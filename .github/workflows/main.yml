@@ -111,12 +111,17 @@ jobs:
         with:
           name: release-binaries-macos
 
+      - name: List files in the workspace
+        run: ls -la  # This will help you verify that the artifacts are downloaded
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            target/release/*
+            release-binaries-linux/*
+            release-binaries-macos/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Ensure you are using the token
 
       - name: Notify success
         run: echo "Release created successfully!"
