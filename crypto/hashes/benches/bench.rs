@@ -44,7 +44,7 @@ fn bench_pow_hash(c: &mut Criterion) {
     let nonce: u64 = rng.gen();
     c.bench_function("PoWHash including timestamp", |b| {
         b.iter(|| {
-            let hasher = PowHash::new(black_box(pre_pow_hash), black_box(timestamp));
+            let mut hasher = PowHash::new(black_box(pre_pow_hash), black_box(timestamp));
             black_box(hasher.finalize_with_nonce(black_box(nonce)));
         })
     });
