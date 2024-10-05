@@ -1,7 +1,7 @@
 [package]
-name = "kaspa-cli"
-description = "Kaspa CLI"
-keywords = ["kaspa", "wallet", "cli", "rpc"]
+name = "pico-cli"
+description = "Pico CLI"
+keywords = ["Pico", "wallet", "cli", "rpc"]
 rust-version.workspace = true
 version.workspace = true
 edition.workspace = true
