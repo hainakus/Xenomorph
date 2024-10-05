@@ -1,126 +1,162 @@
-name: Build All and Release
+name: Build and Upload Pico Project Assets
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'  # Triggers on version tags like v1.0.0
+  release:
+    types: [published]
 
 jobs:
-  build-linux:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    name: Building on ${{ matrix.os }}
+
     steps:
-      - name: Checkout code
+      - name: Checkout sources
         uses: actions/checkout@v3
 
-      - name: Install dependencies (including protobuf-compiler)
+      - name: Fix CRLF on Windows
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo Build Outputs
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache Toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/x-tools
+          key: ${{ runner.os }}-musl-${{ hashFiles('**/musl-toolchain/preset.sh') }}
+          restore-keys: |
+            ${{ runner.os }}-musl-
+
+      - name: Build on Linux
+        if: runner.os == 'Linux'
+        run: |
+          source musl-toolchain/build.sh
+          cd $GITHUB_WORKSPACE
+          cargo --verbose build --bin pico-wallet --bin picod --bin pico-cli --release --target x86_64-unknown-linux-musl
+          mkdir bin || true
+          cp target/x86_64-unknown-linux-musl/release/pico-wallet bin/
+          cp target/x86_64-unknown-linux-musl/release/picod bin/
+          cp target/x86_64-unknown-linux-musl/release/pico-cli bin/
+          archive="bin/pico-${{ github.event.release.tag_name }}-linux-amd64.zip"
+          asset_name="pico-${{ github.event.release.tag_name }}-linux-amd64.zip"
+          zip -r "${archive}" ./bin/*
+          echo "archive=${archive}" >> $GITHUB_ENV
+          echo "asset_name=${asset_name}" >> $GITHUB_ENV
+
+      - name: Build on Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo build --bin pico-wallet --release
+          cargo build --bin picod --release
+          cargo build --bin pico-cli --release
+          mkdir bin || true
+          cp target/release/pico-wallet.exe bin/
+          cp target/release/picod.exe bin/
+          cp target/release/pico-cli.exe bin/
+          archive="bin/pico-${{ github.event.release.tag_name }}-win64.zip"
+          asset_name="pico-${{ github.event.release.tag_name }}-win64.zip"
+          powershell "Compress-Archive bin/* \"${archive}\""
+          echo "archive=${archive}" >> $GITHUB_ENV
+          echo "asset_name=${asset_name}" >> $GITHUB_ENV
+
+      - name: Build on MacOS
+        if: runner.os == 'macOS'
+        run: |
+          cargo build --bin pico-wallet --release
+          cargo build --bin picod --release
+          cargo build --bin pico-cli --release
+          mkdir bin || true
+          cp target/release/pico-wallet bin/
+          cp target/release/picod bin/
+          cp target/release/pico-cli bin/
+          archive="bin/pico-${{ github.event.release.tag_name }}-osx.zip"
+          asset_name="pico-${{ github.event.release.tag_name }}-osx.zip"
+          zip -r "${archive}" ./bin/*
+          echo "archive=${archive}" >> $GITHUB_ENV
+          echo "asset_name=${asset_name}" >> $GITHUB_ENV
+
+      - name: Upload release asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: "./${{ env.archive }}"
+          asset_name: "${{ env.asset_name }}"
+          asset_content_type: application/zip
+
+  build-wasm:
+    runs-on: ubuntu-latest
+    name: Building WASM32 SDK
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v3
+
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install llvm
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y clang llvm
 
-      - name: Verify protoc installation
-        run: protoc --version
+      - name: Install wasm-pack
+        run: cargo install wasm-pack
 
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
+      - name: Add wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install NodeJS
+        uses: actions/setup-node@v4
         with:
-          toolchain: stable
-          profile: minimal
-          override: true
+          node-version: '20'
 
-      - name: Cache cargo registry
-        uses: actions/cache@v3
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+      - name: Build WASM32 SDK
+        run: |
+          cd wasm
+          bash build-release
+          mv release/pico-wasm32-sdk.zip ../pico-wasm32-sdk-${{ github.event.release.tag_name }}.zip
 
-      - name: Cache cargo build
-        uses: actions/cache@v3
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-build-
+          archive="pico-wasm32-sdk-${{ github.event.release.tag_name }}.zip"
+          asset_name="pico-wasm32-sdk-${{ github.event.release.tag_name }}.zip"
+          echo "archive=${archive}" >> $GITHUB_ENV
+          echo "asset_name=${asset_name}" >> $GITHUB_ENV
 
-      - name: Build for Linux
-        run: cargo build --release --bin pico-wallet --bin picod
-
-      - name: Upload release artifacts (Linux)
-        uses: actions/upload-artifact@v3
-        with:
-          name: release-binaries-linux
-          path: |
-            target/release/pico-wallet
-            target/release/picod
-
-  build-macos:
-    runs-on: macos-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Install Protobuf Compiler
-        run: brew install protobuf
-
-      - name: Verify protoc installation
-        run: protoc --version
-
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-          override: true
-
-      - name: Cache cargo registry
-        uses: actions/cache@v3
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v3
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-build-
-
-      - name: Build for macOS
-        run: cargo build --release --bin pico-wallet --bin picod
-
-      - name: Upload release artifacts (macOS)
-        uses: actions/upload-artifact@v3
-        with:
-          name: release-binaries-macos
-          path: |
-            target/release/pico-wallet
-            target/release/picod
-
-
-  release:
-    needs: [build-linux, build-macos]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download Linux build artifacts
-        uses: actions/download-artifact@v3
-        with:
-          name: release-binaries-linux
-          path: ./release-binaries-linux # Optional: specify a download path
-
-      - name: Download macOS build artifacts
-        uses: actions/download-artifact@v3
-        with:
-          name: release-binaries-macos
-          path: ./release-binaries-macos # Optional: specify a download path
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            release-binaries-linux/*
-            release-binaries-macos/*
+      - name: Upload WASM32 SDK
+        uses: actions/upload-release-asset@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Ensure you are using the token
-
-      - name: Notify success
-        run: echo "Release created successfully!"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: "./${{ env.archive }}"
+          asset_name: "${{ env.asset_name }}"
+          asset_content_type: application/zip
