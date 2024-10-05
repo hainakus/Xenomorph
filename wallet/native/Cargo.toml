@@ -1,6 +1,6 @@
 [package]
-name = "kaspa-wallet"
-description = "Kaspa wallet"
+name = "pico-wallet"
+description = "pico wallet"
 rust-version.workspace = true
 version.workspace = true
 edition.workspace = true

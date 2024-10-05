@@ -3341,18 +3341,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kaspa-wallet"
-version = "0.15.2"
-dependencies = [
- "async-std",
- "async-trait",
- "kaspa-cli",
- "tokio",
- "workflow-log",
- "workflow-terminal",
-]
-
-[[package]]
 name = "kaspa-wallet-cli-wasm"
 version = "0.15.2"
 dependencies = [
@@ -4581,6 +4569,18 @@ checksum = "b4c5cc86750666a3ed20bdaf5ca2a0344f9c67674cae0515bec2da16fbaa47db"
 dependencies = [
  "fixedbitset",
  "indexmap 2.4.0",
+]
+
+[[package]]
+name = "pico-wallet"
+version = "0.15.2"
+dependencies = [
+ "async-std",
+ "async-trait",
+ "kaspa-cli",
+ "tokio",
+ "workflow-log",
+ "workflow-terminal",
 ]
 
 [[package]]
