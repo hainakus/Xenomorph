@@ -12,8 +12,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Install dependencies (including protobuf-compiler)
-        run: sudo apt-get update && apt-get install -y protobuf-compiler
+      - name: Install Homebrew and Protobuf Compiler
+        run: |
+          sudo apt-get update && sudo apt-get install -y build-essential
+          /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew install protobuf
 
       - name: Install Rust
         uses: actions-rs/toolchain@v1
@@ -46,8 +50,6 @@ jobs:
           path: |
             target/release/pico-wallet
             target/release/picod
-       
-
 
   build-macos:
     runs-on: macos-latest
@@ -80,7 +82,7 @@ jobs:
             ${{ runner.os }}-cargo-build-
 
       - name: Build for macOS
-        run: cargo build --release --bin pico-wallet --bin picod 
+        run: cargo build --release --bin pico-wallet --bin picod
 
       - name: Upload release artifacts (macOS)
         uses: actions/upload-artifact@v3
@@ -90,7 +92,6 @@ jobs:
             target/release/pico-wallet
             target/release/picod
           
-            
   build-windows:
     runs-on: windows-latest
     steps:
@@ -100,8 +101,9 @@ jobs:
       - name: Install Protobuf Compiler
         run: |
           curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.0/protoc-21.0-win64.zip
-          unzip protoc-21.0-win64.zip -d protoc
-          set PATH=%PATH%;%cd%/protoc/bin      
+          Expand-Archive protoc-21.0-win64.zip -DestinationPath protoc
+          $env:PATH += ";$PWD\protoc\bin"
+          Write-Host "Protoc installed to $env:PATH"   
       
       - name: Install Rust
         uses: actions-rs/toolchain@v1
@@ -134,7 +136,6 @@ jobs:
           path: |
             target/release/pico-wallet
             target/release/picod
- 
 
   release:
     needs: [build-linux, build-macos, build-windows]
@@ -163,3 +164,4 @@ jobs:
 
       - name: Notify success
         run: echo "Release created successfully!"
+
