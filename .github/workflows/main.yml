@@ -1,0 +1,165 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Triggers on version tags like v1.0.0
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install dependencies (including protobuf-compiler)
+        run: sudo apt-get update && apt-get install -y protobuf-compiler
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-
+
+      - name: Build for Linux
+        run: cargo build --release --bin pico-wallet --bin picod
+
+      - name: Upload release artifacts (Linux)
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-binaries-linux
+          path: |
+            target/release/pico-wallet
+            target/release/picod
+       
+
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        
+      - name: Install Protobuf Compiler
+        run: brew install protobuf
+        
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-
+
+      - name: Build for macOS
+        run: cargo build --release --bin pico-wallet --bin picod 
+
+      - name: Upload release artifacts (macOS)
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-binaries-macos
+          path: |
+            target/release/pico-wallet
+            target/release/picod
+          
+            
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Install Protobuf Compiler
+        run: |
+          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.0/protoc-21.0-win64.zip
+          unzip protoc-21.0-win64.zip -d protoc
+          set PATH=%PATH%;%cd%/protoc/bin      
+      
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-
+
+      - name: Build for Windows
+        run: cargo build --release --bin pico-wallet --bin picod
+
+      - name: Upload release artifacts (Windows)
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-binaries-windows
+          path: |
+            target/release/pico-wallet
+            target/release/picod
+ 
+
+  release:
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Linux build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: release-binaries-linux
+
+      - name: Download macOS build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: release-binaries-macos
+
+      - name: Download Windows build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: release-binaries-windows
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            target/release/*
+
+      - name: Notify success
+        run: echo "Release created successfully!"
