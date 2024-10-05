@@ -98,7 +98,7 @@ jobs:
 
 
   release:
-    needs: [build-linux, build-macos, build-windows]
+    needs: [build-linux, build-macos]
     runs-on: ubuntu-latest
     steps:
       - name: Download Linux build artifacts
