@@ -109,7 +109,9 @@ jobs:
           [System.Environment]::SetEnvironmentVariable("PATH", $env:PATH + ";$PWD/protoc/bin", [System.EnvironmentVariableTarget]::Machine)
 
       - name: Verify protoc installation
-        run: protoc --version
+        run: |
+          Start-Sleep -Seconds 2
+          protoc --version
 
       - name: Install Rust
         uses: actions-rs/toolchain@v1
