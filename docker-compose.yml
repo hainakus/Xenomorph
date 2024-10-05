@@ -1,0 +1,24 @@
+services:
+  picod-node-1:
+    build: .
+    container_name: picod-node-1
+    ports:
+      - "16118:26666"  # P2P port
+      - "17118:16668"  # RPC port
+    command: ["--rpclisten=0.0.0.0:16668", "--listen=0.0.0.0:26666", "--utxoindex"]
+
+  picod-node-2:
+    build: .
+    container_name: picod-node-2
+    ports:
+      - "16119:26666"
+      - "17119:16668"
+    command: ["--rpclisten=0.0.0.0:16668", "--listen=0.0.0.0:26666", "--utxoindex"]
+
+  picod-node-3:
+    build: .
+    container_name: picod-node-3
+    ports:
+      - "16122:26666"
+      - "17123:16668"
+    command: ["--rpclisten=0.0.0.0:16668", "--listen=0.0.0.0:26666", "--utxoindex", "--addpeer=89.155.26.12:26666", "--addpeer=84.247.131.3:26666", "--addpeer=194.233.66.230:26666", "--addpeer=213.199.56.32:26666", "--addpeer=45.90.123.219:26666", "--addpeer=45.90.123.88:26666", "--addpeer=4.228.58.100:26666", "--addpeer=172.214.141.215:26666"]
