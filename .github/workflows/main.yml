@@ -113,7 +113,7 @@ jobs:
         run: |
           # Temporarily add the protoc path to the PATH variable for this run
           $env:PATH += ";$GITHUB_WORKSPACE/protoc/bin"
-          protoc --version
+        
 
       - name: Install Rust
         uses: actions-rs/toolchain@v1
