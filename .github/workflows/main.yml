@@ -102,14 +102,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Install Chocolatey
+      - name: Install Protobuf Compiler manually
         run: |
-          Set-ExecutionPolicy Bypass -Scope Process -Force; 
-          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12; 
-          iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
-
-      - name: Install Protobuf Compiler using Chocolatey
-        run: choco install protoc --version=21.0 -y
+          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.0/protoc-21.0-win64.zip
+          unzip protoc-21.0-win64.zip -d protoc
+          set PATH=%PATH%;%cd%/protoc/bin
 
       - name: Verify protoc installation
         run: protoc --version
@@ -145,6 +142,7 @@ jobs:
           path: |
             target/release/pico-wallet
             target/release/picod
+
 
 
 
