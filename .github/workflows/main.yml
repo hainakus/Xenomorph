@@ -105,14 +105,13 @@ jobs:
         uses: actions/download-artifact@v3
         with:
           name: release-binaries-linux
+          path: ./release-binaries-linux # Optional: specify a download path
 
       - name: Download macOS build artifacts
         uses: actions/download-artifact@v3
         with:
           name: release-binaries-macos
-
-      - name: List files in the workspace
-        run: ls -la  # This will help you verify that the artifacts are downloaded
+          path: ./release-binaries-macos # Optional: specify a download path
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
