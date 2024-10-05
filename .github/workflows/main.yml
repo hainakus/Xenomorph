@@ -105,8 +105,8 @@ jobs:
       - name: Install Protobuf Compiler manually
         run: |
           curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.0/protoc-21.0-win64.zip
-          unzip protoc-21.0-win64.zip -d protoc
-          $env:PATH += ";$PWD/protoc/bin"
+          Expand-Archive -Path protoc-21.0-win64.zip -DestinationPath protoc
+          [System.Environment]::SetEnvironmentVariable("PATH", $env:PATH + ";$PWD/protoc/bin", [System.EnvironmentVariableTarget]::Machine)
 
       - name: Verify protoc installation
         run: protoc --version
