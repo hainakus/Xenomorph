@@ -106,7 +106,7 @@ jobs:
         run: |
           curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.0/protoc-21.0-win64.zip
           unzip protoc-21.0-win64.zip -d protoc
-          set PATH=%PATH%;%cd%/protoc/bin
+          $env:PATH += ";$PWD/protoc/bin"
 
       - name: Verify protoc installation
         run: protoc --version
