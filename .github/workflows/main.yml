@@ -12,12 +12,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Install Homebrew and Protobuf Compiler
+      - name: Install dependencies (including protobuf-compiler)
         run: |
-          sudo apt-get update && sudo apt-get install -y build-essential
-          /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
-          brew install protobuf
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Verify protoc installation
+        run: protoc --version
 
       - name: Install Rust
         uses: actions-rs/toolchain@v1
@@ -56,10 +57,13 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-        
+
       - name: Install Protobuf Compiler
         run: brew install protobuf
-        
+
+      - name: Verify protoc installation
+        run: protoc --version
+
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
@@ -91,20 +95,23 @@ jobs:
           path: |
             target/release/pico-wallet
             target/release/picod
-          
+
   build-windows:
     runs-on: windows-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-      
+
       - name: Install Protobuf Compiler
         run: |
           curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.0/protoc-21.0-win64.zip
-          Expand-Archive protoc-21.0-win64.zip -DestinationPath protoc
-          $env:PATH += ";$PWD\protoc\bin"
-          Write-Host "Protoc installed to $env:PATH"   
-      
+          mkdir protoc
+          unzip protoc-21.0-win64.zip -d protoc
+          echo "##[add-path]$PWD/protoc/bin"
+
+      - name: Verify protoc installation
+        run: protoc --version
+
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
@@ -164,4 +171,3 @@ jobs:
 
       - name: Notify success
         run: echo "Release created successfully!"
-
