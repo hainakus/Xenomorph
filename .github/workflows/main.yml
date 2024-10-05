@@ -102,18 +102,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Install Protobuf Compiler
+      - name: Install Chocolatey
         run: |
-          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.0/protoc-21.0-win64.zip
-          mkdir protoc
-          unzip protoc-21.0-win64.zip -d protoc
-          echo "PATH=${{ github.workspace }}/protoc/bin;${{ env.PATH }}" >> $GITHUB_ENV
+          @"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -InputFormat None -ExecutionPolicy Bypass -Command "iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))"
+
+      - name: Install Protobuf Compiler using Chocolatey
+        run: choco install protoc --version=21.0 -y
 
       - name: Verify protoc installation
-        run: |
-          # Temporarily add the protoc path to the PATH variable for this run
-          $env:PATH += ";$GITHUB_WORKSPACE/protoc/bin"
-        
+        run: protoc --version
 
       - name: Install Rust
         uses: actions-rs/toolchain@v1
