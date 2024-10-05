@@ -37,7 +37,7 @@ jobs:
             ${{ runner.os }}-cargo-build-
 
       - name: Build for Linux
-        run: cargo build --release --bin pico-wallet --bin picod --bin pico-cli
+        run: cargo build --release --bin pico-wallet --bin picod
 
       - name: Upload release artifacts (Linux)
         uses: actions/upload-artifact@v3
@@ -46,7 +46,7 @@ jobs:
           path: |
             target/release/pico-wallet
             target/release/picod
-            target/release/pico-cli
+       
 
 
   build-macos:
@@ -80,7 +80,7 @@ jobs:
             ${{ runner.os }}-cargo-build-
 
       - name: Build for macOS
-        run: cargo build --release --bin pico-wallet --bin picod --bin pico-cli
+        run: cargo build --release --bin pico-wallet --bin picod 
 
       - name: Upload release artifacts (macOS)
         uses: actions/upload-artifact@v3
@@ -89,7 +89,7 @@ jobs:
           path: |
             target/release/pico-wallet
             target/release/picod
-            target/release/pico-cli
+          
             
   build-windows:
     runs-on: windows-latest
@@ -125,7 +125,7 @@ jobs:
             ${{ runner.os }}-cargo-build-
 
       - name: Build for Windows
-        run: cargo build --release --bin pico-wallet --bin picod --bin pico-cli
+        run: cargo build --release --bin pico-wallet --bin picod
 
       - name: Upload release artifacts (Windows)
         uses: actions/upload-artifact@v3
@@ -134,7 +134,7 @@ jobs:
           path: |
             target/release/pico-wallet
             target/release/picod
-            target/release/pico-cli
+ 
 
   release:
     needs: [build-linux, build-macos, build-windows]
