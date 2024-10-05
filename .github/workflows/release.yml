@@ -12,6 +12,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
+      - name: Install dependencies (including protobuf-compiler)
+        run: sudo apt-get install -y protobuf-compiler
+
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
@@ -40,14 +43,21 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: release-binaries-linux
-          path: target/release/
+          path: |
+            target/release/pico-wallet
+            target/release/picod
+            target/release/pico-cli
+
 
   build-macos:
     runs-on: macos-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-
+        
+      - name: Install Protobuf Compiler
+        run: brew install protobuf
+        
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
@@ -76,14 +86,23 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: release-binaries-macos
-          path: target/release/
-
+          path: |
+            target/release/pico-wallet
+            target/release/picod
+            target/release/pico-cli
+            
   build-windows:
     runs-on: windows-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
-
+      
+      - name: Install Protobuf Compiler
+        run: |
+          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.0/protoc-21.0-win64.zip
+          unzip protoc-21.0-win64.zip -d protoc
+          set PATH=%PATH%;%cd%/protoc/bin      
+      
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
@@ -112,7 +131,10 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: release-binaries-windows
-          path: target/release/
+          path: |
+            target/release/pico-wallet
+            target/release/picod
+            target/release/pico-cli
 
   release:
     needs: [build-linux, build-macos, build-windows]
