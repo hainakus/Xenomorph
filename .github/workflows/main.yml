@@ -1,8 +1,9 @@
 name: Build and Upload Pico Project Assets
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*.*.*'  # Triggers on version tags like v1.0.0
 
 jobs:
   build:
