@@ -6,106 +6,122 @@ on:
       - 'v*.*.*'  # Triggers on version tags like v1.0.0
 
 jobs:
-  build:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    name: Building on ${{ matrix.os }}
-
+  build-linux:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout sources
+      - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Fix CRLF on Windows
-        if: runner.os == 'Windows'
-        run: git config --global core.autocrlf false
+      - name: Install dependencies (including protobuf-compiler)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
 
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v3
+      - name: Verify protoc installation
+        run: protoc --version
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
         with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          toolchain: stable
+          profile: minimal
+          override: true
 
-      - name: Install stable toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo Build Outputs
+      - name: Cache cargo registry
         uses: actions/cache@v3
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
 
-      - name: Cache Toolchain
-        uses: actions/cache@v4
+      - name: Cache cargo build
+        uses: actions/cache@v3
         with:
-          path: |
-            ~/x-tools
-          key: ${{ runner.os }}-musl-${{ hashFiles('**/musl-toolchain/preset.sh') }}
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-musl-
+            ${{ runner.os }}-cargo-build-
 
-      - name: Build on Linux
-        if: runner.os == 'Linux'
-        run: |
-          source musl-toolchain/build.sh
-          cd $GITHUB_WORKSPACE
-          cargo --verbose build --bin pico-wallet --bin picod --bin pico-cli --release --target x86_64-unknown-linux-musl
-          mkdir bin || true
-          cp target/x86_64-unknown-linux-musl/release/pico-wallet bin/
-          cp target/x86_64-unknown-linux-musl/release/picod bin/
-          cp target/x86_64-unknown-linux-musl/release/pico-cli bin/
-          archive="bin/pico-${{ github.event.release.tag_name }}-linux-amd64.zip"
-          asset_name="pico-${{ github.event.release.tag_name }}-linux-amd64.zip"
-          zip -r "${archive}" ./bin/*
-          echo "archive=${archive}" >> $GITHUB_ENV
-          echo "asset_name=${asset_name}" >> $GITHUB_ENV
+      - name: Build for Linux
+        run: cargo build --release --bin pico-wallet --bin picod
 
-      - name: Build on Windows
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          cargo build --bin pico-wallet --release
-          cargo build --bin picod --release
-          cargo build --bin pico-cli --release
-          mkdir bin || true
-          cp target/release/pico-wallet.exe bin/
-          cp target/release/picod.exe bin/
-          cp target/release/pico-cli.exe bin/
-          archive="bin/pico-${{ github.event.release.tag_name }}-win64.zip"
-          asset_name="pico-${{ github.event.release.tag_name }}-win64.zip"
-          powershell "Compress-Archive bin/* \"${archive}\""
-          echo "archive=${archive}" >> $GITHUB_ENV
-          echo "asset_name=${asset_name}" >> $GITHUB_ENV
-
-      - name: Build on MacOS
-        if: runner.os == 'macOS'
-        run: |
-          cargo build --bin pico-wallet --release
-          cargo build --bin picod --release
-          cargo build --bin pico-cli --release
-          mkdir bin || true
-          cp target/release/pico-wallet bin/
-          cp target/release/picod bin/
-          cp target/release/pico-cli bin/
-          archive="bin/pico-${{ github.event.release.tag_name }}-osx.zip"
-          asset_name="pico-${{ github.event.release.tag_name }}-osx.zip"
-          zip -r "${archive}" ./bin/*
-          echo "archive=${archive}" >> $GITHUB_ENV
-          echo "asset_name=${asset_name}" >> $GITHUB_ENV
-
-      - name: Upload release asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload release artifacts (Linux)
+        uses: actions/upload-artifact@v3
         with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: "./${{ env.archive }}"
-          asset_name: "${{ env.asset_name }}"
-          asset_content_type: application/zip
+          name: release-binaries-linux
+          path: |
+            target/release/pico-wallet
+            target/release/picod
 
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install Protobuf Compiler
+        run: brew install protobuf
+
+      - name: Verify protoc installation
+        run: protoc --version
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-
+
+      - name: Build for macOS
+        run: cargo build --release --bin pico-wallet --bin picod
+
+      - name: Upload release artifacts (macOS)
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-binaries-macos
+          path: |
+            target/release/pico-wallet
+            target/release/picod
+
+
+  release:
+    needs: [build-linux, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Linux build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: release-binaries-linux
+
+      - name: Download macOS build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: release-binaries-macos
+
+      - name: List files in the workspace
+        run: ls -la  # This will help you verify that the artifacts are downloaded
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-binaries-linux/*
+            release-binaries-macos/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Ensure you are using the token
+
+      - name: Notify success
+        run: echo "Release created successfully!"
