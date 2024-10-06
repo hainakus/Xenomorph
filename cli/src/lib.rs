@@ -1,4 +1,4 @@
-extern crate self as kaspa_cli;
+extern crate self as pico_cli;
 
 mod cli;
 pub mod error;

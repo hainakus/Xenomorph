@@ -2449,53 +2449,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kaspa-cli"
-version = "0.15.2"
-dependencies = [
- "async-trait",
- "borsh",
- "cfg-if 1.0.0",
- "convert_case 0.6.0",
- "dashmap",
- "downcast",
- "faster-hex",
- "futures",
- "hex",
- "js-sys",
- "kaspa-addresses",
- "kaspa-bip32",
- "kaspa-consensus-core",
- "kaspa-core",
- "kaspa-daemon",
- "kaspa-metrics-core",
- "kaspa-rpc-core",
- "kaspa-utils",
- "kaspa-wallet-core",
- "kaspa-wallet-keys",
- "kaspa-wallet-pskt",
- "kaspa-wrpc-client",
- "nw-sys",
- "pad",
- "regex",
- "separator",
- "serde",
- "serde_json",
- "textwrap 0.16.1",
- "thiserror",
- "tokio",
- "wasm-bindgen",
- "web-sys",
- "workflow-core",
- "workflow-dom",
- "workflow-log",
- "workflow-node",
- "workflow-nw",
- "workflow-store",
- "workflow-terminal",
- "workflow-wasm",
-]
-
-[[package]]
 name = "kaspa-connectionmanager"
 version = "0.15.2"
 dependencies = [
@@ -3346,7 +3299,7 @@ version = "0.15.2"
 dependencies = [
  "async-trait",
  "js-sys",
- "kaspa-cli",
+ "pico-cli",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "workflow-log",
@@ -4572,12 +4525,59 @@ dependencies = [
 ]
 
 [[package]]
+name = "pico-cli"
+version = "0.15.2"
+dependencies = [
+ "async-trait",
+ "borsh",
+ "cfg-if 1.0.0",
+ "convert_case 0.6.0",
+ "dashmap",
+ "downcast",
+ "faster-hex",
+ "futures",
+ "hex",
+ "js-sys",
+ "kaspa-addresses",
+ "kaspa-bip32",
+ "kaspa-consensus-core",
+ "kaspa-core",
+ "kaspa-daemon",
+ "kaspa-metrics-core",
+ "kaspa-rpc-core",
+ "kaspa-utils",
+ "kaspa-wallet-core",
+ "kaspa-wallet-keys",
+ "kaspa-wallet-pskt",
+ "kaspa-wrpc-client",
+ "nw-sys",
+ "pad",
+ "regex",
+ "separator",
+ "serde",
+ "serde_json",
+ "textwrap 0.16.1",
+ "thiserror",
+ "tokio",
+ "wasm-bindgen",
+ "web-sys",
+ "workflow-core",
+ "workflow-dom",
+ "workflow-log",
+ "workflow-node",
+ "workflow-nw",
+ "workflow-store",
+ "workflow-terminal",
+ "workflow-wasm",
+]
+
+[[package]]
 name = "pico-wallet"
 version = "0.15.2"
 dependencies = [
  "async-std",
  "async-trait",
- "kaspa-cli",
+ "pico-cli",
  "tokio",
  "workflow-log",
  "workflow-terminal",
