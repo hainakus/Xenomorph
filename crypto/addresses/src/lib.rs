@@ -72,7 +72,7 @@ pub enum Prefix {
     Testnet,
     #[serde(rename = "picosim")]
     Simnet,
-    #[serde(rename = "picoev")]
+    #[serde(rename = "picodev")]
     Devnet,
     #[cfg(test)]
     A,
