@@ -203,7 +203,7 @@ impl<'a, T: VerifiableTransaction> TxScriptEngine<'a, T> {
     }
 
     fn execute_opcode(&mut self, opcode: Box<dyn OpCodeImplementation<T>>) -> Result<(), TxScriptError> {
-        // Different from picod: Illegal and disabled opcode are checked on execute instead
+        // Different from pico: Illegal and disabled opcode are checked on execute instead
         // Note that this includes OP_RESERVED which counts as a push operation.
         if !opcode.is_push_opcode() {
             self.num_ops += 1;

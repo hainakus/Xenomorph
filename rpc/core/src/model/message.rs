@@ -155,9 +155,9 @@ impl Deserializer for GetBlockTemplateRequest {
 pub struct GetBlockTemplateResponse {
     pub block: RpcRawBlock,
 
-    /// Whether picod thinks that it's synced.
-    /// Callers are discouraged (but not forbidden) from solving blocks when picod is not synced.
-    /// That is because when picod isn't in sync with the rest of the network there's a high
+    /// Whether pico thinks that it's synced.
+    /// Callers are discouraged (but not forbidden) from solving blocks when pico is not synced.
+    /// That is because when pico isn't in sync with the rest of the network there's a high
     /// chance the block will never be accepted, thus the solving effort would have been wasted.
     pub is_synced: bool,
 }
@@ -2990,7 +2990,7 @@ impl Deserializer for FinalityConflictResolvedNotification {
 //
 // If `addresses` is empty, the notifications will start or stop for all addresses.
 //
-// This call is only available when this picod was started with `--utxoindex`
+// This call is only available when this pico was started with `--utxoindex`
 //
 // See: UtxosChangedNotification
 #[derive(Clone, Debug, Serialize, Deserialize)]

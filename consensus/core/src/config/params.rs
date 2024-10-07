@@ -316,7 +316,7 @@ pub const MAINNET_PARAMS: Params = Params {
     coinbase_payload_script_public_key_max_len: 150,
     max_coinbase_payload_len: 204,
 
-    // This is technically a soft fork from the Go implementation since picod's consensus doesn't
+    // This is technically a soft fork from the Go implementation since pico's consensus doesn't
     // check these rules, but in practice it's enforced by the network layer that limits the message
     // size to 1 GB.
     // These values should be lowered to more reasonable amounts on the next planned HF/SF.
@@ -372,7 +372,7 @@ pub const TESTNET_PARAMS: Params = Params {
     coinbase_payload_script_public_key_max_len: 150,
     max_coinbase_payload_len: 204,
 
-    // This is technically a soft fork from the Go implementation since picod's consensus doesn't
+    // This is technically a soft fork from the Go implementation since pico's consensus doesn't
     // check these rules, but in practice it's enforced by the network layer that limits the message
     // size to 1 GB.
     // These values should be lowered to more reasonable amounts on the next planned HF/SF.
@@ -534,7 +534,7 @@ pub const DEVNET_PARAMS: Params = Params {
     coinbase_payload_script_public_key_max_len: 150,
     max_coinbase_payload_len: 204,
 
-    // This is technically a soft fork from the Go implementation since picod's consensus doesn't
+    // This is technically a soft fork from the Go implementation since pico's consensus doesn't
     // check these rules, but in practice it's enforced by the network layer that limits the message
     // size to 1 GB.
     // These values should be lowered to more reasonable amounts on the next planned HF/SF.

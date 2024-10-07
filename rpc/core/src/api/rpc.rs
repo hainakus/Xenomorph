@@ -138,7 +138,7 @@ pub trait RpcApi: Sync + Send + AnySync {
         request: GetBlockTemplateRequest,
     ) -> RpcResult<GetBlockTemplateResponse>;
 
-    /// Requests the list of known picod addresses in the current network (mainnet, testnet, etc.)
+    /// Requests the list of known pico addresses in the current network (mainnet, testnet, etc.)
     async fn get_peer_addresses(&self) -> RpcResult<GetPeerAddressesResponse> {
         self.get_peer_addresses_call(None, GetPeerAddressesRequest {}).await
     }

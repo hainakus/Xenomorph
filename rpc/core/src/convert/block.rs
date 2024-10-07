@@ -14,7 +14,7 @@ impl From<&Block> for RpcBlock {
         Self {
             header: item.header.as_ref().into(),
             transactions: item.transactions.iter().map(RpcTransaction::from).collect(),
-            // TODO: Implement a populating process inspired from picod\app\rpc\rpccontext\verbosedata.go
+            // TODO: Implement a populating process inspired from pico\app\rpc\rpccontext\verbosedata.go
             verbose_data: None,
         }
     }

@@ -40,7 +40,7 @@ impl TryFrom<CpuMinerConfig> for Vec<String> {
         let mut argv = Vec::new();
 
         if args.path.is_none() {
-            return Err(Error::Custom("no picod path is specified".to_string()));
+            return Err(Error::Custom("no pico path is specified".to_string()));
         }
 
         if args.network.is_none() {
@@ -68,7 +68,7 @@ impl TryFrom<CpuMinerConfig> for Vec<String> {
         }
 
         let server = args.server.unwrap_or("127.0.0.1".to_string());
-        let server = format!("--picod-address={server}");
+        let server = format!("--pico-address={server}");
         argv.push(server.as_str());
 
         if args.address.is_none() {

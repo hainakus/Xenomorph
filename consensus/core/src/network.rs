@@ -42,7 +42,7 @@ impl NetworkType {
     pub fn default_rpc_port(&self) -> u16 {
         match self {
             NetworkType::Mainnet => 26669,
-            NetworkType::Testnet => 16666,
+            NetworkType::Testnet => 10066,
             NetworkType::Simnet => 16510,
             NetworkType::Devnet => 18610,
         }
@@ -265,11 +265,11 @@ impl NetworkId {
 
     /// Returns a textual description of the network prefixed with `kaspa-`
     pub fn to_prefixed(&self) -> String {
-        format!("picod-{}", self)
+        format!("pico-{}", self)
     }
 
     pub fn from_prefixed(prefixed: &str) -> Result<Self, NetworkIdError> {
-        if let Some(stripped) = prefixed.strip_prefix("picod-") {
+        if let Some(stripped) = prefixed.strip_prefix("pico-") {
             Self::from_str(stripped)
         } else {
             Err(NetworkIdError::InvalidPrefix(prefixed.to_string()))

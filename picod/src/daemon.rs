@@ -38,9 +38,9 @@ use kaspa_utxoindex::{api::UtxoIndexProxy, UtxoIndex};
 use kaspa_wrpc_server::service::{Options as WrpcServerOptions, WebSocketCounters as WrpcServerCounters, WrpcEncoding, WrpcService};
 
 /// Desired soft FD limit that needs to be configured
-/// for the picod process.
+/// for the pico process.
 pub const DESIRED_DAEMON_SOFT_FD_LIMIT: u64 = 8 * 1024;
-/// Minimum acceptable soft FD limit for the picod
+/// Minimum acceptable soft FD limit for the pico
 /// process. (Rusty Kaspa will operate with the minimal
 /// acceptable limit of `4096`, but a setting below
 /// this value may impact the database performance).
@@ -67,7 +67,7 @@ pub fn get_app_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     return get_home_dir().join("rusty-kaspa");
     #[cfg(not(target_os = "windows"))]
-    return get_home_dir().join(".rusty-picod");
+    return get_home_dir().join(".rusty-pico");
 }
 
 pub fn validate_args(args: &Args) -> ConfigResult<()> {
@@ -132,7 +132,7 @@ pub struct Runtime {
 
 /// Get the application directory from the supplied [`Args`].
 /// This function can be used to identify the location of
-/// the application folder that contains picod logs and the database.
+/// the application folder that contains pico logs and the database.
 pub fn get_app_dir_from_args(args: &Args) -> PathBuf {
     let app_dir = args
         .appdir
@@ -310,7 +310,7 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
         }
     }
 
-    // Reset Condition: Need to reset if we're upgrading from picod DB version
+    // Reset Condition: Need to reset if we're upgrading from pico DB version
     // TEMP: upgrade from Alpha version or any version before this one
     if !is_db_reset_needed
         && (meta_db.get_pinned(b"multi-consensus-metadata-key").is_ok_and(|r| r.is_some())

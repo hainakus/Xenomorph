@@ -1,7 +1,7 @@
 use crate::imports::*;
 
 #[derive(Default, Handler)]
-#[help("Disconnect from the picod network")]
+#[help("Disconnect from the pico network")]
 pub struct Disconnect;
 
 impl Disconnect {

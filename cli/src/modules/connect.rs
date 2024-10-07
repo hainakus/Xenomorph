@@ -1,7 +1,7 @@
 use crate::imports::*;
 
 #[derive(Default, Handler)]
-#[help("Connect to a picod network")]
+#[help("Connect to a pico network")]
 pub struct Connect;
 
 impl Connect {
