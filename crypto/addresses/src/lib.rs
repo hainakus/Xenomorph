@@ -66,7 +66,7 @@ impl From<workflow_wasm::error::Error> for AddressError {
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug, Hash, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 #[borsh(use_discriminant = true)]
 pub enum Prefix {
-    #[serde(rename = "pico")]
+    #[serde(rename = "picod")]
     Mainnet,
     #[serde(rename = "picotest")]
     Testnet,
@@ -83,7 +83,7 @@ pub enum Prefix {
 impl Prefix {
     fn as_str(&self) -> &'static str {
         match self {
-            Prefix::Mainnet => "pico",
+            Prefix::Mainnet => "picod",
             Prefix::Testnet => "picotest",
             Prefix::Simnet => "picosim",
             Prefix::Devnet => "picoev",
@@ -114,7 +114,7 @@ impl TryFrom<&str> for Prefix {
 
     fn try_from(prefix: &str) -> Result<Self, Self::Error> {
         match prefix {
-            "pico" => Ok(Prefix::Mainnet),
+            "picod" => Ok(Prefix::Mainnet),
             "picotest" => Ok(Prefix::Testnet),
             "picosim" => Ok(Prefix::Simnet),
             "picoev" => Ok(Prefix::Devnet),
