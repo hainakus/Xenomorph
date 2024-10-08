@@ -19,7 +19,7 @@ RUN chmod +x /usr/local/bin/xenom
 EXPOSE 17610 26666
 
 # Set the entrypoint to run the 'xenom' binary
-ENTRYPOINT ["/usr/local/bin/xenon"]
+ENTRYPOINT ["/usr/local/bin/xenom"]
 
 # Default command with necessary flags
 CMD ["--utxoindex", "--rpclisten-borsh", "0.0.0.0:17610"]

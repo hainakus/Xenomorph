@@ -1,7 +1,7 @@
 [package]
-name = "xenon"
-description = "xenon full node daemon"
-keywords = ["xenon","kaspa", "blockdag"]
+name = "xenom"
+description = "xenom full node daemon"
+keywords = ["xenom","kaspa", "blockdag"]
 rust-version.workspace = true
 version.workspace = true
 edition.workspace = true

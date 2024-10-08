@@ -84,7 +84,7 @@ include = [
 kaspa-addresses = { version = "0.15.2", path = "crypto/addresses" }
 kaspa-addressmanager = { version = "0.15.2", path = "components/addressmanager" }
 kaspa-bip32 = { version = "0.15.2", path = "wallet/bip32" }
-xenon-cli = { version = "0.15.2", path = "cli" }
+xenom-cli = { version = "0.15.2", path = "cli" }
 kaspa-connectionmanager = { version = "0.15.2", path = "components/connectionmanager" }
 kaspa-consensus = { version = "0.15.2", path = "consensus" }
 kaspa-consensus-core = { version = "0.15.2", path = "consensus/core" }
@@ -133,7 +133,7 @@ kaspa-wrpc-proxy = { version = "0.15.2", path = "rpc/wrpc/proxy" }
 kaspa-wrpc-server = { version = "0.15.2", path = "rpc/wrpc/server" }
 kaspa-wrpc-wasm = { version = "0.15.2", path = "rpc/wrpc/wasm" }
 kaspa-wrpc-example-subscriber = { version = "0.15.2", path = "rpc/wrpc/examples/subscriber" }
-xenon = { version = "0.15.2", path = "xenom" }
+xenom = { version = "0.15.2", path = "xenom" }
 kaspa-alloc = { version = "0.15.2", path = "utils/alloc" }
 blake3 = "1.5.4"
 # external

@@ -11,7 +11,7 @@ dependencies = [
  "tokio",
  "workflow-log",
  "workflow-terminal",
- "xenon-cli",
+ "xenom-cli",
 ]
 
 [[package]]
@@ -3316,7 +3316,7 @@ dependencies = [
  "workflow-log",
  "workflow-terminal",
  "workflow-wasm",
- "xenon-cli",
+ "xenom-cli",
 ]
 
 [[package]]
@@ -7248,7 +7248,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "xenon"
+name = "xenom"
 version = "0.15.2"
 dependencies = [
  "async-channel 2.3.1",
@@ -7294,7 +7294,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "xenon-cli"
+name = "xenom-cli"
 version = "0.15.2"
 dependencies = [
  "async-trait",
@@ -7341,7 +7341,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "xenon-testing-integration"
+name = "xenom-testing-integration"
 version = "0.15.2"
 dependencies = [
  "async-channel 2.3.1",
@@ -7397,7 +7397,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "workflow-perf-monitor",
- "xenon",
+ "xenom",
 ]
 
 [[package]]

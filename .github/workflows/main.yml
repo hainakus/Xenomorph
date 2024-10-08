@@ -50,7 +50,7 @@ jobs:
           name: release-binaries-linux
           path: |
             target/release/XENo-wallet
-            target/release/xenon
+            target/release/xenom
 
   build-macos:
     runs-on: macos-latest
@@ -94,7 +94,7 @@ jobs:
           name: release-binaries-macos
           path: |
             target/release/XENo-wallet
-            target/release/xenon
+            target/release/xenom
 
 
   release:

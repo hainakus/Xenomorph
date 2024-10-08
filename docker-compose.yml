@@ -1,5 +1,5 @@
 services:
-  xenon-node-1:
+  xenom-node-1:
     build: .
     container_name: xenom-node-1
     ports:
@@ -7,7 +7,7 @@ services:
       - "17118:16668"  # RPC port
     command: ["--rpclisten=0.0.0.0:16668", "--listen=0.0.0.0:26666", "--utxoindex"]
 
-  xenon-node-2:
+  xenom-node-2:
     build: .
     container_name: xenom-node-2
     ports:
@@ -15,7 +15,7 @@ services:
       - "17119:16668"
     command: ["--rpclisten=0.0.0.0:16668", "--listen=0.0.0.0:26666", "--utxoindex"]
 
-  xenon-node-3:
+  xenom-node-3:
     build: .
     container_name: xenom-node-3
     ports:

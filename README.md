@@ -1,15 +1,15 @@
 
 <h1>Xenomorph On UniVerse - based on Kaspa Rust</h1>
 
-* A new blockchain-based platform called xenon is being developed, which utilizes Kaspa as its underlying layer 1 infrastructure.
+* A new blockchain-based platform called xenom is being developed, which utilizes Kaspa as its underlying layer 1 infrastructure.
 * xenom will provide a number of benefits over traditional web development, including increased performance, security, and transparency.
 * The use case for xenom is centered around helping underdeveloped countries and organizations like Unicef by providing a more scalable, secure, and transparent platform for donations and aid distribution.
 * Smart contracts will be used to manage the donation process, ensuring that funds are used efficiently and transparently.
 * The xenom platform will also utilize Kaspa's distributed ledger technology to provide a more decentralized and secure system for managing aid resources.
 * In addition to its core use cases, xenom has the potential to improve the efficiency and effectiveness of various industries and sectors, including healthcare, education, and supply chain management.
-* The xenon platform will be open-source and free to use, providing an opportunity for anyone to contribute to the development and growth of the platform.
+* The xenom platform will be open-source and free to use, providing an opportunity for anyone to contribute to the development and growth of the platform.
 
-Overall, xenon is a promising new blockchain-based platform that has the potential to revolutionize the way we think about web development and aid distribution. By leveraging Kaspa's underlying layer 1 infrastructure and utilizing smart contracts, xenon offers a more scalable, secure, and transparent
+Overall, xenom is a promising new blockchain-based platform that has the potential to revolutionize the way we think about web development and aid distribution. By leveraging Kaspa's underlying layer 1 infrastructure and utilizing smart contracts, xenom offers a more scalable, secure, and transparent
 platform for donations and aid distribution.
 
 

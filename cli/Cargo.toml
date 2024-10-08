@@ -1,5 +1,5 @@
 [package]
-name = "xenon-cli"
+name = "xenom-cli"
 description = "Kaspa CLI"
 keywords = ["kaspa", "wallet", "cli", "rpc"]
 rust-version.workspace = true
