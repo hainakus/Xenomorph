@@ -86,7 +86,7 @@ impl Prefix {
             Prefix::Mainnet => "picod",
             Prefix::Testnet => "picotest",
             Prefix::Simnet => "picosim",
-            Prefix::Devnet => "picoev",
+            Prefix::Devnet => "picodev",
             #[cfg(test)]
             Prefix::A => "a",
             #[cfg(test)]
@@ -117,7 +117,7 @@ impl TryFrom<&str> for Prefix {
             "pico" => Ok(Prefix::Mainnet),
             "picotest" => Ok(Prefix::Testnet),
             "picosim" => Ok(Prefix::Simnet),
-            "picoev" => Ok(Prefix::Devnet),
+            "picodev" => Ok(Prefix::Devnet),
             #[cfg(test)]
             "a" => Ok(Prefix::A),
             #[cfg(test)]
