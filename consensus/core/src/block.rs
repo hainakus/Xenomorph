@@ -86,7 +86,7 @@ impl MemSizeEstimator for Block {
 /// An abstraction for a recallable transaction selector with persistent state
 pub trait TemplateTransactionSelector {
     /// Expected to return a batch of transactions which were not previously selected.
-    /// The batch will typically contain sufficient transactions to fill the block
+    /// The batch will tyXENally contain sufficient transactions to fill the block
     /// mass (along with the previously unrejected txs), or will drain the selector    
     fn select_transactions(&mut self) -> Vec<Transaction>;
 

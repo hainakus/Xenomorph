@@ -27,7 +27,7 @@ const MASS_LIMIT_FACTOR: f64 = 1.2;
 
 /// A rough estimation for the average transaction mass. The usage is a non-important edge case
 /// hence we just throw this here (as oppose to performing an accurate estimation)
-const TYPICAL_TX_MASS: f64 = 2000.0;
+const TYXENAL_TX_MASS: f64 = 2000.0;
 
 /// Management of the transaction pool frontier, that is, the set of transactions in
 /// the transaction pool which have no mempool ancestors and are essentially ready
@@ -100,7 +100,7 @@ impl Frontier {
     ///     5. Q. Why not just use u64 weights?
     ///        A. The current weight calculation is `feerate^alpha` with `alpha=3`. Using u64 would mean that the feerate space
     ///           is limited to a range of size `(2^64)^(1/3) = ~2^21 = ~2M`. Already with current usages, the feerate can vary
-    ///           from `~1/50` (2000 sompi for a transaction with 100K storage mass), to `5M` (100 PIC fee for a transaction with
+    ///           from `~1/50` (2000 sompi for a transaction with 100K storage mass), to `5M` (100 XEN fee for a transaction with
     ///           2000 mass = 100·100_000_000/2000), resulting in a range of size 250M (`5M/(1/50)`).
     ///           By using floating point arithmetics we gain the adjustment of the probability space to the accuracy level required for
     ///           current samples. And if the space is highly biased, the repeated elimination of top items and the prefix weight computation
@@ -211,7 +211,7 @@ impl Frontier {
     /// Builds a feerate estimator based on internal state of the ready transactions frontier
     pub fn build_feerate_estimator(&self, args: FeerateEstimatorArgs) -> FeerateEstimator {
         let average_transaction_mass = match self.len() {
-            0 => TYPICAL_TX_MASS,
+            0 => TYXENAL_TX_MASS,
             n => self.total_mass() as f64 / n as f64,
         };
         let bps = args.network_blocks_per_second as f64;
@@ -275,7 +275,7 @@ mod tests {
             let mut fee: u64 = if i % (cap as u64 / 100) == 0 { 1000000 } else { rng.gen_range(1..10000) };
             if i == 0 {
                 // Add an extremely large fee in order to create extremely high variance
-                fee = 100_000_000 * 1_000_000; // 1M PIC
+                fee = 100_000_000 * 1_000_000; // 1M XEN
             }
             let mass: u64 = 1650;
             let key = build_feerate_key(fee, mass, i);

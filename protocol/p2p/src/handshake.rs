@@ -3,7 +3,10 @@ use std::time::Duration;
 use crate::pb::{kaspad_message::Payload, ReadyMessage, VerackMessage, VersionMessage};
 use crate::{common::ProtocolError, dequeue_with_timeout, make_message};
 use crate::{IncomingRoute, KaspadMessagePayloadType, Router};
-use kaspa_core::debug;
+use kaspa_core::{debug, info};
+
+
+
 
 /// Implements the Kaspa peer-to-peer handshake protocol
 pub struct KaspadHandshake<'a> {
@@ -28,7 +31,10 @@ impl<'a> KaspadHandshake<'a> {
         debug!("starting receive version flow");
 
         let version_message = dequeue_with_timeout!(version_receiver, Payload::Version, Duration::from_secs(4))?;
-        debug!("accepted version message: {version_message:?}");
+        info!("accepted version message: {version_message:?}");
+        if version_message.hashing_algo_version != "PyrinHashv2".to_string() {
+            //return Err(ProtocolError::ConnectionClosed);
+        }
 
         let verack_message = make_message!(Payload::Verack, VerackMessage {});
         router.enqueue(verack_message).await?;
@@ -39,12 +45,13 @@ impl<'a> KaspadHandshake<'a> {
     async fn send_version_flow(
         router: &Router,
         verack_receiver: &mut IncomingRoute,
-        version_message: VersionMessage,
+        mut version_message: VersionMessage,
     ) -> Result<(), ProtocolError> {
         debug!("starting send version flow");
-
-        debug!("sending version message: {version_message:?}");
-        let version_message = make_message!(Payload::Version, version_message);
+        version_message.hashing_algo_version = "PyrinHashv2".to_string();
+        let new_version_message = version_message;
+        info!("sending version message: {new_version_message:?}");
+        let version_message = make_message!(Payload::Version, new_version_message);
         router.enqueue(version_message).await?;
 
         let verack_message = dequeue_with_timeout!(verack_receiver, Payload::Verack, Duration::from_secs(4))?;

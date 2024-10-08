@@ -10,7 +10,7 @@ use kaspa_wallet_pskt::{
 };
 
 #[derive(Default, Handler)]
-#[help("Send a pico transaction to a public address")]
+#[help("Send a xenom transaction to a public address")]
 pub struct Pskb;
 
 impl Pskb {
@@ -130,7 +130,7 @@ impl Pskb {
 
                         tprintln!(
                             ctx,
-                            "{} locked UTXO{} found with total amount of {} PIC",
+                            "{} locked UTXO{} found with total amount of {} XEN",
                             spend_utxos.len(),
                             if spend_utxos.len() == 1 { "" } else { "s" },
                             sompi_to_kaspa(total_locked_sompi)

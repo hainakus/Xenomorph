@@ -329,16 +329,16 @@ impl KaspaCli {
                                     ..
                                 } => {
 
-                                    tprintln!(this, "Connected to pico node version {server_version} at {}", url.unwrap_or("N/A".to_string()));
+                                    tprintln!(this, "Connected to xenom node version {server_version} at {}", url.unwrap_or("N/A".to_string()));
 
                                     let is_open = this.wallet.is_open();
 
                                     if !is_synced {
                                         if is_open {
-                                            terrorln!(this, "Unable to update the wallet state - pico node is currently syncing with the network...");
+                                            terrorln!(this, "Unable to update the wallet state - xenom node is currently syncing with the network...");
 
                                         } else {
-                                            terrorln!(this, "pico node is currently syncing with the network, please wait for the sync to complete...");
+                                            terrorln!(this, "xenom node is currently syncing with the network, please wait for the sync to complete...");
                                         }
                                     }
 
@@ -977,7 +977,7 @@ pub async fn kaspa_cli(terminal_options: TerminalOptions, banner: Option<String>
     let cli = KaspaCli::try_new_arc(options).await?;
 
     let banner =
-        banner.unwrap_or_else(|| format!("pico Cli Wallet v{} (type 'help' for list of commands)", env!("CARGO_PKG_VERSION")));
+        banner.unwrap_or_else(|| format!("xenom Cli Wallet v{} (type 'help' for list of commands)", env!("CARGO_PKG_VERSION")));
     cli.term().writeln(banner);
 
     // redirect the global log output to terminal

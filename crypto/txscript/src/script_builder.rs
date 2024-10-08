@@ -171,7 +171,7 @@ impl ScriptBuilder {
         self
     }
 
-    /// This function should not typically be used by ordinary users as it does not
+    /// This function should not tyXENally be used by ordinary users as it does not
     /// include the checks which prevent data pushes larger than the maximum allowed
     /// sizes which leads to scripts that can't be executed. This is provided for
     /// testing purposes such as tests where sizes are intentionally made larger

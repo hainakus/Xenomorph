@@ -180,7 +180,7 @@ impl ConnectionHandler {
 
     // TODO: revisit the below constants
     fn outgoing_network_channel_size() -> usize {
-        // TODO: this number is taken from go-pico and should be re-evaluated
+        // TODO: this number is taken from go-xenom and should be re-evaluated
         (1 << 17) + 256
     }
 

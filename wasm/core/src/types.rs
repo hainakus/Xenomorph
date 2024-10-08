@@ -8,7 +8,7 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen(typescript_custom_section)]
 const TS_HEX_STRING: &'static str = r#"
 /**
- * A string containing a hexadecimal representation of the data (typically representing for IDs or Hashes).
+ * A string containing a hexadecimal representation of the data (tyXENally representing for IDs or Hashes).
  * 
  * @category General
  */ 

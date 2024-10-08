@@ -133,7 +133,7 @@ pub mod perf {
         pub header_data_cache_size: usize,
 
         /// Preferred cache size for block-body-related data which
-        /// is typically orders-of magnitude larger than header data
+        /// is tyXENally orders-of magnitude larger than header data
         /// (Note this cannot be set to high due to severe memory consumption)
         pub block_data_cache_size: usize,
 
@@ -147,11 +147,11 @@ pub mod perf {
         // Thread-pools
         //
         /// Defaults to 0 which indicates using system default
-        /// which is typically the number of logical CPU cores
+        /// which is tyXENally the number of logical CPU cores
         pub block_processors_num_threads: usize,
 
         /// Defaults to 0 which indicates using system default
-        /// which is typically the number of logical CPU cores
+        /// which is tyXENally the number of logical CPU cores
         pub virtual_processor_num_threads: usize,
     }
 

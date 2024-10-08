@@ -77,7 +77,7 @@ pub struct Params {
     pub mass_per_sig_op: u64,
     pub max_block_mass: u64,
 
-    /// The parameter for scaling inverse PIC value to mass units (unpublished KIP-0009)
+    /// The parameter for scaling inverse XEN value to mass units (unpublished KIP-0009)
     pub storage_mass_parameter: u64,
 
     /// DAA score from which storage mass calculation and transaction mass field are activated as a consensus rule
@@ -298,9 +298,9 @@ pub const MAINNET_PARAMS: Params = Params {
     ghostdag_k: LEGACY_DEFAULT_GHOSTDAG_K,
     legacy_timestamp_deviation_tolerance: LEGACY_TIMESTAMP_DEVIATION_TOLERANCE,
     new_timestamp_deviation_tolerance: NEW_TIMESTAMP_DEVIATION_TOLERANCE,
-    past_median_time_sample_rate: Bps::<1>::past_median_time_sample_rate(),
+    past_median_time_sample_rate: Bps::<25>::past_median_time_sample_rate(),
     past_median_time_sampled_window_size: MEDIAN_TIME_SAMPLED_WINDOW_SIZE,
-    target_time_per_block: 1000,
+    target_time_per_block: 400,
     sampling_activation_daa_score: u64::MAX,
     max_difficulty_target: MAX_DIFFICULTY_TARGET,
     max_difficulty_target_f64: MAX_DIFFICULTY_TARGET_AS_F64,
@@ -316,7 +316,7 @@ pub const MAINNET_PARAMS: Params = Params {
     coinbase_payload_script_public_key_max_len: 150,
     max_coinbase_payload_len: 204,
 
-    // This is technically a soft fork from the Go implementation since pico's consensus doesn't
+    // This is technically a soft fork from the Go implementation since xenom's consensus doesn't
     // check these rules, but in practice it's enforced by the network layer that limits the message
     // size to 1 GB.
     // These values should be lowered to more reasonable amounts on the next planned HF/SF.
@@ -372,7 +372,7 @@ pub const TESTNET_PARAMS: Params = Params {
     coinbase_payload_script_public_key_max_len: 150,
     max_coinbase_payload_len: 204,
 
-    // This is technically a soft fork from the Go implementation since pico's consensus doesn't
+    // This is technically a soft fork from the Go implementation since xenom's consensus doesn't
     // check these rules, but in practice it's enforced by the network layer that limits the message
     // size to 1 GB.
     // These values should be lowered to more reasonable amounts on the next planned HF/SF.
@@ -534,7 +534,7 @@ pub const DEVNET_PARAMS: Params = Params {
     coinbase_payload_script_public_key_max_len: 150,
     max_coinbase_payload_len: 204,
 
-    // This is technically a soft fork from the Go implementation since pico's consensus doesn't
+    // This is technically a soft fork from the Go implementation since xenom's consensus doesn't
     // check these rules, but in practice it's enforced by the network layer that limits the message
     // size to 1 GB.
     // These values should be lowered to more reasonable amounts on the next planned HF/SF.

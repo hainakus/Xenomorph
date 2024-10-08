@@ -173,7 +173,7 @@ where
 
     /// Resend the compounded subscription state of the notifier to its subscribers (its parents).
     ///
-    /// The typical use case is a RPC client reconnecting to a server and resending the compounded subscriptions of its listeners.
+    /// The tyXENal use case is a RPC client reconnecting to a server and resending the compounded subscriptions of its listeners.
     pub fn try_renew_subscriptions(&self) -> Result<()> {
         self.inner.clone().renew_subscriptions()
     }

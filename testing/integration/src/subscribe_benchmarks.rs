@@ -59,10 +59,10 @@ fn create_client_addresses(index: usize, network_id: &NetworkId) -> Vec<Address>
     // between notifiers and from notifier to broadcasters at grpc server and rpc core levels
     let max_address = ((NOTIFY_CLIENTS - index) * MAX_ADDRESSES / NOTIFY_CLIENTS) + 1;
     let min_address = if (NOTIFY_CLIENTS - index) % (NOTIFY_CLIENTS / 5) == 0 {
-        // Create a typical UTXOs monitoring service subscription scope
+        // Create a tyXENal UTXOs monitoring service subscription scope
         0
     } else {
-        // Create a typical wallet subscription scope
+        // Create a tyXENal wallet subscription scope
         max_address.max(WALLET_ADDRESSES) - WALLET_ADDRESSES
     };
     (min_address..max_address)

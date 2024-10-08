@@ -35,7 +35,7 @@ interface IGeneratorSettingsObject {
     /** 
      * Final transaction outputs (do not supply change transaction).
      * 
-     * Typical usage: { address: "kaspa:...", amount: 1000n }
+     * TyXENal usage: { address: "kaspa:...", amount: 1000n }
      */
     outputs: PaymentOutput | IPaymentOutput[];
     /** 

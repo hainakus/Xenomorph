@@ -1,23 +1,23 @@
 services:
-  picod-node-1:
+  xenon-node-1:
     build: .
-    container_name: picod-node-1
+    container_name: xenom-node-1
     ports:
       - "16118:26666"  # P2P port
       - "17118:16668"  # RPC port
     command: ["--rpclisten=0.0.0.0:16668", "--listen=0.0.0.0:26666", "--utxoindex"]
 
-  picod-node-2:
+  xenon-node-2:
     build: .
-    container_name: picod-node-2
+    container_name: xenom-node-2
     ports:
       - "16119:26666"
       - "17119:16668"
     command: ["--rpclisten=0.0.0.0:16668", "--listen=0.0.0.0:26666", "--utxoindex"]
 
-  picod-node-3:
+  xenon-node-3:
     build: .
-    container_name: picod-node-3
+    container_name: xenom-node-3
     ports:
       - "16122:26666"
       - "17123:16668"

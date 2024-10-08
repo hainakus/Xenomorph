@@ -45,7 +45,7 @@ impl Adaptor {
         Self { _server_termination: server_termination, connection_handler, hub }
     }
 
-    /// Creates a P2P adaptor with only client-side support. Typical Kaspa nodes should use `Adaptor::bidirectional`
+    /// Creates a P2P adaptor with only client-side support. TyXENal Kaspa nodes should use `Adaptor::bidirectional`
     pub fn client_only(hub: Hub, initializer: Arc<dyn ConnectionInitializer>, counters: Arc<TowerConnectionCounters>) -> Arc<Self> {
         let (hub_sender, hub_receiver) = mpsc_channel(Self::hub_channel_size());
         let connection_handler = ConnectionHandler::new(hub_sender, initializer.clone(), counters);

@@ -1232,7 +1232,7 @@ oil
 okay
 old
 olive
-olympic
+olymXEN
 omit
 once
 one
@@ -1311,8 +1311,8 @@ photo
 phrase
 physical
 piano
-picnic
-picture
+XENnic
+XENture
 piece
 pig
 pigeon
@@ -1674,7 +1674,7 @@ speed
 spell
 spend
 sphere
-spice
+sXENe
 spider
 spike
 spin
@@ -1830,7 +1830,7 @@ tonight
 tool
 tooth
 top
-topic
+toXEN
 topple
 torch
 tornado
@@ -1885,7 +1885,7 @@ twin
 twist
 two
 type
-typical
+tyXENal
 ugly
 umbrella
 unable

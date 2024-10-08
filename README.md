@@ -1,16 +1,17 @@
 
-<h1>picod On Habitat - based on Kaspa Rust</h1>
+<h1>Xenomorph On UniVerse - based on Kaspa Rust</h1>
 
-* A new blockchain-based platform called picod is being developed, which utilizes Kaspa as its underlying layer 1 infrastructure.
-* picod will provide a number of benefits over traditional web development, including increased performance, security, and transparency.
-* The use case for picod is centered around helping underdeveloped countries and organizations like Unicef by providing a more scalable, secure, and transparent platform for donations and aid distribution.
+* A new blockchain-based platform called xenon is being developed, which utilizes Kaspa as its underlying layer 1 infrastructure.
+* xenom will provide a number of benefits over traditional web development, including increased performance, security, and transparency.
+* The use case for xenom is centered around helping underdeveloped countries and organizations like Unicef by providing a more scalable, secure, and transparent platform for donations and aid distribution.
 * Smart contracts will be used to manage the donation process, ensuring that funds are used efficiently and transparently.
-* The picod platform will also utilize Kaspa's distributed ledger technology to provide a more decentralized and secure system for managing aid resources.
-* In addition to its core use cases, picod has the potential to improve the efficiency and effectiveness of various industries and sectors, including healthcare, education, and supply chain management.
-* The picod platform will be open-source and free to use, providing an opportunity for anyone to contribute to the development and growth of the platform.
+* The xenom platform will also utilize Kaspa's distributed ledger technology to provide a more decentralized and secure system for managing aid resources.
+* In addition to its core use cases, xenom has the potential to improve the efficiency and effectiveness of various industries and sectors, including healthcare, education, and supply chain management.
+* The xenon platform will be open-source and free to use, providing an opportunity for anyone to contribute to the development and growth of the platform.
 
-Overall, picod is a promising new blockchain-based platform that has the potential to revolutionize the way we think about web development and aid distribution. By leveraging Kaspa's underlying layer 1 infrastructure and utilizing smart contracts, picod offers a more scalable, secure, and transparent
+Overall, xenon is a promising new blockchain-based platform that has the potential to revolutionize the way we think about web development and aid distribution. By leveraging Kaspa's underlying layer 1 infrastructure and utilizing smart contracts, xenon offers a more scalable, secure, and transparent
 platform for donations and aid distribution.
+
 
 
 Welcome to the Rust-based implementation of the Kaspa full-node and its ancillary libraries. The contained node release serves as a drop-in replacement to the established <a href="https://github.com/kaspanet/kaspad">Golang node</a> and to date is the recommended node software for the Kaspa network, introducing developers to the possibilities of Rust in the Kaspa network's context.
@@ -236,14 +237,14 @@ The framework is compatible with all major desktop and mobile browsers.
   **Start a mainnet node**
 
   ```bash
-  cargo run --release --bin picod
+  cargo run --release --bin xenom
   # or with UTXO-index enabled (needed when using wallets)
-  cargo run --release --bin picod -- --utxoindex
+  cargo run --release --bin xenom -- --utxoindex
   ```
   **Start a testnet node**
 
   ```bash
-cargo run --release --bin picod -- --testnet
+cargo run --release --bin xenom -- --testnet
   ```
 
   **Testnet 11**
@@ -257,9 +258,9 @@ Using a configuration file
   </summary>
 
   ```bash
-cargo run --release --bin picod -- --configfile /path/to/configfile.toml
+cargo run --release --bin xenom -- --configfile /path/to/configfile.toml
 # or
-cargo run --release --bin picod -- -C /path/to/configfile.toml
+cargo run --release --bin xenom -- -C /path/to/configfile.toml
   ```
   - The config file should be a list of \<CLI argument\> = \<value\> separated by newlines. 
   - Whitespace around the `=` is fine, `arg=value` and `arg = value` are both parsed correctly.
@@ -279,7 +280,7 @@ addpeer = ["10.0.0.1", "1.2.3.4"]
  Pass the `--help` flag to view all possible arguments
 
   ```bash
-cargo run --release --bin picod -- --help
+cargo run --release --bin xenom -- --help
   ```
 </details>
 
@@ -366,7 +367,7 @@ cargo run --release --bin simpa -- -t=200 -d=2 -b=8 -n=1000
 Heap-profiling in `kaspad` and `simpa` can be done by enabling `heap` feature and profile using the `--features` argument
 
 ```bash
-cargo run --bin picod --profile heap --features=heap
+cargo run --bin xenom --profile heap --features=heap
 ```
 
 It will produce `{bin-name}-heap.json` file in the root of the workdir, that can be inspected by the [dhat-viewer](https://github.com/unofficial-mirror/valgrind/tree/master/dhat)

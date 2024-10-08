@@ -1,6 +1,6 @@
 [package]
-name = "pico-wallet"
-description = "pico wallet"
+name = "XENo-wallet"
+description = "XENo wallet"
 rust-version.workspace = true
 version.workspace = true
 edition.workspace = true
@@ -15,7 +15,7 @@ default = []
 [dependencies]
 async-std.workspace = true
 async-trait.workspace = true
-pico-cli.workspace = true
+xenon-cli.workspace = true
 tokio.workspace = true
 workflow-log.workspace = true
 workflow-terminal.workspace = true

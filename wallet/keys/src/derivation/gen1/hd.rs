@@ -545,7 +545,7 @@ mod tests {
 
     #[tokio::test]
     async fn address_test_by_ktrv() {
-        let mnemonic = "hunt bitter praise lift buyer topic crane leopard uniform network inquiry over grain pass match crush marine strike doll relax fortune trumpet sunny silk";
+        let mnemonic = "hunt bitter praise lift buyer toXEN crane leopard uniform network inquiry over grain pass match crush marine strike doll relax fortune trumpet sunny silk";
         let mnemonic = kaspa_bip32::Mnemonic::new(mnemonic, kaspa_bip32::Language::English).unwrap();
         let xprv = kaspa_bip32::ExtendedPrivateKey::<kaspa_bip32::SecretKey>::new(mnemonic.to_seed("")).unwrap();
         let ktrv_str = xprv.to_string(kaspa_bip32::Prefix::KTRV).to_string();

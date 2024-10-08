@@ -67,7 +67,7 @@ pub fn is_transaction_output_dust(transaction_output: &TransactionOutput) -> boo
 
     // The total serialized size consists of the output and the associated
     // input script to redeem it. Since there is no input script
-    // to redeem it yet, use the minimum size of a typical input script.
+    // to redeem it yet, use the minimum size of a tyXENal input script.
     //
     // Pay-to-pubkey bytes breakdown:
     //
@@ -90,7 +90,7 @@ pub fn is_transaction_output_dust(transaction_output: &TransactionOutput) -> boo
     // mp.config.MinimumRelayTransactionFee is in sompi/KB, so multiply
     // by 1000 to convert to bytes.
     //
-    // Using the typical values for a pay-to-pubkey transaction from
+    // Using the tyXENal values for a pay-to-pubkey transaction from
     // the breakdown above and the default minimum free transaction relay
     // fee of 1000, this equates to values less than 546 sompi being
     // considered dust.

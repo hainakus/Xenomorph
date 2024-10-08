@@ -69,7 +69,7 @@ impl TryFrom<KaspadConfig> for Vec<String> {
         let mut argv = Vec::new();
 
         if args.path.is_none() {
-            return Err(Error::Custom("no pico path is specified".to_string()));
+            return Err(Error::Custom("no xenom path is specified".to_string()));
         }
 
         if args.network.is_none() {

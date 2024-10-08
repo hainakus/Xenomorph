@@ -81,7 +81,7 @@ impl Daemons {
     }
 
     pub fn kaspad(&self) -> Arc<dyn KaspadCtl + Send + Sync + 'static> {
-        self.kaspad.as_ref().expect("accessing Daemons::pico while pico option is None").clone()
+        self.kaspad.as_ref().expect("accessing Daemons::xenom while xenom option is None").clone()
     }
 
     pub fn try_kaspad(&self) -> Option<Arc<dyn KaspadCtl + Send + Sync + 'static>> {

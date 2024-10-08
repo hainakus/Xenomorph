@@ -1,5 +1,5 @@
 [package]
-name = "pico-cli"
+name = "xenon-cli"
 description = "Kaspa CLI"
 keywords = ["kaspa", "wallet", "cli", "rpc"]
 rust-version.workspace = true

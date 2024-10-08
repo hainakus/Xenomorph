@@ -195,8 +195,8 @@ pub fn cli() -> Command {
     let defaults: Args = Default::default();
 
     #[allow(clippy::let_and_return)]
-    let cmd = Command::new("pico")
-        .about(format!("{} (rusty-pico) v{}", env!("CARGO_PKG_DESCRIPTION"), version()))
+    let cmd = Command::new("xenom")
+        .about(format!("{} (rusty-xenom) v{}", env!("CARGO_PKG_DESCRIPTION"), version()))
         .version(env!("CARGO_PKG_VERSION"))
         .arg(arg!(-C --configfile <CONFIG_FILE> "Path of config file."))
         .arg(arg!(-b --appdir <DATA_DIR> "Directory to store data."))
@@ -482,9 +482,9 @@ fn arg_match_many_unwrap_or<T: Clone + Send + Sync + 'static>(m: &clap::ArgMatch
 
   -V, --version                             Display version information and exit
   -C, --configfile=                         Path to configuration file (default: /Users/aspect/Library/Application
-                                            Support/pico/pico.conf)
+                                            Support/xenom/xenom.conf)
   -b, --appdir=                             Directory to store data (default: /Users/aspect/Library/Application
-                                            Support/pico)
+                                            Support/xenom)
       --logdir=                             Directory to log output.
   -a, --addpeer=                            Add a peer to connect with at startup
       --connect=                            Connect only to the specified peers at startup
@@ -530,7 +530,7 @@ fn arg_match_many_unwrap_or<T: Clone + Send + Sync + 'static>(m: &clap::ArgMatch
                                             individual subsystems -- Use show to list available subsystems (default:
                                             info)
       --upnp                                Use UPnP to map our listening port outside of NAT
-      --minrelaytxfee=                      The minimum transaction fee in PIC/kB to be considered a non-zero fee.
+      --minrelaytxfee=                      The minimum transaction fee in XEN/kB to be considered a non-zero fee.
                                             (default: 1e-05)
       --maxorphantx=                        Max number of orphan transactions to keep in memory (default: 100)
       --blockmaxmass=                       Maximum transaction mass to be used when creating a block (default:

@@ -135,7 +135,7 @@ pub enum Opcodes {
     OpDup = 0x76,
     OpNip = 0x77,
     OpOver = 0x78,
-    OpPick = 0x79,
+    OpXENk = 0x79,
 
     OpRoll = 0x7a,
     OpRot = 0x7b,

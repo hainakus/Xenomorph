@@ -203,7 +203,7 @@ impl<'a, T: VerifiableTransaction> TxScriptEngine<'a, T> {
     }
 
     fn execute_opcode(&mut self, opcode: Box<dyn OpCodeImplementation<T>>) -> Result<(), TxScriptError> {
-        // Different from pico: Illegal and disabled opcode are checked on execute instead
+        // Different from xenom: Illegal and disabled opcode are checked on execute instead
         // Note that this includes OP_RESERVED which counts as a push operation.
         if !opcode.is_push_opcode() {
             self.num_ops += 1;
@@ -1081,7 +1081,7 @@ mod bitcoind_tests {
                         TxScriptError::EarlyReturn => vec!["OP_RETURN"],
                         TxScriptError::VerifyError => vec!["VERIFY", "EQUALVERIFY"],
                         TxScriptError::InvalidStackOperation(_, _) => vec!["INVALID_STACK_OPERATION", "INVALID_ALTSTACK_OPERATION"],
-                        TxScriptError::InvalidState(s) if s == "pick at an invalid location" => vec!["INVALID_STACK_OPERATION"],
+                        TxScriptError::InvalidState(s) if s == "XENk at an invalid location" => vec!["INVALID_STACK_OPERATION"],
                         TxScriptError::InvalidState(s) if s == "roll at an invalid location" => vec!["INVALID_STACK_OPERATION"],
                         TxScriptError::OpcodeDisabled(_) => vec!["DISABLED_OPCODE"],
                         TxScriptError::ElementTooBig(_, _) => vec!["PUSH_SIZE"],

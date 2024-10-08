@@ -1,7 +1,7 @@
 use crate::imports::*;
 
 #[derive(Default, Handler)]
-#[help("Send a pico transaction to a public address")]
+#[help("Send a xenom transaction to a public address")]
 pub struct Send;
 
 impl Send {
@@ -39,7 +39,7 @@ impl Send {
             .await?;
 
         tprintln!(ctx, "Send - {summary}");
-        tprintln!(ctx, "\nSending {} PIC to {address}, tx ids:", sompi_to_kaspa_string(amount_sompi));
+        tprintln!(ctx, "\nSending {} XEN to {address}, tx ids:", sompi_to_kaspa_string(amount_sompi));
         // tprintln!(ctx, "{}\n", ids.into_iter().map(|a| a.to_string()).collect::<Vec<_>>().join("\n"));
 
         Ok(())

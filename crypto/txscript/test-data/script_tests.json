@@ -405,19 +405,19 @@
   ],
   [
     "22 21 20",
-    "0 PICK 20 EQUALVERIFY DEPTH 3 EQUALVERIFY DROP DROP DROP TRUE",
+    "0 XENK 20 EQUALVERIFY DEPTH 3 EQUALVERIFY DROP DROP DROP TRUE",
     "",
     "OK"
   ],
   [
     "22 21 20",
-    "1 PICK 21 EQUALVERIFY DEPTH 3 EQUALVERIFY DROP DROP DROP TRUE",
+    "1 XENK 21 EQUALVERIFY DEPTH 3 EQUALVERIFY DROP DROP DROP TRUE",
     "",
     "OK"
   ],
   [
     "22 21 20",
-    "2 PICK 22 EQUALVERIFY DEPTH 3 EQUALVERIFY DROP DROP DROP TRUE",
+    "2 XENK 22 EQUALVERIFY DEPTH 3 EQUALVERIFY DROP DROP DROP TRUE",
     "",
     "OK"
   ],
@@ -1958,13 +1958,13 @@
   ],
   [
     "1 0 0 0 3",
-    "PICK VERIFY DROP DROP DROP DROP TRUE",
+    "XENK VERIFY DROP DROP DROP DROP TRUE",
     "",
     "OK"
   ],
   [
     "1 0",
-    "PICK VERIFY DROP TRUE",
+    "XENK VERIFY DROP TRUE",
     "",
     "OK"
   ],
@@ -3261,37 +3261,37 @@
   ],
   [
     "19 20 21",
-    "PICK 19 EQUALVERIFY DEPTH 2 EQUAL",
+    "XENK 19 EQUALVERIFY DEPTH 2 EQUAL",
     "",
     "INVALID_STACK_OPERATION"
   ],
   [
     "",
-    "0 PICK",
+    "0 XENK",
     "",
     "INVALID_STACK_OPERATION"
   ],
   [
     "1",
-    "-1 PICK",
+    "-1 XENK",
     "",
     "INVALID_STACK_OPERATION"
   ],
   [
     "19 20 21",
-    "0 PICK 20 EQUALVERIFY DEPTH 3 EQUAL",
+    "0 XENK 20 EQUALVERIFY DEPTH 3 EQUAL",
     "",
     "EQUALVERIFY"
   ],
   [
     "19 20 21",
-    "1 PICK 21 EQUALVERIFY DEPTH 3 EQUAL",
+    "1 XENK 21 EQUALVERIFY DEPTH 3 EQUAL",
     "",
     "EQUALVERIFY"
   ],
   [
     "19 20 21",
-    "2 PICK 22 EQUALVERIFY DEPTH 3 EQUAL",
+    "2 XENK 22 EQUALVERIFY DEPTH 3 EQUAL",
     "",
     "EQUALVERIFY"
   ],
@@ -4443,13 +4443,13 @@
   ],
   [
     "1 1 1 3",
-    "PICK",
+    "XENK",
     "",
     "INVALID_STACK_OPERATION"
   ],
   [
     "0",
-    "PICK 1",
+    "XENK 1",
     "",
     "INVALID_STACK_OPERATION"
   ],
@@ -4981,7 +4981,7 @@
   ],
   [
     "1 0x02 0x0000",
-    "PICK DROP",
+    "XENK DROP",
     "",
     "UNKNOWN_ERROR"
   ],

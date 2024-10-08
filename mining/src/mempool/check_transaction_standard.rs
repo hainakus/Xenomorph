@@ -120,7 +120,7 @@ impl Mempool {
 
         // The total serialized size consists of the output and the associated
         // input script to redeem it. Since there is no input script
-        // to redeem it yet, use the minimum size of a typical input script.
+        // to redeem it yet, use the minimum size of a tyXENal input script.
         //
         // Pay-to-pubkey bytes breakdown:
         //
@@ -142,7 +142,7 @@ impl Mempool {
         // mp.config.MinimumRelayTransactionFee is in sompi/KB, so multiply
         // by 1000 to convert to bytes.
         //
-        // Using the typical values for a pay-to-pubkey transaction from
+        // Using the tyXENal values for a pay-to-pubkey transaction from
         // the breakdown above and the default minimum free transaction relay
         // fee of 1000, this equates to values less than 546 sompi being
         // considered dust.
@@ -415,7 +415,7 @@ mod tests {
 
         let tests = vec![
             Test {
-                name: "Typical pay-to-pubkey transaction",
+                name: "TyXENal pay-to-pubkey transaction",
                 mtx: new_mtx(
                     Transaction::new(
                         TX_VERSION,

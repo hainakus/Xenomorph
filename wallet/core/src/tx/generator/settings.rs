@@ -22,7 +22,7 @@ pub struct GeneratorSettings {
     pub source_utxo_context: Option<UtxoContext>,
     // Priority utxo entries that are consumed before others
     pub priority_utxo_entries: Option<Vec<UtxoEntryReference>>,
-    // typically a number of keys required to sign the transaction
+    // tyXENally a number of keys required to sign the transaction
     pub sig_op_count: u8,
     // number of minimum signatures required to sign the transaction
     pub minimum_signatures: u16,

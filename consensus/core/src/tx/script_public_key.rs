@@ -47,7 +47,7 @@ export interface IScriptPublicKey {
 }
 "#;
 
-/// Represents a pico ScriptPublicKey
+/// Represents a xenom ScriptPublicKey
 /// @category Consensus
 #[derive(Default, PartialEq, Eq, Clone, Hash, CastFromJs)]
 #[wasm_bindgen(inspectable)]

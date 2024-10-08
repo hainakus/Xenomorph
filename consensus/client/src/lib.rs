@@ -8,7 +8,7 @@
 //!
 //! Unlike raw consensus primitives (used for high-performance DAG processing) the primitives
 //! offered in this crate are designed to be used in client-side applications. Their internal
-//! data is typically wrapped into `Arc<Mutex<T>>`, allowing for easy sharing between
+//! data is tyXENally wrapped into `Arc<Mutex<T>>`, allowing for easy sharing between
 //! async / threaded environments and WASM bindings.
 //!
 

@@ -286,7 +286,7 @@ impl VirtualStateProcessor {
 
         let (new_sink, virtual_parent_candidates) =
             self.sink_search_algorithm(&virtual_read, &mut accumulated_diff, prev_sink, tips, finality_point, pruning_point);
-        let (virtual_parents, virtual_ghostdag_data) = self.pick_virtual_parents(new_sink, virtual_parent_candidates, pruning_point);
+        let (virtual_parents, virtual_ghostdag_data) = self.XENk_virtual_parents(new_sink, virtual_parent_candidates, pruning_point);
         assert_eq!(virtual_ghostdag_data.selected_parent, new_sink);
 
         let sink_multiset = self.utxo_multisets_store.get(new_sink).unwrap();
@@ -616,12 +616,12 @@ impl VirtualStateProcessor {
         }
     }
 
-    /// Picks the virtual parents according to virtual parent selection pruning constrains.
+    /// XENks the virtual parents according to virtual parent selection pruning constrains.
     /// Assumes:
     ///     1. `selected_parent` is a UTXO-valid block
     ///     2. `candidates` are an antichain ordered in descending blue work order
     ///     3. `candidates` do not contain `selected_parent` and `selected_parent.blue work > max(candidates.blue_work)`  
-    pub(super) fn pick_virtual_parents(
+    pub(super) fn XENk_virtual_parents(
         &self,
         selected_parent: Hash,
         mut candidates: VecDeque<Hash>,
@@ -638,7 +638,7 @@ impl VirtualStateProcessor {
         let max_block_parents = self.max_block_parents as usize;
         let max_candidates = self.max_virtual_parent_candidates();
 
-        // Prioritize half the blocks with highest blue work and pick the rest randomly to ensure diversity between nodes
+        // Prioritize half the blocks with highest blue work and XENk the rest randomly to ensure diversity between nodes
         if candidates.len() > max_candidates {
             // make_contiguous should be a no op since the deque was just built
             let slice = candidates.make_contiguous();
@@ -918,7 +918,7 @@ impl VirtualStateProcessor {
         }
 
         // Check whether this was an overall successful selection episode. We pass this decision
-        // to the selector implementation which has the broadest picture and can use mempool config
+        // to the selector implementation which has the broadest XENture and can use mempool config
         // and context
         match (build_mode, tx_selector.is_successful()) {
             (TemplateBuildMode::Standard, false) => return Err(RuleError::InvalidTransactionsInNewBlock(invalid_transactions)),

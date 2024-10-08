@@ -100,7 +100,7 @@ fn check_duplicate_transaction_inputs(tx: &Transaction) -> TxResult<()> {
 }
 
 fn check_gas(tx: &Transaction) -> TxResult<()> {
-    // This should be revised if subnetworks are activated (along with other validations that weren't copied from pico)
+    // This should be revised if subnetworks are activated (along with other validations that weren't copied from xenom)
     if tx.gas > 0 {
         return Err(TxRuleError::TxHasGas);
     }
@@ -108,7 +108,7 @@ fn check_gas(tx: &Transaction) -> TxResult<()> {
 }
 
 fn check_transaction_payload(tx: &Transaction) -> TxResult<()> {
-    // This should be revised if subnetworks are activated (along with other validations that weren't copied from pico)
+    // This should be revised if subnetworks are activated (along with other validations that weren't copied from xenom)
     if !tx.is_coinbase() && !tx.payload.is_empty() {
         return Err(TxRuleError::NonCoinbaseTxHasPayload);
     }

@@ -1,4 +1,4 @@
-name: Build and Upload Pico Project Assets
+name: Build and Upload XENo Project Assets
 
 on:
   push:
@@ -42,15 +42,15 @@ jobs:
             ${{ runner.os }}-cargo-build-
 
       - name: Build for Linux
-        run: cargo build --release --bin pico-wallet --bin dal
+        run: cargo build --release --bin XENo-wallet --bin dal
 
       - name: Upload release artifacts (Linux)
         uses: actions/upload-artifact@v3
         with:
           name: release-binaries-linux
           path: |
-            target/release/pico-wallet
-            target/release/picod
+            target/release/XENo-wallet
+            target/release/xenon
 
   build-macos:
     runs-on: macos-latest
@@ -86,15 +86,15 @@ jobs:
             ${{ runner.os }}-cargo-build-
 
       - name: Build for macOS
-        run: cargo build --release --bin pico-wallet --bin dal
+        run: cargo build --release --bin XENo-wallet --bin dal
 
       - name: Upload release artifacts (macOS)
         uses: actions/upload-artifact@v3
         with:
           name: release-binaries-macos
           path: |
-            target/release/pico-wallet
-            target/release/picod
+            target/release/XENo-wallet
+            target/release/xenon
 
 
   release:

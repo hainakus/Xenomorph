@@ -275,7 +275,7 @@ struct Inner {
     destination_utxo_context: Option<UtxoContext>,
     // Event multiplexer
     multiplexer: Option<Multiplexer<Box<Events>>>,
-    // typically a number of keys required to sign the transaction
+    // tyXENally a number of keys required to sign the transaction
     sig_op_count: u8,
     // number of minimum signatures required to sign the transaction
     minimum_signatures: u16,

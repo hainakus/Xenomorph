@@ -12,7 +12,7 @@ kaspa.initConsolePanicHook();
 (async () => {
 
     //const mnemonic = Mnemonic.random();
-    const mnemonic = new Mnemonic("hunt bitter praise lift buyer topic crane leopard uniform network inquiry over grain pass match crush marine strike doll relax fortune trumpet sunny silk")
+    const mnemonic = new Mnemonic("hunt bitter praise lift buyer toXEN crane leopard uniform network inquiry over grain pass match crush marine strike doll relax fortune trumpet sunny silk")
     console.log("mnemonic:", mnemonic);
     const seed = mnemonic.toSeed();
     console.log("seed:", seed);

@@ -121,7 +121,7 @@ impl Account {
                                         if let Some(txid) = txid {
                                             tprintln!(
                                                 ctx_,
-                                                "Scan detected {} PIC at index {}; transfer txid: {}",
+                                                "Scan detected {} XEN at index {}; transfer txid: {}",
                                                 sompi_to_kaspa_string(balance),
                                                 processed,
                                                 txid
@@ -129,7 +129,7 @@ impl Account {
                                         } else if processed > 0 {
                                             tprintln!(
                                                 ctx_,
-                                                "Scanned {} derivations, found {} PIC",
+                                                "Scanned {} derivations, found {} XEN",
                                                 processed,
                                                 sompi_to_kaspa_string(balance)
                                             );
@@ -298,13 +298,13 @@ impl Account {
                     if let Some(txid) = txid {
                         tprintln!(
                             ctx_,
-                            "Scan detected {} PIC at index {}; transfer txid: {}",
+                            "Scan detected {} XEN at index {}; transfer txid: {}",
                             sompi_to_kaspa_string(balance),
                             processed,
                             txid
                         );
                     } else {
-                        tprintln!(ctx_, "Scanned {} derivations, found {} PIC", processed, sompi_to_kaspa_string(balance));
+                        tprintln!(ctx_, "Scanned {} derivations, found {} XEN", processed, sompi_to_kaspa_string(balance));
                     }
                 })),
             )

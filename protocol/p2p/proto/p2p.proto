@@ -147,6 +147,8 @@ message VersionMessage{
   bool disableRelayTx = 8;
   SubnetworkId subnetworkId = 9;
   string network = 10;
+  string dns_seeder = 11;
+  string hashing_algo_version = 12;
 }
 
 message RejectMessage{

@@ -349,7 +349,7 @@ opcode_list! {
         let mut cond = OpCond::Skip;
         if vm.is_executing() {
             // This code seems identical to pop_bool, but was written this way to preserve
-            // the similar flow of go-pico
+            // the similar flow of go-xenom
             if let Some(mut cond_buf) = vm.dstack.pop() {
                 if cond_buf.len() > 1 {
                     return Err(TxScriptError::InvalidState("expected boolean".to_string()));
@@ -469,10 +469,10 @@ opcode_list! {
 
     opcode OpOver<0x78, 1>(self, vm) vm.dstack.over_items::<1>()
 
-    opcode OpPick<0x79, 1>(self, vm) {
+    opcode OpXENk<0x79, 1>(self, vm) {
         let [loc]: [i32; 1] = vm.dstack.pop_items()?;
         if  loc < 0 || loc as usize >= vm.dstack.len() {
-            return Err(TxScriptError::InvalidState("pick at an invalid location".to_string()));
+            return Err(TxScriptError::InvalidState("XENk at an invalid location".to_string()));
         }
         vm.dstack.push(vm.dstack[vm.dstack.len()-(loc as usize)-1].clone());
         Ok(())
@@ -2276,20 +2276,20 @@ mod test {
     }
 
     #[test]
-    fn test_oppick() {
+    fn test_opXENk() {
         run_success_test_cases(vec![
             TestCase {
-                code: opcodes::OpPick::empty().expect("Should accept empty"),
+                code: opcodes::OpXENk::empty().expect("Should accept empty"),
                 init: vec![vec![], vec![]],
                 dstack: vec![vec![], vec![]],
             },
             TestCase {
-                code: opcodes::OpPick::empty().expect("Should accept empty"),
+                code: opcodes::OpXENk::empty().expect("Should accept empty"),
                 init: vec![vec![2], vec![], vec![1]],
                 dstack: vec![vec![2], vec![], vec![2]],
             },
             TestCase {
-                code: opcodes::OpPick::empty().expect("Should accept empty"),
+                code: opcodes::OpXENk::empty().expect("Should accept empty"),
                 init: vec![vec![5], vec![4], vec![3], vec![], vec![2]],
                 dstack: vec![vec![5], vec![4], vec![3], vec![], vec![4]],
             },
@@ -2297,14 +2297,14 @@ mod test {
 
         run_error_test_cases(vec![
             ErrorTestCase {
-                code: opcodes::OpPick::empty().expect("Should accept empty"),
+                code: opcodes::OpXENk::empty().expect("Should accept empty"),
                 init: vec![vec![5], vec![4], vec![3], vec![], vec![4]],
-                error: TxScriptError::InvalidState("pick at an invalid location".to_string()),
+                error: TxScriptError::InvalidState("XENk at an invalid location".to_string()),
             },
             ErrorTestCase {
-                code: opcodes::OpPick::empty().expect("Should accept empty"),
+                code: opcodes::OpXENk::empty().expect("Should accept empty"),
                 init: vec![vec![5], vec![4], vec![3], vec![], vec![0x81]],
-                error: TxScriptError::InvalidState("pick at an invalid location".to_string()),
+                error: TxScriptError::InvalidState("XENk at an invalid location".to_string()),
             },
         ])
     }

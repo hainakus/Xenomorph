@@ -62,7 +62,7 @@ impl Add for Global {
         self.input_count = self.input_count.max(rhs.input_count);
         self.output_count = self.output_count.max(rhs.output_count);
         // BIP 174: The Combiner must remove any duplicate key-value pairs, in accordance with
-        //          the specification. It can pick arbitrarily when conflicts occur.
+        //          the specification. It can XENk arbitrarily when conflicts occur.
 
         // Merging xpubs
         for (xpub, KeySource { key_fingerprint: fingerprint1, derivation_path: derivation1 }) in rhs.xpubs {

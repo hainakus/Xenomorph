@@ -274,7 +274,7 @@ mod tests {
                 "xprv9s21ZrQH143K327fsEDJyFE3KXMsbohV237ET6FXnMfixZQJ5Q1myJwos2aGeBfbwmtpxPoAewr2XpKgc3rUAA9UbmYd3aFief6Q3qyu5gT"
             ],
             [
-                "advance defy bridge record time fringe heart useful delay grab fresh axis blouse hidden approve labor come wise satisfy silly honey spice bulb maximum",
+                "advance defy bridge record time fringe heart useful delay grab fresh axis blouse hidden approve labor come wise satisfy silly honey sXENe bulb maximum",
                 "xprv9s21ZrQH143K2ey6aizH6RGVDQgzWu3VfgCaXQds9LXpsyT8mdDeBGBGdWCdLVjxhCBvfR98WSffrDiGYc6RwkgbXneyZudBFv41tRT5yZA"
             ],
             [

@@ -20,7 +20,7 @@ impl DefaultSettings for KaspadSettings {
         let mut settings = vec![(Self::Mute, to_value(true).unwrap())];
 
         let root = nw_sys::app::folder();
-        if let Ok(binaries) = kaspa_daemon::locate_binaries(&root, "pico").await {
+        if let Ok(binaries) = kaspa_daemon::locate_binaries(&root, "xenom").await {
             if let Some(path) = binaries.first() {
                 settings.push((Self::Location, to_value(path.to_string_lossy().to_string()).unwrap()));
             }
@@ -39,7 +39,7 @@ pub struct Node {
 impl Default for Node {
     fn default() -> Self {
         Node {
-            settings: SettingsStore::try_new("pico").expect("Failed to create node settings store"),
+            settings: SettingsStore::try_new("xenom").expect("Failed to create node settings store"),
             mute: Arc::new(AtomicBool::new(true)),
             is_running: Arc::new(AtomicBool::new(false)),
         }
@@ -155,7 +155,7 @@ impl Node {
                 } else {
                     tprintln!(ctx, "{}", style("node is unmuted").dim());
                 }
-                // pico.mute(mute).await?;
+                // xenom.mute(mute).await?;
                 self.settings.set(KaspadSettings::Mute, mute).await?;
             }
             "status" => {
@@ -205,13 +205,13 @@ impl Node {
 
         match path {
             None => {
-                let binaries = kaspa_daemon::locate_binaries(root.as_str(), "pico").await?;
+                let binaries = kaspa_daemon::locate_binaries(root.as_str(), "xenom").await?;
 
                 if binaries.is_empty() {
-                    tprintln!(ctx, "No pico binaries found");
+                    tprintln!(ctx, "No xenom binaries found");
                 } else {
                     let binaries = binaries.iter().map(|p| p.display().to_string()).collect::<Vec<_>>();
-                    if let Some(selection) = ctx.term().select("Please select a pico binary", &binaries).await? {
+                    if let Some(selection) = ctx.term().select("Please select a xenom binary", &binaries).await? {
                         tprintln!(ctx, "selecting: {}", selection);
                         self.settings.set(KaspadSettings::Location, selection.as_str()).await?;
                     } else {
@@ -227,7 +227,7 @@ impl Node {
                     self.settings.set(KaspadSettings::Location, path.as_str()).await?;
                 } else {
                     twarnln!(ctx, "destination binary not found, please specify full path including the binary name");
-                    twarnln!(ctx, "example: 'node select /home/user/testnet/pico'");
+                    twarnln!(ctx, "example: 'node select /home/user/testnet/xenom'");
                     tprintln!(ctx, "no selection is made");
                 }
             }
@@ -245,12 +245,12 @@ impl Node {
                 term.refresh_prompt();
             }
             Event::Exit(_code) => {
-                tprintln!(ctx, "pico has exited");
+                tprintln!(ctx, "xenom has exited");
                 self.is_running.store(false, Ordering::SeqCst);
                 term.refresh_prompt();
             }
             Event::Error(error) => {
-                tprintln!(ctx, "{}", style(format!("pico error: {error}")).red());
+                tprintln!(ctx, "{}", style(format!("xenom error: {error}")).red());
                 self.is_running.store(false, Ordering::SeqCst);
                 term.refresh_prompt();
             }

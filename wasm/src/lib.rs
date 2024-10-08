@@ -61,7 +61,7 @@ repository at <https://github.com/kaspanet/rusty-kaspa/releases>.
 ## Development Builds
 
 The latest development builds from <https://kaspa.aspectron.org/nightly/downloads/>.
-Development builds typically contain fixes and improvements that are not yet available in
+Development builds tyXENally contain fixes and improvements that are not yet available in
 stable releases. Additional information can be found at
 <https://aspectron.org/en/projects/kaspa-wasm.html>.
 

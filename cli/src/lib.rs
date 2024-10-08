@@ -1,4 +1,4 @@
-extern crate self as pico_cli;
+extern crate self as xenom_cli;
 
 mod cli;
 pub mod error;
