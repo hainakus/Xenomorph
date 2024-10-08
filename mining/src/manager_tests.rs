@@ -39,7 +39,7 @@ mod tests {
     use std::{iter::once, sync::Arc};
     use tokio::sync::mpsc::{error::TryRecvError, unbounded_channel};
 
-    const TARGET_TIME_PER_BLOCK: u64 = 1_000;
+    const TARGET_TIME_PER_BLOCK: u64 = 250;
     const MAX_BLOCK_MASS: u64 = 500_000;
 
     // test_validate_and_insert_transaction verifies that valid transactions were successfully inserted into the mempool.

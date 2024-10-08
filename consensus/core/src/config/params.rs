@@ -300,7 +300,7 @@ pub const MAINNET_PARAMS: Params = Params {
     new_timestamp_deviation_tolerance: NEW_TIMESTAMP_DEVIATION_TOLERANCE,
     past_median_time_sample_rate: Bps::<25>::past_median_time_sample_rate(),
     past_median_time_sampled_window_size: MEDIAN_TIME_SAMPLED_WINDOW_SIZE,
-    target_time_per_block: 400,
+    target_time_per_block: 250,
     sampling_activation_daa_score: u64::MAX,
     max_difficulty_target: MAX_DIFFICULTY_TARGET,
     max_difficulty_target_f64: MAX_DIFFICULTY_TARGET_AS_F64,
