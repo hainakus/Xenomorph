@@ -42,7 +42,7 @@ impl NetworkType {
     pub fn default_rpc_port(&self) -> u16 {
         match self {
             NetworkType::Mainnet => 26669,
-            NetworkType::Testnet => 16666,
+            NetworkType::Testnet => 10066,
             NetworkType::Simnet => 16510,
             NetworkType::Devnet => 18610,
         }

@@ -365,7 +365,7 @@ impl Router {
     pub fn route_to_flow(&self, msg: KaspadMessage) -> Result<(), ProtocolError> {
         if msg.payload.is_none() {
             debug!("P2P, Route to flow got empty payload, peer: {}", self);
-            return Err(ProtocolError::Other("received picod p2p message with empty payload"));
+            return Err(ProtocolError::Other("received pico p2p message with empty payload"));
         }
         let msg_type: KaspadMessagePayloadType = msg.payload.as_ref().expect("payload was just verified").into();
         // Handle the special case of a reject message ending the connection

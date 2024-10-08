@@ -21,14 +21,14 @@ pub enum WalletSettings {
     Network,
     #[describe("Server address (default: 127.0.0.1)")]
     Server,
-    #[describe("Wallet storage or file name (default 'picod')")]
+    #[describe("Wallet storage or file name (default 'pico')")]
     Wallet,
 }
 
 #[async_trait]
 impl DefaultSettings for WalletSettings {
     async fn defaults() -> Vec<(Self, Value)> {
-        vec![(Self::Server, to_value("public").unwrap()), (Self::Wallet, to_value("picod").unwrap())]
+        vec![(Self::Server, to_value("public").unwrap()), (Self::Wallet, to_value("pico").unwrap())]
     }
 }
 
@@ -173,12 +173,12 @@ where
     }
 }
 
-/// Returns the wallet data storage folder `~/.picod`.
+/// Returns the wallet data storage folder `~/.pico`.
 pub fn application_folder() -> Result<PathBuf> {
     Ok(fs::resolve_path(storage::local::default_storage_folder())?)
 }
 
-/// If missing, creates the wallet data storage folder `~/.picod`.
+/// If missing, creates the wallet data storage folder `~/.pico`.
 pub async fn ensure_application_folder() -> Result<()> {
     let path = application_folder()?;
     log_info!("Creating application folder: `{}`", path.display());

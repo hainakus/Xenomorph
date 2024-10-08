@@ -83,10 +83,10 @@ pub enum Prefix {
 impl Prefix {
     fn as_str(&self) -> &'static str {
         match self {
-            Prefix::Mainnet => "pico",
+            Prefix::Mainnet => "picod",
             Prefix::Testnet => "picotest",
             Prefix::Simnet => "picosim",
-            Prefix::Devnet => "picodev",
+            Prefix::Devnet => "picoev",
             #[cfg(test)]
             Prefix::A => "a",
             #[cfg(test)]
@@ -117,7 +117,7 @@ impl TryFrom<&str> for Prefix {
             "pico" => Ok(Prefix::Mainnet),
             "picotest" => Ok(Prefix::Testnet),
             "picosim" => Ok(Prefix::Simnet),
-            "picodev" => Ok(Prefix::Devnet),
+            "picoev" => Ok(Prefix::Devnet),
             #[cfg(test)]
             "a" => Ok(Prefix::A),
             #[cfg(test)]
@@ -581,8 +581,8 @@ mod tests {
             (Address::new(Prefix::Testnet, Version::PubKey, &[0u8; 32]),      "kaspatest:qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqhqrxplya"),
             (Address::new(Prefix::Testnet, Version::PubKeyECDSA, &[0u8; 33]), "kaspatest:qyqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqhe837j2d"),
             (Address::new(Prefix::Testnet, Version::PubKeyECDSA, b"\xba\x01\xfc\x5f\x4e\x9d\x98\x79\x59\x9c\x69\xa3\xda\xfd\xb8\x35\xa7\x25\x5e\x5f\x2e\x93\x4e\x93\x22\xec\xd3\xaf\x19\x0a\xb0\xf6\x0e"), "kaspatest:qxaqrlzlf6wes72en3568khahq66wf27tuhfxn5nytkd8tcep2c0vrse6gdmpks"),
-            (Address::new(Prefix::Mainnet, Version::PubKey, &[0u8; 32]),      "picod:qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqkx9awp4e"),
-            (Address::new(Prefix::Mainnet, Version::PubKey, b"\x5f\xff\x3c\x4d\xa1\x8f\x45\xad\xcd\xd4\x99\xe4\x46\x11\xe9\xff\xf1\x48\xba\x69\xdb\x3c\x4e\xa2\xdd\xd9\x55\xfc\x46\xa5\x95\x22"), "picod:qp0l70zd5x85ttwd6jv7g3s3a8llzj96d8dncn4zmhv4tlzx5k2jyqh70xmfj"),
+            (Address::new(Prefix::Mainnet, Version::PubKey, &[0u8; 32]),      "pico:qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqkx9awp4e"),
+            (Address::new(Prefix::Mainnet, Version::PubKey, b"\x5f\xff\x3c\x4d\xa1\x8f\x45\xad\xcd\xd4\x99\xe4\x46\x11\xe9\xff\xf1\x48\xba\x69\xdb\x3c\x4e\xa2\xdd\xd9\x55\xfc\x46\xa5\x95\x22"), "pico:qp0l70zd5x85ttwd6jv7g3s3a8llzj96d8dncn4zmhv4tlzx5k2jyqh70xmfj"),
         ]
         // cspell:enable
     }

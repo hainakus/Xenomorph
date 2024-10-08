@@ -174,7 +174,7 @@ mod tests {
                     ),
                 ),
                 prefix: Prefix::Mainnet,
-                expected_address: Ok("picod:qpauqsvk7yf9unexwmxsnmg547mhyga37csh0kj53q6xxgl24ydxjsgzthw5j".try_into().unwrap()),
+                expected_address: Ok("pico:qpauqsvk7yf9unexwmxsnmg547mhyga37csh0kj53q6xxgl24ydxjsgzthw5j".try_into().unwrap()),
             },
             Test {
                 name: "Testnet PubKeyECDSA script and address",

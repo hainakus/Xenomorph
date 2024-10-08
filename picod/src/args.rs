@@ -195,8 +195,8 @@ pub fn cli() -> Command {
     let defaults: Args = Default::default();
 
     #[allow(clippy::let_and_return)]
-    let cmd = Command::new("picod")
-        .about(format!("{} (rusty-picod) v{}", env!("CARGO_PKG_DESCRIPTION"), version()))
+    let cmd = Command::new("pico")
+        .about(format!("{} (rusty-pico) v{}", env!("CARGO_PKG_DESCRIPTION"), version()))
         .version(env!("CARGO_PKG_VERSION"))
         .arg(arg!(-C --configfile <CONFIG_FILE> "Path of config file."))
         .arg(arg!(-b --appdir <DATA_DIR> "Directory to store data."))
@@ -482,9 +482,9 @@ fn arg_match_many_unwrap_or<T: Clone + Send + Sync + 'static>(m: &clap::ArgMatch
 
   -V, --version                             Display version information and exit
   -C, --configfile=                         Path to configuration file (default: /Users/aspect/Library/Application
-                                            Support/picod/picod.conf)
+                                            Support/pico/pico.conf)
   -b, --appdir=                             Directory to store data (default: /Users/aspect/Library/Application
-                                            Support/picod)
+                                            Support/pico)
       --logdir=                             Directory to log output.
   -a, --addpeer=                            Add a peer to connect with at startup
       --connect=                            Connect only to the specified peers at startup

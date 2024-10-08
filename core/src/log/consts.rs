@@ -1,7 +1,7 @@
 pub const DEFAULT_LOGGER_ENV: &str = "RUST_LOG";
 
-pub const LOG_FILE_NAME: &str = "rusty-picod.log";
-pub const ERR_LOG_FILE_NAME: &str = "rusty-picod_err.log";
+pub const LOG_FILE_NAME: &str = "rusty-pico.log";
+pub const ERR_LOG_FILE_NAME: &str = "rusty-pico_err.log";
 
 pub const LOG_ARCHIVE_SUFFIX: &str = ".{}.gz";
 

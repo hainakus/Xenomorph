@@ -865,9 +865,9 @@ impl PruningProofManager {
                     let ghostdag = self.ghostdag_stores[0].get_data(hash).unwrap();
                     e.insert((&*ghostdag).into());
 
-                    // We fill `ghostdag_blocks` only for picod-go legacy reasons, but the real set we
+                    // We fill `ghostdag_blocks` only for pico-go legacy reasons, but the real set we
                     // send is `daa_window_blocks` which represents the full trusted sub-DAG in the antifuture
-                    // of the pruning point which picod-rust nodes expect to get when synced with headers proof
+                    // of the pruning point which pico-rust nodes expect to get when synced with headers proof
                     if let Entry::Vacant(e) = daa_window_blocks.entry(hash) {
                         e.insert(TrustedHeader {
                             header: self.headers_store.get_header(hash).unwrap(),
