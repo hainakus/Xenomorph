@@ -33,6 +33,8 @@ impl From<Version> for protowire::VersionMessage {
             disable_relay_tx: item.disable_relay_tx,
             subnetwork_id: item.subnetwork_id.map(|x| x.into()),
             network: item.network.clone(),
+            dns_seeder: "".to_string(),
+            hashing_algo_version: "".to_string(),
         }
     }
 }

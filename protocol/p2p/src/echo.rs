@@ -101,6 +101,8 @@ fn build_dummy_version_message() -> VersionMessage {
         disable_relay_tx: false,
         subnetwork_id: None,
         network: "pyrin-mainnet".to_string(),
+        dns_seeder: "".to_string(),
+        hashing_algo_version: "".to_string(),
     }
 }
 
