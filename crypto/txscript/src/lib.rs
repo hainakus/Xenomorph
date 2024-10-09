@@ -20,7 +20,7 @@ use kaspa_consensus_core::hashing::sighash::{calc_ecdsa_signature_hash, calc_sch
 use kaspa_consensus_core::hashing::sighash_type::SigHashType;
 use kaspa_consensus_core::tx::{ScriptPublicKey, TransactionInput, UtxoEntry, VerifiableTransaction};
 use kaspa_txscript_errors::TxScriptError;
-use log::{debug, trace};
+use log::{trace};
 use opcodes::codes::OpReturn;
 use opcodes::{codes, to_small_int, OpCond};
 use script_class::ScriptClass;

@@ -3,18 +3,6 @@
 version = 3
 
 [[package]]
-name = "xenom-wallet"
-version = "0.15.2"
-dependencies = [
- "async-std",
- "async-trait",
- "tokio",
- "workflow-log",
- "workflow-terminal",
- "xenom-cli",
-]
-
-[[package]]
 name = "accessory"
 version = "1.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7398,6 +7386,18 @@ dependencies = [
  "tokio",
  "workflow-perf-monitor",
  "xenom",
+]
+
+[[package]]
+name = "xenom-wallet"
+version = "0.15.2"
+dependencies = [
+ "async-std",
+ "async-trait",
+ "tokio",
+ "workflow-log",
+ "workflow-terminal",
+ "xenom-cli",
 ]
 
 [[package]]
