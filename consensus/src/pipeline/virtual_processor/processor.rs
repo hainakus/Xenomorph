@@ -621,7 +621,7 @@ impl VirtualStateProcessor {
     ///     1. `selected_parent` is a UTXO-valid block
     ///     2. `candidates` are an antichain ordered in descending blue work order
     ///     3. `candidates` do not contain `selected_parent` and `selected_parent.blue work > max(candidates.blue_work)`  
-    pub(super) fn XENk_virtual_parents(
+    pub(super) fn pick_virtual_parents(
         &self,
         selected_parent: Hash,
         mut candidates: VecDeque<Hash>,
