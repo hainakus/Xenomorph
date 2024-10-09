@@ -286,7 +286,7 @@ impl VirtualStateProcessor {
 
         let (new_sink, virtual_parent_candidates) =
             self.sink_search_algorithm(&virtual_read, &mut accumulated_diff, prev_sink, tips, finality_point, pruning_point);
-        let (virtual_parents, virtual_ghostdag_data) = self.XENk_virtual_parents(new_sink, virtual_parent_candidates, pruning_point);
+        let (virtual_parents, virtual_ghostdag_data) = self.pick_virtual_parents(new_sink, virtual_parent_candidates, pruning_point);
         assert_eq!(virtual_ghostdag_data.selected_parent, new_sink);
 
         let sink_multiset = self.utxo_multisets_store.get(new_sink).unwrap();
