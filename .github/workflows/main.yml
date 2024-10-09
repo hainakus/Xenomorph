@@ -1,4 +1,4 @@
-name: Build and Upload XENo Project Assets
+name: Build and Upload Xenomorph Project Assets
 
 on:
   push:
@@ -9,6 +9,17 @@ jobs:
   build-linux:
     runs-on: ubuntu-latest
     steps:
+      - name: Cache
+        uses: actions/cache@v4.1.1
+        with:
+          # Cache target directory to skip re-building if cache exists
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-
+          upload-chunk-size: 20000000  # Optional: 20MB chunk size to upload cache
+          enableCrossOsArchive: true  # Optional: Cross-platform caching enabled
+
       - name: Checkout code
         uses: actions/checkout@v3
 
@@ -96,7 +107,6 @@ jobs:
             target/release/xenom-wallet
             target/release/xenom
 
-
   release:
     needs: [build-linux, build-macos]
     runs-on: ubuntu-latest
@@ -118,8 +128,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release-binaries-linux
-            release-binaries-macos
+            linux/xenom-wallet
+            linux/xenom
+            macos/xenom-wallet
+            macos/xenom
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Ensure you are using the token
 
