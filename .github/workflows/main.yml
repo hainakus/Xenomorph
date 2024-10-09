@@ -42,14 +42,14 @@ jobs:
             ${{ runner.os }}-cargo-build-
 
       - name: Build for Linux
-        run: cargo build --release --bin XENo-wallet --bin dal
+        run: cargo build --release --bin xenom-wallet --bin dal
 
       - name: Upload release artifacts (Linux)
         uses: actions/upload-artifact@v3
         with:
           name: release-binaries-linux
           path: |
-            target/release/XENo-wallet
+            target/release/xenom-wallet
             target/release/xenom
 
   build-macos:
@@ -86,14 +86,14 @@ jobs:
             ${{ runner.os }}-cargo-build-
 
       - name: Build for macOS
-        run: cargo build --release --bin XENo-wallet --bin dal
+        run: cargo build --release --bin xenom-wallet --bin dal
 
       - name: Upload release artifacts (macOS)
         uses: actions/upload-artifact@v3
         with:
           name: release-binaries-macos
           path: |
-            target/release/XENo-wallet
+            target/release/xenom-wallet
             target/release/xenom
 
 

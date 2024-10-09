@@ -3,7 +3,7 @@
 version = 3
 
 [[package]]
-name = "XENo-wallet"
+name = "xenom-wallet"
 version = "0.15.2"
 dependencies = [
  "async-std",
