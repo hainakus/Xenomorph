@@ -118,8 +118,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release-binaries-linux/*
-            release-binaries-macos/*
+            release-binaries-linux
+            release-binaries-macos
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Ensure you are using the token
 
