@@ -83,7 +83,7 @@ pub enum Prefix {
 impl Prefix {
     fn as_str(&self) -> &'static str {
         match self {
-            Prefix::Mainnet => "xenomd",
+            Prefix::Mainnet => "xenom",
             Prefix::Testnet => "xenomtest",
             Prefix::Simnet => "xenomsim",
             Prefix::Devnet => "xenomdev",
