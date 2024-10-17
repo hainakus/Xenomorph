@@ -12,13 +12,12 @@ jobs:
       - name: Cache
         uses: actions/cache@v4.1.1
         with:
-          # Cache target directory to skip re-building if cache exists
           path: target
           key: ${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-build-
-          upload-chunk-size: 20000000  # Optional: 20MB chunk size to upload cache
-          enableCrossOsArchive: true  # Optional: Cross-platform caching enabled
+          upload-chunk-size: 20000000
+          enableCrossOsArchive: true
 
       - name: Checkout code
         uses: actions/checkout@v3
@@ -107,8 +106,52 @@ jobs:
             target/release/xenom-wallet
             target/release/xenom
 
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install Protobuf Compiler
+        run: choco install protoc
+
+      - name: Verify protoc installation
+        run: protoc --version
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: C:\Users\runneradmin\.cargo\registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-
+
+      - name: Build for Windows
+        run: cargo build --release --bin xenom-wallet --bin xenom
+
+      - name: Upload release artifacts (Windows)
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-binaries-windows
+          path: |
+            target\release\xenom-wallet.exe
+            target\release\xenom.exe
+
   release:
-    needs: [build-linux, build-macos]
+    needs: [build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
     steps:
       - name: Download Linux build artifacts
@@ -121,8 +164,13 @@ jobs:
         with:
           name: release-binaries-macos
 
+      - name: Download Windows build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: release-binaries-windows
+
       - name: List files in the workspace
-        run: ls -la  # This will help you verify that the artifacts are downloaded
+        run: ls -la
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -132,8 +180,10 @@ jobs:
             linux/xenom
             macos/xenom-wallet
             macos/xenom
+            windows/xenom-wallet.exe
+            windows/xenom.exe
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Ensure you are using the token
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Notify success
         run: echo "Release created successfully!"
