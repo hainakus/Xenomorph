@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::pb::{kaspad_message::Payload, ReadyMessage, VerackMessage, VersionMessage};
 use crate::{common::ProtocolError, dequeue_with_timeout, make_message};
 use crate::{IncomingRoute, KaspadMessagePayloadType, Router};
-use kaspa_core::{debug, info};
+use kaspa_core::{debug};
 
 
 
@@ -31,9 +31,9 @@ impl<'a> KaspadHandshake<'a> {
         debug!("starting receive version flow");
 
         let version_message = dequeue_with_timeout!(version_receiver, Payload::Version, Duration::from_secs(4))?;
-        info!("accepted version message: {version_message:?}");
+        //info!("accepted version message: {version_message:?}");
         if version_message.hashing_algo_version != "PyrinHashv2".to_string() {
-            //return Err(ProtocolError::ConnectionClosed);
+            return Err(ProtocolError::ConnectionClosed);
         }
 
         let verack_message = make_message!(Payload::Verack, VerackMessage {});
@@ -50,7 +50,7 @@ impl<'a> KaspadHandshake<'a> {
         debug!("starting send version flow");
         version_message.hashing_algo_version = "PyrinHashv2".to_string();
         let new_version_message = version_message;
-        info!("sending version message: {new_version_message:?}");
+       // info!("sending version message: {new_version_message:?}");
         let version_message = make_message!(Payload::Version, new_version_message);
         router.enqueue(version_message).await?;
 
