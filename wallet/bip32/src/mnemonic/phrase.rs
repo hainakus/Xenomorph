@@ -229,8 +229,6 @@ impl Mnemonic {
     }
 
     /// Convert this mnemonic phrase into the BIP39 seed value.
-    //#[cfg(feature = "bip39")]
-    //#[cfg_attr(docsrs, doc(cfg(feature = "bip39")))]
     pub fn to_seed(&self, password: &str) -> Seed {
         let salt = Zeroizing::new(format!("mnemonic{password}"));
         let mut seed = [0u8; Seed::SIZE];
@@ -274,7 +272,7 @@ mod tests {
                 "xprv9s21ZrQH143K327fsEDJyFE3KXMsbohV237ET6FXnMfixZQJ5Q1myJwos2aGeBfbwmtpxPoAewr2XpKgc3rUAA9UbmYd3aFief6Q3qyu5gT"
             ],
             [
-                "advance defy bridge record time fringe heart useful delay grab fresh axis blouse hidden approve labor come wise satisfy silly honey sXENe bulb maximum",
+                "advance defy bridge record time fringe heart useful delay grab fresh axis blouse hidden approve labor come wise satisfy silly honey spice bulb maximum",
                 "xprv9s21ZrQH143K2ey6aizH6RGVDQgzWu3VfgCaXQds9LXpsyT8mdDeBGBGdWCdLVjxhCBvfR98WSffrDiGYc6RwkgbXneyZudBFv41tRT5yZA"
             ],
             [

@@ -8,6 +8,7 @@ pub mod test_consensus;
 #[cfg(feature = "devnet-prealloc")]
 mod utxo_set_override;
 
+use kaspa_core::info;
 use crate::{
     config::Config,
     errors::{BlockProcessResult, RuleError},
@@ -607,7 +608,7 @@ impl ConsensusApi for Consensus {
         self.config.is_nearly_synced(compact.timestamp, compact.daa_score)
     }
 
-    fn get_virtual_chain_from_block(&self, low: Hash, chain_path_added_limit: Option<usize>) -> ConsensusResult<ChainPath> {
+    fn get_virtual_chain_from_block(&self, low: Hash) -> ConsensusResult<ChainPath> {
         // Calculate chain changes between the given `low` and the current sink hash (up to `limit` amount of block hashes).
         // Note:
         // 1) that we explicitly don't
@@ -626,7 +627,7 @@ impl ConsensusApi for Consensus {
             .then_some(())
             .ok_or(ConsensusError::General("the queried hash does not have source on its chain"))?;
 
-        Ok(self.services.dag_traversal_manager.calculate_chain_path(low, self.get_sink(), chain_path_added_limit))
+        Ok(self.services.dag_traversal_manager.calculate_chain_path(low, self.get_sink()))
     }
 
     /// Returns a Vec of header samples since genesis
@@ -771,7 +772,14 @@ impl ConsensusApi for Consensus {
     fn append_imported_pruning_point_utxos(&self, utxoset_chunk: &[(TransactionOutpoint, UtxoEntry)], current_multiset: &mut MuHash) {
         let mut pruning_utxoset_write = self.pruning_utxoset_stores.write();
         pruning_utxoset_write.utxo_set.write_many(utxoset_chunk).unwrap();
+
+        let mut utxos_loaded: usize = 0;
         for (outpoint, entry) in utxoset_chunk {
+            if utxos_loaded % 400_000 == 0 || utxos_loaded >= (utxoset_chunk.len() - 1) {
+                info!("Importing UTXO dump to pruning point utxos ({:.2}%)", (utxos_loaded as f64 / utxoset_chunk.len() as f64) * 100.0);
+            }
+
+            utxos_loaded += 1;
             current_multiset.add_utxo(outpoint, entry);
         }
     }

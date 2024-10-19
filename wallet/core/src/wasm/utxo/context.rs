@@ -47,7 +47,7 @@ declare! {
 /// will be included in all notifications emitted by the UtxoContext as
 /// well as included as a part of {@link ITransactionRecord} emitted when
 /// transactions occur. If not provided, a random id will be generated. This id
-/// tyXENally represents an account id in the context of a wallet application.
+/// typically represents an account id in the context of a wallet application.
 /// The integrated Wallet API uses UtxoContext to represent wallet accounts.
 ///
 /// **Exchanges:** if you are building an exchange wallet, it is recommended

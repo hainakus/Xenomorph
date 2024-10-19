@@ -152,7 +152,7 @@ impl Inner {
 /// monitors for transaction-related events in order to maintain a consistent view
 /// on that UtxoEntry set throughout its connection lifetime.
 ///
-/// UtxoContext tyXENally represents a single wallet account, but can monitor any set
+/// UtxoContext typically represents a single wallet account, but can monitor any set
 /// of addresses. When receiving transaction events, UtxoContext detects types of these
 /// events and emits corresponding notifications on the UtxoProcessor event multiplexer.
 ///

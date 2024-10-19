@@ -616,7 +616,7 @@ NOTE: This error usually indicates an RPC conversion error between the node and 
         // else it returns the batch_size amount on pure chain blocks.
         // Note: batch_size does not bound removed chain blocks, only added chain blocks.
         let batch_size = (self.config.mergeset_size_limit * 10) as usize;
-        let mut virtual_chain_batch = session.async_get_virtual_chain_from_block(request.start_hash, Some(batch_size)).await?;
+        let mut virtual_chain_batch = session.async_get_virtual_chain_from_block(request.start_hash).await?;
         let accepted_transaction_ids = if request.include_accepted_transaction_ids {
             let accepted_transaction_ids = self
                 .consensus_converter

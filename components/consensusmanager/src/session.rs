@@ -248,10 +248,6 @@ impl ConsensusSessionOwned {
         self.clone().spawn_blocking(|c| c.get_sink_timestamp()).await
     }
 
-    pub async fn async_get_current_block_color(&self, hash: Hash) -> Option<bool> {
-        self.clone().spawn_blocking(move |c| c.get_current_block_color(hash)).await
-    }
-
     /// source refers to the earliest block from which the current node has full header & block data  
     pub async fn async_get_source(&self) -> Hash {
         self.clone().spawn_blocking(|c| c.get_source()).await
@@ -268,12 +264,11 @@ impl ConsensusSessionOwned {
         self.clone().spawn_blocking(|c| c.is_nearly_synced()).await
     }
 
-    pub async fn async_get_virtual_chain_from_block(
-        &self,
-        low: Hash,
-        chain_path_added_limit: Option<usize>,
-    ) -> ConsensusResult<ChainPath> {
-        self.clone().spawn_blocking(move |c| c.get_virtual_chain_from_block(low, chain_path_added_limit)).await
+    pub async fn async_get_virtual_chain_from_block(&self, hash: Hash) -> ConsensusResult<ChainPath> {
+        self.clone().spawn_blocking(move |c| c.get_virtual_chain_from_block(hash)).await
+    }
+    pub async fn async_get_current_block_color(&self, hash: Hash) -> Option<bool> {
+        self.clone().spawn_blocking(move |c| c.get_current_block_color(hash)).await
     }
 
     pub async fn async_get_virtual_utxos(

@@ -173,12 +173,12 @@ where
     }
 }
 
-/// Returns the wallet data storage folder `~/.xenom`.
+/// Returns the wallet data storage folder `~/.kaspa`.
 pub fn application_folder() -> Result<PathBuf> {
     Ok(fs::resolve_path(storage::local::default_storage_folder())?)
 }
 
-/// If missing, creates the wallet data storage folder `~/.xenom`.
+/// If missing, creates the wallet data storage folder `~/.kaspa`.
 pub async fn ensure_application_folder() -> Result<()> {
     let path = application_folder()?;
     log_info!("Creating application folder: `{}`", path.display());

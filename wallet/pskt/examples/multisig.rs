@@ -52,7 +52,7 @@ fn main() {
 
     let signer_pskt: PSKT<Signer> = serde_json::from_str(&ser_updated).expect("Failed to deserialize");
     let mut reused_values = SigHashReusedValues::new();
-    let mut sign = |signer_pskt: PSKT<Signer>, kp: &Keypair| {
+    let sign = |signer_pskt: PSKT<Signer>, kp: &Keypair| {
         signer_pskt
             .pass_signature_sync(|tx, sighash| -> Result<Vec<SignInputOk>, String> {
                 let tx = dbg!(tx);
