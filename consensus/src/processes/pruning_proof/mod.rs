@@ -189,7 +189,7 @@ impl PruningProofManager {
         }
 
         let new_pruning_point = pruning_points.last().unwrap().hash;
-        info!("Setting {new_pruning_point} as the staging pruning point");
+        info!("Setting {new_pruning_point} as the current pruning point");
 
         let mut pruning_point_write = self.pruning_point_store.write();
         let mut batch = WriteBatch::default();
@@ -865,9 +865,9 @@ impl PruningProofManager {
                     let ghostdag = self.ghostdag_stores[0].get_data(hash).unwrap();
                     e.insert((&*ghostdag).into());
 
-                    // We fill `ghostdag_blocks` only for xenom-go legacy reasons, but the real set we
+                    // We fill `ghostdag_blocks` only for kaspad-go legacy reasons, but the real set we
                     // send is `daa_window_blocks` which represents the full trusted sub-DAG in the antifuture
-                    // of the pruning point which xenom-rust nodes expect to get when synced with headers proof
+                    // of the pruning point which kaspad-rust nodes expect to get when synced with headers proof
                     if let Entry::Vacant(e) = daa_window_blocks.entry(hash) {
                         e.insert(TrustedHeader {
                             header: self.headers_store.get_header(hash).unwrap(),
