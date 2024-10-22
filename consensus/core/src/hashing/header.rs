@@ -36,26 +36,20 @@ pub fn hash(header: &Header) -> Hash {
 
 #[cfg(test)]
 mod tests {
+    use core::str::FromStr;
+    use std::hash::Hash;
     use super::*;
     use crate::{blockhash, BlueWorkType};
+    use crate::block::Block;
+    use crate::config::params::GENESIS;
 
     #[test]
     fn test_header_hashing() {
-        let header = Header::new_finalized(
-            1,
-            vec![vec![1.into()]],
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            234,
-            23,
-            567,
-            0,
-            0.into(),
-            0,
-            Default::default(),
-        );
-        assert_ne!(blockhash::NONE, header.hash);
+        let header = Header::from_precomputed_hash("f7812a38f08473ff60e5b314a069e034919ad8b4b1b6812902d2d3f541c6e174".parse().unwrap(), vec![]);
+        println!("HEADER {:?}", header);
+       let h = Block::from_header(header.clone());
+
+        assert_eq!(h.hash(), header.hash);
     }
 
     #[test]

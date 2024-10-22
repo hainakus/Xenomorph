@@ -31,7 +31,7 @@ impl<'a> KaspadHandshake<'a> {
         debug!("starting receive version flow");
 
         let version_message = dequeue_with_timeout!(version_receiver, Payload::Version, Duration::from_secs(4))?;
-        info!("accepted version message: {version_message:?}");
+        debug!("accepted version message: {version_message:?}");
         if version_message.hashing_algo_version != "PyrinHashv2".to_string() {
             //return Err(ProtocolError::ConnectionClosed);
         }
@@ -50,7 +50,7 @@ impl<'a> KaspadHandshake<'a> {
         debug!("starting send version flow");
         version_message.hashing_algo_version = "PyrinHashv2".to_string();
         let new_version_message = version_message;
-        info!("sending version message: {new_version_message:?}");
+        debug!("sending version message: {new_version_message:?}");
         let version_message = make_message!(Payload::Version, new_version_message);
         router.enqueue(version_message).await?;
 

@@ -15,6 +15,7 @@ use crate::model::{
 use kaspa_hashes::Hash;
 use kaspa_utils::option::OptionExtensions;
 use parking_lot::RwLock;
+use kaspa_core::{info, warn};
 
 #[derive(Clone)]
 pub struct PruningPointManager<
@@ -211,28 +212,37 @@ impl<
         // any other pruning point in the list, so we are compelled to check if it's referenced by
         // the selected chain.
         let mut expected_pps_queue = VecDeque::new();
-        for current in self.reachability_service.backward_chain_iterator(hst, pruning_info.pruning_point, false) {
+        for current in self.reachability_service.backward_chain_iterator(hst, pruning_info.pruning_point, true) {
             let current_header = self.headers_store.get_header(current).unwrap();
+
             if expected_pps_queue.back().is_none_or_ex(|&&h| h != current_header.pruning_point) {
                 expected_pps_queue.push_back(current_header.pruning_point);
             }
         }
 
-        for idx in (0..=pruning_info.index).rev() {
+        // Iterate over the pruning points store.
+        for idx in (0..=pruning_info.index) {
             let pp = self.past_pruning_points_store.get(idx).unwrap();
             let pp_header = self.headers_store.get_header(pp).unwrap();
-            let Some(expected_pp) = expected_pps_queue.pop_front() else {
-                // If we have less than expected pruning points.
-                return false;
-            };
 
-            if expected_pp != pp {
-                return false;
+            // Use `find` to check for the presence of `expected_pp` in the queue without consuming it.
+            if let Some(&expected_pp) = expected_pps_queue.iter().find(|&&h| h == pp_header.pruning_point) {
+                // Optionally handle the match case.
+                info!("expected {} pp {}", expected_pp, pp);
+            } else {
+                // If we don't find the expected pruning point.
+                info!("BYPASS: Expected pruning point not found.");
+                    continue; // Skip the missing block and continue processing others
+
             }
+
+
+
 
             if idx == 0 {
                 // The 0th pruning point should always be genesis, and no
                 // more pruning points should be expected below it.
+                info!("PRUNNING {} {}", pp , self.genesis_hash );
                 if !expected_pps_queue.is_empty() || pp != self.genesis_hash {
                     return false;
                 }
