@@ -81,11 +81,11 @@ impl Config {
             perf,
             process_genesis: true,
             is_archival: false,
-            enable_sanity_checks: false,
-            utxoindex: false,
+            enable_sanity_checks: true,
+            utxoindex: true,
             unsafe_rpc: false,
             enable_unsynced_mining: false,
-            enable_mainnet_mining: false,
+            enable_mainnet_mining: true,
             user_agent_comments: Default::default(),
             externalip: None,
             p2p_listen_address: ContextualNetAddress::unspecified(),
@@ -94,7 +94,7 @@ impl Config {
             #[cfg(feature = "devnet-prealloc")]
             initial_utxo_set: Default::default(),
             disable_upnp: false,
-            ram_scale: 1.0,
+            ram_scale: 3.0,
         }
     }
 

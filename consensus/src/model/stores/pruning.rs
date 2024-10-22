@@ -8,7 +8,7 @@ use kaspa_hashes::Hash;
 use rocksdb::WriteBatch;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
 pub struct PruningPointInfo {
     pub pruning_point: Hash,
     pub candidate: Hash,

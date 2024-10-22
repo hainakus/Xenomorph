@@ -25,7 +25,7 @@ use kaspa_consensus_core::{
     trusted::{TrustedBlock, TrustedGhostdagData, TrustedHeader},
     BlockHashMap, BlockHashSet, BlockLevel, HashMapCustomHasher, KType,
 };
-use kaspa_core::{debug, info, trace};
+use kaspa_core::{debug, info, trace, warn};
 use kaspa_database::prelude::{CachePolicy, ConnBuilder, StoreResultEmptyTuple, StoreResultExtensions};
 use kaspa_hashes::Hash;
 use kaspa_pow::calc_block_level;
@@ -388,8 +388,9 @@ impl PruningProofManager {
     }
 
     pub fn validate_pruning_point_proof(&self, proof: &PruningPointProof) -> PruningImportResult<()> {
-        if proof.len() != self.max_block_level as usize + 1 {
-            return Err(PruningImportError::ProofNotEnoughLevels(self.max_block_level as usize + 1));
+        info!("PROOF {}", proof.len());
+        if proof.len() - 1 != self.max_block_level as usize  {
+            return Err(PruningImportError::ProofNotEnoughLevels(self.max_block_level as usize ));
         }
         if proof[0].is_empty() {
             return Err(PruningImportError::PruningProofNotEnoughHeaders);

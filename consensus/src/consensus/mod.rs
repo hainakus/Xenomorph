@@ -101,6 +101,7 @@ use self::{services::ConsensusServices, storage::ConsensusStorage};
 use crate::model::stores::selected_chain::SelectedChainStoreReader;
 
 use std::cmp;
+use kaspa_core::info;
 
 pub struct Consensus {
     // DB
@@ -786,7 +787,7 @@ impl ConsensusApi for Consensus {
         if !self.services.pruning_point_manager.is_valid_pruning_point(pp_info.pruning_point, hst) {
             return Err(ConsensusError::General("invalid pruning point candidate"));
         }
-
+            info!("HAHS {:?} {}" , pp_info, hst);
         if !self.services.pruning_point_manager.are_pruning_points_in_valid_chain(pp_info, hst) {
             return Err(ConsensusError::General("past pruning points do not form a valid chain"));
         }
