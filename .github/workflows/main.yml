@@ -45,8 +45,8 @@ jobs:
         run: |
           cargo build --release --bin xenom-wallet --bin xenom
           mkdir -p linux
-          cp path_to_linux_binary/xenom-wallet linux/xenom-wallet
-          cp path_to_linux_binary/xenom linux/xenom
+          cp target/release/xenom-wallet linux/xenom-wallet
+          cp target/release/xenom linux/xenom
 
       - name: Upload release artifacts (Linux)
         uses: actions/upload-artifact@v3
@@ -93,8 +93,8 @@ jobs:
         run: |
           cargo build --release --bin xenom-wallet --bin xenom
           mkdir -p macos
-          cp path_to_macos_binary/xenom-wallet macos/xenom-wallet
-          cp path_to_macos_binary/xenom macos/xenom
+          cp target/release/xenom-wallet macos/xenom-wallet
+          cp target/release/xenom macos/xenom
       - name: Upload release artifacts (macOS)
         uses: actions/upload-artifact@v3
         with:
@@ -140,8 +140,8 @@ jobs:
         run: | 
           cargo build --release --bin xenom-wallet --bin xenom
           mkdir -p windows
-          cp path_to_windows_binary/xenom-wallet.exe windows/xenom-wallet.exe
-          cp path_to_windows_binary/xenom.exe windows/xenom.exe
+          cp target/release/xenom-wallet.exe windows/xenom-wallet.exe
+          cp target/release/xenom.exe windows/xenom.exe
       - name: Upload release artifacts (Windows)
         uses: actions/upload-artifact@v3
         with:
