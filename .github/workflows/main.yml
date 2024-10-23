@@ -9,16 +9,6 @@ jobs:
   build-linux:
     runs-on: ubuntu-latest
     steps:
-      - name: Cache
-        uses: actions/cache@v4.1.1
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-build-
-          upload-chunk-size: 20000000
-          enableCrossOsArchive: true
-
       - name: Checkout code
         uses: actions/checkout@v3
 
@@ -52,7 +42,11 @@ jobs:
             ${{ runner.os }}-cargo-build-
 
       - name: Build for Linux
-        run: cargo build --release --bin xenom-wallet --bin xenom
+        run: |
+          cargo build --release --bin xenom-wallet --bin xenom
+          mkdir -p linux
+          cp target/release/xenom-wallet linux/xenom-wallet
+          cp target/release/xenom linux/xenom
 
       - name: Upload release artifacts (Linux)
         uses: actions/upload-artifact@v3
@@ -96,8 +90,11 @@ jobs:
             ${{ runner.os }}-cargo-build-
 
       - name: Build for macOS
-        run: cargo build --release --bin xenom-wallet --bin xenom
-
+        run: |
+          cargo build --release --bin xenom-wallet --bin xenom
+          mkdir -p macos
+          cp target/release/xenom-wallet macos/xenom-wallet
+          cp target/release/xenom macos/xenom
       - name: Upload release artifacts (macOS)
         uses: actions/upload-artifact@v3
         with:
@@ -140,8 +137,11 @@ jobs:
             ${{ runner.os }}-cargo-build-
 
       - name: Build for Windows
-        run: cargo build --release --bin xenom-wallet --bin xenom
-
+        run: | 
+          cargo build --release --bin xenom-wallet --bin xenom
+          mkdir -p windows
+          cp target/release/xenom-wallet.exe windows/xenom-wallet.exe
+          cp target/release/xenom.exe windows/xenom.exe
       - name: Upload release artifacts (Windows)
         uses: actions/upload-artifact@v3
         with:
