@@ -291,7 +291,7 @@ impl From<NetworkId> for Params {
 
 pub const MAINNET_PARAMS: Params = Params {
     dns_seeders: &[
-        "dnsseeder.pico-kid.online"
+        "dnsseeder.xenom.space"
     ],
     net: NetworkId::new(NetworkType::Mainnet),
     genesis: GENESIS,
