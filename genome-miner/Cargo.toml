@@ -30,6 +30,7 @@ faster-hex.workspace = true
 log.workspace = true
 rayon.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread"] }
+wgpu = { version = "22", features = ["metal", "vulkan-portability"] }
 
 [lints]
 workspace = true
