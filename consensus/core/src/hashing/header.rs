@@ -24,6 +24,7 @@ pub fn hash_override_nonce_time(header: &Header, nonce: u64, timestamp: u64) -> 
         .update(header.daa_score.to_le_bytes())
         .update(header.blue_score.to_le_bytes())
         .write_blue_work(header.blue_work)
+        .update(header.epoch_seed)
         .update(header.pruning_point);
 
     hasher.finalize()

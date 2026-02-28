@@ -307,6 +307,11 @@ impl TryCastFromJs for Header {
                     bits: object.get_u32("bits")?,
                     blue_work: object.get_value("blueWork")?.try_into().map_err(|err| Error::convert("blueWork", err))?,
                     blue_score: object.get_u64("blueScore")?,
+                    epoch_seed: if let Ok(v) = object.get_value("epochSeed") {
+                        v.try_into_owned().map_err(|err| Error::convert("epochSeed", err))?
+                    } else {
+                        Default::default()
+                    },
                     pruning_point: object
                         .get_value("pruningPoint")?
                         .try_into_owned()

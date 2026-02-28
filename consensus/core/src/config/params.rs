@@ -86,6 +86,24 @@ pub struct Params {
     /// DAA score after which the pre-deflationary period switches to the deflationary period
     pub deflationary_phase_daa_score: u64,
 
+    /// DAA score from which fitness-based coinbase rules are activated
+    pub fitness_coinbase_activation_daa_score: u64,
+
+    pub genome_pow_activation_daa_score: u64,
+
+    pub genome_merkle_root: &'static str,
+
+    pub genome_fragment_size_bytes: u32,
+
+    pub epoch_len: u32,
+
+    /// Fund script public key (hex string including the 2-byte version prefix)
+    pub fund_script_public_key: &'static str,
+
+    pub fund_subsidy_percent: u8,
+
+    pub fitness_threshold: u32,
+
     pub pre_deflationary_phase_base_subsidy: u64,
     pub coinbase_maturity: u64,
     pub skip_proof_of_work: bool,
@@ -291,7 +309,7 @@ impl From<NetworkId> for Params {
 
 pub const MAINNET_PARAMS: Params = Params {
     dns_seeders: &[
-        "dnsseeder.pico-kid.online"
+        "dnsseeder.xenom.space"
     ],
     net: NetworkId::new(NetworkType::Mainnet),
     genesis: GENESIS,
@@ -340,7 +358,21 @@ pub const MAINNET_PARAMS: Params = Params {
     // The network was down for three days shortly after launch
     // Three days in seconds = 3 * 24 * 60 * 60 = 259200
     deflationary_phase_daa_score: 15778800 - 259200,
-    pre_deflationary_phase_base_subsidy: 50000000000,
+
+    // ── Genome PoW HF activation ────────────────────────────────────────────
+    // Chain tip at time of HF definition: 21_270_401
+    // At 4 BPS (250 ms/block):
+    //   fitness_coinbase_activation = tip + 100_000 blocks  ≈ +7 h  (miners upgrade window)
+    //   genome_pow_activation       = fitness + epoch_len(200) + 200  ≈ +1.7 min after fitness
+    fitness_coinbase_activation_daa_score: 21_370_401,
+    genome_pow_activation_daa_score:       21_370_801,
+    genome_merkle_root: "277a0eebac2d72bce4133c252cd8d84a53a96497ea8a35b0e6f65dba5393d342",
+    genome_fragment_size_bytes: 1_048_576,
+    epoch_len: 200,
+    fund_script_public_key: "000020b04e36baa42ee1855575bd9fa37617ac6877bcf4da3148aba953c42fc8684b6eac",
+    fund_subsidy_percent: 10,
+    fitness_threshold: 10_000,
+    pre_deflationary_phase_base_subsidy: 12_500_000_000,
     coinbase_maturity: 100,
     skip_proof_of_work: false,
     max_block_level: 225,
@@ -396,6 +428,14 @@ pub const TESTNET_PARAMS: Params = Params {
     // The network was down for three days shortly after launch
     // Three days in seconds = 3 * 24 * 60 * 60 = 259200
     deflationary_phase_daa_score: 15778800 - 259200,
+    fitness_coinbase_activation_daa_score: u64::MAX,
+    genome_pow_activation_daa_score: u64::MAX,
+    genome_merkle_root: "",
+    genome_fragment_size_bytes: 1_048_576,
+    epoch_len: 200,
+    fund_script_public_key: "0000",
+    fund_subsidy_percent: 10,
+    fitness_threshold: 10_000,
     pre_deflationary_phase_base_subsidy: 50000000000,
     coinbase_maturity: 100,
     skip_proof_of_work: false,
@@ -433,6 +473,14 @@ pub const TESTNET11_PARAMS: Params = Params {
     pruning_depth: Testnet11Bps::pruning_depth(),
     pruning_proof_m: Testnet11Bps::pruning_proof_m(),
     deflationary_phase_daa_score: Testnet11Bps::deflationary_phase_daa_score(),
+    fitness_coinbase_activation_daa_score: u64::MAX,
+    genome_pow_activation_daa_score: u64::MAX,
+    genome_merkle_root: "",
+    genome_fragment_size_bytes: 1_048_576,
+    epoch_len: 200,
+    fund_script_public_key: "0000",
+    fund_subsidy_percent: 10,
+    fitness_threshold: 10_000,
     pre_deflationary_phase_base_subsidy: Testnet11Bps::pre_deflationary_phase_base_subsidy(),
     coinbase_maturity: Testnet11Bps::coinbase_maturity(),
 
@@ -486,6 +534,14 @@ pub const SIMNET_PARAMS: Params = Params {
     pruning_depth: Testnet11Bps::pruning_depth(),
     pruning_proof_m: Testnet11Bps::pruning_proof_m(),
     deflationary_phase_daa_score: Testnet11Bps::deflationary_phase_daa_score(),
+    fitness_coinbase_activation_daa_score: u64::MAX,
+    genome_pow_activation_daa_score: u64::MAX,
+    genome_merkle_root: "",
+    genome_fragment_size_bytes: 1_048_576,
+    epoch_len: 200,
+    fund_script_public_key: "0000",
+    fund_subsidy_percent: 10,
+    fitness_threshold: 10_000,
     pre_deflationary_phase_base_subsidy: Testnet11Bps::pre_deflationary_phase_base_subsidy(),
     coinbase_maturity: Testnet11Bps::coinbase_maturity(),
 
@@ -558,6 +614,14 @@ pub const DEVNET_PARAMS: Params = Params {
     // The network was down for three days shortly after launch
     // Three days in seconds = 3 * 24 * 60 * 60 = 259200
     deflationary_phase_daa_score: 15778800 - 259200,
+    fitness_coinbase_activation_daa_score: u64::MAX,
+    genome_pow_activation_daa_score: u64::MAX,
+    genome_merkle_root: "",
+    genome_fragment_size_bytes: 1_048_576,
+    epoch_len: 200,
+    fund_script_public_key: "0000",
+    fund_subsidy_percent: 10,
+    fitness_threshold: 10_000,
     pre_deflationary_phase_base_subsidy: 50000000000,
     coinbase_maturity: 100,
     skip_proof_of_work: false,

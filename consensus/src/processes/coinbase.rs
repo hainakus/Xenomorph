@@ -7,12 +7,16 @@ use kaspa_consensus_core::{
 };
 use std::convert::TryInto;
 
+use kaspa_utils::hex::FromHex;
+use blake3;
+
 use crate::{constants, model::stores::ghostdag::GhostdagData};
 
 const LENGTH_OF_BLUE_SCORE: usize = size_of::<u64>();
 const LENGTH_OF_SUBSIDY: usize = size_of::<u64>();
 const LENGTH_OF_SCRIPT_PUB_KEY_VERSION: usize = size_of::<u16>();
 const LENGTH_OF_SCRIPT_PUB_KEY_LENGTH: usize = size_of::<u8>();
+const LENGTH_OF_FITNESS: usize = size_of::<u32>();
 
 const MIN_PAYLOAD_LENGTH: usize =
     LENGTH_OF_BLUE_SCORE + LENGTH_OF_SUBSIDY + LENGTH_OF_SCRIPT_PUB_KEY_VERSION + LENGTH_OF_SCRIPT_PUB_KEY_LENGTH;
@@ -29,6 +33,10 @@ pub struct CoinbaseManager {
     coinbase_payload_script_public_key_max_len: u8,
     max_coinbase_payload_len: usize,
     deflationary_phase_daa_score: u64,
+    fitness_coinbase_activation_daa_score: u64,
+    fund_script_public_key: ScriptPublicKey,
+    fund_subsidy_percent: u8,
+    fitness_threshold: u32,
     pre_deflationary_phase_base_subsidy: u64,
     target_time_per_block: u64,
 
@@ -37,6 +45,13 @@ pub struct CoinbaseManager {
 
     /// Precomputed subsidy by month table
     subsidy_by_month_table: SubsidyByMonthTable,
+}
+
+pub struct CoinbaseDataV2<T: AsRef<[u8]> = Vec<u8>> {
+    pub blue_score: u64,
+    pub subsidy: u64,
+    pub fitness: u32,
+    pub miner_data: MinerData<T>,
 }
 
 /// Struct used to streamline payload parsing
@@ -62,6 +77,10 @@ impl CoinbaseManager {
         coinbase_payload_script_public_key_max_len: u8,
         max_coinbase_payload_len: usize,
         deflationary_phase_daa_score: u64,
+        fitness_coinbase_activation_daa_score: u64,
+        fund_script_public_key: &'static str,
+        fund_subsidy_percent: u8,
+        fitness_threshold: u32,
         pre_deflationary_phase_base_subsidy: u64,
         target_time_per_block: u64,
     ) -> Self {
@@ -73,15 +92,76 @@ impl CoinbaseManager {
         // Here values are rounded up so that we keep the same number of rewarding months as in the original 1 BPS table.
         // In a 10 BPS network, the induced increase in total rewards is 51 XEN (see tests::calc_high_bps_total_rewards_delta())
         let subsidy_by_month_table: SubsidyByMonthTable = core::array::from_fn(|i| (SUBSIDY_BY_MONTH_TABLE[i] + bps - 1) / bps);
+        let fund_script_public_key = ScriptPublicKey::from_hex(fund_script_public_key)
+            .unwrap_or_else(|_| panic!("Invalid fund_script_public_key hex"));
+
         Self {
             coinbase_payload_script_public_key_max_len,
             max_coinbase_payload_len,
             deflationary_phase_daa_score,
+            fitness_coinbase_activation_daa_score,
+            fund_script_public_key,
+            fund_subsidy_percent,
+            fitness_threshold,
             pre_deflationary_phase_base_subsidy,
             target_time_per_block,
             blocks_per_month,
             subsidy_by_month_table,
         }
+    }
+
+    #[inline]
+    fn fitness_coinbase_activated(&self, daa_score: u64) -> bool {
+        daa_score >= self.fitness_coinbase_activation_daa_score
+    }
+
+    #[inline]
+    pub fn is_fitness_coinbase_activated(&self, daa_score: u64) -> bool {
+        self.fitness_coinbase_activated(daa_score)
+    }
+
+    #[inline]
+    fn split_subsidy_to_miner_and_fund(&self, total_subsidy: u64) -> (u64, u64) {
+        let fund = total_subsidy.saturating_mul(self.fund_subsidy_percent as u64) / 100;
+        let miner = total_subsidy.saturating_sub(fund);
+        (miner, fund)
+    }
+
+    fn calc_fitness_multiplier(&self, fitness: u32) -> f64 {
+        let threshold = self.fitness_threshold.max(1) as f64;
+        let ratio = (fitness as f64) / threshold;
+        let m = 1.0 + ratio * ratio;
+        m.clamp(1.0, 2.0)
+    }
+
+    fn calc_variable_block_subsidy(&self, daa_score: u64, fitness: u32) -> u64 {
+        let base = self.calc_block_subsidy(daa_score) as f64;
+        let subsidy = base * self.calc_fitness_multiplier(fitness);
+        subsidy.floor().max(0.0).min(u64::MAX as f64) as u64
+    }
+
+    fn calc_expected_fitness(&self, daa_score: u64, blue_score: u64, selected_parent: &kaspa_hashes::Hash, miner_spk: &ScriptPublicKey) -> u32 {
+        // Derive a deterministic 32-byte pseudo-fragment from block parameters.
+        // In a full Genome PoW deployment the miner supplies the real genome fitness;
+        // this provides the template value used for coinbase construction.
+        let mut h = blake3::Hasher::new();
+        h.update(&daa_score.to_le_bytes());
+        h.update(&blue_score.to_le_bytes());
+        h.update(selected_parent.as_ref());
+        h.update(&miner_spk.version().to_le_bytes());
+        h.update(miner_spk.script());
+        let pseudo_fragment = *h.finalize().as_bytes();
+        // Apply the same three-component fitness scoring used by genome PoW miners
+        // (entropy + GC content + cycle complexity), returning a value in [0, 3000].
+        kaspa_pow::genome_pow::compute_fitness(&pseudo_fragment)
+    }
+
+    pub fn expected_block_subsidy_from_payload(&self, daa_score: u64, payload: &[u8]) -> CoinbaseResult<u64> {
+        if !self.fitness_coinbase_activated(daa_score) {
+            return Ok(self.calc_block_subsidy(daa_score));
+        }
+        let v2 = self.deserialize_coinbase_payload_v2(payload)?;
+        Ok(self.calc_variable_block_subsidy(daa_score, v2.fitness))
     }
 
     #[cfg(test)]
@@ -99,6 +179,24 @@ impl CoinbaseManager {
         mergeset_non_daa: &BlockHashSet,
     ) -> CoinbaseResult<CoinbaseTransactionTemplate> {
         let mut outputs = Vec::with_capacity(ghostdag_data.mergeset_blues.len() + 1); // + 1 for possible red reward
+
+        let activated = self.fitness_coinbase_activated(daa_score);
+        let fitness = if activated {
+            self.calc_expected_fitness(daa_score, ghostdag_data.blue_score, &ghostdag_data.selected_parent, &miner_data.script_public_key)
+        } else {
+            0
+        };
+
+        if activated {
+            let total_subsidy = self.calc_variable_block_subsidy(daa_score, fitness);
+            let (miner_subsidy, fund_subsidy) = self.split_subsidy_to_miner_and_fund(total_subsidy);
+            if miner_subsidy > 0 {
+                outputs.push(TransactionOutput::new(miner_subsidy, miner_data.script_public_key.clone()));
+            }
+            if fund_subsidy > 0 {
+                outputs.push(TransactionOutput::new(fund_subsidy, self.fund_script_public_key.clone()));
+            }
+        }
 
         // Add an output for each mergeset blue block (∩ DAA window), paying to the script reported by the block.
         // Note that combinatorically it is nearly impossible for a blue block to be non-DAA
@@ -122,8 +220,12 @@ impl CoinbaseManager {
         }
 
         // Build the current block's payload
-        let subsidy = self.calc_block_subsidy(daa_score);
-        let payload = self.serialize_coinbase_payload(&CoinbaseData { blue_score: ghostdag_data.blue_score, subsidy, miner_data })?;
+        let subsidy = if activated { self.calc_variable_block_subsidy(daa_score, fitness) } else { self.calc_block_subsidy(daa_score) };
+        let payload = if activated {
+            self.serialize_coinbase_payload_v2(&CoinbaseData { blue_score: ghostdag_data.blue_score, subsidy, miner_data }, fitness)?
+        } else {
+            self.serialize_coinbase_payload(&CoinbaseData { blue_score: ghostdag_data.blue_score, subsidy, miner_data })?
+        };
 
         Ok(CoinbaseTransactionTemplate {
             tx: Transaction::new(constants::TX_VERSION, vec![], outputs, 0, subnets::SUBNETWORK_ID_COINBASE, 0, payload),
@@ -145,6 +247,34 @@ impl CoinbaseManager {
             .chain((script_pub_key_len as u8).to_le_bytes().iter().copied())                    // Script public key length     (u8)
             .chain(data.miner_data.script_public_key.script().iter().copied())                  // Script public key            
             .chain(data.miner_data.extra_data.as_ref().iter().copied())                         // Extra data
+            .collect();
+
+        Ok(payload)
+    }
+
+    pub fn serialize_coinbase_payload_v2<T: AsRef<[u8]>>(
+        &self,
+        data: &CoinbaseData<T>,
+        fitness: u32,
+    ) -> CoinbaseResult<Vec<u8>> {
+        let script_pub_key_len = data.miner_data.script_public_key.script().len();
+        if script_pub_key_len > self.coinbase_payload_script_public_key_max_len as usize {
+            return Err(CoinbaseError::PayloadScriptPublicKeyLenAboveMax(
+                script_pub_key_len,
+                self.coinbase_payload_script_public_key_max_len,
+            ));
+        }
+        let payload: Vec<u8> = data
+            .blue_score
+            .to_le_bytes()
+            .iter()
+            .copied()
+            .chain(data.subsidy.to_le_bytes().iter().copied())
+            .chain(data.miner_data.script_public_key.version().to_le_bytes().iter().copied())
+            .chain((script_pub_key_len as u8).to_le_bytes().iter().copied())
+            .chain(data.miner_data.script_public_key.script().iter().copied())
+            .chain(fitness.to_le_bytes().iter().copied())
+            .chain(data.miner_data.extra_data.as_ref().iter().copied())
             .collect();
 
         Ok(payload)
@@ -207,6 +337,50 @@ impl CoinbaseManager {
         let extra_data = parser.remaining;
 
         Ok(CoinbaseData { blue_score, subsidy, miner_data: MinerData { script_public_key, extra_data } })
+    }
+
+    pub fn deserialize_coinbase_payload_v2<'a>(&self, payload: &'a [u8]) -> CoinbaseResult<CoinbaseDataV2<&'a [u8]>> {
+        if payload.len() < MIN_PAYLOAD_LENGTH + LENGTH_OF_FITNESS {
+            return Err(CoinbaseError::PayloadLenBelowMin(payload.len(), MIN_PAYLOAD_LENGTH + LENGTH_OF_FITNESS));
+        }
+
+        if payload.len() > self.max_coinbase_payload_len {
+            return Err(CoinbaseError::PayloadLenAboveMax(payload.len(), self.max_coinbase_payload_len));
+        }
+
+        let mut parser = PayloadParser::new(payload);
+
+        let blue_score = u64::from_le_bytes(parser.take(LENGTH_OF_BLUE_SCORE).try_into().unwrap());
+        let subsidy = u64::from_le_bytes(parser.take(LENGTH_OF_SUBSIDY).try_into().unwrap());
+        let script_pub_key_version = u16::from_le_bytes(parser.take(LENGTH_OF_SCRIPT_PUB_KEY_VERSION).try_into().unwrap());
+        let script_pub_key_len = u8::from_le_bytes(parser.take(LENGTH_OF_SCRIPT_PUB_KEY_LENGTH).try_into().unwrap());
+
+        if script_pub_key_len > self.coinbase_payload_script_public_key_max_len {
+            return Err(CoinbaseError::PayloadScriptPublicKeyLenAboveMax(
+                script_pub_key_len as usize,
+                self.coinbase_payload_script_public_key_max_len,
+            ));
+        }
+
+        if parser.remaining.len() < script_pub_key_len as usize + LENGTH_OF_FITNESS {
+            return Err(CoinbaseError::PayloadCantContainScriptPublicKey(
+                payload.len(),
+                MIN_PAYLOAD_LENGTH + LENGTH_OF_FITNESS + script_pub_key_len as usize,
+            ));
+        }
+
+        let script_public_key =
+            ScriptPublicKey::new(script_pub_key_version, ScriptVec::from_slice(parser.take(script_pub_key_len as usize)));
+        let fitness = u32::from_le_bytes(parser.take(LENGTH_OF_FITNESS).try_into().unwrap());
+        let extra_data = parser.remaining;
+
+        Ok(CoinbaseDataV2 { blue_score, subsidy, fitness, miner_data: MinerData { script_public_key, extra_data } })
+    }
+
+    /// Extracts the fitness value from a coinbase payload, trying v2 format first.
+    /// Returns `None` if the payload is not a valid v2 payload (e.g. pre-activation blocks).
+    pub fn extract_fitness_from_payload(&self, payload: &[u8]) -> Option<u32> {
+        self.deserialize_coinbase_payload_v2(payload).ok().map(|v2| v2.fitness)
     }
 
     pub fn calc_block_subsidy(&self, daa_score: u64) -> u64 {
@@ -480,6 +654,10 @@ mod tests {
             params.coinbase_payload_script_public_key_max_len,
             params.max_coinbase_payload_len,
             params.deflationary_phase_daa_score,
+            params.fitness_coinbase_activation_daa_score,
+            params.fund_script_public_key,
+            params.fund_subsidy_percent,
+            params.fitness_threshold,
             params.pre_deflationary_phase_base_subsidy,
             params.target_time_per_block,
         )
@@ -487,6 +665,6 @@ mod tests {
 
     /// Return a CoinbaseManager with legacy golang 1 BPS properties
     fn create_legacy_manager() -> CoinbaseManager {
-        CoinbaseManager::new(150, 204, 15778800 - 259200, 50000000000, 1000)
+        CoinbaseManager::new(150, 204, 15778800 - 259200, u64::MAX, "0000", 10, 10_000, 50000000000, 1000)
     }
 }

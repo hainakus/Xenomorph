@@ -136,6 +136,10 @@ impl ConsensusServices {
             params.coinbase_payload_script_public_key_max_len,
             params.max_coinbase_payload_len,
             params.deflationary_phase_daa_score,
+            params.fitness_coinbase_activation_daa_score,
+            params.fund_script_public_key,
+            params.fund_subsidy_percent,
+            params.fitness_threshold,
             params.pre_deflationary_phase_base_subsidy,
             params.target_time_per_block,
         );

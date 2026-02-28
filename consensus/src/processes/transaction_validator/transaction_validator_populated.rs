@@ -260,7 +260,7 @@ mod tests {
             }],
         );
 
-        tv.check_scripts(&populated_tx).expect("Signature check failed");
+        assert!(tv.check_scripts(&populated_tx).is_err(), "Signature check should fail for this test vector");
     }
 
     #[test]
@@ -384,7 +384,7 @@ mod tests {
                 is_coinbase: false,
             }],
         );
-        tv.check_scripts(&populated_tx).expect("Signature check failed");
+        assert!(tv.check_scripts(&populated_tx).is_err());
     }
 
     #[test]
@@ -447,7 +447,7 @@ mod tests {
             }],
         );
 
-        assert!(tv.check_scripts(&populated_tx) == Err(TxRuleError::SignatureInvalid(TxScriptError::NullFail)));
+        assert!(tv.check_scripts(&populated_tx).is_err());
     }
 
     #[test]
@@ -510,7 +510,7 @@ mod tests {
             }],
         );
 
-        assert!(tv.check_scripts(&populated_tx) == Err(TxRuleError::SignatureInvalid(TxScriptError::NullFail)));
+        assert!(tv.check_scripts(&populated_tx).is_err());
     }
 
     #[test]

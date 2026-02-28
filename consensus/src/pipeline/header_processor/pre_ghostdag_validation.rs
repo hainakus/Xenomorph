@@ -10,6 +10,7 @@ use kaspa_consensus_core::BlockLevel;
 use kaspa_core::time::unix_now;
 use kaspa_database::prelude::StoreResultExtensions;
 use std::cmp::max;
+use blake3;
 
 impl HeaderProcessor {
     /// Validates the header in isolation including pow check against header declared bits.
@@ -99,13 +100,66 @@ impl HeaderProcessor {
     }
 
     fn check_pow_and_calc_block_level(&self, header: &Header) -> BlockProcessResult<BlockLevel> {
-        let state = kaspa_pow::State::new(header);
-        let (passed, pow) = state.check_pow(header.nonce);
+        let pow = if header.daa_score >= self.genome_pow_activation_daa_score {
+            self.check_genome_pow(header)?
+        } else {
+            let state = kaspa_pow::State::new(header);
+            let (passed, pow) = state.check_pow(header.nonce);
+            if !passed && !self.skip_proof_of_work {
+                return Err(RuleError::InvalidPoW);
+            }
+            pow
+        };
+        let signed_block_level = self.max_block_level as i64 - pow.bits() as i64;
+        Ok(max(signed_block_level, 0) as BlockLevel)
+    }
+
+    /// Validates genome PoW for `header`.
+    ///
+    /// Derives the genome fragment deterministically from `(epoch_seed, nonce, fragment_index)`.
+    /// When the real on-disk GRCh38 dataset loader is integrated, replace the
+    /// `synthesize_fragment` call with an actual disk read keyed on `fragment_idx`.
+    fn check_genome_pow(&self, header: &Header) -> BlockProcessResult<kaspa_math::Uint256> {
+        use kaspa_pow::genome_pow::{fragment_index, GenomePowState};
+        let state = GenomePowState::new(
+            kaspa_consensus_core::hashing::header::hash_override_nonce_time(header, 0, 0),
+            kaspa_math::Uint256::from_compact_target_bits(header.bits),
+            header.epoch_seed,
+            self.genome_fragment_size_bytes,
+        );
+        let fragment_idx = fragment_index(&header.epoch_seed, header.nonce, self.genome_fragment_size_bytes);
+        let fragment = match &self.genome_dataset_loader {
+            Some(loader) => match loader.load_fragment(fragment_idx) {
+                Some(f) => f,
+                None => return Err(RuleError::InvalidPoW), // loader present but fragment unavailable
+            },
+            None => self.synthesize_fragment(fragment_idx, &header.epoch_seed),
+        };
+        let (passed, pow, _fitness) = state.check_pow_with_fragment(header.nonce, &fragment);
         if passed || self.skip_proof_of_work {
-            let signed_block_level = self.max_block_level as i64 - pow.bits() as i64;
-            Ok(max(signed_block_level, 0) as BlockLevel)
+            Ok(pow)
         } else {
             Err(RuleError::InvalidPoW)
         }
+    }
+
+    /// Produces a deterministic pseudo-fragment of `genome_fragment_size_bytes` bytes.
+    ///
+    /// This is a placeholder until the production genome dataset (GRCh38) is loaded
+    /// from disk.  Every 32-byte chunk is `blake3(fragment_idx_le ‖ epoch_seed ‖ chunk_idx_le)`.
+    fn synthesize_fragment(&self, fragment_idx: u64, epoch_seed: &kaspa_hashes::Hash) -> Vec<u8> {
+        let size = self.genome_fragment_size_bytes as usize;
+        let mut out = Vec::with_capacity(size);
+        let mut chunk = 0u64;
+        while out.len() < size {
+            let mut h = blake3::Hasher::new();
+            h.update(&fragment_idx.to_le_bytes());
+            h.update(epoch_seed.as_ref());
+            h.update(&chunk.to_le_bytes());
+            out.extend_from_slice(h.finalize().as_bytes());
+            chunk += 1;
+        }
+        out.truncate(size);
+        out
     }
 }

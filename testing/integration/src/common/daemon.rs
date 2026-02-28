@@ -97,24 +97,35 @@ pub struct Daemon {
 }
 
 impl Daemon {
+    fn next_free_tcp_port() -> u16 {
+        use std::sync::{
+            atomic::{AtomicU16, Ordering},
+            OnceLock,
+        };
+
+        static NEXT_PORT: OnceLock<AtomicU16> = OnceLock::new();
+        let base_port = 40_000u16.saturating_add((std::process::id() % 10_000) as u16 * 2);
+        let next_port = NEXT_PORT.get_or_init(|| AtomicU16::new(base_port));
+
+        for _ in 0..10_000 {
+            let port = next_port.fetch_add(1, Ordering::Relaxed);
+            if port == 0 {
+                continue;
+            }
+            if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+                return port;
+            }
+        }
+
+        // Fallback - ask OS for a port. This may still race but should be rare.
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    }
+
     pub fn fill_args_with_random_ports(args: &mut Args) {
-        // This should ask the OS to allocate free port for socket 1 to 4.
-        let socket1 = std::net::TcpListener::bind(format!("127.0.0.1:{}", args.rpclisten.map_or(0, |x| x.normalize(0).port))).unwrap();
-        let rpc_port = socket1.local_addr().unwrap().port();
-
-        let socket2 = std::net::TcpListener::bind(format!("127.0.0.1:{}", args.listen.map_or(0, |x| x.normalize(0).port))).unwrap();
-        let p2p_port = socket2.local_addr().unwrap().port();
-
-        let socket3 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let rpc_json_port = socket3.local_addr().unwrap().port();
-
-        let socket4 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let rpc_borsh_port = socket4.local_addr().unwrap().port();
-
-        drop(socket1);
-        drop(socket2);
-        drop(socket3);
-        drop(socket4);
+        let rpc_port = Self::next_free_tcp_port();
+        let p2p_port = Self::next_free_tcp_port();
+        let rpc_json_port = Self::next_free_tcp_port();
+        let rpc_borsh_port = Self::next_free_tcp_port();
 
         args.rpclisten = Some(format!("0.0.0.0:{rpc_port}").try_into().unwrap());
         args.listen = Some(format!("0.0.0.0:{p2p_port}").try_into().unwrap());

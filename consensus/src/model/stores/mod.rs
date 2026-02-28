@@ -4,6 +4,7 @@ pub mod block_window_cache;
 pub mod children;
 pub mod daa;
 pub mod depth;
+pub mod fitness;
 pub mod ghostdag;
 pub mod headers;
 pub mod headers_selected_tip;

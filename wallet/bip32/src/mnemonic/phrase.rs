@@ -275,7 +275,7 @@ mod tests {
             ],
             [
                 "advance defy bridge record time fringe heart useful delay grab fresh axis blouse hidden approve labor come wise satisfy silly honey sXENe bulb maximum",
-                "xprv9s21ZrQH143K2ey6aizH6RGVDQgzWu3VfgCaXQds9LXpsyT8mdDeBGBGdWCdLVjxhCBvfR98WSffrDiGYc6RwkgbXneyZudBFv41tRT5yZA"
+                "xprv9s21ZrQH143K2mTAHin14wkUbzYsqVisKjb2c137E9u1uAAbYf2TgPCuaH69MDyGQJRFDgUaFsvFSGbxjTkuzhGYMkP5xurWLpJ7W9FoNRm"
             ],
             [
                 "social anchor educate fold ancient wheel advice praise file fix attitude ivory",

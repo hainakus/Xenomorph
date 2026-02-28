@@ -19,6 +19,7 @@ members = [
     "consensus/wasm",
     "xenom",
     "simpa",
+    "genome-miner",
     "wasm",
     "wasm/core",
     "math",

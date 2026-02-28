@@ -25,6 +25,7 @@ impl From<&Header> for protowire::BlockHeader {
             // We follow the golang specification of variable big-endian here
             blue_work: item.blue_work.to_be_bytes_var(),
             blue_score: item.blue_score,
+            epoch_seed: Some(item.epoch_seed.into()),
             pruning_point: Some(item.pruning_point.into()),
         }
     }
@@ -56,6 +57,7 @@ impl TryFrom<protowire::BlockHeader> for Header {
             // We follow the golang specification of variable big-endian here
             BlueWorkType::from_be_bytes_var(&item.blue_work)?,
             item.blue_score,
+            item.epoch_seed.try_into_ex()?,
             item.pruning_point.try_into_ex()?,
         ))
     }

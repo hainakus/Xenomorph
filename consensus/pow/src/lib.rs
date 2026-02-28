@@ -1,5 +1,7 @@
 // public for benchmarks
 #[doc(hidden)]
+pub mod genome_pow;
+#[doc(hidden)]
 pub mod matrix;
 #[cfg(feature = "wasm32-sdk")]
 pub mod wasm;
@@ -9,6 +11,7 @@ pub mod xoshiro;
 use std::cmp::max;
 
 use crate::matrix::Matrix;
+use genome_pow::GenomePowState;
 use kaspa_consensus_core::{hashing, header::Header, BlockLevel};
 use kaspa_hashes::PowHash;
 use kaspa_math::Uint256;
@@ -53,6 +56,13 @@ impl State {
     }
 }
 
+/// Builds a `GenomePowState` from a block header (used when genome PoW is active).
+pub fn genome_pow_state(header: &Header, fragment_size_bytes: u32) -> GenomePowState {
+    let target = Uint256::from_compact_target_bits(header.bits);
+    let pre_pow_hash = hashing::header::hash_override_nonce_time(header, 0, 0);
+    GenomePowState::new(pre_pow_hash, target, header.epoch_seed, fragment_size_bytes)
+}
+
 pub fn calc_block_level(header: &Header, max_block_level: BlockLevel) -> BlockLevel {
     if header.parents_by_level.is_empty() {
         return max_block_level; // Genesis has the max block level
@@ -60,6 +70,35 @@ pub fn calc_block_level(header: &Header, max_block_level: BlockLevel) -> BlockLe
 
     let state = State::new(header);
     let (_, pow) = state.check_pow(header.nonce);
+    let signed_block_level = max_block_level as i64 - pow.bits() as i64;
+    max(signed_block_level, 0) as BlockLevel
+}
+
+/// Calculates block level using genome PoW when a fragment is supplied.
+///
+/// Used by validators once the genome dataset is available.
+/// Falls back to legacy KHeavyHash when `fragment` is `None`.
+pub fn calc_block_level_genome(
+    header: &Header,
+    max_block_level: BlockLevel,
+    fragment: Option<&[u8]>,
+    fragment_size_bytes: u32,
+) -> BlockLevel {
+    if header.parents_by_level.is_empty() {
+        return max_block_level;
+    }
+    let pow = match fragment {
+        Some(frag) => {
+            let state = genome_pow_state(header, fragment_size_bytes);
+            let (_, pow, _) = state.check_pow_with_fragment(header.nonce, frag);
+            pow
+        }
+        None => {
+            let state = State::new(header);
+            let (_, pow) = state.check_pow(header.nonce);
+            pow
+        }
+    };
     let signed_block_level = max_block_level as i64 - pow.bits() as i64;
     max(signed_block_level, 0) as BlockLevel
 }

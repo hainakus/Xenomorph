@@ -26,6 +26,7 @@ use crate::{
             reachability::DbReachabilityStore,
             relations::{DbRelationsStore, RelationsStoreReader},
             selected_chain::{DbSelectedChainStore, SelectedChainStore},
+            fitness::{BlockFitnessData, DbFitnessStore, FitnessStore, FitnessStoreReader},
             statuses::{DbStatusesStore, StatusesStore, StatusesStoreBatchExtensions, StatusesStoreReader},
             tips::{DbTipsStore, TipsStoreReader},
             utxo_diffs::{DbUtxoDiffsStore, UtxoDiffsStoreReader},
@@ -75,6 +76,7 @@ use kaspa_core::{debug, info, time::unix_now, trace, warn};
 use kaspa_database::prelude::{StoreError, StoreResultEmptyTuple, StoreResultExtensions};
 use kaspa_hashes::Hash;
 use kaspa_muhash::MuHash;
+use kaspa_pow::genome_pow::next_epoch_seed;
 use kaspa_notify::{events::EventType, notifier::Notify};
 
 use super::errors::{PruningImportError, PruningImportResult};
@@ -160,6 +162,14 @@ pub struct VirtualStateProcessor {
 
     // Storage mass hardfork DAA score
     pub(crate) storage_mass_activation_daa_score: u64,
+
+    // Genome PoW / epoch parameters
+    pub(crate) genome_pow_activation_daa_score: u64,
+    pub(crate) genome_fragment_size_bytes: u32,
+    pub(crate) epoch_len: u32,
+
+    // Genome PoW fitness store
+    pub(crate) fitness_store: Arc<DbFitnessStore>,
 }
 
 impl VirtualStateProcessor {
@@ -221,6 +231,10 @@ impl VirtualStateProcessor {
             notification_root,
             counters,
             storage_mass_activation_daa_score: params.storage_mass_activation_daa_score,
+            genome_pow_activation_daa_score: params.genome_pow_activation_daa_score,
+            genome_fragment_size_bytes: params.genome_fragment_size_bytes,
+            epoch_len: params.epoch_len,
+            fitness_store: storage.fitness_store.clone(),
         }
     }
 
@@ -428,6 +442,8 @@ impl VirtualStateProcessor {
                         diff_point = current;
                         // Commit UTXO data for current chain block
                         self.commit_utxo_state(current, ctx.mergeset_diff, ctx.multiset_hash, ctx.mergeset_acceptance_data);
+                        // Persist genome PoW fitness for epoch seed derivation
+                        self.record_block_fitness(current, pov_daa_score);
                         // Count the number of UTXO-processed chain blocks
                         chain_block_counter += 1;
                     }
@@ -999,6 +1015,7 @@ impl VirtualStateProcessor {
             virtual_state.daa_score,
             virtual_state.ghostdag_data.blue_work,
             virtual_state.ghostdag_data.blue_score,
+            self.calc_epoch_seed(&virtual_state.ghostdag_data.selected_parent, virtual_state.daa_score),
             header_pruning_point,
         );
         let selected_parent_hash = virtual_state.ghostdag_data.selected_parent;
@@ -1013,6 +1030,81 @@ impl VirtualStateProcessor {
             selected_parent_hash,
             calculated_fees,
         ))
+    }
+
+    /// Returns the epoch seed for the block being built on top of `selected_parent`.
+    ///
+    /// - At an epoch boundary (`daa_score % epoch_len == 0`): computes the median fitness
+    ///   of the last `epoch_len` blocks and derives `next_seed = blake3(median_fitness ‖ prev_seed)`.
+    /// - Otherwise: carries the parent's epoch seed forward unchanged.
+    fn calc_epoch_seed(&self, selected_parent: &Hash, daa_score: u64) -> Hash {
+        let epoch_len = self.epoch_len as u64;
+        if epoch_len == 0 {
+            return Default::default();
+        }
+        let parent_epoch_seed = self
+            .headers_store
+            .get_header(*selected_parent)
+            .unwrap_option()
+            .map(|h| h.epoch_seed)
+            .unwrap_or_default();
+        if daa_score % epoch_len == 0 && daa_score > 0 {
+            let median_fitness = self.median_epoch_fitness(selected_parent, epoch_len);
+            next_epoch_seed(median_fitness, &parent_epoch_seed)
+        } else {
+            parent_epoch_seed
+        }
+    }
+
+    /// Computes the median fitness of up to `window` blocks ending at (and including) `tip`.
+    ///
+    /// Walks the selected chain backwards via `ghostdag_primary_store`, reading fitness
+    /// values from `fitness_store`.  Blocks with no fitness record (pre-activation) are
+    /// assigned fitness = 0.
+    fn median_epoch_fitness(&self, tip: &Hash, window: u64) -> u32 {
+        let mut values: Vec<u32> = Vec::with_capacity(window as usize);
+        let mut current = *tip;
+        for _ in 0..window {
+            // Read fitness; default to 0 for blocks without a record
+            let fitness = self.fitness_store.get_fitness(current).map(|d| d.fitness).unwrap_or(0);
+            values.push(fitness);
+            // Walk to selected parent
+            match self.ghostdag_primary_store.get_selected_parent(current).unwrap_option() {
+                Some(parent) => current = parent,
+                None => break,
+            }
+        }
+        if values.is_empty() {
+            return 0;
+        }
+        values.sort_unstable();
+        let mid = values.len() / 2;
+        if values.len() % 2 == 0 {
+            ((values[mid - 1] as u64 + values[mid] as u64) / 2) as u32
+        } else {
+            values[mid]
+        }
+    }
+
+    /// Extracts the fitness value from a block's coinbase v2 payload and writes it to the
+    /// fitness store.  No-ops when the block has no transactions or genome PoW is not yet
+    /// active for this block.
+    pub(crate) fn record_block_fitness(&self, block_hash: Hash, daa_score: u64) {
+        if daa_score < self.genome_pow_activation_daa_score {
+            return;
+        }
+        // Read the coinbase payload (first transaction in the block)
+        let txs = match self.block_transactions_store.get(block_hash).unwrap_option() {
+            Some(txs) => txs,
+            None => return,
+        };
+        if txs.is_empty() {
+            return;
+        }
+        let fitness = self.coinbase_manager.extract_fitness_from_payload(&txs[0].payload).unwrap_or(0);
+        let data = BlockFitnessData { fitness, daa_score };
+        // Ignore duplicate-insert errors (idempotent on re-process)
+        let _ = self.fitness_store.insert(block_hash, data);
     }
 
     /// Make sure pruning point-related stores are initialized

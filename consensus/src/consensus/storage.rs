@@ -6,6 +6,7 @@ use crate::{
         block_window_cache::BlockWindowCacheStore,
         daa::DbDaaStore,
         depth::DbDepthStore,
+        fitness::{BlockFitnessData, DbFitnessStore},
         ghostdag::{CompactGhostdagData, DbGhostdagStore},
         headers::{CompactHeaderData, DbHeadersStore},
         headers_selected_tip::DbHeadersSelectedTipStore,
@@ -62,6 +63,9 @@ pub struct ConsensusStorage {
     pub utxo_diffs_store: Arc<DbUtxoDiffsStore>,
     pub utxo_multisets_store: Arc<DbUtxoMultisetsStore>,
     pub acceptance_data_store: Arc<DbAcceptanceDataStore>,
+
+    // Genome PoW fitness
+    pub fitness_store: Arc<DbFitnessStore>,
 
     // Block window caches
     pub block_window_cache_for_difficulty: Arc<BlockWindowCacheStore>,
@@ -218,6 +222,7 @@ impl ConsensusStorage {
 
         // Txs
         let block_transactions_store = Arc::new(DbBlockTransactionsStore::new(db.clone(), transactions_builder.build()));
+        let fitness_store = Arc::new(DbFitnessStore::new(db.clone(), block_data_builder.build()));
         let utxo_diffs_store = Arc::new(DbUtxoDiffsStore::new(db.clone(), utxo_diffs_builder.build()));
         let utxo_multisets_store = Arc::new(DbUtxoMultisetsStore::new(db.clone(), block_data_builder.build()));
         let acceptance_data_store = Arc::new(DbAcceptanceDataStore::new(db.clone(), acceptance_data_builder.build()));
@@ -259,6 +264,7 @@ impl ConsensusStorage {
             past_pruning_points_store,
             daa_excluded_store,
             depth_store,
+            fitness_store,
             utxo_diffs_store,
             utxo_multisets_store,
             block_window_cache_for_difficulty,

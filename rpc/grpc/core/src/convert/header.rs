@@ -23,6 +23,7 @@ from!(item: &kaspa_rpc_core::RpcHeader, protowire::RpcBlockHeader, {
         blue_work: item.blue_work.to_rpc_hex(),
         blue_score: item.blue_score,
         pruning_point: item.pruning_point.to_string(),
+        epoch_seed: item.epoch_seed.to_string(),
     }
 });
 
@@ -40,6 +41,7 @@ from!(item: &kaspa_rpc_core::RpcRawHeader, protowire::RpcBlockHeader, {
         blue_work: item.blue_work.to_rpc_hex(),
         blue_score: item.blue_score,
         pruning_point: item.pruning_point.to_string(),
+        epoch_seed: item.epoch_seed.to_string(),
     }
 });
 
@@ -63,6 +65,7 @@ try_from!(item: &protowire::RpcBlockHeader, kaspa_rpc_core::RpcHeader, {
         item.daa_score,
         kaspa_rpc_core::RpcBlueWorkType::from_rpc_hex(&item.blue_work)?,
         item.blue_score,
+        RpcHash::from_str(&item.epoch_seed)?,
         RpcHash::from_str(&item.pruning_point)?,
     );
 
@@ -82,6 +85,7 @@ try_from!(item: &protowire::RpcBlockHeader, kaspa_rpc_core::RpcRawHeader, {
         daa_score: item.daa_score,
         blue_work: kaspa_rpc_core::RpcBlueWorkType::from_rpc_hex(&item.blue_work)?,
         blue_score: item.blue_score,
+        epoch_seed: RpcHash::from_str(&item.epoch_seed)?,
         pruning_point: RpcHash::from_str(&item.pruning_point)?,
     }
 });
@@ -163,6 +167,7 @@ mod tests {
             459912.into(),
             1928374,
             new_unique(),
+            new_unique(),
         );
         let r = RpcHeader::from(r);
         let p: protowire::RpcBlockHeader = (&r).into();
@@ -194,6 +199,7 @@ mod tests {
             120055,
             459912.into(),
             1928374,
+            new_unique(),
             new_unique(),
         );
         let b = Block::from_header(h);

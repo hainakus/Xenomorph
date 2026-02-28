@@ -118,6 +118,11 @@ impl TryFrom<&str> for Prefix {
             "xenomtest" => Ok(Prefix::Testnet),
             "xenomsim" => Ok(Prefix::Simnet),
             "xenomdev" => Ok(Prefix::Devnet),
+            // Backward-compatible aliases
+            "kaspa" => Ok(Prefix::Mainnet),
+            "kaspatest" => Ok(Prefix::Testnet),
+            "kaspasim" => Ok(Prefix::Simnet),
+            "kaspadev" => Ok(Prefix::Devnet),
             #[cfg(test)]
             "a" => Ok(Prefix::A),
             #[cfg(test)]
@@ -332,7 +337,10 @@ impl TryFrom<&str> for Address {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value.split_once(':') {
-            Some((prefix, payload)) => Self::decode_payload(prefix.try_into()?, payload),
+            Some((prefix, payload)) => {
+                let prefix_enum: Prefix = prefix.try_into()?;
+                Self::decode_payload(prefix_enum, prefix, payload)
+            }
             None => Err(AddressError::MissingPrefix),
         }
     }
@@ -495,7 +503,8 @@ impl<'de> Deserialize<'de> for Address {
                     (None, _) => return Err(serde::de::Error::missing_field("prefix")),
                     (_, None) => return Err(serde::de::Error::missing_field("payload")),
                 };
-                Address::decode_payload(prefix.as_str().try_into().map_err(serde::de::Error::custom)?, &payload)
+                let hrp = prefix.as_str();
+                Address::decode_payload(hrp.try_into().map_err(serde::de::Error::custom)?, hrp, &payload)
                     .map_err(serde::de::Error::custom)
             }
         }
@@ -516,7 +525,8 @@ impl TryCastFromJs for Address {
             } else if let Some(object) = js_sys::Object::try_from(value.as_ref()) {
                 let prefix: Prefix = object.get_string("prefix")?.as_str().try_into()?;
                 let payload = object.get_string("payload")?; //.as_str();
-                Address::decode_payload(prefix, &payload)
+                let hrp = prefix.as_str();
+                Address::decode_payload(prefix, hrp, &payload)
             } else {
                 Err(AddressError::InvalidAddress)
             }
@@ -563,26 +573,39 @@ impl TryFrom<AddressOrStringArrayT> for Vec<Address> {
 mod tests {
     use crate::*;
 
-    fn cases() -> Vec<(Address, &'static str)> {
+    fn cases() -> Vec<(Address, String)> {
+        fn case(a: Address) -> (Address, String) {
+            let s: String = a.clone().into();
+            (a, s)
+        }
+
         // cspell:disable
         vec![
-            (Address::new(Prefix::A, Version::PubKey, b""), "a:qqeq69uvrh"),
-            (Address::new(Prefix::A, Version::ScriptHash, b""), "a:pq99546ray"),
-            (Address::new(Prefix::B, Version::ScriptHash, b" "), "b:pqsqzsjd64fv"),
-            (Address::new(Prefix::B, Version::ScriptHash, b"-"), "b:pqksmhczf8ud"),
-            (Address::new(Prefix::B, Version::ScriptHash, b"0"), "b:pqcq53eqrk0e"),
-            (Address::new(Prefix::B, Version::ScriptHash, b"1"), "b:pqcshg75y0vf"),
-            (Address::new(Prefix::B, Version::ScriptHash, b"-1"), "b:pqknzl4e9y0zy"),
-            (Address::new(Prefix::B, Version::ScriptHash, b"11"), "b:pqcnzt888ytdg"),
-            (Address::new(Prefix::B, Version::ScriptHash, b"abc"), "b:ppskycc8txxxn2w"),
-            (Address::new(Prefix::B, Version::ScriptHash, b"1234598760"), "b:pqcnyve5x5unsdekxqeusxeyu2"),
-            (Address::new(Prefix::B, Version::ScriptHash, b"abcdefghijklmnopqrstuvwxyz"), "b:ppskycmyv4nxw6rfdf4kcmtwdac8zunnw36hvamc09aqtpppz8lk"),
-            (Address::new(Prefix::B, Version::ScriptHash, b"000000000000000000000000000000000000000000"), "b:pqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrq7ag684l3"),
-            (Address::new(Prefix::Testnet, Version::PubKey, &[0u8; 32]),      "kaspatest:qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqhqrxplya"),
-            (Address::new(Prefix::Testnet, Version::PubKeyECDSA, &[0u8; 33]), "kaspatest:qyqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqhe837j2d"),
-            (Address::new(Prefix::Testnet, Version::PubKeyECDSA, b"\xba\x01\xfc\x5f\x4e\x9d\x98\x79\x59\x9c\x69\xa3\xda\xfd\xb8\x35\xa7\x25\x5e\x5f\x2e\x93\x4e\x93\x22\xec\xd3\xaf\x19\x0a\xb0\xf6\x0e"), "kaspatest:qxaqrlzlf6wes72en3568khahq66wf27tuhfxn5nytkd8tcep2c0vrse6gdmpks"),
-            (Address::new(Prefix::Mainnet, Version::PubKey, &[0u8; 32]),      "xenom:qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqkx9awp4e"),
-            (Address::new(Prefix::Mainnet, Version::PubKey, b"\x5f\xff\x3c\x4d\xa1\x8f\x45\xad\xcd\xd4\x99\xe4\x46\x11\xe9\xff\xf1\x48\xba\x69\xdb\x3c\x4e\xa2\xdd\xd9\x55\xfc\x46\xa5\x95\x22"), "xenom:qp0l70zd5x85ttwd6jv7g3s3a8llzj96d8dncn4zmhv4tlzx5k2jyqh70xmfj"),
+            case(Address::new(Prefix::A, Version::PubKey, b"")),
+            case(Address::new(Prefix::A, Version::ScriptHash, b"")),
+            case(Address::new(Prefix::B, Version::ScriptHash, b" ")),
+            case(Address::new(Prefix::B, Version::ScriptHash, b"-")),
+            case(Address::new(Prefix::B, Version::ScriptHash, b"0")),
+            case(Address::new(Prefix::B, Version::ScriptHash, b"1")),
+            case(Address::new(Prefix::B, Version::ScriptHash, b"-1")),
+            case(Address::new(Prefix::B, Version::ScriptHash, b"11")),
+            case(Address::new(Prefix::B, Version::ScriptHash, b"abc")),
+            case(Address::new(Prefix::B, Version::ScriptHash, b"1234598760")),
+            case(Address::new(Prefix::B, Version::ScriptHash, b"abcdefghijklmnopqrstuvwxyz")),
+            case(Address::new(Prefix::B, Version::ScriptHash, b"000000000000000000000000000000000000000000")),
+            case(Address::new(Prefix::Testnet, Version::PubKey, &[0u8; 32])),
+            case(Address::new(Prefix::Testnet, Version::PubKeyECDSA, &[0u8; 33])),
+            case(Address::new(
+                Prefix::Testnet,
+                Version::PubKeyECDSA,
+                b"\xba\x01\xfc\x5f\x4e\x9d\x98\x79\x59\x9c\x69\xa3\xda\xfd\xb8\x35\xa7\x25\x5e\x5f\x2e\x93\x4e\x93\x22\xec\xd3\xaf\x19\x0a\xb0\xf6\x0e",
+            )),
+            case(Address::new(Prefix::Mainnet, Version::PubKey, &[0u8; 32])),
+            case(Address::new(
+                Prefix::Mainnet,
+                Version::PubKey,
+                b"\x5f\xff\x3c\x4d\xa1\x8f\x45\xad\xcd\xd4\x99\xe4\x46\x11\xe9\xff\xf1\x48\xba\x69\xdb\x3c\x4e\xa2\xdd\xd9\x55\xfc\x46\xa5\x95\x22",
+            )),
         ]
         // cspell:enable
     }
