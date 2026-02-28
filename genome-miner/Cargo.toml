@@ -23,8 +23,10 @@ kaspa-math.workspace = true
 kaspa-notify.workspace = true
 kaspa-pow.workspace = true
 kaspa-rpc-core.workspace = true
+kaspa-txscript.workspace = true
 
 clap.workspace = true
+faster-hex.workspace = true
 log.workspace = true
 rayon.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread"] }

@@ -358,12 +358,18 @@ pub const MAINNET_PARAMS: Params = Params {
     // The network was down for three days shortly after launch
     // Three days in seconds = 3 * 24 * 60 * 60 = 259200
     deflationary_phase_daa_score: 15778800 - 259200,
-    fitness_coinbase_activation_daa_score: u64::MAX,
-    genome_pow_activation_daa_score: u64::MAX,
-    genome_merkle_root: "",
+
+    // ── Genome PoW HF activation ────────────────────────────────────────────
+    // Chain tip at time of HF definition: 21_270_401
+    // At 4 BPS (250 ms/block):
+    //   fitness_coinbase_activation = tip + 100_000 blocks  ≈ +7 h  (miners upgrade window)
+    //   genome_pow_activation       = fitness + epoch_len(200) + 200  ≈ +1.7 min after fitness
+    fitness_coinbase_activation_daa_score: 21_370_401,
+    genome_pow_activation_daa_score:       21_370_801,
+    genome_merkle_root: "277a0eebac2d72bce4133c252cd8d84a53a96497ea8a35b0e6f65dba5393d342",
     genome_fragment_size_bytes: 1_048_576,
     epoch_len: 200,
-    fund_script_public_key: "0000",
+    fund_script_public_key: "000020b04e36baa42ee1855575bd9fa37617ac6877bcf4da3148aba953c42fc8684b6eac",
     fund_subsidy_percent: 10,
     fitness_threshold: 10_000,
     pre_deflationary_phase_base_subsidy: 12_500_000_000,

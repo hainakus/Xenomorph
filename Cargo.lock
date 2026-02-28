@@ -1770,6 +1770,7 @@ name = "genome-miner"
 version = "0.15.2"
 dependencies = [
  "clap 4.5.16",
+ "faster-hex",
  "kaspa-addresses",
  "kaspa-consensus-core",
  "kaspa-core",
@@ -1779,6 +1780,7 @@ dependencies = [
  "kaspa-notify",
  "kaspa-pow",
  "kaspa-rpc-core",
+ "kaspa-txscript",
  "log",
  "rayon",
  "tokio",
