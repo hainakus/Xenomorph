@@ -1,3 +1,5 @@
+mod gpu;
+
 use std::{
     io::Read,
     sync::{
@@ -57,6 +59,15 @@ fn cli() -> Command {
                 .about("Convert a Xenomorph address to fund_script_public_key hex for params.rs")
                 .arg(Arg::new("address").long("address").short('a').value_name("ADDRESS").required(true).help("Fund wallet address"))
         )
+        .subcommand(
+            Command::new("gpu")
+                .about("Run the GPU miner (wgpu — Metal on Mac, Vulkan elsewhere)")
+                .arg(Arg::new("rpcserver").long("rpcserver").short('s').value_name("HOST:PORT").help("gRPC node endpoint (default: localhost:36669)"))
+                .arg(Arg::new("mining-address").long("mining-address").short('a').value_name("ADDRESS").required(true).help("Reward address"))
+                .arg(Arg::new("batch-size").long("batch-size").value_name("N").value_parser(clap::value_parser!(u32)).default_value("1048576").help("Nonces per GPU dispatch (default: 1M)"))
+                .arg(Arg::new("genome-activation-daa-score").long("genome-activation-daa-score").value_name("SCORE").value_parser(clap::value_parser!(u64)).help("DAA score where Genome PoW activates"))
+                .arg(Arg::new("genome-fragment-size").long("genome-fragment-size").value_name("BYTES").value_parser(clap::value_parser!(u32)).default_value("1048576").help("Fragment size in bytes"))
+        )
 }
 
 // ── Miner state (mine subcommand) ────────────────────────────────────────────
@@ -94,10 +105,11 @@ async fn main() {
     kaspa_core::log::init_logger(None, "info");
     let matches = cli().get_matches();
     match matches.subcommand() {
-        Some(("mine", m))           => cmd_mine(m).await,
-        Some(("suggest-params", m)) => cmd_suggest_params(m).await,
+        Some(("mine", m))                => cmd_mine(m).await,
+        Some(("suggest-params", m))      => cmd_suggest_params(m).await,
         Some(("compute-merkle-root", m)) => cmd_compute_merkle_root(m),
-        Some(("address-to-script", m))  => cmd_address_to_script(m),
+        Some(("address-to-script", m))   => cmd_address_to_script(m),
+        Some(("gpu", m))                 => gpu::cmd_gpu(m).await,
         _ => unreachable!(),
     }
 }

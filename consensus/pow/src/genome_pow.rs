@@ -167,13 +167,26 @@ fn cycle_complexity_score(data: &[u8]) -> u32 {
 
 // ─── Final hash & epoch seed ──────────────────────────────────────────────────
 
-/// Computes the Genome PoW value: `blake3(genome ‖ pre_pow_hash ‖ nonce_le)`.
+/// Hashes a mutated genome fragment to a 32-byte digest.
 ///
-/// The result is interpreted as a little-endian `Uint256` and compared against `target`.
+/// This intermediate hash can be pre-computed once per fragment per epoch (since
+/// mutations depend only on `epoch_seed`, not on the nonce), enabling efficient
+/// GPU mining where each nonce only needs one small blake3 call.
+#[inline]
+pub fn genome_fragment_pow_hash(mutated_genome: &[u8]) -> [u8; 32] {
+    *blake3::hash(mutated_genome).as_bytes()
+}
+
+/// Computes the Genome PoW value:
+/// `blake3( blake3(mutated_genome) ‖ pre_pow_hash ‖ nonce_le )`.
+///
+/// The two-step design lets GPU miners pre-compute `blake3(mutated_genome)` for
+/// every fragment once per epoch; per-nonce work is then a single 72-byte blake3.
 #[inline]
 pub fn genome_final_hash(genome: &[u8], pre_pow_hash: &Hash, nonce: u64) -> Uint256 {
+    let genome_h = genome_fragment_pow_hash(genome);
     let mut h = blake3::Hasher::new();
-    h.update(genome);
+    h.update(&genome_h);
     h.update(pre_pow_hash.as_ref());
     h.update(&nonce.to_le_bytes());
     Uint256::from_le_bytes(*h.finalize().as_bytes())
