@@ -1,0 +1,6 @@
+# Apple clang does not include the WebAssembly backend.
+# Install Homebrew LLVM once: brew install llvm
+# Then this config routes C compilation (needed by secp256k1-sys) to a WASM-capable clang.
+[env]
+CC_wasm32_unknown_unknown = "/opt/homebrew/opt/llvm/bin/clang"
+AR_wasm32_unknown_unknown = "/opt/homebrew/opt/llvm/bin/llvm-ar"

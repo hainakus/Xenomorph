@@ -112,6 +112,7 @@ pub fn generate_random_header(rng: &mut SmallRng, parent_amount: usize) -> Heade
         rng.gen::<u64>().into(),
         rng.gen(),
         generate_random_hash(rng),
+        generate_random_hash(rng),
     )
 }
 

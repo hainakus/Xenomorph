@@ -119,6 +119,9 @@ pub struct HeaderProcessor {
     pub(super) mergeset_size_limit: u64,
     pub(super) skip_proof_of_work: bool,
     pub(super) max_block_level: BlockLevel,
+    pub(super) genome_pow_activation_daa_score: u64,
+    pub(super) genome_fragment_size_bytes: u32,
+    pub(super) genome_dataset_loader: Option<std::sync::Arc<dyn kaspa_pow::genome_pow::GenomeDatasetLoader>>,
 
     // DB
     db: Arc<DB>,
@@ -206,7 +209,20 @@ impl HeaderProcessor {
             mergeset_size_limit: params.mergeset_size_limit,
             skip_proof_of_work: params.skip_proof_of_work,
             max_block_level: params.max_block_level,
+            genome_pow_activation_daa_score: params.genome_pow_activation_daa_score,
+            genome_fragment_size_bytes: params.genome_fragment_size_bytes,
+            genome_dataset_loader: None,
         }
+    }
+
+    /// Attaches a genome dataset loader so that validation uses real GRCh38 fragments.
+    /// Call this after construction when the loader is available.
+    pub fn with_genome_loader(
+        mut self,
+        loader: std::sync::Arc<dyn kaspa_pow::genome_pow::GenomeDatasetLoader>,
+    ) -> Self {
+        self.genome_dataset_loader = Some(loader);
+        self
     }
 
     pub fn worker(self: &Arc<HeaderProcessor>) {

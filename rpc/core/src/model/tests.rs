@@ -1,6 +1,7 @@
 #[cfg(test)]
-mod mockery {
+mod mocks {
 
+    use super::*;
     use crate::{model::*, RpcScriptClass};
     use kaspa_addresses::{Prefix, Version};
     use kaspa_consensus_core::api::BlockCount;
@@ -135,6 +136,12 @@ mod mockery {
         }
     }
 
+    impl Mock for kaspa_muhash::Hash {
+        fn mock() -> Self {
+            Default::default()
+        }
+    }
+
     impl Mock for RpcHeader {
         fn mock() -> Self {
             RpcHeader {
@@ -150,6 +157,7 @@ mod mockery {
                 daa_score: mock(),
                 blue_score: mock(),
                 blue_work: mock(),
+                epoch_seed: mock(),
                 pruning_point: mock(),
             }
         }
@@ -169,6 +177,7 @@ mod mockery {
                 daa_score: mock(),
                 blue_score: mock(),
                 blue_work: mock(),
+                epoch_seed: mock(),
                 pruning_point: mock(),
             }
         }

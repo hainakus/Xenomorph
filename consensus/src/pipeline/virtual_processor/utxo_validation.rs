@@ -5,6 +5,7 @@ use crate::{
         RuleError::{BadAcceptedIDMerkleRoot, BadCoinbaseTransaction, BadUTXOCommitment, InvalidTransactionsInUtxoContext},
     },
     model::stores::{block_transactions::BlockTransactionsStoreReader, daa::DaaStoreReader, ghostdag::GhostdagData},
+    model::stores::headers::HeaderStoreReader,
     processes::transaction_validator::{
         errors::{TxResult, TxRuleError},
         transaction_validator_populated::TxValidationFlags,
@@ -127,10 +128,17 @@ impl VirtualStateProcessor {
                 });
             }
 
-            let coinbase_data = self.coinbase_manager.deserialize_coinbase_payload(&txs[0].payload).unwrap();
+            let merged_daa_score = self.headers_store.get_daa_score(merged_block).unwrap();
+            let (miner_spk, subsidy) = if self.coinbase_manager.is_fitness_coinbase_activated(merged_daa_score) {
+                let v2 = self.coinbase_manager.deserialize_coinbase_payload_v2(&txs[0].payload).unwrap();
+                (v2.miner_data.script_public_key, 0u64)
+            } else {
+                let v1 = self.coinbase_manager.deserialize_coinbase_payload(&txs[0].payload).unwrap();
+                (v1.miner_data.script_public_key, v1.subsidy)
+            };
             ctx.mergeset_rewards.insert(
                 merged_block,
-                BlockRewardData::new(coinbase_data.subsidy, block_fee, coinbase_data.miner_data.script_public_key),
+                BlockRewardData::new(subsidy, block_fee, miner_spk),
             );
         }
 
@@ -196,7 +204,11 @@ impl VirtualStateProcessor {
         mergeset_non_daa: &BlockHashSet,
     ) -> BlockProcessResult<()> {
         // Extract only miner data from the provided coinbase
-        let miner_data = self.coinbase_manager.deserialize_coinbase_payload(&coinbase.payload).unwrap().miner_data;
+        let miner_data = if self.coinbase_manager.is_fitness_coinbase_activated(daa_score) {
+            self.coinbase_manager.deserialize_coinbase_payload_v2(&coinbase.payload).unwrap().miner_data
+        } else {
+            self.coinbase_manager.deserialize_coinbase_payload(&coinbase.payload).unwrap().miner_data
+        };
         let expected_coinbase = self
             .coinbase_manager
             .expected_coinbase_transaction(daa_score, miner_data, ghostdag_data, mergeset_rewards, mergeset_non_daa)

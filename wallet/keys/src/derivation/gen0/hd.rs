@@ -652,6 +652,7 @@ impl WalletDerivationManagerTrait for WalletDerivationManagerV0 {
 mod tests {
     //use super::hd_;
     use super::{PubkeyDerivationManagerV0, WalletDerivationManagerTrait, WalletDerivationManagerV0};
+    use kaspa_addresses::Address;
     use kaspa_addresses::Prefix;
 
     fn gen0_receive_addresses() -> Vec<&'static str> {
@@ -917,8 +918,8 @@ mod tests {
         let hd_wallet = hd_wallet.unwrap();
         //let hd_wallet2 = hd_wallet2.unwrap();
 
-        let receive_addresses = gen0_receive_addresses();
-        let change_addresses = gen0_change_addresses();
+        let receive_addresses = gen0_receive_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
+        let change_addresses = gen0_change_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
 
         //println!("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$");
         //println!("hd_wallet1: {:?}", hd_wallet.receive_pubkey_manager().public_key());
@@ -959,8 +960,8 @@ mod tests {
             .collect::<Vec<String>>();
         println!("receive addresses: {addresses_receive:#?}");
         println!("change addresses: {addresses_change:#?}");
-        let receive_addresses = gen0_receive_addresses();
-        let change_addresses = gen0_change_addresses();
+        let receive_addresses = gen0_receive_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
+        let change_addresses = gen0_change_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
         for index in 0..20 {
             assert_eq!(receive_addresses[index], addresses_receive[index], "receive address at {index} failed");
             assert_eq!(change_addresses[index], addresses_change[index], "change address at {index} failed");
@@ -1014,6 +1015,9 @@ mod tests {
             "kaspatest:qz5qk6nvffsgdcujma3gq5rr2lr2q6yjw87n3w6asc0uj3rr8z8pk7sl927wk",
             "kaspatest:qr55n5vkaq6lxcwzl6522nz86dj7ntl76nergy0u2j99v8w8lhyv6gshlq3wz",
         ];
+
+        let receive_addresses = receive_addresses.iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
+        let change_addresses = change_addresses.iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
 
         let master_xprv =
             "xprv9s21ZrQH143K2rS8XAhiRk3NmkNRriFDrywGNQsWQqq8byBgBUt6A5uwTqYdZ3o5oDtKx7FuvNC1H1zPo7D5PXhszZTVgAvs79ehfTGESBh";

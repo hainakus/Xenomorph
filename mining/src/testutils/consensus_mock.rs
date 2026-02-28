@@ -100,6 +100,7 @@ impl ConsensusApi for ConsensusMock {
             0.into(),
             0,
             ZERO_HASH,
+            ZERO_HASH,
         );
         let mutable_block = MutableBlock::new(header, txs);
 

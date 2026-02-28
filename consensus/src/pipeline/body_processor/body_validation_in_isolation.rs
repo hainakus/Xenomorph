@@ -154,7 +154,7 @@ mod tests {
         let wait_handles = consensus.init();
 
         let body_processor = consensus.block_body_processor();
-        let example_block = MutableBlock::new(
+        let mut example_block = MutableBlock::new(
             Header::new_finalized(
                 0,
                 vec![vec![
@@ -179,6 +179,7 @@ mod tests {
                 0,
                 0.into(),
                 9,
+                Default::default(),
                 Default::default(),
             ),
             vec![
@@ -402,6 +403,8 @@ mod tests {
                 ),
             ],
         );
+
+        example_block.header.hash_merkle_root = calc_hash_merkle_root(example_block.transactions.iter());
 
         body_processor.validate_body_in_isolation(&example_block.clone().to_immutable()).unwrap();
 

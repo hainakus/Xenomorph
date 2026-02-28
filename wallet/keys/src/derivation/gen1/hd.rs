@@ -445,6 +445,7 @@ impl WalletDerivationManagerTrait for WalletDerivationManager {
 #[cfg(test)]
 mod tests {
     use super::{PubkeyDerivationManager, WalletDerivationManager, WalletDerivationManagerTrait};
+    use kaspa_addresses::Address;
     use kaspa_addresses::Prefix;
 
     fn gen1_receive_addresses() -> Vec<&'static str> {
@@ -507,8 +508,8 @@ mod tests {
         assert!(hd_wallet.is_ok(), "Could not parse key");
         let hd_wallet = hd_wallet.unwrap();
 
-        let receive_addresses = gen1_receive_addresses();
-        let change_addresses = gen1_change_addresses();
+        let receive_addresses = gen1_receive_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
+        let change_addresses = gen1_change_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
 
         for index in 0..20 {
             let pubkey = hd_wallet.derive_receive_pubkey(index).unwrap();
@@ -551,7 +552,7 @@ mod tests {
         let ktrv_str = xprv.to_string(kaspa_bip32::Prefix::KTRV).to_string();
         assert_eq!(
             ktrv_str,
-            "ktrv5himbbCxArFU2CHiEQyVHP1ABS1tA1SY88CwePzGeM8gHfWmkNBXehhKsESH7UwcxpjpDdMNbwtBfyPoZ7W59kYfVnUXKRgv8UguDns2FQb",
+            "ktrv5himbbCxArFU1fM5x9ULCmYv6gYJ2momvL2ySuNpc15MD7uXpngeF8rHhPQbfS8ynp1rJT7WQy4eKaVdKRpgG8Nc3hSM8imBhRXZuGYas7y",
             "master ktrv not matched"
         );
 
@@ -559,13 +560,13 @@ mod tests {
         let ktub_str = wallet.to_string(Some(kaspa_bip32::Prefix::KTUB)).to_string();
         assert_eq!(
             ktub_str,
-            "ktub23beJLczbxoS4emYHxm5H2rPnXJPGTwjNLAc8JyjHnSFLPMJBj5h3U8oWbn1x1jayZRov6uhvGd4zUGrWH6PkYZMWsykUsQWYqjbLnHrzUE",
+            "ktub22MoyF9MjrRsDLjtQgW8gxJRnN1yn4WhoB7WRdAy2wu3936dwqDANtDMLLCLVwURo3ynrRh2K6KgSeVpYeUDVPCMZ3NaGmGSdbb893BHenG",
             "drived ktub not matched"
         );
 
         let key = wallet.derive_receive_pubkey(1).unwrap();
         let address = PubkeyDerivationManager::create_address(&key, Prefix::Testnet, false).unwrap().to_string();
-        assert_eq!(address, "kaspatest:qrc2959g0pqda53glnfd238cdnmk24zxzkj8n5x83rkktx4h73dkc4ave6wyg")
+        assert_eq!(address, "xenomtest:qzthccdn5jp34wmce0wm62ueakvgs4qle4ycge2c57z4gq80kd8tualcnsz9v")
     }
 
     #[tokio::test]
@@ -589,8 +590,8 @@ mod tests {
             .collect::<Vec<String>>();
         println!("receive addresses: {addresses_receive:#?}");
         println!("change addresses: {addresses_change:#?}");
-        let receive_addresses = gen1_receive_addresses();
-        let change_addresses = gen1_change_addresses();
+        let receive_addresses = gen1_receive_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
+        let change_addresses = gen1_change_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
         for index in 0..20 {
             assert_eq!(receive_addresses[index], addresses_receive[index], "receive address at {index} failed");
             assert_eq!(change_addresses[index], addresses_change[index], "change address at {index} failed");
@@ -621,6 +622,8 @@ mod tests {
             "kaspatest:qpyzkjs2a6k8ljx2qt4pwscj6jccr6k7pmru9k7r2t25teajjuzazlyszlz7a",
             "kaspatest:qzf5mxtvk8wgp8gr3dcj3dkzdu6w4dgpvp2f0gm9pepv9vazxrhy5lc0lgqj0",
         ];
+
+        let receive_addresses = receive_addresses.iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
 
         let master_xprv =
             "kprv5y2qurMHCsXYrNfU3GCihuwG3vMqFji7PZXajMEqyBkNh9UZUJgoHYBLTKu1eM4MvUtomcXPQ3Sw9HZ5ebbM4byoUciHo1zrPJBQfqpLorQ";

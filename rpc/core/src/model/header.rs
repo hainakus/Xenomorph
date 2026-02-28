@@ -23,6 +23,7 @@ pub struct RpcRawHeader {
     pub daa_score: u64,
     pub blue_work: BlueWorkType,
     pub blue_score: u64,
+    pub epoch_seed: Hash,
     pub pruning_point: Hash,
 }
 
@@ -43,6 +44,7 @@ pub struct RpcHeader {
     pub daa_score: u64,
     pub blue_work: BlueWorkType,
     pub blue_score: u64,
+    pub epoch_seed: Hash,
     pub pruning_point: Hash,
 }
 
@@ -77,6 +79,7 @@ impl From<Header> for RpcHeader {
             daa_score: header.daa_score,
             blue_work: header.blue_work,
             blue_score: header.blue_score,
+            epoch_seed: header.epoch_seed,
             pruning_point: header.pruning_point,
         }
     }
@@ -97,6 +100,7 @@ impl From<&Header> for RpcHeader {
             daa_score: header.daa_score,
             blue_work: header.blue_work,
             blue_score: header.blue_score,
+            epoch_seed: header.epoch_seed,
             pruning_point: header.pruning_point,
         }
     }
@@ -117,6 +121,7 @@ impl From<RpcHeader> for Header {
             daa_score: header.daa_score,
             blue_work: header.blue_work,
             blue_score: header.blue_score,
+            epoch_seed: header.epoch_seed,
             pruning_point: header.pruning_point,
         }
     }
@@ -137,6 +142,7 @@ impl From<&RpcHeader> for Header {
             daa_score: header.daa_score,
             blue_work: header.blue_work,
             blue_score: header.blue_score,
+            epoch_seed: header.epoch_seed,
             pruning_point: header.pruning_point,
         }
     }
@@ -158,6 +164,7 @@ impl Serializer for RpcHeader {
         store!(u64, &self.daa_score, writer)?;
         store!(BlueWorkType, &self.blue_work, writer)?;
         store!(u64, &self.blue_score, writer)?;
+        store!(Hash, &self.epoch_seed, writer)?;
         store!(Hash, &self.pruning_point, writer)?;
 
         Ok(())
@@ -180,6 +187,7 @@ impl Deserializer for RpcHeader {
         let daa_score = load!(u64, reader)?;
         let blue_work = load!(BlueWorkType, reader)?;
         let blue_score = load!(u64, reader)?;
+        let epoch_seed = load!(Hash, reader)?;
         let pruning_point = load!(Hash, reader)?;
 
         Ok(Self {
@@ -195,6 +203,7 @@ impl Deserializer for RpcHeader {
             daa_score,
             blue_work,
             blue_score,
+            epoch_seed,
             pruning_point,
         })
     }
@@ -214,6 +223,7 @@ impl From<RpcRawHeader> for Header {
             header.daa_score,
             header.blue_work,
             header.blue_score,
+            header.epoch_seed,
             header.pruning_point,
         )
     }
@@ -233,6 +243,7 @@ impl From<&RpcRawHeader> for Header {
             header.daa_score,
             header.blue_work,
             header.blue_score,
+            header.epoch_seed,
             header.pruning_point,
         )
     }
@@ -252,6 +263,7 @@ impl From<&Header> for RpcRawHeader {
             daa_score: header.daa_score,
             blue_work: header.blue_work,
             blue_score: header.blue_score,
+            epoch_seed: header.epoch_seed,
             pruning_point: header.pruning_point,
         }
     }
@@ -271,6 +283,7 @@ impl From<Header> for RpcRawHeader {
             daa_score: header.daa_score,
             blue_work: header.blue_work,
             blue_score: header.blue_score,
+            epoch_seed: header.epoch_seed,
             pruning_point: header.pruning_point,
         }
     }
@@ -278,7 +291,7 @@ impl From<Header> for RpcRawHeader {
 
 impl Serializer for RpcRawHeader {
     fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-        store!(u16, &1, writer)?;
+        store!(u16, &2, writer)?;
 
         store!(u16, &self.version, writer)?;
         store!(Vec<Vec<Hash>>, &self.parents_by_level, writer)?;
@@ -291,6 +304,7 @@ impl Serializer for RpcRawHeader {
         store!(u64, &self.daa_score, writer)?;
         store!(BlueWorkType, &self.blue_work, writer)?;
         store!(u64, &self.blue_score, writer)?;
+        store!(Hash, &self.epoch_seed, writer)?;
         store!(Hash, &self.pruning_point, writer)?;
 
         Ok(())
@@ -299,7 +313,7 @@ impl Serializer for RpcRawHeader {
 
 impl Deserializer for RpcRawHeader {
     fn deserialize<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
-        let _version = load!(u16, reader)?;
+        let version_tag = load!(u16, reader)?;
 
         let version = load!(u16, reader)?;
         let parents_by_level = load!(Vec<Vec<Hash>>, reader)?;
@@ -312,6 +326,7 @@ impl Deserializer for RpcRawHeader {
         let daa_score = load!(u64, reader)?;
         let blue_work = load!(BlueWorkType, reader)?;
         let blue_score = load!(u64, reader)?;
+        let epoch_seed = if version_tag >= 2 { load!(Hash, reader)? } else { Default::default() };
         let pruning_point = load!(Hash, reader)?;
 
         Ok(Self {
@@ -326,6 +341,7 @@ impl Deserializer for RpcRawHeader {
             daa_score,
             blue_work,
             blue_score,
+            epoch_seed,
             pruning_point,
         })
     }

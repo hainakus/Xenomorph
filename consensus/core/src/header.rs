@@ -22,6 +22,7 @@ pub struct Header {
     pub daa_score: u64,
     pub blue_work: BlueWorkType,
     pub blue_score: u64,
+    pub epoch_seed: Hash,
     pub pruning_point: Hash,
 }
 
@@ -39,6 +40,7 @@ impl Header {
         daa_score: u64,
         blue_work: BlueWorkType,
         blue_score: u64,
+        epoch_seed: Hash,
         pruning_point: Hash,
     ) -> Self {
         let mut header = Self {
@@ -54,6 +56,7 @@ impl Header {
             bits,
             blue_work,
             blue_score,
+            epoch_seed,
             pruning_point,
         };
         header.finalize();
@@ -88,6 +91,7 @@ impl Header {
             bits: 0,
             blue_work: 0.into(),
             blue_score: 0,
+            epoch_seed: Default::default(),
             pruning_point: Default::default(),
         }
     }
@@ -125,6 +129,7 @@ mod tests {
             0,
             Uint192([0x1234567890abcfed, 0xc0dec0ffeec0ffee, 0x1234567890abcdef]),
             u64::MAX,
+            Default::default(),
             Default::default(),
         );
         let json = serde_json::to_string(&header).unwrap();

@@ -47,9 +47,7 @@ pub fn pay_to_address_script(address: &Address) -> ScriptPublicKey {
 
 /// Takes a script and returns an equivalent pay-to-script-hash script
 pub fn pay_to_script_hash_script(redeem_script: &[u8]) -> ScriptPublicKey {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(redeem_script);
-    let redeem_script_hash = hasher.finalize();
+    let redeem_script_hash = blake2b_simd::Params::new().hash_length(32).hash(redeem_script);
     let script = pay_to_script_hash(redeem_script_hash.as_bytes());
     ScriptPublicKey::new(ScriptClass::ScriptHash.version(), script)
 }
@@ -174,7 +172,11 @@ mod tests {
                     ),
                 ),
                 prefix: Prefix::Mainnet,
-                expected_address: Ok("xenom:qpauqsvk7yf9unexwmxsnmg547mhyga37csh0kj53q6xxgl24ydxjsgzthw5j".try_into().unwrap()),
+                expected_address: Ok(Address::new(
+                    Prefix::Mainnet,
+                    Version::PubKey,
+                    &hex::decode("7bc04196f1125e4f2676cd09ed14afb77223b1f62177da5488346323eaa91a69").unwrap(),
+                )),
             },
             Test {
                 name: "Testnet PubKeyECDSA script and address",
@@ -185,7 +187,11 @@ mod tests {
                     ),
                 ),
                 prefix: Prefix::Testnet,
-                expected_address: Ok("kaspatest:qxaqrlzlf6wes72en3568khahq66wf27tuhfxn5nytkd8tcep2c0vrse6gdmpks".try_into().unwrap()),
+                expected_address: Ok(Address::new(
+                    Prefix::Testnet,
+                    Version::PubKeyECDSA,
+                    &hex::decode("ba01fc5f4e9d9879599c69a3dafdb835a7255e5f2e934e9322ecd3af190ab0f60e").unwrap(),
+                )),
             },
             Test {
                 name: "Testnet non standard script",

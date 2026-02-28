@@ -15,6 +15,7 @@ wasm32-sdk = []
 
 [dependencies]
 blake3.workspace = true
+blake2b_simd.workspace = true
 borsh.workspace = true
 cfg-if.workspace = true
 hexplay.workspace = true

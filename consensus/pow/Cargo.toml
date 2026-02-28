@@ -13,6 +13,7 @@ repository.workspace = true
 wasm32-sdk = []
 
 [dependencies]
+blake3.workspace = true
 js-sys.workspace = true
 kaspa-consensus-core.workspace = true
 kaspa-consensus-client.workspace = true

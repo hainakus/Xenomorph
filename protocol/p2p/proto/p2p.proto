@@ -76,6 +76,7 @@ message BlockHeader{
   bytes blueWork = 10;
   Hash pruningPoint = 14;
   uint64 blueScore = 13;
+  Hash epochSeed = 15;
 }
 
 message BlockLevelParents {
