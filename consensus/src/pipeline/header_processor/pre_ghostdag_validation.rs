@@ -105,7 +105,7 @@ impl HeaderProcessor {
         } else {
             let state = kaspa_pow::State::new(header);
             let (passed, pow) = state.check_pow(header.nonce);
-            if !passed && !self.skip_proof_of_work {
+            if !passed {
                 return Err(RuleError::InvalidPoW);
             }
             pow
@@ -136,7 +136,7 @@ impl HeaderProcessor {
             None => self.synthesize_fragment(fragment_idx, &header.epoch_seed),
         };
         let (passed, pow, _fitness) = state.check_pow_with_fragment(header.nonce, &fragment);
-        if passed || self.skip_proof_of_work {
+        if passed {
             Ok(pow)
         } else {
             Err(RuleError::InvalidPoW)

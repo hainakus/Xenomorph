@@ -2,6 +2,9 @@ use super::HasherExtensions;
 use crate::header::Header;
 use kaspa_hashes::{Hash, HasherBase};
 
+/// DAA score at which Genome PoW activates on mainnet.
+pub const EPOCH_SEED_HASH_ACTIVATION_MAINNET: u64 = 21_370_801;
+
 /// Returns the header hash using the provided nonce+timestamp instead of those in the header.
 ///
 /// `epoch_seed` is included in the hash **only when it is non-zero**.  A zero (default) epoch_seed

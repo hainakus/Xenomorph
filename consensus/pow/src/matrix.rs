@@ -98,6 +98,18 @@ impl Matrix {
         rank
     }
 
+    /// Export matrix as a flat Vec<u32> (4096 entries, one per element, values 0-15).
+    /// Row-major: index = row * 64 + col.  Used to upload to GPU.
+    pub fn to_flat_u32(&self) -> Vec<u32> {
+        let mut out = Vec::with_capacity(64 * 64);
+        for row in &self.0 {
+            for &v in row {
+                out.push(v as u32);
+            }
+        }
+        out
+    }
+
     pub fn heavy_hash(&self, hash: Hash) -> Hash {
         // SAFETY: An uninitialized MaybrUninit is always safe.
         let mut vec: [MaybeUninit<u8>; 64] = unsafe { MaybeUninit::uninit().assume_init() };
