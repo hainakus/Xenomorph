@@ -329,6 +329,49 @@ pub trait Account: AnySync + Send + Sync + 'static {
         Ok((generator.summary(), ids))
     }
 
+    /// Migrate all secp256k1 UTXOs to a post-quantum `PubKeyPQ` address.
+    ///
+    /// Signs with the existing secp256k1 key (spending old UTXOs is still valid during the grace period).
+    /// Outputs are locked to `pq_address` so all resulting UTXOs are quantum-resistant.
+    /// Must be called **before** `pq_mandatory_daa_score` is reached.
+    async fn pq_migrate(
+        self: Arc<Self>,
+        wallet_secret: Secret,
+        payment_secret: Option<Secret>,
+        pq_address: Address,
+        abortable: &Abortable,
+        notifier: Option<GenerationNotifier>,
+    ) -> Result<(GeneratorSummary, Vec<kaspa_hashes::Hash>)> {
+        let keydata = self.prv_key_data(wallet_secret).await?;
+        let signer = Arc::new(Signer::new(self.clone().as_dyn_arc(), keydata, payment_secret));
+        let settings = GeneratorSettings::try_new_with_context(
+            self.utxo_context().clone(),
+            None,
+            pq_address,
+            self.sig_op_count(),
+            self.minimum_signatures(),
+            PaymentDestination::Change,
+            Fees::None,
+            None,
+            Some(self.wallet().multiplexer().clone()),
+        )?;
+        let generator = Generator::try_new(settings, Some(signer), Some(abortable))?;
+
+        let mut stream = generator.stream();
+        let mut ids = vec![];
+        while let Some(transaction) = stream.try_next().await? {
+            transaction.try_sign()?;
+            ids.push(transaction.try_submit(&self.wallet().rpc_api()).await?);
+
+            if let Some(notifier) = notifier.as_ref() {
+                notifier(&transaction);
+            }
+            yield_executor().await;
+        }
+
+        Ok((generator.summary(), ids))
+    }
+
     /// Send funds to a [`PaymentDestination`] comprised of one or multiple [`PaymentOutputs`](crate::tx::PaymentOutputs)
     /// or [`PaymentDestination::Change`] variant that will forward funds to the change address.
     async fn send(
