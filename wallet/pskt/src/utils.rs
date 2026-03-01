@@ -1,4 +1,5 @@
 //! Utility functions for the PSKT module.
+#![allow(unused_assignments)]
 
 use std::collections::BTreeMap;
 

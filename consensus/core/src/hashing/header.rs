@@ -19,8 +19,10 @@ pub fn hash_override_nonce_time(header: &Header, nonce: u64, timestamp: u64) -> 
 
 /// Like [`hash_override_nonce_time`] but with an explicit genome-PoW activation DAA score.
 /// `epoch_seed` is included in the hash only when BOTH conditions hold:
-///   1. `header.daa_score >= genome_pow_activation_daa_score`
-///   2. `header.epoch_seed != Hash::default()` (non-zero sentinel)
+///
+///    1. `header.daa_score >= genome_pow_activation_daa_score`
+///    2. `header.epoch_seed != Hash::default()` (non-zero sentinel)
+///
 /// Legacy nodes never set `epochSeed`; the P2P layer defaults it to `Hash::default()`,
 /// so condition 2 ensures we produce the same hash as legacy nodes for their blocks.
 #[inline]

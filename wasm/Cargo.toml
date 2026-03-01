@@ -67,3 +67,6 @@ targets = [
     { target = "web", out-dir = "web/kaspa" }
 ]
 folder = "setup"
+
+[lints]
+workspace = true

@@ -6,7 +6,7 @@ use crate::{
         block_window_cache::BlockWindowCacheStore,
         daa::DbDaaStore,
         depth::DbDepthStore,
-        fitness::{BlockFitnessData, DbFitnessStore},
+        fitness::DbFitnessStore,
         ghostdag::{CompactGhostdagData, DbGhostdagStore},
         headers::{CompactHeaderData, DbHeadersStore},
         headers_selected_tip::DbHeadersSelectedTipStore,

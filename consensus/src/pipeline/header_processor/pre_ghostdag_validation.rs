@@ -100,6 +100,9 @@ impl HeaderProcessor {
     }
 
     fn check_pow_and_calc_block_level(&self, header: &Header) -> BlockProcessResult<BlockLevel> {
+        if self.skip_proof_of_work {
+            return Ok(0);
+        }
         let pow = if header.daa_score >= self.genome_pow_activation_daa_score {
             self.check_genome_pow(header)?
         } else {

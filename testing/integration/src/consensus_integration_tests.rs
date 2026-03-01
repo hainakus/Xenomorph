@@ -837,6 +837,8 @@ impl KaspadGoParams {
             genome_merkle_root: MAINNET_PARAMS.genome_merkle_root,
             genome_fragment_size_bytes: MAINNET_PARAMS.genome_fragment_size_bytes,
             epoch_len: MAINNET_PARAMS.epoch_len,
+            pq_activation_daa_score: u64::MAX,
+            pq_mandatory_daa_score: u64::MAX,
             fund_script_public_key: MAINNET_PARAMS.fund_script_public_key,
             fund_subsidy_percent: MAINNET_PARAMS.fund_subsidy_percent,
             fitness_threshold: MAINNET_PARAMS.fitness_threshold,

@@ -1,4 +1,5 @@
 //! PSKT input structure.
+#![allow(unused_assignments)]
 
 use crate::pskt::{KeySource, PartialSigs};
 use crate::utils::{combine_if_no_conflicts, Error as CombineMapErr};

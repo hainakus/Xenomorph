@@ -1,6 +1,7 @@
 //!
 //! Test utils for reachability
 //!
+#![allow(unused_assignments)]
 use super::{inquirer::*, tree::*};
 use crate::{
     model::stores::{

@@ -1,4 +1,5 @@
 //! PSKT output structure.
+#![allow(unused_assignments)]
 
 use crate::pskt::KeySource;
 use crate::utils::combine_if_no_conflicts;

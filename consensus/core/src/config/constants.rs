@@ -36,7 +36,7 @@ pub mod consensus {
 
     /// Size of the **sampled** median time window (independent of BPS)
     pub const MEDIAN_TIME_SAMPLED_WINDOW_SIZE: u64 =
-        ((2 * NEW_TIMESTAMP_DEVIATION_TOLERANCE - 1) + PAST_MEDIAN_TIME_SAMPLE_INTERVAL - 1) / PAST_MEDIAN_TIME_SAMPLE_INTERVAL;
+        (2 * NEW_TIMESTAMP_DEVIATION_TOLERANCE - 1).div_ceil(PAST_MEDIAN_TIME_SAMPLE_INTERVAL);
 
     //
     // ~~~~~~~~~~~~~~~~~~~~~~~~~ Max difficulty target ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -72,7 +72,7 @@ pub mod consensus {
 
     /// Size of the **sampled** difficulty window (independent of BPS)
     pub const DIFFICULTY_SAMPLED_WINDOW_SIZE: u64 =
-        (NEW_DIFFICULTY_WINDOW_DURATION + DIFFICULTY_WINDOW_SAMPLE_INTERVAL - 1) / DIFFICULTY_WINDOW_SAMPLE_INTERVAL;
+        NEW_DIFFICULTY_WINDOW_DURATION.div_ceil(DIFFICULTY_WINDOW_SAMPLE_INTERVAL);
 
     //
     // ~~~~~~~~~~~~~~~~~~~ Finality & Pruning ~~~~~~~~~~~~~~~~~~~

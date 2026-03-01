@@ -100,6 +100,9 @@ pub enum TxRuleError {
     /// fee/mass RBF validation rule
     #[error("fee rate per contextual mass gram is not greater than the fee rate of the replaced transaction")]
     FeerateTooLow,
+
+    #[error("input {0} spends a legacy secp256k1 UTXO after the PQ mandatory activation score; migrate funds to a PubKeyPQ address before the deadline")]
+    Secp256k1SpendNotAllowed(usize),
 }
 
 pub type TxResult<T> = std::result::Result<T, TxRuleError>;

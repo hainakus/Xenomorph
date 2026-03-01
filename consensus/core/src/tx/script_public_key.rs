@@ -94,7 +94,7 @@ impl Serialize for ScriptPublicKey {
     }
 }
 
-impl<'de: 'a, 'a> Deserialize<'de> for ScriptPublicKey {
+impl<'de> Deserialize<'de> for ScriptPublicKey {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -238,7 +238,7 @@ impl<'de: 'a, 'a> Deserialize<'de> for ScriptPublicKey {
                 pub enum Value<'a> {
                     U16(u16),
                     #[serde(borrow)]
-                    String(Cow<'a, String>),
+                    String(Cow<'a, str>),
                 }
                 impl From<Value<'_>> for u16 {
                     fn from(value: Value<'_>) -> Self {

@@ -28,9 +28,13 @@ pub struct TransactionValidator {
 
     /// Storage mass hardfork DAA score
     storage_mass_activation_daa_score: u64,
+
+    /// DAA score after which legacy secp256k1 (PubKey/PubKeyECDSA) spends are rejected
+    pq_mandatory_daa_score: u64,
 }
 
 impl TransactionValidator {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         max_tx_inputs: usize,
         max_tx_outputs: usize,
@@ -42,6 +46,7 @@ impl TransactionValidator {
         counters: Arc<TxScriptCacheCounters>,
         mass_calculator: MassCalculator,
         storage_mass_activation_daa_score: u64,
+        pq_mandatory_daa_score: u64,
     ) -> Self {
         Self {
             max_tx_inputs,
@@ -54,6 +59,7 @@ impl TransactionValidator {
             sig_cache: Cache::with_counters(10_000, counters),
             mass_calculator,
             storage_mass_activation_daa_score,
+            pq_mandatory_daa_score,
         }
     }
 
@@ -78,6 +84,7 @@ impl TransactionValidator {
             sig_cache: Cache::with_counters(10_000, counters),
             mass_calculator: MassCalculator::new(0, 0, 0, 0),
             storage_mass_activation_daa_score: u64::MAX,
+            pq_mandatory_daa_score: u64::MAX,
         }
     }
 }

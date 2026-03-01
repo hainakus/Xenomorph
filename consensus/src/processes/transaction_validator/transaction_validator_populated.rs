@@ -5,7 +5,7 @@ use kaspa_consensus_core::{
     tx::{TransactionInput, VerifiableTransaction},
 };
 use kaspa_core::warn;
-use kaspa_txscript::{get_sig_op_count, TxScriptEngine};
+use kaspa_txscript::{get_sig_op_count, script_class::ScriptClass, TxScriptEngine};
 use kaspa_txscript_errors::TxScriptError;
 
 use super::{
@@ -45,6 +45,9 @@ impl TransactionValidator {
             if pov_daa_score < self.storage_mass_activation_daa_score + 10 && self.storage_mass_activation_daa_score > 0 {
                 warn!("--------- Storage mass hardfork was activated successfully!!! --------- (DAA score: {})", pov_daa_score);
             }
+        }
+        if pov_daa_score >= self.pq_mandatory_daa_score {
+            self.check_no_legacy_secp256k1_spends(tx)?;
         }
         Self::check_sequence_lock(tx, pov_daa_score)?;
 
@@ -161,6 +164,16 @@ impl TransactionValidator {
             let calculated = get_sig_op_count::<T>(&input.signature_script, &entry.script_public_key);
             if calculated != input.sig_op_count as u64 {
                 return Err(TxRuleError::WrongSigOpCount(i, input.sig_op_count as u64, calculated));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_no_legacy_secp256k1_spends(&self, tx: &impl VerifiableTransaction) -> TxResult<()> {
+        for (i, (_, entry)) in tx.populated_inputs().enumerate() {
+            let class = ScriptClass::from_script(&entry.script_public_key);
+            if matches!(class, ScriptClass::PubKey | ScriptClass::PubKeyECDSA) {
+                return Err(TxRuleError::Secp256k1SpendNotAllowed(i));
             }
         }
         Ok(())

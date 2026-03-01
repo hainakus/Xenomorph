@@ -20,9 +20,11 @@ use kaspa_consensus_core::hashing::sighash::{calc_ecdsa_signature_hash, calc_sch
 use kaspa_consensus_core::hashing::sighash_type::SigHashType;
 use kaspa_consensus_core::tx::{ScriptPublicKey, TransactionInput, UtxoEntry, VerifiableTransaction};
 use kaspa_txscript_errors::TxScriptError;
-use log::{trace};
+use log::trace;
 use opcodes::codes::OpReturn;
 use opcodes::{codes, to_small_int, OpCond};
+use pqcrypto_dilithium::dilithium3;
+use pqcrypto_traits::sign::{DetachedSignature as _, PublicKey as _};
 use script_class::ScriptClass;
 
 pub mod prelude {
@@ -33,7 +35,7 @@ pub use standard::*;
 pub const MAX_SCRIPT_PUBLIC_KEY_VERSION: u16 = 0;
 pub const MAX_STACK_SIZE: usize = 244;
 pub const MAX_SCRIPTS_SIZE: usize = 10_000;
-pub const MAX_SCRIPT_ELEMENT_SIZE: usize = 520;
+pub const MAX_SCRIPT_ELEMENT_SIZE: usize = 8192;
 pub const MAX_OPS_PER_SCRIPT: i32 = 201;
 pub const MAX_TX_IN_SEQUENCE_NUM: u64 = u64::MAX;
 pub const SEQUENCE_LOCK_TIME_DISABLED: u64 = 1 << 63;
@@ -116,7 +118,7 @@ fn get_sig_op_count_by_opcodes<T: VerifiableTransaction>(opcodes: &[Result<Box<d
         match op {
             Ok(op) => {
                 match op.value() {
-                    codes::OpCheckSig | codes::OpCheckSigVerify | codes::OpCheckSigECDSA => num_sigs += 1,
+                    codes::OpCheckSig | codes::OpCheckSigVerify | codes::OpCheckSigECDSA | codes::OpCheckSigPQ => num_sigs += 1,
                     codes::OpCheckMultiSig | codes::OpCheckMultiSigVerify | codes::OpCheckMultiSigECDSA => {
                         if i == 0 {
                             num_sigs += MAX_PUB_KEYS_PER_MUTLTISIG as u64;
@@ -199,7 +201,7 @@ impl<'a, T: VerifiableTransaction> TxScriptEngine<'a, T> {
 
     #[inline]
     pub fn is_executing(&self) -> bool {
-        return self.cond_stack.is_empty() || *self.cond_stack.last().expect("Checked not empty") == OpCond::True;
+        self.cond_stack.is_empty() || *self.cond_stack.last().expect("Checked not empty") == OpCond::True
     }
 
     fn execute_opcode(&mut self, opcode: Box<dyn OpCodeImplementation<T>>) -> Result<(), TxScriptError> {
@@ -499,6 +501,35 @@ impl<'a, T: VerifiableTransaction> TxScriptEngine<'a, T> {
                         }
                     }
                 }
+            }
+            _ => Err(TxScriptError::NotATransactionInput),
+        }
+    }
+
+    /// Verify a post-quantum ML-DSA-65 (Dilithium3) signature.
+    /// `pubkey_hash` = blake2b-256(pubkey_bytes)[0..32] as embedded in the P2PQKH locking script.
+    /// `sig` = raw detached signature bytes (3293 bytes, hash-type byte already stripped by caller).
+    fn check_pq_signature(
+        &mut self,
+        hash_type: SigHashType,
+        pubkey_hash: &[u8],
+        pubkey_bytes: &[u8],
+        sig: &[u8],
+    ) -> Result<bool, TxScriptError> {
+        match self.script_source {
+            ScriptSource::TxInput { tx, id, .. } => {
+                let computed_hash = blake2b_simd::Params::new().hash_length(32).hash(pubkey_bytes);
+                if computed_hash.as_bytes() != pubkey_hash {
+                    return Ok(false);
+                }
+                let pk = dilithium3::PublicKey::from_bytes(pubkey_bytes)
+                    .map_err(|_| TxScriptError::PubKeyFormat)?;
+                let pq_sig = match dilithium3::DetachedSignature::from_bytes(sig) {
+                    Ok(s) => s,
+                    Err(_) => return Ok(false),
+                };
+                let sig_hash = calc_schnorr_signature_hash(tx, id, hash_type, self.reused_values);
+                Ok(dilithium3::verify_detached_signature(&pq_sig, &sig_hash.as_bytes(), &pk).is_ok())
             }
             _ => Err(TxScriptError::NotATransactionInput),
         }

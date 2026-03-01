@@ -1,6 +1,7 @@
 //!
 //! Partially Signed Kaspa Transaction (PSKT)
 //!
+#![allow(unused_assignments)]
 
 use kaspa_bip32::{secp256k1, DerivationPath, KeyFingerprint};
 use serde::{Deserialize, Serialize};

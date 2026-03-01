@@ -137,6 +137,8 @@ kaspa-wrpc-example-subscriber = { version = "0.15.2", path = "rpc/wrpc/examples/
 xenom = { version = "0.15.2", path = "xenom" }
 kaspa-alloc = { version = "0.15.2", path = "utils/alloc" }
 blake3 = "1.5.4"
+pqcrypto-dilithium = "0.5"
+pqcrypto-traits = "0.3"
 # external
 aes = "0.8.3"
 ahash = "0.8.6"
@@ -337,5 +339,12 @@ inherits = "release"
 debug = true
 strip = false
 
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(wasm_bindgen_unstable_test_coverage)'] }
+mismatched_lifetime_syntaxes = "allow"
+
 [workspace.lints.clippy]
 empty_docs = "allow"
+result_large_err = "allow"
+type_complexity = "allow"
+

@@ -91,6 +91,13 @@ pub struct Params {
 
     pub genome_pow_activation_daa_score: u64,
 
+    /// DAA score from which post-quantum ML-DSA-65 signatures are required (co-activated with Genome PoW HF)
+    pub pq_activation_daa_score: u64,
+
+    /// DAA score after which spending legacy secp256k1 UTXOs is forbidden by consensus
+    /// Set to u64::MAX until the grace period ends and migration is complete
+    pub pq_mandatory_daa_score: u64,
+
     pub genome_merkle_root: &'static str,
 
     pub genome_fragment_size_bytes: u32,
@@ -366,6 +373,8 @@ pub const MAINNET_PARAMS: Params = Params {
     //   genome_pow_activation       = fitness + epoch_len(200) + 200  ≈ +1.7 min after fitness
     fitness_coinbase_activation_daa_score: 21_370_401,
     genome_pow_activation_daa_score:       21_370_801,
+    pq_activation_daa_score:               21_370_801,
+    pq_mandatory_daa_score:                u64::MAX,
     genome_merkle_root: "277a0eebac2d72bce4133c252cd8d84a53a96497ea8a35b0e6f65dba5393d342",
     genome_fragment_size_bytes: 1_048_576,
     epoch_len: 200,
@@ -430,6 +439,8 @@ pub const TESTNET_PARAMS: Params = Params {
     deflationary_phase_daa_score: 15778800 - 259200,
     fitness_coinbase_activation_daa_score: 0,
     genome_pow_activation_daa_score: 0,
+    pq_activation_daa_score: 0,
+    pq_mandatory_daa_score: u64::MAX,
     genome_merkle_root: "277a0eebac2d72bce4133c252cd8d84a53a96497ea8a35b0e6f65dba5393d342",
     genome_fragment_size_bytes: 1_048_576,
     epoch_len: 200,
@@ -475,6 +486,8 @@ pub const TESTNET11_PARAMS: Params = Params {
     deflationary_phase_daa_score: Testnet11Bps::deflationary_phase_daa_score(),
     fitness_coinbase_activation_daa_score: 0,
     genome_pow_activation_daa_score: 0,
+    pq_activation_daa_score: 0,
+    pq_mandatory_daa_score: u64::MAX,
     genome_merkle_root: "277a0eebac2d72bce4133c252cd8d84a53a96497ea8a35b0e6f65dba5393d342",
     genome_fragment_size_bytes: 1_048_576,
     epoch_len: 200,
@@ -536,6 +549,8 @@ pub const SIMNET_PARAMS: Params = Params {
     deflationary_phase_daa_score: Testnet11Bps::deflationary_phase_daa_score(),
     fitness_coinbase_activation_daa_score: 0,
     genome_pow_activation_daa_score: 0,
+    pq_activation_daa_score: 0,
+    pq_mandatory_daa_score: u64::MAX,
     genome_merkle_root: "277a0eebac2d72bce4133c252cd8d84a53a96497ea8a35b0e6f65dba5393d342",
     genome_fragment_size_bytes: 1_048_576,
     epoch_len: 200,
@@ -616,6 +631,8 @@ pub const DEVNET_PARAMS: Params = Params {
     deflationary_phase_daa_score: 15778800 - 259200,
     fitness_coinbase_activation_daa_score: 0,
     genome_pow_activation_daa_score: 0,
+    pq_activation_daa_score: 0,
+    pq_mandatory_daa_score: u64::MAX,
     genome_merkle_root: "277a0eebac2d72bce4133c252cd8d84a53a96497ea8a35b0e6f65dba5393d342",
     genome_fragment_size_bytes: 1_048_576,
     epoch_len: 200,

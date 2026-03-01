@@ -91,7 +91,7 @@ impl CoinbaseManager {
         // Precomputed subsidy by month table for the actual block per second rate
         // Here values are rounded up so that we keep the same number of rewarding months as in the original 1 BPS table.
         // In a 10 BPS network, the induced increase in total rewards is 51 XEN (see tests::calc_high_bps_total_rewards_delta())
-        let subsidy_by_month_table: SubsidyByMonthTable = core::array::from_fn(|i| (SUBSIDY_BY_MONTH_TABLE[i] + bps - 1) / bps);
+        let subsidy_by_month_table: SubsidyByMonthTable = core::array::from_fn(|i| SUBSIDY_BY_MONTH_TABLE[i].div_ceil(bps));
         let fund_script_public_key = ScriptPublicKey::from_hex(fund_script_public_key)
             .unwrap_or_else(|_| panic!("Invalid fund_script_public_key hex"));
 

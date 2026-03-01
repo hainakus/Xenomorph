@@ -87,11 +87,7 @@ impl History {
         };
         let length = ids.size_hint().0;
         let skip = if let Some(last) = last {
-            if last > length {
-                0
-            } else {
-                length - last
-            }
+            length.saturating_sub(last)
         } else {
             0
         };

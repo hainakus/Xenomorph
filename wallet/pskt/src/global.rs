@@ -1,4 +1,5 @@
 //! Global PSKT data.
+#![allow(unused_assignments)]
 
 use crate::pskt::{KeySource, Version};
 use crate::utils::combine_if_no_conflicts;

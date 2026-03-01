@@ -9,14 +9,14 @@ impl Guide {
         let guide = include_str!("guide.txt");
 
         let lines = guide.split('\n');
+        let whitespace = Regex::new(r"\s+").unwrap();
 
         let mut paras = Vec::<String>::new();
         let mut para = String::new();
         for line in lines {
             if line.trim().is_empty() {
                 if !para.is_empty() {
-                    let regex = Regex::new(r"\s+").unwrap();
-                    let text = regex.replace_all(para.trim(), " ");
+                    let text = whitespace.replace_all(para.trim(), " ");
                     paras.push(text.to_string());
                     para.clear();
                 }
@@ -27,8 +27,7 @@ impl Guide {
         }
 
         if !para.is_empty() {
-            let regex = Regex::new(r"\s+").unwrap();
-            let text = regex.replace_all(para.trim(), " ");
+            let text = whitespace.replace_all(para.trim(), " ");
             paras.push(text.to_string());
             para.clear();
         }

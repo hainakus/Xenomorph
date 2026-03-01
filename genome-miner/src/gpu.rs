@@ -50,7 +50,7 @@ impl GpuContext {
             source: wgpu::ShaderSource::Wgsl(shader_src.into()),
         });
 
-        let kh_shader_src = include_str!("kheavyhash3.wgsl");
+        let kh_shader_src = include_str!("kheavyhash4.wgsl");
         let kh_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label:  Some("kheavyhash"),
             source: wgpu::ShaderSource::Wgsl(kh_shader_src.into()),

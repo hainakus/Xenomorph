@@ -29,3 +29,6 @@ tokio.workspace = true
 [dev-dependencies]
 statrs.workspace = true
 statest.workspace = true
+
+[lints]
+workspace = true

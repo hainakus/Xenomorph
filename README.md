@@ -22,6 +22,218 @@ Your feedback, contributions, and issue reports will be integral to evolving thi
 
 The default branch of this repository is `master` and new contributions are constantly merged into it. For a stable branch corresponding to the latest stable release please pull and compile the `stable` branch. 
 
+---
+
+## Genome PoW — Evolutionary Proof-of-Work Based on the Human Genome
+
+> **Blockchain + Genetics + Fitness Incentive + Adaptive Epoch**
+
+Xenom introduces a novel Proof-of-Work algorithm, **GenomePoW**, that anchors mining computations to the human reference genome (GRCh38). Instead of pure hash brute-force, miners must process a genomic fragment, apply deterministic mutations, score biological fitness, and then produce a valid final hash — creating a PoW that is both CPU/memory-hard and biologically meaningful.
+
+![Genome PoW Diagram](docs/genome_pow_diagram.png)
+
+---
+
+### How It Works — 8 Steps
+
+#### 1. Genome Base (GRCh38)
+The dataset is the **human reference genome** (~3 billion bases), pre-segmented into **1 MB fragments**. This dataset is shared and verifiable by all nodes.
+
+```
+Total bases : ~3,000,000,000
+Fragment size: 1 MB
+```
+
+#### 2. Selection of Fragment
+Each mining attempt selects a **deterministic fragment** derived from the current epoch seed and the miner's nonce:
+
+```
+fragment_index = blake3(epoch_seed ‖ nonce)
+```
+
+The resulting fragment is a deterministic subsequence of the genome — every miner with the same nonce and epoch seed reads the same fragment.
+
+#### 3. Block Genome Generation
+Starting from the selected fragment base (`genome_0`), the algorithm applies **K rounds of deterministic mutations** over the epoch:
+
+```
+genome_0 = Fragment Base
+for i in 0..K(epoch):
+    apply mutation → genome_i
+```
+
+**Mutation types (deterministic, seeded by nonce):**
+| Mutation | Description |
+|---|---|
+| **Swap** | Swap two subsequences |
+| **Insert** | Insert a sub-fragment |
+| **Rotate** | Rotate a window |
+| **XOR** | XOR a region with a derived key |
+| **Shift** | Shift a segment left/right |
+
+#### 4. Light Fitness Scoring
+After mutation, the resulting genome sequence is scored for **biological fitness** using three metrics:
+
+| Metric | Description |
+|---|---|
+| **Entropy** | Shannon entropy of the base distribution |
+| **Cycles & Patterns** | Repeat and structural pattern density |
+| **GC Content** | Guanine + Cytosine ratio (target ~50%) |
+
+```
+fitness_value = compute_fitness(entropy, gc_content, complexity)
+                → score in [0, 3000]
+```
+
+#### 5. Final Hash (Validation)
+The mutated genome sequence, block header, and nonce are combined into the final hash:
+
+```
+final_hash = blake3(genome_i ‖ header ‖ nonce)
+```
+
+The block is **valid** if and only if:
+
+```
+final_hash < Target
+```
+
+If not, the miner increments the nonce and repeats from step 2.
+
+#### 6. Reward Incentive
+Miners are rewarded based on both finding a valid block **and** the fitness quality of their genome:
+
+```
+reward = base_reward × clamp(1 + (fitness / threshold)², 1.0, 2.0)
+```
+
+The coinbase payload also encodes:
+- **Output 1** → miner address
+- **Mutation type** used
+- **Memory size** consumed (2 MB – 32 MB, scales with epoch)
+
+Higher-quality genomic work earns up to **2× the base block reward**.
+
+#### 7. Epoch Update (every ~300 blocks / ~5 min)
+At each epoch boundary the network collectively updates the difficulty seed:
+
+```
+epoch_score = median(fitness of last N blocks)
+next_seed   = blake3(epoch_score ‖ prev_seed)
+```
+
+This makes the fragment selection for the **next epoch** dependent on the collective mining quality of the current epoch — the network adapts over time.
+
+#### 8. Next Block / Next Epoch
+The `next_seed` becomes the `epoch_seed` for the following epoch. Every node independently recomputes and verifies it from the chain history, requiring no trusted coordination.
+
+---
+
+### Key Properties
+
+| Property | Value |
+|---|---|
+| **Dataset** | Human reference genome GRCh38 |
+| **Fragment size** | 1 MB (scales with epoch) |
+| **Hash function** | Blake3 |
+| **Mutation rounds** | K (adaptive per epoch) |
+| **Epoch length** | 300 blocks (~5 minutes) |
+| **Max reward multiplier** | 2× base reward |
+| **Memory requirement** | 2 MB – 32 MB |
+| **Activation** | `genome_pow_activation_daa_score` |
+
+### Activation
+
+GenomePoW is dormant until a configurable DAA score threshold (`genome_pow_activation_daa_score`) is reached. Prior to activation, Xenom uses **KHeavyHash (PyrinHashv2)**. After activation, all blocks must satisfy the Genome PoW rules — nodes running without the GRCh38 dataset fall back to synthetic fragment generation for validation.
+
+---
+
+## Post-Quantum Cryptography (ML-DSA-65)
+
+Xenom replaces **secp256k1 ECDSA/Schnorr** with **ML-DSA-65** (CRYSTALS-Dilithium3, NIST FIPS 204), co-activated with the Genome PoW hard fork. This makes all new addresses quantum-resistant by default.
+
+### Algorithm
+
+| Property | Value |
+|---|---|
+| **Algorithm** | ML-DSA-65 (CRYSTALS-Dilithium3) |
+| **Public key size** | 1952 bytes |
+| **Signature size** | 3293 bytes |
+| **Address version** | `PubKeyPQ = 2` |
+| **Script opcode** | `OP_CHECKSIGPQ = 0xbe` |
+| **Script type** | P2PQKH (`OP_DATA_32 <blake2b(pubkey)[0..32]> OP_CHECKSIGPQ`) |
+| **Rust crate** | `pqcrypto-dilithium 0.5` |
+
+### Migration Timeline
+
+```
+pq_activation_daa_score = 21_370_801   (co-activated with Genome PoW)
+  │
+  ├─ PQ addresses become valid on-chain
+  ├─ Wallets can generate PubKeyPQ addresses: pq_keypair() + pq_address_from_pubkey()
+  └─ New outputs should use PubKeyPQ from this point forward
+
+  ════════════ GRACE PERIOD ════════════
+  │
+  │  Wallets call: account.pq_migrate(wallet_secret, pq_address, ...)
+  │  ├─ Signs spending tx with OLD secp256k1 key (still valid during grace period)
+  │  ├─ All outputs land on the PubKeyPQ address
+  │  └─ No special protocol change needed — works with existing transaction flow
+  │
+  ════════════════════════════════════════
+
+pq_mandatory_daa_score = u64::MAX      (dormant — set when grace period ends)
+  │
+  ├─ Consensus rejects any tx spending PubKey / PubKeyECDSA UTXOs
+  ├─ Error: TxRuleError::Secp256k1SpendNotAllowed(input_index)
+  └─ Un-migrated UTXOs become permanently unspendable
+```
+
+### Wallet Integration
+
+**Generate a PQ keypair and address:**
+```rust
+use kaspa_txscript::{pq_keypair, pq_address_from_pubkey};
+use kaspa_addresses::Prefix;
+
+let (sk_bytes, pk_bytes) = pq_keypair();                            // fresh ML-DSA-65 keypair
+let address = pq_address_from_pubkey(&pk_bytes, Prefix::Mainnet);  // PubKeyPQ address
+```
+
+**Migrate existing secp256k1 funds to PQ (call before `pq_mandatory_daa_score`):**
+```rust
+// account is any wallet Account (bip32, legacy, multisig)
+let (summary, tx_ids) = account
+    .pq_migrate(wallet_secret, payment_secret, pq_address, &abortable, None)
+    .await?;
+```
+This sweeps **all secp256k1 UTXOs** in the account to `pq_address` using the existing secp256k1 signing key. No new key material required for the sweep itself.
+
+**Build a sigScript when spending a P2PQKH output:**
+```rust
+use kaspa_txscript::build_pq_sigscript;
+use kaspa_consensus_core::hashing::sighash_type::SigHashType;
+use pqcrypto_dilithium::dilithium3;
+use pqcrypto_traits::sign::{SecretKey as _, DetachedSignature as _};
+
+let sk = dilithium3::SecretKey::from_bytes(&sk_bytes).unwrap();
+let mut sig = dilithium3::detached_sign(&sighash_bytes, &sk).as_bytes().to_vec();
+sig.push(SigHashType::All.to_u8());                 // append hash-type byte
+
+let sig_script = build_pq_sigscript(&sig, &pk_bytes);
+```
+
+### Activating the Mandatory Deadline
+
+When migration is deemed complete, update **one field** in `consensus/core/src/config/params.rs`:
+```rust
+// Example: enforce PQ ~6 months after activation (~8.3M blocks at 4 BPS)
+pq_mandatory_daa_score: 30_000_000,
+```
+No other code changes are required — `TransactionValidator` enforces the rule automatically.
+
+---
+
 ## Installation
   <details>
   <summary>Building on Linux</summary>
