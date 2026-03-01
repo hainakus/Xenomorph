@@ -344,3 +344,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(wasm_bindgen_unstable_test
 
 [workspace.lints.clippy]
 empty_docs = "allow"
+result_large_err = "allow"
+type_complexity = "allow"
+mismatched_lifetime_syntaxes = "allow"
+

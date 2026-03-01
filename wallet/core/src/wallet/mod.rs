@@ -1367,9 +1367,7 @@ impl Wallet {
             .encrypted_mnemonics
             .into_iter()
             .map(|mnemonic| {
-                decrypt_mnemonic(file.num_threads, mnemonic, import_secret.as_ref())
-                    .map_err(Error::from)
-                    .and_then(|decrypted| Mnemonic::new(decrypted.trim(), Language::English).map_err(Error::from))
+                decrypt_mnemonic(file.num_threads, mnemonic, import_secret.as_ref()).and_then(|decrypted| Mnemonic::new(decrypted.trim(), Language::English).map_err(Error::from))
             })
             .map(|r| r.map(|m| (m, <Option<Secret>>::None)))
             .collect::<Result<Vec<(Mnemonic, Option<Secret>)>>>()?;
@@ -1409,9 +1407,7 @@ impl Wallet {
             .encrypted_mnemonics
             .into_iter()
             .map(|mnemonic| {
-                decrypt_mnemonic(MultisigWalletFileV1::<T>::NUM_THREADS, mnemonic, import_secret.as_ref())
-                    .map_err(Error::from)
-                    .and_then(|decrypted| Mnemonic::new(decrypted.trim(), Language::English).map_err(Error::from))
+                decrypt_mnemonic(MultisigWalletFileV1::<T>::NUM_THREADS, mnemonic, import_secret.as_ref()).and_then(|decrypted| Mnemonic::new(decrypted.trim(), Language::English).map_err(Error::from))
             })
             .map(|r| r.map(|m| (m, <Option<Secret>>::None)))
             .collect::<Result<Vec<(Mnemonic, Option<Secret>)>>>()?;

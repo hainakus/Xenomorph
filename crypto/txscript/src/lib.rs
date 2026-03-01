@@ -201,7 +201,7 @@ impl<'a, T: VerifiableTransaction> TxScriptEngine<'a, T> {
 
     #[inline]
     pub fn is_executing(&self) -> bool {
-        return self.cond_stack.is_empty() || *self.cond_stack.last().expect("Checked not empty") == OpCond::True;
+        self.cond_stack.is_empty() || *self.cond_stack.last().expect("Checked not empty") == OpCond::True
     }
 
     fn execute_opcode(&mut self, opcode: Box<dyn OpCodeImplementation<T>>) -> Result<(), TxScriptError> {

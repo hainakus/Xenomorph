@@ -1111,7 +1111,6 @@ mod test {
             opcodes::OpUnknown187::empty().expect("Should accept empty"),
             opcodes::OpUnknown188::empty().expect("Should accept empty"),
             opcodes::OpUnknown189::empty().expect("Should accept empty"),
-            opcodes::OpUnknown190::empty().expect("Should accept empty"),
             opcodes::OpUnknown191::empty().expect("Should accept empty"),
             opcodes::OpUnknown192::empty().expect("Should accept empty"),
             opcodes::OpUnknown193::empty().expect("Should accept empty"),

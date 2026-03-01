@@ -234,7 +234,7 @@ impl<
         }
 
         // Iterate over the pruning points store.
-        for idx in (0..=pruning_info.index) {
+        for idx in 0..=pruning_info.index {
             let pp = self.past_pruning_points_store.get(idx).unwrap();
             let pp_header = self.headers_store.get_header(pp).unwrap();
 

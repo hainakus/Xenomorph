@@ -443,13 +443,23 @@ mod tests {
                 expected: Ok(once(OpPushData2).chain([8, 2]).chain(repeat(0x49).take(520)).collect()),
                 unchecked: false,
             },
-            // BIP0062: OP_PUSHDATA4 can never be used, as pushes over 520
-            // bytes are not allowed, and those below can be done using
-            // other operators.
+            // MAX_SCRIPT_ELEMENT_SIZE was raised to 8192 for PQ sigs; 521 bytes is valid.
             Test {
                 name: "push data len 521",
                 data: vec![0x49; 521],
-                expected: Err(ScriptBuilderError::ElementExceedsMaxSize(521)),
+                expected: Ok(once(OpPushData2).chain([9, 2]).chain(repeat(0x49).take(521)).collect()),
+                unchecked: false,
+            },
+            Test {
+                name: "push data len 8192",
+                data: vec![0x49; 8192],
+                expected: Ok(once(OpPushData2).chain([0, 32]).chain(repeat(0x49).take(8192)).collect()),
+                unchecked: false,
+            },
+            Test {
+                name: "push data len 8193 (exceeds MAX_SCRIPT_ELEMENT_SIZE)",
+                data: vec![0x49; 8193],
+                expected: Err(ScriptBuilderError::ElementExceedsMaxSize(8193)),
                 unchecked: false,
             },
             Test {

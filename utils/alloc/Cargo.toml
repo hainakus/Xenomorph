@@ -22,3 +22,6 @@ mimalloc = { version = "0.1.43", default-features = false }
 heap = []
 
 [dependencies]
+
+[lints]
+workspace = true
