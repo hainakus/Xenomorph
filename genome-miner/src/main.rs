@@ -37,8 +37,11 @@ fn cli() -> Command {
                 .arg(Arg::new("mining-address").long("mining-address").short('a').value_name("ADDRESS").required(true).help("Reward address"))
                 .arg(Arg::new("threads").long("threads").short('t').value_name("N").value_parser(clap::value_parser!(usize)).help("Mining threads (default: logical CPUs)"))
                 .arg(Arg::new("nonce-batch").long("nonce-batch").value_name("N").value_parser(clap::value_parser!(u64)).default_value("50000").help("Nonces per rayon task"))
-                .arg(Arg::new("genome-activation-daa-score").long("genome-activation-daa-score").value_name("SCORE").value_parser(clap::value_parser!(u64)).help("DAA score where Genome PoW activates"))
+                .arg(Arg::new("genome-activation-daa-score").long("genome-activation-daa-score").value_name("SCORE").value_parser(clap::value_parser!(u64)).help("DAA score where Genome PoW activates (overrides --mainnet/--testnet/--devnet)"))
                 .arg(Arg::new("genome-fragment-size").long("genome-fragment-size").value_name("BYTES").value_parser(clap::value_parser!(u32)).default_value("1048576").help("Fragment size in bytes"))
+                .arg(Arg::new("mainnet").long("mainnet").action(clap::ArgAction::SetTrue).help("Mainnet (genome activation DAA 21_370_801)"))
+                .arg(Arg::new("testnet").long("testnet").action(clap::ArgAction::SetTrue).help("Testnet (genome activation DAA 0)"))
+                .arg(Arg::new("devnet").long("devnet").action(clap::ArgAction::SetTrue).help("Devnet (genome activation DAA 0)"))
         )
         .subcommand(
             Command::new("suggest-params")
@@ -65,8 +68,11 @@ fn cli() -> Command {
                 .arg(Arg::new("rpcserver").long("rpcserver").short('s').value_name("HOST:PORT").help("gRPC node endpoint (default: localhost:36669)"))
                 .arg(Arg::new("mining-address").long("mining-address").short('a').value_name("ADDRESS").required(true).help("Reward address"))
                 .arg(Arg::new("batch-size").long("batch-size").value_name("N").value_parser(clap::value_parser!(u32)).default_value("1048576").help("Nonces per GPU dispatch (default: 1M)"))
-                .arg(Arg::new("genome-activation-daa-score").long("genome-activation-daa-score").value_name("SCORE").value_parser(clap::value_parser!(u64)).help("DAA score where Genome PoW activates"))
+                .arg(Arg::new("genome-activation-daa-score").long("genome-activation-daa-score").value_name("SCORE").value_parser(clap::value_parser!(u64)).help("DAA score where Genome PoW activates (overrides --mainnet/--testnet/--devnet)"))
                 .arg(Arg::new("genome-fragment-size").long("genome-fragment-size").value_name("BYTES").value_parser(clap::value_parser!(u32)).default_value("1048576").help("Fragment size in bytes"))
+                .arg(Arg::new("mainnet").long("mainnet").action(clap::ArgAction::SetTrue).help("Mainnet (genome activation DAA 21_370_801)"))
+                .arg(Arg::new("testnet").long("testnet").action(clap::ArgAction::SetTrue).help("Testnet (genome activation DAA 0)"))
+                .arg(Arg::new("devnet").long("devnet").action(clap::ArgAction::SetTrue).help("Devnet (genome activation DAA 0)"))
         )
 }
 
@@ -102,7 +108,7 @@ impl MinerState {
 
 #[tokio::main]
 async fn main() {
-    kaspa_core::log::init_logger(None, "info");
+    kaspa_core::log::init_logger(None, "info,wgpu_core=warn,wgpu_hal=warn,naga=warn");
     let matches = cli().get_matches();
     match matches.subcommand() {
         Some(("mine", m))                => cmd_mine(m).await,
@@ -114,6 +120,23 @@ async fn main() {
     }
 }
 
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+/// Resolves the genome PoW activation DAA score from CLI flags.
+/// Priority: explicit `--genome-activation-daa-score` > `--mainnet` > `--testnet`/`--devnet` > u64::MAX
+fn resolve_activation(m: &ArgMatches) -> u64 {
+    if let Some(&score) = m.get_one::<u64>("genome-activation-daa-score") {
+        return score;
+    }
+    if m.get_flag("mainnet") {
+        return kaspa_consensus_core::hashing::header::EPOCH_SEED_HASH_ACTIVATION_MAINNET;
+    }
+    if m.get_flag("testnet") || m.get_flag("devnet") {
+        return 0;
+    }
+    u64::MAX
+}
+
 // ── mine ─────────────────────────────────────────────────────────────────────
 
 async fn cmd_mine(m: &ArgMatches) {
@@ -123,7 +146,7 @@ async fn cmd_mine(m: &ArgMatches) {
         mining_address: m.get_one::<String>("mining-address").cloned().expect("--mining-address required"),
         threads,
         nonce_batch: m.get_one::<u64>("nonce-batch").copied().unwrap_or(50_000),
-        genome_pow_activation_daa_score: m.get_one::<u64>("genome-activation-daa-score").copied().unwrap_or(u64::MAX),
+        genome_pow_activation_daa_score: resolve_activation(m),
         genome_fragment_size_bytes: m.get_one::<u32>("genome-fragment-size").copied().unwrap_or(1_048_576),
     };
 

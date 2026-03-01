@@ -52,12 +52,12 @@ impl GpuContext {
         let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label:   Some("genome_pow_bgl"),
             entries: &[
-                // binding 0: Params uniform
+                // binding 0: Params (read-only storage — avoids 16-byte uniform alignment)
                 wgpu::BindGroupLayoutEntry {
                     binding:    0,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty:         wgpu::BindingType::Buffer {
-                        ty:                 wgpu::BufferBindingType::Uniform,
+                        ty:                 wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
                         min_binding_size:   None,
                     },
@@ -145,7 +145,7 @@ async fn gpu_search_batch(
     let params_buf = dev.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label:    Some("params"),
         contents: params_data,
-        usage:    wgpu::BufferUsages::UNIFORM,
+        usage:    wgpu::BufferUsages::STORAGE,
     });
 
     // Output buffer: [found(u32), nonce_lo(u32), nonce_hi(u32), pad(u32)] = 16 bytes
@@ -255,7 +255,7 @@ pub async fn cmd_gpu(m: &ArgMatches) {
     let addr_str   = m.get_one::<String>("mining-address").cloned().expect("--mining-address required");
     let batch_size = m.get_one::<u32>("batch-size").copied().unwrap_or(1 << 20); // 1M nonces/dispatch
     let frag_size  = m.get_one::<u32>("genome-fragment-size").copied().unwrap_or(1_048_576);
-    let genome_activation = m.get_one::<u64>("genome-activation-daa-score").copied().unwrap_or(u64::MAX);
+    let genome_activation = crate::resolve_activation(m);
 
     info!("Initialising GPU ...");
     let ctx = Arc::new(GpuContext::new().await);
@@ -267,20 +267,22 @@ pub async fn cmd_gpu(m: &ArgMatches) {
     let pay_address: kaspa_rpc_core::RpcAddress =
         Address::try_from(addr_str.as_str()).expect("Invalid --mining-address");
 
-    // Pre-compute fragment hashes (synthetic loader until real genome file is wired)
+    let num_fragments = (GENOME_BASE_SIZE / frag_size.max(1) as u64) as u32;
+
+    // Initial fragment hashes with zero epoch_seed
     let epoch_seed_zero = kaspa_hashes::Hash::from_bytes([0u8; 32]);
     let loader = SyntheticLoader::new(frag_size, epoch_seed_zero);
     let frag_hashes_bytes = precompute_fragment_hashes(&loader, &epoch_seed_zero, frag_size);
-    let num_fragments = (GENOME_BASE_SIZE / frag_size.max(1) as u64) as u32;
 
-    // Upload fragment hashes to GPU VRAM (kept resident)
+    // Upload fragment hashes to GPU VRAM — COPY_DST so we can update on epoch boundary
     let frag_hash_buf = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label:    Some("frag_hashes"),
         contents: &frag_hashes_bytes,
-        usage:    wgpu::BufferUsages::STORAGE,
+        usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     });
 
     let mut last_template_id: Option<kaspa_hashes::Hash> = None;
+    let mut last_epoch_seed: kaspa_hashes::Hash = epoch_seed_zero;
     let mut nonce_base: u64 = 0;
     let mut total_hashes: u64 = 0;
     let mut report_timer = Instant::now();
@@ -304,6 +306,17 @@ pub async fn cmd_gpu(m: &ArgMatches) {
         }
 
         let header: Header = (&rpc_block.header).into();
+
+        // Re-compute fragment hashes when epoch_seed rotates (every epoch_len blocks)
+        if header.epoch_seed != last_epoch_seed {
+            info!("Epoch seed changed at daa={} — recomputing {} fragment hashes ...", header.daa_score, num_fragments);
+            let new_loader = SyntheticLoader::new(frag_size, header.epoch_seed);
+            let new_bytes = precompute_fragment_hashes(&new_loader, &header.epoch_seed, frag_size);
+            ctx.queue.write_buffer(&frag_hash_buf, 0, &new_bytes);
+            last_epoch_seed = header.epoch_seed;
+            info!("Fragment hashes updated.");
+        }
+
         if header.daa_score < genome_activation {
             warn!("Genome PoW not yet active (daa={} < activation={}); sleeping.", header.daa_score, genome_activation);
             sleep(Duration::from_secs(5)).await;
@@ -334,8 +347,15 @@ pub async fn cmd_gpu(m: &ArgMatches) {
             }
         }
 
-        if report_timer.elapsed() >= Duration::from_secs(10) {
-            info!("GPU hashrate: {:.2} MH/s", total_hashes as f64 / report_timer.elapsed().as_secs_f64() / 1_000_000.0);
+        if report_timer.elapsed() >= Duration::from_secs(5) {
+            let elapsed = report_timer.elapsed().as_secs_f64();
+            let mhs = total_hashes as f64 / elapsed / 1_000_000.0;
+            info!(
+                "GPU [{:.0} MH/s] daa={} epoch_seed={}...",
+                mhs,
+                header.daa_score,
+                &format!("{:?}", header.epoch_seed)[..8],
+            );
             total_hashes = 0;
             report_timer = Instant::now();
         }
