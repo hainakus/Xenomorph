@@ -107,18 +107,18 @@ fn b3_hash_72(a: array<u32, 8>, b_data: array<u32, 8>, nonce_lo: u32, nonce_hi: 
 struct Params {
     epoch_seed:    array<u32, 8>,  // 32 bytes
     pre_pow_hash:  array<u32, 8>,  // 32 bytes
-    target:        array<u32, 8>,  // 256-bit LE target (8×u32 little-endian)
+    pow_target:    array<u32, 8>,  // 256-bit LE target (8×u32 little-endian)
     nonce_base_lo: u32,
     nonce_base_hi: u32,
     num_fragments: u32,
-    _pad:          u32,
+    pad0:          u32,
 }
 
 struct Output {
     found:    atomic<u32>,
     nonce_lo: u32,
     nonce_hi: u32,
-    _pad:     u32,
+    pad0:     u32,
 }
 
 @group(0) @binding(0) var<uniform>             params:          Params;
@@ -181,7 +181,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Step 3: genome_final_hash = blake3(frag_hash||pre_pow_hash||nonce) ≤ target?
     let pow_hash = b3_hash_72(fh, params.pre_pow_hash, nonce_lo, nonce_hi);
 
-    if le256(pow_hash, params.target) {
+    if le256(pow_hash, params.pow_target) {
         // Atomically claim the first found nonce
         let prev = atomicCompareExchangeWeak(&out_buf.found, 0u, 1u);
         if prev.old_value == 0u {
