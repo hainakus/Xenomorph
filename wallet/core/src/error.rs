@@ -1,6 +1,7 @@
 //!
 //! Error types used by the wallet framework.
 //!
+#![allow(unused_assignments)]
 
 use crate::imports::{AccountId, AccountKind, AssocPrvKeyDataIds, PrvKeyDataId};
 use base64::DecodeError;
