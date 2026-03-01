@@ -14,14 +14,18 @@ pub fn hash_override_nonce_time(header: &Header, nonce: u64, timestamp: u64) -> 
     hash_override_nonce_time_with_activation(header, nonce, timestamp, 0)
 }
 
-/// Like [`hash_override_nonce_time`] but with an explicit genome-PoW activation DAA score
-/// (kept for API compatibility; the activation parameter is no longer used for hash computation).
+/// Like [`hash_override_nonce_time`] but with an explicit genome-PoW activation DAA score.
+/// `epoch_seed` is included in the hash only when BOTH conditions hold:
+///   1. `header.daa_score >= genome_pow_activation_daa_score`
+///   2. `header.epoch_seed != Hash::default()` (non-zero sentinel)
+/// Legacy nodes never set `epochSeed`; the P2P layer defaults it to `Hash::default()`,
+/// so condition 2 ensures we produce the same hash as legacy nodes for their blocks.
 #[inline]
 pub fn hash_override_nonce_time_with_activation(
     header: &Header,
     nonce: u64,
     timestamp: u64,
-    _genome_pow_activation_daa_score: u64,
+    genome_pow_activation_daa_score: u64,
 ) -> Hash {
     let mut hasher = kaspa_hashes::BlockHash::new();
     hasher.update(header.version.to_le_bytes()).write_len(header.parents_by_level.len());
@@ -41,7 +45,7 @@ pub fn hash_override_nonce_time_with_activation(
         .update(header.blue_score.to_le_bytes())
         .write_blue_work(header.blue_work);
 
-    if header.epoch_seed != Hash::default() {
+    if header.daa_score >= genome_pow_activation_daa_score && header.epoch_seed != Hash::default() {
         hasher.update(header.epoch_seed);
     }
 
