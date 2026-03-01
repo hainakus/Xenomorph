@@ -58,6 +58,7 @@ impl Add for Output {
 
 /// Error combining two output maps.
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+#[allow(unused_assignments)]
 pub enum CombineError {
     #[error("The amounts are not the same")]
     AmountMismatch {

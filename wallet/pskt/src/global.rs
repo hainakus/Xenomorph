@@ -128,6 +128,7 @@ impl Default for Global {
 
 /// Error combining two global maps.
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+#[allow(unused_assignments)]
 pub enum CombineError {
     #[error("The version numbers are not the same")]
     /// The version numbers are not the same.

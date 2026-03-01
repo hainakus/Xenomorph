@@ -139,6 +139,7 @@ impl Add for Input {
 
 /// Error combining two input maps.
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+#[allow(unused_assignments)]
 pub enum CombineError {
     #[error("The previous txids are not the same")]
     PreviousTxidMismatch {

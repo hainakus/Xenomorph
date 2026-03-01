@@ -23,6 +23,7 @@ where
 }
 
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+#[allow(unused_assignments)]
 #[error("Conflict")]
 pub struct Error<K, V> {
     pub field: K,

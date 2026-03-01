@@ -461,6 +461,7 @@ pub enum CombineError {
 }
 
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+#[allow(unused_assignments)]
 pub enum FinalizeError<E> {
     #[error("Signatures count mismatch")]
     WrongFinalizedSigsCount { expected: usize, actual: usize },
