@@ -168,10 +168,13 @@ impl TestConsensus {
         mut txs: Vec<Transaction>,
     ) -> MutableBlock {
         let mut header = self.build_header_with_parents(hash, parents);
+        let fitness_activated = self.consensus.services.coinbase_manager.is_fitness_coinbase_activated(header.daa_score);
         let cb_payload: Vec<u8> = header.blue_score.to_le_bytes().iter().copied() // Blue score
             .chain(self.consensus.services.coinbase_manager.calc_block_subsidy(header.daa_score).to_le_bytes().iter().copied()) // Subsidy
             .chain((0_u16).to_le_bytes().iter().copied()) // Script public key version
             .chain((0_u8).to_le_bytes().iter().copied()) // Script public key length
+            // v2: fitness field (u32) immediately after the empty script key
+            .chain(if fitness_activated { (0_u32).to_le_bytes().to_vec() } else { vec![] })
             .collect();
 
         let cb = Transaction::new(TX_VERSION, vec![], vec![], 0, SUBNETWORK_ID_COINBASE, 0, cb_payload);
