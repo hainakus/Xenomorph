@@ -17,6 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install protoc
+        run: sudo apt-get update -y && sudo apt-get install -y protobuf-compiler
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
@@ -40,6 +43,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install protoc
+        run: sudo apt-get update -y && sudo apt-get install -y protobuf-compiler
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
@@ -62,6 +68,9 @@ jobs:
     needs: check
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: sudo apt-get update -y && sudo apt-get install -y protobuf-compiler
 
       - name: Install Rust stable + clippy
         uses: dtolnay/rust-toolchain@stable
@@ -88,6 +97,9 @@ jobs:
     if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: sudo apt-get update -y && sudo apt-get install -y protobuf-compiler
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
