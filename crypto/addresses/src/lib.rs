@@ -1,4 +1,3 @@
-#![allow(unexpected_cfgs)]
 //!
 //! Kaspa [`Address`] implementation.
 //!
