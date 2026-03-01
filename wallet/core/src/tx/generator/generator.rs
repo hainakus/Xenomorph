@@ -576,12 +576,11 @@ impl Generator {
         self.inner.mass_calculator.calc_minimum_transaction_fee_from_mass(self.calc_relay_transaction_mass(data))
     }
 
-    /// Main UTXO entry processing loop. This function sources UTXOs from [`Generator::get_utxo_entry()`] and
-    /// accumulates consumed UTXO entry data within the [`Context`], [`Stage`] and [`Data`] structures.
-    ///
-    /// The general processing pattern can be described as follows:
-    ///
-    /**
+    // Main UTXO entry processing loop. This function sources UTXOs from [`Generator::get_utxo_entry()`] and
+    // accumulates consumed UTXO entry data within the [`Context`], [`Stage`] and [`Data`] structures.
+    //
+    // The general processing pattern can be described as follows:
+    /*
     loop {
        1. Obtain UTXO entry from [`Generator::get_utxo_entry()`]
        2. Check if UTXO entries have been depleted, if so, handle sweep processing.

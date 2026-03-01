@@ -42,8 +42,8 @@ harness = false
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)', 'cfg(wasm_bindgen_unstable_test_coverage)'] }
+mismatched_lifetime_syntaxes = "allow"
 
 [lints.clippy]
 result_large_err = "allow"
 type_complexity = "allow"
-mismatched_lifetime_syntaxes = "allow"

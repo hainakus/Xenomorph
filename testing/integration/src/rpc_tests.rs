@@ -3,7 +3,6 @@ use std::{str::FromStr, sync::Arc, time::Duration};
 use crate::common::{client_notify::ChannelNotify, daemon::Daemon};
 use futures_util::future::try_join_all;
 use kaspa_addresses::{Address, Prefix, Version};
-use kaspa_consensus::params::SIMNET_GENESIS;
 use kaspa_consensus_core::{constants::MAX_SOMPI, header::Header, subnets::SubnetworkId, tx::Transaction};
 use kaspa_core::{assert_match, info};
 use kaspa_grpc_core::ops::KaspadPayloadOps;
