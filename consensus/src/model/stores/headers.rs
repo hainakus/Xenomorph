@@ -1,14 +1,41 @@
 use std::sync::Arc;
 
 use kaspa_consensus_core::{header::Header, BlockHasher, BlockLevel};
-use kaspa_database::prelude::{BatchDbWriter, CachedDbAccess};
+use kaspa_consensus_core::BlueWorkType;
+use kaspa_database::prelude::{BatchDbWriter, CachedDbAccess, DbKey};
 use kaspa_database::prelude::{CachePolicy, DB};
 use kaspa_database::prelude::{StoreError, StoreResult};
 use kaspa_database::registry::DatabaseStorePrefixes;
 use kaspa_hashes::Hash;
+use kaspa_muhash::Hash as Blake2Hash;
 use kaspa_utils::mem_size::MemSizeEstimator;
 use rocksdb::WriteBatch;
 use serde::{Deserialize, Serialize};
+
+/// Header layout as stored by pre-epoch_seed binaries (V0).
+/// Field order must exactly match the old `Header` struct for bincode to work.
+#[derive(Deserialize)]
+struct HeaderV0 {
+    hash:                    Hash,
+    version:                 u16,
+    parents_by_level:        Vec<Vec<Hash>>,
+    hash_merkle_root:        Hash,
+    accepted_id_merkle_root: Hash,
+    utxo_commitment:         Blake2Hash,
+    timestamp:               u64,
+    bits:                    u32,
+    nonce:                   u64,
+    daa_score:               u64,
+    blue_work:               BlueWorkType,
+    blue_score:              u64,
+    pruning_point:           Hash,
+}
+
+#[derive(Deserialize)]
+struct HeaderWithBlockLevelV0 {
+    header:      HeaderV0,
+    block_level: BlockLevel,
+}
 
 pub trait HeaderStoreReader {
     fn get_daa_score(&self, hash: Hash) -> Result<u64, StoreError>;
@@ -134,7 +161,11 @@ impl HeaderStoreReader for DbHeadersStore {
     }
 
     fn get_header(&self, hash: Hash) -> Result<Arc<Header>, StoreError> {
-        Ok(self.headers_access.read(hash)?.header)
+        match self.headers_access.read(hash) {
+            Ok(hwl) => Ok(hwl.header),
+            Err(StoreError::DeserializationError(_)) => self.get_header_v0_fallback(hash),
+            Err(e) => Err(e),
+        }
     }
 
     fn get_header_with_block_level(&self, hash: Hash) -> Result<HeaderWithBlockLevel, StoreError> {
@@ -146,6 +177,49 @@ impl HeaderStoreReader for DbHeadersStore {
             return Ok(header_with_block_level.header.as_ref().into());
         }
         self.compact_headers_access.read(hash)
+    }
+}
+
+impl DbHeadersStore {
+    /// Fallback for headers stored by the pre-epoch_seed binary (V0 format).
+    /// Reads raw bytes, deserializes as HeaderWithBlockLevelV0, upgrades to V1
+    /// (epoch_seed = Hash::default(), stored hash preserved), then lazily rewrites
+    /// the DB entry so future reads use the fast V1 path.
+    fn get_header_v0_fallback(&self, hash: Hash) -> Result<Arc<Header>, StoreError> {
+        let db_key = DbKey::new(DatabaseStorePrefixes::Headers.as_ref(), hash);
+        let Some(slice) = self.db.get_pinned(&db_key)? else {
+            return Err(StoreError::KeyNotFound(db_key));
+        };
+        let old: HeaderWithBlockLevelV0 = bincode::deserialize(&slice)?;
+        let v0 = old.header;
+        // Build V1 Header: epoch_seed defaults to zeros; preserve the stored hash
+        // (do NOT call finalize() — the hash was computed by the old binary without
+        // epoch_seed and is still correct for pre-fork blocks).
+        let header = Arc::new(Header {
+            hash:                    v0.hash,
+            version:                 v0.version,
+            parents_by_level:        v0.parents_by_level,
+            hash_merkle_root:        v0.hash_merkle_root,
+            accepted_id_merkle_root: v0.accepted_id_merkle_root,
+            utxo_commitment:         v0.utxo_commitment,
+            timestamp:               v0.timestamp,
+            bits:                    v0.bits,
+            nonce:                   v0.nonce,
+            daa_score:               v0.daa_score,
+            blue_work:               v0.blue_work,
+            blue_score:              v0.blue_score,
+            epoch_seed:              Hash::default(),
+            pruning_point:           v0.pruning_point,
+        });
+        // Lazy migration: rewrite in V1 format so this code path is hit only once.
+        let mut batch = WriteBatch::default();
+        self.headers_access.write(
+            BatchDbWriter::new(&mut batch),
+            hash,
+            HeaderWithBlockLevel { header: header.clone(), block_level: old.block_level },
+        )?;
+        let _ = self.db.write(batch); // best-effort; non-fatal if it fails
+        Ok(header)
     }
 }
 

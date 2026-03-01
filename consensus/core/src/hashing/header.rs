@@ -2,18 +2,34 @@ use super::HasherExtensions;
 use crate::header::Header;
 use kaspa_hashes::{Hash, HasherBase};
 
+/// DAA score at which `epoch_seed` was added to the canonical block hash (mainnet hard-fork point).
+/// Blocks with `daa_score < EPOCH_SEED_HASH_ACTIVATION` were hashed by the old binary that did
+/// not include this field, so we must skip it to keep their hashes consistent.
+/// For test networks the activation DAA score is 0, so ALL blocks include `epoch_seed`.
+pub const EPOCH_SEED_HASH_ACTIVATION_MAINNET: u64 = 21_370_801;
+
 /// Returns the header hash using the provided nonce+timestamp instead of those in the header.
 #[inline]
 pub fn hash_override_nonce_time(header: &Header, nonce: u64, timestamp: u64) -> Hash {
-    let mut hasher = kaspa_hashes::BlockHash::new();
-    hasher.update(header.version.to_le_bytes()).write_len(header.parents_by_level.len()); // Write the number of parent levels
+    hash_override_nonce_time_with_activation(header, nonce, timestamp, EPOCH_SEED_HASH_ACTIVATION_MAINNET)
+}
 
-    // Write parents at each level
+/// Like [`hash_override_nonce_time`] but with an explicit genome-PoW activation DAA score.
+/// Use this variant when the correct network activation threshold is known (e.g. in tests).
+#[inline]
+pub fn hash_override_nonce_time_with_activation(
+    header: &Header,
+    nonce: u64,
+    timestamp: u64,
+    genome_pow_activation_daa_score: u64,
+) -> Hash {
+    let mut hasher = kaspa_hashes::BlockHash::new();
+    hasher.update(header.version.to_le_bytes()).write_len(header.parents_by_level.len());
+
     header.parents_by_level.iter().for_each(|level| {
         hasher.write_var_array(level);
     });
 
-    // Write all header fields
     hasher
         .update(header.hash_merkle_root)
         .update(header.accepted_id_merkle_root)
@@ -23,10 +39,13 @@ pub fn hash_override_nonce_time(header: &Header, nonce: u64, timestamp: u64) -> 
         .update(nonce.to_le_bytes())
         .update(header.daa_score.to_le_bytes())
         .update(header.blue_score.to_le_bytes())
-        .write_blue_work(header.blue_work)
-        .update(header.epoch_seed)
-        .update(header.pruning_point);
+        .write_blue_work(header.blue_work);
 
+    if header.daa_score >= genome_pow_activation_daa_score {
+        hasher.update(header.epoch_seed);
+    }
+
+    hasher.update(header.pruning_point);
     hasher.finalize()
 }
 

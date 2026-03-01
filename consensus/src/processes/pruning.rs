@@ -131,8 +131,21 @@ impl<
 
         let (current_pruning_point, current_candidate, current_pruning_point_index) = pruning_info.decompose();
 
-        let sp_header_pp = self.headers_store.get_header(ghostdag_data.selected_parent).unwrap().pruning_point;
-        let sp_header_pp_blue_score = self.headers_store.get_blue_score(sp_header_pp).unwrap();
+        let sp_header_pp = match self.headers_store.get_header(ghostdag_data.selected_parent) {
+            Ok(h) => h.pruning_point,
+            Err(e) => {
+                warn!("expected_header_pruning_point: failed to read header for {}: {} (stale DB schema?); falling back to genesis",
+                      ghostdag_data.selected_parent, e);
+                return self.genesis_hash;
+            }
+        };
+        let sp_header_pp_blue_score = match self.headers_store.get_blue_score(sp_header_pp) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("expected_header_pruning_point: failed to read blue_score for pp {}: {}", sp_header_pp, e);
+                return self.genesis_hash;
+            }
+        };
 
         // If the block doesn't have the pruning in its selected chain we know for sure that it can't trigger a pruning point
         // change (we check the selected parent to take care of the case where the block is the virtual which doesn't have reachability data).
