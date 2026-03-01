@@ -145,6 +145,9 @@ pub enum Version {
     PubKey = 0,
     /// PubKey ECDSA addresses always have the version byte set to 1
     PubKeyECDSA = 1,
+    /// PubKeyPQ addresses always have the version byte set to 2 (post-quantum ML-DSA-65)
+    /// Payload is blake2b-256(pq_pubkey)[0..32]
+    PubKeyPQ = 2,
     /// ScriptHash addresses always have the version byte set to 8
     ScriptHash = 8,
 }
@@ -156,6 +159,7 @@ impl TryFrom<&str> for Version {
         match value {
             "PubKey" => Ok(Version::PubKey),
             "PubKeyECDSA" => Ok(Version::PubKeyECDSA),
+            "PubKeyPQ" => Ok(Version::PubKeyPQ),
             "ScriptHash" => Ok(Version::ScriptHash),
             _ => Err(AddressError::InvalidVersionString(value.to_owned())),
         }
@@ -167,6 +171,7 @@ impl Version {
         match self {
             Version::PubKey => 32,
             Version::PubKeyECDSA => 33,
+            Version::PubKeyPQ => 32,
             Version::ScriptHash => 32,
         }
     }
@@ -179,6 +184,7 @@ impl TryFrom<u8> for Version {
         match value {
             0 => Ok(Version::PubKey),
             1 => Ok(Version::PubKeyECDSA),
+            2 => Ok(Version::PubKeyPQ),
             8 => Ok(Version::ScriptHash),
             _ => Err(AddressError::InvalidVersion(value)),
         }
@@ -190,6 +196,7 @@ impl Display for Version {
         match self {
             Version::PubKey => write!(f, "PubKey"),
             Version::PubKeyECDSA => write!(f, "PubKeyECDSA"),
+            Version::PubKeyPQ => write!(f, "PubKeyPQ"),
             Version::ScriptHash => write!(f, "ScriptHash"),
         }
     }

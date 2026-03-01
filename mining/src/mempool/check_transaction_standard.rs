@@ -187,6 +187,7 @@ impl Mempool {
                 }
                 ScriptClass::PubKey => {}
                 ScriptClass::PubKeyECDSA => {}
+                ScriptClass::PubKeyPQ => {}
                 ScriptClass::ScriptHash => {
                     get_sig_op_count::<PopulatedTransaction>(&input.signature_script, &entry.script_public_key);
                     let num_sig_ops = 1;

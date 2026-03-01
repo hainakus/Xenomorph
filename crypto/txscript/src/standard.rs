@@ -1,5 +1,5 @@
 use crate::{
-    opcodes::codes::{OpBlake3, OpCheckSig, OpCheckSigECDSA, OpData32, OpData33, OpEqual},
+    opcodes::codes::{OpBlake3, OpCheckSig, OpCheckSigECDSA, OpCheckSigPQ, OpData32, OpData33, OpEqual},
     script_builder::{ScriptBuilder, ScriptBuilderResult},
     script_class::ScriptClass,
 };
@@ -27,6 +27,13 @@ fn pay_to_pub_key_ecdsa(address_payload: &[u8]) -> ScriptVec {
     SmallVec::from_iter(once(OpData33).chain(address_payload.iter().copied()).chain(once(OpCheckSigECDSA)))
 }
 
+/// Creates a P2PQKH locking script: OP_DATA_32 <blake2b(pq_pubkey)[0..32]> OP_CHECKSIGPQ.
+/// `address_payload` must be the 32-byte blake2b hash of the full PQ public key.
+fn pay_to_pub_key_pq(address_payload: &[u8]) -> ScriptVec {
+    assert_eq!(address_payload.len(), 32);
+    SmallVec::from_iter(once(OpData32).chain(address_payload.iter().copied()).chain(once(OpCheckSigPQ)))
+}
+
 /// Creates a new script to pay a transaction output to a script hash.
 /// It is expected that the input is a valid hash.
 fn pay_to_script_hash(script_hash: &[u8]) -> ScriptVec {
@@ -40,6 +47,7 @@ pub fn pay_to_address_script(address: &Address) -> ScriptPublicKey {
     let script = match address.version {
         Version::PubKey => pay_to_pub_key(address.payload.as_slice()),
         Version::PubKeyECDSA => pay_to_pub_key_ecdsa(address.payload.as_slice()),
+        Version::PubKeyPQ => pay_to_pub_key_pq(address.payload.as_slice()),
         Version::ScriptHash => pay_to_script_hash(address.payload.as_slice()),
     };
     ScriptPublicKey::new(ScriptClass::from(address.version).version(), script)
@@ -79,6 +87,7 @@ pub fn extract_script_pub_key_address(script_public_key: &ScriptPublicKey, prefi
         ScriptClass::PubKey => Ok(Address::new(prefix, Version::PubKey, &script[1..33])),
         ScriptClass::PubKeyECDSA => Ok(Address::new(prefix, Version::PubKeyECDSA, &script[1..34])),
         ScriptClass::ScriptHash => Ok(Address::new(prefix, Version::ScriptHash, &script[2..34])),
+        ScriptClass::PubKeyPQ => Ok(Address::new(prefix, Version::PubKeyPQ, &script[1..33])),
     }
 }
 

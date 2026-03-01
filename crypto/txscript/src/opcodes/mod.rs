@@ -885,7 +885,25 @@ opcode_list! {
     opcode OpUnknown187<0xbb, 1>(self, vm) Err(TxScriptError::InvalidOpcode(format!("{self:?}")))
     opcode OpUnknown188<0xbc, 1>(self, vm) Err(TxScriptError::InvalidOpcode(format!("{self:?}")))
     opcode OpUnknown189<0xbd, 1>(self, vm) Err(TxScriptError::InvalidOpcode(format!("{self:?}")))
-    opcode OpUnknown190<0xbe, 1>(self, vm) Err(TxScriptError::InvalidOpcode(format!("{self:?}")))
+    opcode OpCheckSigPQ<0xbe, 1>(self, vm) {
+        let [pubkey, mut sig, hash] = vm.dstack.pop_raw()?;
+        match sig.pop() {
+            Some(typ) => {
+                let hash_type = SigHashType::from_u8(typ).map_err(|_| TxScriptError::InvalidSigHashType(typ))?;
+                match vm.check_pq_signature(hash_type, hash.as_slice(), pubkey.as_slice(), sig.as_slice()) {
+                    Ok(valid) => {
+                        vm.dstack.push_item(valid);
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            None => {
+                vm.dstack.push_item(false);
+                Ok(())
+            }
+        }
+    }
     opcode OpUnknown191<0xbf, 1>(self, vm) Err(TxScriptError::InvalidOpcode(format!("{self:?}")))
     opcode OpUnknown192<0xc0, 1>(self, vm) Err(TxScriptError::InvalidOpcode(format!("{self:?}")))
     opcode OpUnknown193<0xc1, 1>(self, vm) Err(TxScriptError::InvalidOpcode(format!("{self:?}")))
