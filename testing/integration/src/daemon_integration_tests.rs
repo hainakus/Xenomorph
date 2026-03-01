@@ -278,7 +278,8 @@ async fn daemon_utxos_propagation_test() {
     const NUMBER_INPUTS: u64 = 2;
     const NUMBER_OUTPUTS: u64 = 2;
     let total_input_amount: u64 = utxos[0..NUMBER_INPUTS as usize].iter().map(|u| u.1.amount).sum();
-    let tx_amount: u64 = total_input_amount * (NUMBER_INPUTS * 5 - 1) / (NUMBER_INPUTS * 5);
+    let tx_amount_raw: u64 = total_input_amount * (NUMBER_INPUTS * 5 - 1) / (NUMBER_INPUTS * 5);
+    let tx_amount: u64 = tx_amount_raw / NUMBER_OUTPUTS * NUMBER_OUTPUTS;
     let transaction = generate_tx(miner_schnorr_key, &utxos[0..NUMBER_INPUTS as usize], tx_amount, NUMBER_OUTPUTS, &user_address);
     rpc_client1.submit_transaction((&transaction).into(), false).await.unwrap();
 
