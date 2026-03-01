@@ -148,6 +148,92 @@ GenomePoW is dormant until a configurable DAA score threshold (`genome_pow_activ
 
 ---
 
+## Post-Quantum Cryptography (ML-DSA-65)
+
+Xenom replaces **secp256k1 ECDSA/Schnorr** with **ML-DSA-65** (CRYSTALS-Dilithium3, NIST FIPS 204), co-activated with the Genome PoW hard fork. This makes all new addresses quantum-resistant by default.
+
+### Algorithm
+
+| Property | Value |
+|---|---|
+| **Algorithm** | ML-DSA-65 (CRYSTALS-Dilithium3) |
+| **Public key size** | 1952 bytes |
+| **Signature size** | 3293 bytes |
+| **Address version** | `PubKeyPQ = 2` |
+| **Script opcode** | `OP_CHECKSIGPQ = 0xbe` |
+| **Script type** | P2PQKH (`OP_DATA_32 <blake2b(pubkey)[0..32]> OP_CHECKSIGPQ`) |
+| **Rust crate** | `pqcrypto-dilithium 0.5` |
+
+### Migration Timeline
+
+```
+pq_activation_daa_score = 21_370_801   (co-activated with Genome PoW)
+  │
+  ├─ PQ addresses become valid on-chain
+  ├─ Wallets can generate PubKeyPQ addresses: pq_keypair() + pq_address_from_pubkey()
+  └─ New outputs should use PubKeyPQ from this point forward
+
+  ════════════ GRACE PERIOD ════════════
+  │
+  │  Wallets call: account.pq_migrate(wallet_secret, pq_address, ...)
+  │  ├─ Signs spending tx with OLD secp256k1 key (still valid during grace period)
+  │  ├─ All outputs land on the PubKeyPQ address
+  │  └─ No special protocol change needed — works with existing transaction flow
+  │
+  ════════════════════════════════════════
+
+pq_mandatory_daa_score = u64::MAX      (dormant — set when grace period ends)
+  │
+  ├─ Consensus rejects any tx spending PubKey / PubKeyECDSA UTXOs
+  ├─ Error: TxRuleError::Secp256k1SpendNotAllowed(input_index)
+  └─ Un-migrated UTXOs become permanently unspendable
+```
+
+### Wallet Integration
+
+**Generate a PQ keypair and address:**
+```rust
+use kaspa_txscript::{pq_keypair, pq_address_from_pubkey};
+use kaspa_addresses::Prefix;
+
+let (sk_bytes, pk_bytes) = pq_keypair();                            // fresh ML-DSA-65 keypair
+let address = pq_address_from_pubkey(&pk_bytes, Prefix::Mainnet);  // PubKeyPQ address
+```
+
+**Migrate existing secp256k1 funds to PQ (call before `pq_mandatory_daa_score`):**
+```rust
+// account is any wallet Account (bip32, legacy, multisig)
+let (summary, tx_ids) = account
+    .pq_migrate(wallet_secret, payment_secret, pq_address, &abortable, None)
+    .await?;
+```
+This sweeps **all secp256k1 UTXOs** in the account to `pq_address` using the existing secp256k1 signing key. No new key material required for the sweep itself.
+
+**Build a sigScript when spending a P2PQKH output:**
+```rust
+use kaspa_txscript::build_pq_sigscript;
+use kaspa_consensus_core::hashing::sighash_type::SigHashType;
+use pqcrypto_dilithium::dilithium3;
+use pqcrypto_traits::sign::{SecretKey as _, DetachedSignature as _};
+
+let sk = dilithium3::SecretKey::from_bytes(&sk_bytes).unwrap();
+let mut sig = dilithium3::detached_sign(&sighash_bytes, &sk).as_bytes().to_vec();
+sig.push(SigHashType::All.to_u8());                 // append hash-type byte
+
+let sig_script = build_pq_sigscript(&sig, &pk_bytes);
+```
+
+### Activating the Mandatory Deadline
+
+When migration is deemed complete, update **one field** in `consensus/core/src/config/params.rs`:
+```rust
+// Example: enforce PQ ~6 months after activation (~8.3M blocks at 4 BPS)
+pq_mandatory_daa_score: 30_000_000,
+```
+No other code changes are required — `TransactionValidator` enforces the rule automatically.
+
+---
+
 ## Installation
   <details>
   <summary>Building on Linux</summary>
