@@ -169,7 +169,11 @@ impl HeaderStoreReader for DbHeadersStore {
     }
 
     fn get_header_with_block_level(&self, hash: Hash) -> Result<HeaderWithBlockLevel, StoreError> {
-        self.headers_access.read(hash)
+        match self.headers_access.read(hash) {
+            Ok(hwl) => Ok(hwl),
+            Err(StoreError::DeserializationError(_)) => self.get_header_with_block_level_v0_fallback(hash),
+            Err(e) => Err(e),
+        }
     }
 
     fn get_compact_header_data(&self, hash: Hash) -> Result<CompactHeaderData, StoreError> {
@@ -181,20 +185,15 @@ impl HeaderStoreReader for DbHeadersStore {
 }
 
 impl DbHeadersStore {
-    /// Fallback for headers stored by the pre-epoch_seed binary (V0 format).
-    /// Reads raw bytes, deserializes as HeaderWithBlockLevelV0, upgrades to V1
-    /// (epoch_seed = Hash::default(), stored hash preserved), then lazily rewrites
-    /// the DB entry so future reads use the fast V1 path.
-    fn get_header_v0_fallback(&self, hash: Hash) -> Result<Arc<Header>, StoreError> {
+    /// Shared V0 upgrade path: reads raw bytes, deserializes as HeaderWithBlockLevelV0, upgrades
+    /// to V1 (epoch_seed = Hash::default(), stored hash preserved), lazily rewrites DB entry.
+    fn get_header_with_block_level_v0_fallback(&self, hash: Hash) -> Result<HeaderWithBlockLevel, StoreError> {
         let db_key = DbKey::new(DatabaseStorePrefixes::Headers.as_ref(), hash);
         let Some(slice) = self.db.get_pinned(&db_key)? else {
             return Err(StoreError::KeyNotFound(db_key));
         };
         let old: HeaderWithBlockLevelV0 = bincode::deserialize(&slice)?;
         let v0 = old.header;
-        // Build V1 Header: epoch_seed defaults to zeros; preserve the stored hash
-        // (do NOT call finalize() — the hash was computed by the old binary without
-        // epoch_seed and is still correct for pre-fork blocks).
         let header = Arc::new(Header {
             hash:                    v0.hash,
             version:                 v0.version,
@@ -211,15 +210,16 @@ impl DbHeadersStore {
             epoch_seed:              Hash::default(),
             pruning_point:           v0.pruning_point,
         });
-        // Lazy migration: rewrite in V1 format so this code path is hit only once.
+        let hwl = HeaderWithBlockLevel { header, block_level: old.block_level };
+        // Lazy migration: rewrite in V1 format so this path is hit only once.
         let mut batch = WriteBatch::default();
-        self.headers_access.write(
-            BatchDbWriter::new(&mut batch),
-            hash,
-            HeaderWithBlockLevel { header: header.clone(), block_level: old.block_level },
-        )?;
-        let _ = self.db.write(batch); // best-effort; non-fatal if it fails
-        Ok(header)
+        self.headers_access.write(BatchDbWriter::new(&mut batch), hash, hwl.clone())?;
+        let _ = self.db.write(batch);
+        Ok(hwl)
+    }
+
+    fn get_header_v0_fallback(&self, hash: Hash) -> Result<Arc<Header>, StoreError> {
+        self.get_header_with_block_level_v0_fallback(hash).map(|hwl| hwl.header)
     }
 }
 
