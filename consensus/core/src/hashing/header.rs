@@ -2,26 +2,26 @@ use super::HasherExtensions;
 use crate::header::Header;
 use kaspa_hashes::{Hash, HasherBase};
 
-/// DAA score at which `epoch_seed` was added to the canonical block hash (mainnet hard-fork point).
-/// Blocks with `daa_score < EPOCH_SEED_HASH_ACTIVATION` were hashed by the old binary that did
-/// not include this field, so we must skip it to keep their hashes consistent.
-/// For test networks the activation DAA score is 0, so ALL blocks include `epoch_seed`.
-pub const EPOCH_SEED_HASH_ACTIVATION_MAINNET: u64 = 21_370_801;
-
 /// Returns the header hash using the provided nonce+timestamp instead of those in the header.
+///
+/// `epoch_seed` is included in the hash **only when it is non-zero**.  A zero (default) epoch_seed
+/// means either the block predates Genome PoW activation or was received from a legacy node that
+/// did not set the field; in both cases we produce the same hash as those legacy nodes.
+/// Once Genome PoW is active the node sets a real (non-zero) epoch_seed in new block templates,
+/// which then becomes part of the canonical hash — forming a clean hard-fork boundary.
 #[inline]
 pub fn hash_override_nonce_time(header: &Header, nonce: u64, timestamp: u64) -> Hash {
-    hash_override_nonce_time_with_activation(header, nonce, timestamp, EPOCH_SEED_HASH_ACTIVATION_MAINNET)
+    hash_override_nonce_time_with_activation(header, nonce, timestamp, 0)
 }
 
-/// Like [`hash_override_nonce_time`] but with an explicit genome-PoW activation DAA score.
-/// Use this variant when the correct network activation threshold is known (e.g. in tests).
+/// Like [`hash_override_nonce_time`] but with an explicit genome-PoW activation DAA score
+/// (kept for API compatibility; the activation parameter is no longer used for hash computation).
 #[inline]
 pub fn hash_override_nonce_time_with_activation(
     header: &Header,
     nonce: u64,
     timestamp: u64,
-    genome_pow_activation_daa_score: u64,
+    _genome_pow_activation_daa_score: u64,
 ) -> Hash {
     let mut hasher = kaspa_hashes::BlockHash::new();
     hasher.update(header.version.to_le_bytes()).write_len(header.parents_by_level.len());
@@ -41,7 +41,7 @@ pub fn hash_override_nonce_time_with_activation(
         .update(header.blue_score.to_le_bytes())
         .write_blue_work(header.blue_work);
 
-    if header.daa_score >= genome_pow_activation_daa_score {
+    if header.epoch_seed != Hash::default() {
         hasher.update(header.epoch_seed);
     }
 

@@ -57,7 +57,7 @@ impl TryFrom<protowire::BlockHeader> for Header {
             // We follow the golang specification of variable big-endian here
             BlueWorkType::from_be_bytes_var(&item.blue_work)?,
             item.blue_score,
-            item.epoch_seed.try_into_ex()?,
+            item.epoch_seed.map(Hash::try_from).transpose().map_err(|_| super::error::ConversionError::General)?.unwrap_or_default(),
             item.pruning_point.try_into_ex()?,
         ))
     }
