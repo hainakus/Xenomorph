@@ -1,4 +1,5 @@
 //! PSKT input structure.
+#![allow(unused_assignments)]
 
 use crate::pskt::{KeySource, PartialSigs};
 use crate::utils::{combine_if_no_conflicts, Error as CombineMapErr};
@@ -139,7 +140,6 @@ impl Add for Input {
 
 /// Error combining two input maps.
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
-#[allow(unused_assignments)]
 pub enum CombineError {
     #[error("The previous txids are not the same")]
     PreviousTxidMismatch {

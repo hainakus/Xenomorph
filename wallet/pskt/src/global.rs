@@ -1,4 +1,5 @@
 //! Global PSKT data.
+#![allow(unused_assignments)]
 
 use crate::pskt::{KeySource, Version};
 use crate::utils::combine_if_no_conflicts;
@@ -128,7 +129,6 @@ impl Default for Global {
 
 /// Error combining two global maps.
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
-#[allow(unused_assignments)]
 pub enum CombineError {
     #[error("The version numbers are not the same")]
     /// The version numbers are not the same.

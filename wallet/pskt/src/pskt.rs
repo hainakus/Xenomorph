@@ -1,6 +1,7 @@
 //!
 //! Partially Signed Kaspa Transaction (PSKT)
 //!
+#![allow(unused_assignments)]
 
 use kaspa_bip32::{secp256k1, DerivationPath, KeyFingerprint};
 use serde::{Deserialize, Serialize};
@@ -461,7 +462,6 @@ pub enum CombineError {
 }
 
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
-#[allow(unused_assignments)]
 pub enum FinalizeError<E> {
     #[error("Signatures count mismatch")]
     WrongFinalizedSigsCount { expected: usize, actual: usize },

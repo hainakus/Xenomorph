@@ -1,4 +1,5 @@
 //! Utility functions for the PSKT module.
+#![allow(unused_assignments)]
 
 use std::collections::BTreeMap;
 
@@ -23,7 +24,6 @@ where
 }
 
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
-#[allow(unused_assignments)]
 #[error("Conflict")]
 pub struct Error<K, V> {
     pub field: K,
