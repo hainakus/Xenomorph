@@ -4,23 +4,22 @@
 //   2. fragment_hashes[fragment_index]  (pre-computed on CPU, uploaded to VRAM)
 //   3. blake3(fragment_hash||pre_pow_hash||nonce) → compare ≤ target
 
-// ── Blake3 constants ──────────────────────────────────────────────────────────
+// ── Blake3 IV ─────────────────────────────────────────────────────────────────
 
-const B3_IV = array<u32, 8>(
-    0x6A09E667u, 0xBB67AE85u, 0x3C6EF372u, 0xA54FF53Au,
-    0x510E527Fu, 0x9B05688Cu, 0x1F83D9ABu, 0x5BE0CD19u
-);
+const IV0 : u32 = 0x6A09E667u;
+const IV1 : u32 = 0xBB67AE85u;
+const IV2 : u32 = 0x3C6EF372u;
+const IV3 : u32 = 0xA54FF53Au;
+const IV4 : u32 = 0x510E527Fu;
+const IV5 : u32 = 0x9B05688Cu;
+const IV6 : u32 = 0x1F83D9ABu;
+const IV7 : u32 = 0x5BE0CD19u;
 
-// Blake3 message schedule sigma (7 rounds × 16 indices)
-const S0  = array<u32, 16>(0u,1u,2u,3u,4u,5u,6u,7u,8u,9u,10u,11u,12u,13u,14u,15u);
-const S1  = array<u32, 16>(2u,6u,3u,10u,7u,0u,4u,13u,1u,11u,12u,5u,9u,14u,15u,8u);
-const S2  = array<u32, 16>(3u,4u,10u,12u,13u,2u,7u,14u,6u,5u,9u,0u,11u,15u,8u,1u);
-const S3  = array<u32, 16>(10u,7u,12u,9u,14u,3u,13u,15u,4u,0u,11u,2u,5u,8u,1u,6u);
-const S4  = array<u32, 16>(12u,13u,9u,11u,15u,10u,14u,8u,7u,2u,5u,3u,0u,1u,6u,4u);
-const S5  = array<u32, 16>(9u,14u,11u,5u,8u,12u,15u,1u,13u,3u,0u,10u,2u,6u,4u,7u);
-const S6  = array<u32, 16>(11u,15u,5u,0u,1u,9u,8u,6u,14u,10u,2u,12u,3u,4u,7u,13u);
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-// ── Blake3 mixing function ────────────────────────────────────────────────────
+fn rotr(x: u32, n: u32) -> u32 { return (x >> n) | (x << (32u - n)); }
+
+// ── Blake3 G mixing function ──────────────────────────────────────────────────
 
 fn b3g(v: ptr<function, array<u32, 16>>, a: u32, b: u32, c: u32, d: u32, x: u32, y: u32) {
     (*v)[a] = (*v)[a] + (*v)[b] + x;
@@ -33,73 +32,118 @@ fn b3g(v: ptr<function, array<u32, 16>>, a: u32, b: u32, c: u32, d: u32, x: u32,
     (*v)[b] = rotr((*v)[b] ^ (*v)[c], 7u);
 }
 
-fn b3_round(v: ptr<function, array<u32, 16>>, m: array<u32, 16>, r: u32) {
-    var s: array<u32, 16>;
-    switch r {
-        case 0u: { s = S0; }
-        case 1u: { s = S1; }
-        case 2u: { s = S2; }
-        case 3u: { s = S3; }
-        case 4u: { s = S4; }
-        case 5u: { s = S5; }
-        default: { s = S6; }
-    }
-    b3g(v, 0u, 4u, 8u,  12u, m[s[0]],  m[s[1]]);
-    b3g(v, 1u, 5u, 9u,  13u, m[s[2]],  m[s[3]]);
-    b3g(v, 2u, 6u, 10u, 14u, m[s[4]],  m[s[5]]);
-    b3g(v, 3u, 7u, 11u, 15u, m[s[6]],  m[s[7]]);
-    b3g(v, 0u, 5u, 10u, 15u, m[s[8]],  m[s[9]]);
-    b3g(v, 1u, 6u, 11u, 12u, m[s[10]], m[s[11]]);
-    b3g(v, 2u, 7u, 8u,  13u, m[s[12]], m[s[13]]);
-    b3g(v, 3u, 4u, 9u,  14u, m[s[14]], m[s[15]]);
-}
+// ── Compress: 7 rounds fully inlined (avoids runtime double-array indexing) ───
 
-// Compress one 64-byte block.  Returns the full 16-word output vector.
-fn b3_compress(cv: array<u32, 8>, m: array<u32, 16>,
-               ctr_lo: u32, ctr_hi: u32, blen: u32, flags: u32) -> array<u32, 16> {
+fn b3_compress(cv0: u32, cv1: u32, cv2: u32, cv3: u32,
+               cv4: u32, cv5: u32, cv6: u32, cv7: u32,
+               m: ptr<function, array<u32, 16>>,
+               ctr_lo: u32, ctr_hi: u32, blen: u32, flags: u32)
+               -> array<u32, 8> {
     var v: array<u32, 16>;
-    v[0]=cv[0]; v[1]=cv[1]; v[2]=cv[2];  v[3]=cv[3];
-    v[4]=cv[4]; v[5]=cv[5]; v[6]=cv[6];  v[7]=cv[7];
-    v[8]=B3_IV[0]; v[9]=B3_IV[1]; v[10]=B3_IV[2]; v[11]=B3_IV[3];
+    v[0]=cv0; v[1]=cv1; v[2]=cv2; v[3]=cv3;
+    v[4]=cv4; v[5]=cv5; v[6]=cv6; v[7]=cv7;
+    v[8]=IV0; v[9]=IV1; v[10]=IV2; v[11]=IV3;
     v[12]=ctr_lo; v[13]=ctr_hi; v[14]=blen; v[15]=flags;
-    for (var r = 0u; r < 7u; r++) { b3_round(&v, m, r); }
+
+    // Round 0  sigma=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]
+    b3g(&v,0u,4u,8u, 12u,(*m)[0], (*m)[1]);
+    b3g(&v,1u,5u,9u, 13u,(*m)[2], (*m)[3]);
+    b3g(&v,2u,6u,10u,14u,(*m)[4], (*m)[5]);
+    b3g(&v,3u,7u,11u,15u,(*m)[6], (*m)[7]);
+    b3g(&v,0u,5u,10u,15u,(*m)[8], (*m)[9]);
+    b3g(&v,1u,6u,11u,12u,(*m)[10],(*m)[11]);
+    b3g(&v,2u,7u,8u, 13u,(*m)[12],(*m)[13]);
+    b3g(&v,3u,4u,9u, 14u,(*m)[14],(*m)[15]);
+
+    // Round 1  sigma=[2,6,3,10,7,0,4,13,1,11,12,5,9,14,15,8]
+    b3g(&v,0u,4u,8u, 12u,(*m)[2], (*m)[6]);
+    b3g(&v,1u,5u,9u, 13u,(*m)[3], (*m)[10]);
+    b3g(&v,2u,6u,10u,14u,(*m)[7], (*m)[0]);
+    b3g(&v,3u,7u,11u,15u,(*m)[4], (*m)[13]);
+    b3g(&v,0u,5u,10u,15u,(*m)[1], (*m)[11]);
+    b3g(&v,1u,6u,11u,12u,(*m)[12],(*m)[5]);
+    b3g(&v,2u,7u,8u, 13u,(*m)[9], (*m)[14]);
+    b3g(&v,3u,4u,9u, 14u,(*m)[15],(*m)[8]);
+
+    // Round 2  sigma=[3,4,10,12,13,2,7,14,6,5,9,0,11,15,8,1]
+    b3g(&v,0u,4u,8u, 12u,(*m)[3], (*m)[4]);
+    b3g(&v,1u,5u,9u, 13u,(*m)[10],(*m)[12]);
+    b3g(&v,2u,6u,10u,14u,(*m)[13],(*m)[2]);
+    b3g(&v,3u,7u,11u,15u,(*m)[7], (*m)[14]);
+    b3g(&v,0u,5u,10u,15u,(*m)[6], (*m)[5]);
+    b3g(&v,1u,6u,11u,12u,(*m)[9], (*m)[0]);
+    b3g(&v,2u,7u,8u, 13u,(*m)[11],(*m)[15]);
+    b3g(&v,3u,4u,9u, 14u,(*m)[8], (*m)[1]);
+
+    // Round 3  sigma=[10,7,12,9,14,3,13,15,4,0,11,2,5,8,1,6]
+    b3g(&v,0u,4u,8u, 12u,(*m)[10],(*m)[7]);
+    b3g(&v,1u,5u,9u, 13u,(*m)[12],(*m)[9]);
+    b3g(&v,2u,6u,10u,14u,(*m)[14],(*m)[3]);
+    b3g(&v,3u,7u,11u,15u,(*m)[13],(*m)[15]);
+    b3g(&v,0u,5u,10u,15u,(*m)[4], (*m)[0]);
+    b3g(&v,1u,6u,11u,12u,(*m)[11],(*m)[2]);
+    b3g(&v,2u,7u,8u, 13u,(*m)[5], (*m)[8]);
+    b3g(&v,3u,4u,9u, 14u,(*m)[1], (*m)[6]);
+
+    // Round 4  sigma=[12,13,9,11,15,10,14,8,7,2,5,3,0,1,6,4]
+    b3g(&v,0u,4u,8u, 12u,(*m)[12],(*m)[13]);
+    b3g(&v,1u,5u,9u, 13u,(*m)[9], (*m)[11]);
+    b3g(&v,2u,6u,10u,14u,(*m)[15],(*m)[10]);
+    b3g(&v,3u,7u,11u,15u,(*m)[14],(*m)[8]);
+    b3g(&v,0u,5u,10u,15u,(*m)[7], (*m)[2]);
+    b3g(&v,1u,6u,11u,12u,(*m)[5], (*m)[3]);
+    b3g(&v,2u,7u,8u, 13u,(*m)[0], (*m)[1]);
+    b3g(&v,3u,4u,9u, 14u,(*m)[6], (*m)[4]);
+
+    // Round 5  sigma=[9,14,11,5,8,12,15,1,13,3,0,10,2,6,4,7]
+    b3g(&v,0u,4u,8u, 12u,(*m)[9], (*m)[14]);
+    b3g(&v,1u,5u,9u, 13u,(*m)[11],(*m)[5]);
+    b3g(&v,2u,6u,10u,14u,(*m)[8], (*m)[12]);
+    b3g(&v,3u,7u,11u,15u,(*m)[15],(*m)[1]);
+    b3g(&v,0u,5u,10u,15u,(*m)[13],(*m)[3]);
+    b3g(&v,1u,6u,11u,12u,(*m)[0], (*m)[10]);
+    b3g(&v,2u,7u,8u, 13u,(*m)[2], (*m)[6]);
+    b3g(&v,3u,4u,9u, 14u,(*m)[4], (*m)[7]);
+
+    // Round 6  sigma=[11,15,5,0,1,9,8,6,14,10,2,12,3,4,7,13]
+    b3g(&v,0u,4u,8u, 12u,(*m)[11],(*m)[15]);
+    b3g(&v,1u,5u,9u, 13u,(*m)[5], (*m)[0]);
+    b3g(&v,2u,6u,10u,14u,(*m)[1], (*m)[9]);
+    b3g(&v,3u,7u,11u,15u,(*m)[8], (*m)[6]);
+    b3g(&v,0u,5u,10u,15u,(*m)[14],(*m)[10]);
+    b3g(&v,1u,6u,11u,12u,(*m)[2], (*m)[12]);
+    b3g(&v,2u,7u,8u, 13u,(*m)[3], (*m)[4]);
+    b3g(&v,3u,4u,9u, 14u,(*m)[7], (*m)[13]);
+
     v[0]^=v[8];  v[1]^=v[9];  v[2]^=v[10]; v[3]^=v[11];
     v[4]^=v[12]; v[5]^=v[13]; v[6]^=v[14]; v[7]^=v[15];
-    return v;
-}
-
-// Extract the 8-word chaining value from a compress output.
-fn cv_from(out: array<u32, 16>) -> array<u32, 8> {
-    return array<u32, 8>(out[0],out[1],out[2],out[3],out[4],out[5],out[6],out[7]);
+    return array<u32,8>(v[0],v[1],v[2],v[3],v[4],v[5],v[6],v[7]);
 }
 
 // ── blake3 of 40 bytes: epoch_seed(32) || nonce(8) → 8 u32s ─────────────────
-//
-// Single block (block_len=40), flags = CHUNK_START|CHUNK_END|ROOT = 11.
-fn b3_hash_40(data: array<u32, 10>) -> array<u32, 8> {
+fn b3_hash_40(d0: u32, d1: u32, d2: u32, d3: u32, d4: u32, d5: u32, d6: u32, d7: u32,
+              d8: u32, d9: u32) -> array<u32, 8> {
     var m: array<u32, 16>;
-    for (var i = 0u; i < 10u; i++) { m[i] = data[i]; }
-    // m[10..15] are already 0 (zero-init)
-    let out = b3_compress(B3_IV, m, 0u, 0u, 40u, 11u);
-    return cv_from(out);
+    m[0]=d0; m[1]=d1; m[2]=d2; m[3]=d3; m[4]=d4;
+    m[5]=d5; m[6]=d6; m[7]=d7; m[8]=d8; m[9]=d9;
+    return b3_compress(IV0,IV1,IV2,IV3,IV4,IV5,IV6,IV7, &m, 0u,0u, 40u, 11u);
 }
 
-// ── blake3 of 72 bytes: frag_hash(32) || pre_pow_hash(32) || nonce(8) ────────
-//
-// Block 1: 64 bytes (frag_hash||pre_pow_hash), flags=CHUNK_START=1
-// Block 2:  8 bytes (nonce) padded to 64,       flags=CHUNK_END|ROOT=10
-fn b3_hash_72(a: array<u32, 8>, b_data: array<u32, 8>, nonce_lo: u32, nonce_hi: u32) -> array<u32, 8> {
-    // Block 1
+// ── blake3 of 72 bytes: frag_hash(32)||pre_pow_hash(32)||nonce(8) ─────────────
+fn b3_hash_72(fh: array<u32, 8>, ph: array<u32, 8>, nonce_lo: u32, nonce_hi: u32) -> array<u32, 8> {
+    // Block 1: 64 bytes (frag_hash||pre_pow_hash), flags=CHUNK_START=1
     var m1: array<u32, 16>;
-    for (var i = 0u; i < 8u; i++) { m1[i] = a[i]; m1[i+8u] = b_data[i]; }
-    let out1 = b3_compress(B3_IV, m1, 0u, 0u, 64u, 1u);
-    let cv1 = cv_from(out1);
-    // Block 2
+    m1[0]=fh[0]; m1[1]=fh[1]; m1[2]=fh[2]; m1[3]=fh[3];
+    m1[4]=fh[4]; m1[5]=fh[5]; m1[6]=fh[6]; m1[7]=fh[7];
+    m1[8]=ph[0]; m1[9]=ph[1]; m1[10]=ph[2]; m1[11]=ph[3];
+    m1[12]=ph[4]; m1[13]=ph[5]; m1[14]=ph[6]; m1[15]=ph[7];
+    let cv1 = b3_compress(IV0,IV1,IV2,IV3,IV4,IV5,IV6,IV7, &m1, 0u,0u, 64u, 1u);
+
+    // Block 2: 8 bytes (nonce), flags=CHUNK_END|ROOT=10
     var m2: array<u32, 16>;
-    m2[0] = nonce_lo; m2[1] = nonce_hi;
-    // m2[2..15] = 0
-    let out2 = b3_compress(cv1, m2, 0u, 0u, 8u, 10u);
-    return cv_from(out2);
+    m2[0]=nonce_lo; m2[1]=nonce_hi;
+    return b3_compress(cv1[0],cv1[1],cv1[2],cv1[3],cv1[4],cv1[5],cv1[6],cv1[7],
+                       &m2, 0u,0u, 8u, 10u);
 }
 
 // ── Inputs/outputs ───────────────────────────────────────────────────────────
@@ -121,19 +165,21 @@ struct Output {
     pad0:     u32,
 }
 
-@group(0) @binding(0) var<uniform>             params:          Params;
+@group(0) @binding(0) var<storage, read>        params:          Params;
 @group(0) @binding(1) var<storage, read>       frag_hashes:     array<u32>;  // num_fragments × 8 u32s
 @group(0) @binding(2) var<storage, read_write> out_buf:         Output;
 
 // ── 256-bit LE comparison: returns true if a ≤ b ─────────────────────────────
 fn le256(a: array<u32, 8>, b: array<u32, 8>) -> bool {
-    for (var i = 7i; i >= 0i; i--) {
-        let ai = a[u32(i)];
-        let bi = b[u32(i)];
-        if ai < bi { return true; }
-        if ai > bi { return false; }
-    }
-    return true; // equal
+    if a[7] < b[7] { return true; } if a[7] > b[7] { return false; }
+    if a[6] < b[6] { return true; } if a[6] > b[6] { return false; }
+    if a[5] < b[5] { return true; } if a[5] > b[5] { return false; }
+    if a[4] < b[4] { return true; } if a[4] > b[4] { return false; }
+    if a[3] < b[3] { return true; } if a[3] > b[3] { return false; }
+    if a[2] < b[2] { return true; } if a[2] > b[2] { return false; }
+    if a[1] < b[1] { return true; } if a[1] > b[1] { return false; }
+    if a[0] < b[0] { return true; } if a[0] > b[0] { return false; }
+    return true;
 }
 
 // ── Main compute kernel ───────────────────────────────────────────────────────
@@ -147,44 +193,43 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if nonce_lo < delta { nonce_hi += 1u; }  // carry
 
     // Step 1: fragment_index = blake3(epoch_seed||nonce)[0..8] % num_fragments
-    var inp40: array<u32, 10>;
-    for (var i = 0u; i < 8u; i++) { inp40[i] = params.epoch_seed[i]; }
-    inp40[8] = nonce_lo;
-    inp40[9] = nonce_hi;
-    let h40 = b3_hash_40(inp40);
-    // h40[0] and h40[1] = first 8 bytes LE → u64
-    let raw_lo = h40[0];
-    let raw_hi = h40[1];
-    // raw % num_fragments  (64-bit mod approximated as 32-bit since num_fragments ≤ 2^32)
+    // Matches Rust: u64::from_le_bytes(hash[0..8]) % num_fragments
+    let h40 = b3_hash_40(
+        params.epoch_seed[0], params.epoch_seed[1],
+        params.epoch_seed[2], params.epoch_seed[3],
+        params.epoch_seed[4], params.epoch_seed[5],
+        params.epoch_seed[6], params.epoch_seed[7],
+        nonce_lo, nonce_hi);
     var frag_idx: u32;
     if params.num_fragments == 0u {
         frag_idx = 0u;
     } else {
-        // Use 64-bit mod: treat as u64 little-endian
-        // For num_fragments that fit in u32 (≤3000), we can do: combine into u64, mod
-        // WGSL doesn't have u64, so approximate: (lo + hi*2^32) % N
-        // Since N << 2^32, hi*2^32 % N = (hi % N) * (2^32 % N) % N
-        let n = params.num_fragments;
-        let pow32_mod_n = u32((u64(0x100000000u) % u64(n)));  // WGSL has no u64; use workaround
-        // Actually WGSL doesn't support u64. Use: (hi*pow32_mod_n + lo) % n
-        // pow32_mod_n: 2^32 % n. For n≤3000 this = (4294967296 % n). Precomputed on CPU.
-        // We pass it as a spare field: actually let me use a simpler approach:
-        // Since num_fragments ≤ 2861 << 2^16, raw_lo alone gives good distribution:
-        frag_idx = raw_lo % n;
+        // 64-bit modulo in 32-bit arithmetic:
+        //   raw64 = h40[0] + h40[1] * 2^32
+        //   raw64 % n = (h40[0] % n + h40[1] % n * (2^32 % n)) % n
+        // 2^32 % n = (0xFFFFFFFF % n + 1) % n  (avoids u32 overflow)
+        let n  = params.num_fragments;
+        let lo = h40[0] % n;
+        let hi = h40[1] % n;
+        let p  = (0xFFFFFFFFu % n + 1u) % n;  // 2^32 mod n
+        frag_idx = (hi * p + lo) % n;
     }
 
-    // Step 2: lookup fragment hash
+    // Step 2: lookup fragment hash (unrolled)
     let base = frag_idx * 8u;
-    var fh: array<u32, 8>;
-    for (var i = 0u; i < 8u; i++) { fh[i] = frag_hashes[base + i]; }
+    let fh = array<u32, 8>(
+        frag_hashes[base],     frag_hashes[base + 1u],
+        frag_hashes[base + 2u],frag_hashes[base + 3u],
+        frag_hashes[base + 4u],frag_hashes[base + 5u],
+        frag_hashes[base + 6u],frag_hashes[base + 7u]);
 
     // Step 3: genome_final_hash = blake3(frag_hash||pre_pow_hash||nonce) ≤ target?
     let pow_hash = b3_hash_72(fh, params.pre_pow_hash, nonce_lo, nonce_hi);
 
     if le256(pow_hash, params.pow_target) {
-        // Atomically claim the first found nonce
-        let prev = atomicCompareExchangeWeak(&out_buf.found, 0u, 1u);
-        if prev.old_value == 0u {
+        // atomicAdd returns the OLD value; the invocation that gets 0 is first winner
+        let slot = atomicAdd(&out_buf.found, 1u);
+        if slot == 0u {
             out_buf.nonce_lo = nonce_lo;
             out_buf.nonce_hi = nonce_hi;
         }
