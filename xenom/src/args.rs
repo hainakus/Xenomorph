@@ -61,7 +61,6 @@ pub struct Args {
     #[serde(rename = "rpcmaxclients")]
     pub rpc_max_clients: usize,
     pub max_tracked_addresses: usize,
-    pub enable_unsynced_mining: bool,
     pub enable_mainnet_mining: bool,
     pub testnet: bool,
     #[serde(rename = "netsuffix")]
@@ -107,7 +106,6 @@ impl Default for Args {
             inbound_limit: 128,
             rpc_max_clients: 128,
             max_tracked_addresses: 0,
-            enable_unsynced_mining: false,
             enable_mainnet_mining: true,
             testnet: false,
             testnet_suffix: 10,
@@ -149,7 +147,6 @@ impl Args {
         config.utxoindex = self.utxoindex;
         config.disable_upnp = self.disable_upnp;
         config.unsafe_rpc = self.unsafe_rpc;
-        config.enable_unsynced_mining = self.enable_unsynced_mining;
         config.enable_mainnet_mining = self.enable_mainnet_mining;
         config.is_archival = self.archival;
         // TODO: change to `config.enable_sanity_checks = self.sanity` when we reach stable versions
@@ -302,7 +299,6 @@ pub fn cli() -> Command {
                 .help("Max number of RPC clients for standard connections (default: 128)."),
         )
         .arg(arg!(--"reset-db" "Reset database before starting node. It's needed when switching between subnetworks."))
-        .arg(arg!(--"enable-unsynced-mining" "Allow the node to accept blocks from RPC while not synced (this flag is mainly used for testing)"))
         .arg(
             Arg::new("enable-mainnet-mining")
                 .long("enable-mainnet-mining")
@@ -428,7 +424,6 @@ impl Args {
             rpc_max_clients: arg_match_unwrap_or::<usize>(&m, "rpcmaxclients", defaults.rpc_max_clients),
             max_tracked_addresses: arg_match_unwrap_or::<usize>(&m, "max-tracked-addresses", defaults.max_tracked_addresses),
             reset_db: arg_match_unwrap_or::<bool>(&m, "reset-db", defaults.reset_db),
-            enable_unsynced_mining: arg_match_unwrap_or::<bool>(&m, "enable-unsynced-mining", defaults.enable_unsynced_mining),
             enable_mainnet_mining: arg_match_unwrap_or::<bool>(&m, "enable-mainnet-mining", defaults.enable_mainnet_mining),
             utxoindex: arg_match_unwrap_or::<bool>(&m, "utxoindex", defaults.utxoindex),
             testnet: arg_match_unwrap_or::<bool>(&m, "testnet", defaults.testnet),
