@@ -45,7 +45,6 @@ async fn sanity_test() {
     let args = Args {
         simnet: true,
         disable_upnp: true, // UPnP registration might take some time and is not needed for this test
-        enable_unsynced_mining: true,
         block_template_cache_lifetime: Some(0),
         utxoindex: true,
         unsafe_rpc: true,

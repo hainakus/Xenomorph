@@ -296,9 +296,13 @@ impl RpcApi for RpcCoreService {
         let session = self.consensus_manager.consensus().unguarded_session();
 
         // TODO: consider adding an error field to SubmitBlockReport to document both the report and error fields
-        let is_synced: bool = self.has_sufficient_peer_connectivity() && session.async_is_nearly_synced().await;
+        // A node is considered ready to mine when it is nearly synced OR when IBD is not running
+        // (meaning no peer has a longer chain — the node is already at the network tip, even if
+        // the chain has been idle for longer than the DAA window).
+        let is_synced: bool = self.has_sufficient_peer_connectivity()
+            && (session.async_is_nearly_synced().await || !self.flow_context.is_ibd_running());
 
-        if !self.config.enable_unsynced_mining && !is_synced {
+        if !is_synced {
             // error = "Block not submitted - node is not synced"
             return Ok(SubmitBlockResponse { report: SubmitBlockReport::Reject(SubmitBlockRejectReason::IsInIBD) });
         }
@@ -378,8 +382,8 @@ NOTE: This error usually indicates an RPC conversion error between the node and 
             return Err(RpcError::CoinbasePayloadLengthAboveMax(self.config.max_coinbase_payload_len));
         }
 
-        let is_nearly_synced =
-            self.config.is_nearly_synced(block_template.selected_parent_timestamp, block_template.selected_parent_daa_score);
+        let is_nearly_synced = self.config.is_nearly_synced(block_template.selected_parent_timestamp, block_template.selected_parent_daa_score)
+            || !self.flow_context.is_ibd_running();
         Ok(GetBlockTemplateResponse {
             block: block_template.block.into(),
             is_synced: self.has_sufficient_peer_connectivity() && is_nearly_synced,

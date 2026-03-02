@@ -51,7 +51,6 @@ async fn daemon_mining_test() {
     let args = Args {
         simnet: true,
         unsafe_rpc: true,
-        enable_unsynced_mining: true,
         disable_upnp: true, // UPnP registration might take some time and is not needed for this test
         ..Default::default()
     };
@@ -134,7 +133,6 @@ async fn daemon_utxos_propagation_test() {
     let args = Args {
         simnet: true,
         unsafe_rpc: true,
-        enable_unsynced_mining: true,
         disable_upnp: true, // UPnP registration might take some time and is not needed for this test
         utxoindex: true,
         ..Default::default()
