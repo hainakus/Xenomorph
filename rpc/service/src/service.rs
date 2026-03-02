@@ -296,12 +296,15 @@ impl RpcApi for RpcCoreService {
         let session = self.consensus_manager.consensus().unguarded_session();
 
         // TODO: consider adding an error field to SubmitBlockReport to document both the report and error fields
-        // A node is considered ready to mine when it is nearly synced OR when IBD is not running
-        // (meaning no peer has a longer chain — the node is already at the network tip, even if
-        // the chain has been idle for longer than the DAA window).
-        let is_synced: bool = self.has_sufficient_peer_connectivity()
-            && (session.async_is_nearly_synced().await
-                || (!self.flow_context.is_ibd_running() && self.flow_context.hub().has_peers()));
+        // A node is considered ready to mine when:
+        //  1. It is nearly synced (last block is recent), OR
+        //  2. IBD is not running AND it has peers (at network tip on an idle chain), OR
+        //  3. It is a non-production network (simnet/devnet) where sync checks are not meaningful.
+        let is_real_network = matches!(self.flow_context.config.net.network_type, Mainnet | Testnet);
+        let is_synced: bool = !is_real_network
+            || (self.has_sufficient_peer_connectivity()
+                && (session.async_is_nearly_synced().await
+                    || (!self.flow_context.is_ibd_running() && self.flow_context.hub().has_peers())));
 
         if !is_synced {
             // error = "Block not submitted - node is not synced"
