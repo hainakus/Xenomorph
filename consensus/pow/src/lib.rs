@@ -28,11 +28,9 @@ impl State {
     #[inline]
     pub fn new(header: &Header) -> Self {
         let target = Uint256::from_compact_target_bits(header.bits);
-        // KHeavyHash never includes epoch_seed in the pre-pow hash.
-        // Using u64::MAX as the activation ensures the condition
-        // `daa_score >= activation` is always false, matching the original
-        // Kaspa hash computation for all existing mainnet blocks.
-        let pre_pow_hash = hashing::header::hash_override_nonce_time_with_activation(header, 0, 0, u64::MAX);
+        // epoch_seed is included in the pre-pow hash when non-zero (activation=0).
+        // Xenomorph mainnet blocks were mined with this hash semantics.
+        let pre_pow_hash = hashing::header::hash_override_nonce_time(header, 0, 0);
         // PRE_POW_HASH || TIME || 32 zero byte padding || NONCE
         let hasher = PowHash::new(pre_pow_hash, header.timestamp);
         let matrix = Matrix::generate(pre_pow_hash);
