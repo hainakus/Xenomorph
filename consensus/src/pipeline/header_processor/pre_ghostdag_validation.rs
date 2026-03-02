@@ -109,6 +109,15 @@ impl HeaderProcessor {
             let state = kaspa_pow::State::new(header);
             let (passed, pow) = state.check_pow(header.nonce);
             if !passed {
+                // Diagnostic: log enough detail to reproduce the failure offline.
+                let pre_with = kaspa_consensus_core::hashing::header::hash_override_nonce_time(header, 0, 0);
+                let pre_without = kaspa_consensus_core::hashing::header::hash_override_nonce_time_with_activation(header, 0, 0, u64::MAX);
+                kaspa_core::warn!(
+                    "InvalidPoW daa={} nonce={:#018x} epoch_seed={} bits={:#010x} \
+                     pre_pow_with_epoch_seed={} pre_pow_without_epoch_seed={}",
+                    header.daa_score, header.nonce, header.epoch_seed,
+                    header.bits, pre_with, pre_without
+                );
                 return Err(RuleError::InvalidPoW);
             }
             pow
