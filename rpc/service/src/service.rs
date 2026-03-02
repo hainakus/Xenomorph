@@ -300,7 +300,8 @@ impl RpcApi for RpcCoreService {
         // (meaning no peer has a longer chain — the node is already at the network tip, even if
         // the chain has been idle for longer than the DAA window).
         let is_synced: bool = self.has_sufficient_peer_connectivity()
-            && (session.async_is_nearly_synced().await || !self.flow_context.is_ibd_running());
+            && (session.async_is_nearly_synced().await
+                || (!self.flow_context.is_ibd_running() && self.flow_context.hub().has_peers()));
 
         if !is_synced {
             // error = "Block not submitted - node is not synced"
@@ -383,7 +384,7 @@ NOTE: This error usually indicates an RPC conversion error between the node and 
         }
 
         let is_nearly_synced = self.config.is_nearly_synced(block_template.selected_parent_timestamp, block_template.selected_parent_daa_score)
-            || !self.flow_context.is_ibd_running();
+            || (!self.flow_context.is_ibd_running() && self.flow_context.hub().has_peers());
         Ok(GetBlockTemplateResponse {
             block: block_template.block.into(),
             is_synced: self.has_sufficient_peer_connectivity() && is_nearly_synced,
