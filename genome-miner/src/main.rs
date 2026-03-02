@@ -89,7 +89,6 @@ struct MineConfig {
 
 struct MinerState {
     cfg: MineConfig,
-    loader: Arc<dyn GenomeDatasetLoader>,
     template_generation: AtomicU64,
     template_id: std::sync::Mutex<Option<kaspa_hashes::Hash>>,
     found: AtomicBool,
@@ -97,10 +96,7 @@ struct MinerState {
 
 impl MinerState {
     fn new(cfg: MineConfig) -> Self {
-        let epoch_seed = kaspa_hashes::Hash::from_bytes([0u8; 32]);
-        let inner = SyntheticLoader::new(cfg.genome_fragment_size_bytes, epoch_seed);
-        let loader: Arc<dyn GenomeDatasetLoader> = Arc::new(CachedLoader::new(inner, 256));
-        Self { cfg, loader, template_generation: AtomicU64::new(0), template_id: std::sync::Mutex::new(None), found: AtomicBool::new(false) }
+        Self { cfg, template_generation: AtomicU64::new(0), template_id: std::sync::Mutex::new(None), found: AtomicBool::new(false) }
     }
 }
 
@@ -185,13 +181,18 @@ async fn cmd_mine(m: &ArgMatches) {
         info!("New template daa={} bits={:#010x} genome={}", header.daa_score, header.bits, genome_active);
 
         let batch = state.cfg.nonce_batch;
+        let frag_size = state.cfg.genome_fragment_size_bytes;
+        // Build a per-template loader keyed on the template's epoch_seed so that
+        // synthesized fragment content matches what the validator computes.
+        let template_loader: Arc<dyn GenomeDatasetLoader> = Arc::new(
+            CachedLoader::new(SyntheticLoader::new(frag_size, header.epoch_seed), 256)
+        );
         let mut nonce_base: u64 = 0;
         let solution: Option<u64> = 'search: loop {
             if state.template_generation.load(Ordering::Relaxed) != gen { break 'search None; }
             let range_start = nonce_base;
             nonce_base = nonce_base.saturating_add(batch * state.cfg.threads as u64);
-            let frag_size = state.cfg.genome_fragment_size_bytes;
-            let loader_ref = state.loader.as_ref();
+            let loader_ref = template_loader.as_ref();
             let winning = pool.install(|| {
                 (0..state.cfg.threads as u64).into_par_iter().find_map_first(|tid| {
                     let start = range_start + tid * batch;
