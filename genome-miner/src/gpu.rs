@@ -448,8 +448,9 @@ pub async fn cmd_gpu(m: &ArgMatches) {
         }
 
         if header.daa_score < genome_activation {
-            // Pre-activation: mine KHeavyHash (PyrinHashv2) on GPU
-            let pre_pow_hash = kaspa_consensus_core::hashing::header::hash_override_nonce_time(&header, 0, 0);
+            // Pre-activation: mine KHeavyHash (PyrinHashv2) on GPU.
+            // KHeavyHash never includes epoch_seed in the pre-pow hash (u64::MAX activation).
+            let pre_pow_hash = kaspa_consensus_core::hashing::header::hash_override_nonce_time_with_activation(&header, 0, 0, u64::MAX);
             let target = kaspa_math::Uint256::from_compact_target_bits(header.bits);
 
             // Re-upload matrix when template changes (pre_pow_hash → new matrix)
