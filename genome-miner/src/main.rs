@@ -119,18 +119,15 @@ async fn main() {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /// Resolves the genome PoW activation DAA score from CLI flags.
-/// Priority: explicit `--genome-activation-daa-score` > `--mainnet` > `--testnet`/`--devnet` > u64::MAX
+/// Priority: explicit `--genome-activation-daa-score` > `--testnet`/`--devnet` > mainnet default
 fn resolve_activation(m: &ArgMatches) -> u64 {
     if let Some(&score) = m.get_one::<u64>("genome-activation-daa-score") {
         return score;
     }
-    if m.get_flag("mainnet") {
-        return kaspa_consensus_core::hashing::header::EPOCH_SEED_HASH_ACTIVATION_MAINNET;
-    }
     if m.get_flag("testnet") || m.get_flag("devnet") {
         return 0;
     }
-    u64::MAX
+    kaspa_consensus_core::hashing::header::EPOCH_SEED_HASH_ACTIVATION_MAINNET
 }
 
 // ── mine ─────────────────────────────────────────────────────────────────────
