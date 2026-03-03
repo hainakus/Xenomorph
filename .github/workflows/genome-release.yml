@@ -58,9 +58,9 @@ jobs:
       - name: Extract merkle root
         id: merkle
         run: |
-          ROOT=$(grep "Merkle root:" genome-freeze.log | awk '{print $3}')
-          echo "root=$ROOT" >> $GITHUB_OUTPUT
-          echo "Merkle root: $ROOT"
+          ROOT=$(grep -m 1 "Merkle root:" genome-freeze.log | awk '{print $3}')
+          echo "root=${ROOT}" >> "$GITHUB_OUTPUT"
+          echo "Merkle root: ${ROOT}"
 
       - name: Verify merkle root matches params.rs
         run: |
