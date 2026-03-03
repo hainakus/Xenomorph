@@ -5,6 +5,7 @@ use async_channel::unbounded;
 use kaspa_consensus_core::{
     config::ConfigBuilder,
     errors::config::{ConfigError, ConfigResult},
+    network::NetworkType,
 };
 use kaspa_consensus_notify::{root::ConsensusNotificationRoot, service::NotifyService};
 use kaspa_core::{core::Core, debug, info};
@@ -247,12 +248,17 @@ pub fn create_core_with_runtime(runtime: &Runtime, args: &Args, fd_total_budget:
         } else if let Some(ref global) = global_candidate {
             if global.exists() {
                 Some(global.to_string_lossy().into_owned())
+            } else if network.network_type == NetworkType::Simnet {
+                // Simnet uses skip_proof_of_work=true; never download the genome dataset.
+                None
             } else {
                 // Not found anywhere — attempt auto-download.
                 info!("Genome PoW dataset not found. Downloading from GitHub Releases...");
                 info!("  Source:      {}", GENOME_RELEASE_URL);
                 info!("  Destination: {}", global.display());
-                match tokio::runtime::Handle::current().block_on(download_genome_file(GENOME_RELEASE_URL, global)) {
+                match tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(download_genome_file(GENOME_RELEASE_URL, global))
+                }) {
                     Ok(()) => {
                         info!("Genome dataset download complete: {}", global.display());
                         Some(global.to_string_lossy().into_owned())
