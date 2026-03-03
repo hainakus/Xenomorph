@@ -485,11 +485,13 @@ pub fn genome_mix_hash(packed: &[u8], epoch_seed: &Hash, nonce: u64, pre_pow_has
         *h.finalize().as_bytes()
     };
 
+    let num_chunks_u32 = num_chunks.min(u32::MAX as u64) as u32;
     for _ in 0..MIX_ROUNDS {
-        if num_chunks == 0 {
+        if num_chunks_u32 == 0 {
             break;
         }
-        let pos = u64::from_le_bytes(state[0..8].try_into().unwrap()) % num_chunks;
+        // Use low 32 bits of state (matches WGSL `state[0] % n` — avoids u32 overflow).
+        let pos = (u32::from_le_bytes(state[0..4].try_into().unwrap()) % num_chunks_u32) as u64;
         let offset = (pos * MIX_CHUNK_BYTES as u64) as usize;
         let mut h = blake3::Hasher::new();
         h.update(&state);

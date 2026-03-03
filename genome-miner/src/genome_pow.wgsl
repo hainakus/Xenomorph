@@ -218,13 +218,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         nonce_lo, nonce_hi);
 
     // Step 2: 8 mixing rounds — random 32-byte reads from full packed genome.
-    // pos_idx uses 64-bit mod in 32-bit arithmetic (same pattern as old frag_idx).
-    // packed_genome is array<u32>, so 8 u32s = 32 bytes per chunk.
+    // pos uses the low 32 bits of state (state[0]) mod num_mix_chunks.
+    // Simple 32-bit mod avoids u32 overflow and matches Rust genome_mix_hash exactly.
     let n = params.num_mix_chunks;
     if n > 0u {
         for (var i = 0u; i < 8u; i++) {
-            let p   = (0xFFFFFFFFu % n + 1u) % n;
-            let pos = (state[1] % n * p + state[0] % n) % n;
+            let pos = state[0] % n;
             let base = pos * 8u;
             let chunk = array<u32, 8>(
                 packed_genome[base],      packed_genome[base + 1u],
