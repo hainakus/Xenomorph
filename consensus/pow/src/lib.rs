@@ -1,5 +1,7 @@
 // public for benchmarks
 #[doc(hidden)]
+pub mod genome_file;
+#[doc(hidden)]
 pub mod genome_pow;
 #[doc(hidden)]
 pub mod matrix;

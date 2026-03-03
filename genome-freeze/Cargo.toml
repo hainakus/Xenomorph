@@ -1,0 +1,17 @@
+[package]
+name = "genome-freeze"
+description = "Xenom GRCh38 genome dataset freezer — converts FASTA to packed .xenom format"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "genome-freeze"
+path = "src/main.rs"
+
+[dependencies]
+kaspa-pow.workspace = true
+kaspa-hashes.workspace = true
+clap = { workspace = true }
