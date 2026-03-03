@@ -243,7 +243,18 @@ impl Consensus {
                 true,
             )
             .unwrap_or_else(|e| panic!("Failed to open genome file '{genome_path}': {e}"));
-            kaspa_core::info!("Genome PoW: loaded {genome_path} ({} fragments)", loader.num_fragments());
+            let file_root = loader.merkle_root_hex();
+            if file_root != params.genome_merkle_root {
+                panic!(
+                    "Genome file Merkle root mismatch!\n  file:   {file_root}\n  params: {}\nEnsure you are using the canonical GRCh38 dataset (Ensembl release-113 primary assembly).",
+                    params.genome_merkle_root
+                );
+            }
+            kaspa_core::info!(
+                "Genome PoW: loaded {genome_path} ({} fragments, root {}...)",
+                loader.num_fragments(),
+                &file_root[..12]
+            );
             header_processor_base.with_genome_loader(std::sync::Arc::new(loader))
         } else {
             header_processor_base
