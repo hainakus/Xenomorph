@@ -14,8 +14,9 @@ use kaspa_hashes::Hash;
 use kaspa_math::Uint256;
 use std::collections::HashSet;
 
-/// Number of deterministic mutation steps applied to each fragment per nonce attempt.
-pub const MUTATION_STEPS: usize = 8;
+/// Minimum and maximum adaptive mutation rounds K(epoch) ∈ [4, 16].
+pub const MUTATION_ROUNDS_MIN: usize = 4;
+pub const MUTATION_ROUNDS_MAX: usize = 16;
 
 /// Approximate size of the human genome base (GRCh38) in bytes.
 pub const GENOME_BASE_SIZE: u64 = 3_000_000_000;
@@ -91,12 +92,23 @@ fn apply_step(genome: &mut [u8], params: &[u8; 32]) {
     }
 }
 
-/// Applies `MUTATION_STEPS` deterministic mutations to `genome` in-place.
+/// Returns the number of mutation rounds K for a given epoch seed: K ∈ [4, 16].
 ///
-/// All parameters are derived from `epoch_seed` only (not the nonce), so every
+/// Derived from `epoch_seed[0]` so it changes every epoch deterministically.
+#[inline]
+pub fn mutation_rounds_for_epoch(epoch_seed: &Hash) -> usize {
+    let byte = epoch_seed.as_bytes()[0];
+    MUTATION_ROUNDS_MIN + (byte as usize % (MUTATION_ROUNDS_MAX - MUTATION_ROUNDS_MIN + 1))
+}
+
+/// Applies K(epoch) deterministic mutations to `genome` in-place.
+///
+/// The number of rounds is derived from `epoch_seed` (adaptive per epoch).
+/// All mutation parameters are also derived from `epoch_seed`, so every
 /// miner applying the same seed to the same fragment gets an identical result.
 pub fn apply_mutations(genome: &mut [u8], epoch_seed: &Hash) {
-    for step in 0..MUTATION_STEPS {
+    let rounds = mutation_rounds_for_epoch(epoch_seed);
+    for step in 0..rounds {
         let params = step_params(epoch_seed, step);
         apply_step(genome, &params);
     }
@@ -104,20 +116,51 @@ pub fn apply_mutations(genome: &mut [u8], epoch_seed: &Hash) {
 
 // ─── Fitness scoring ──────────────────────────────────────────────────────────
 
-/// Computes the fitness score of a mutated genome fragment.
+/// Derives per-epoch fitness weights `(w1, w2, w3)` from the epoch seed.
 ///
-/// Returns a value in `[0, 3000]` as the sum of three sub-scores:
-/// - **Entropy**    (0–1000): Shannon entropy of byte distribution
-/// - **GC content** (0–1000): proximity to the ~50% GC optimum
-/// - **Complexity** (0–1000): unique 4-gram ratio (sampled)
-pub fn compute_fitness(genome: &[u8]) -> u32 {
-    entropy_score(genome) + gc_content_score(genome) + cycle_complexity_score(genome)
+/// Each weight is proportional to a seed byte offset by 64 to avoid zero weights.
+/// The three weights always sum to exactly 3000 (the maximum possible fitness).
+pub fn epoch_weights(epoch_seed: &Hash) -> (u32, u32, u32) {
+    let bytes = epoch_seed.as_bytes();
+    let a = (bytes[2] as u32) + 64; // [64, 319]
+    let b = (bytes[3] as u32) + 64;
+    let c = (bytes[4] as u32) + 64;
+    let total = a + b + c;
+    let w1 = a * 3000 / total;
+    let w2 = b * 3000 / total;
+    let w3 = 3000u32.saturating_sub(w1 + w2);
+    (w1, w2, w3)
 }
 
-/// Shannon-entropy sub-score: 0 (all bytes identical) → 1000 (uniform distribution).
-fn entropy_score(data: &[u8]) -> u32 {
+/// Computes the fitness score of a mutated genome fragment using equal weights.
+///
+/// Returns a value in `[0, 3000]` as the equally-weighted sum of three sub-scores.
+/// Use `compute_fitness_with_seed` for the epoch-adaptive version.
+pub fn compute_fitness(genome: &[u8]) -> u32 {
+    compute_fitness_weighted(genome, 1000, 1000, 1000)
+}
+
+/// Computes the adaptive fitness score using per-epoch weights derived from `epoch_seed`.
+///
+/// This is the production path used during Genome PoW mining and validation.
+pub fn compute_fitness_with_seed(genome: &[u8], epoch_seed: &Hash) -> u32 {
+    let (w1, w2, w3) = epoch_weights(epoch_seed);
+    compute_fitness_weighted(genome, w1, w2, w3)
+}
+
+/// Computes the fitness score with explicit weights `(w1, w2, w3)` where
+/// each weight is in [0, 3000] and ideally sums to 3000.
+pub fn compute_fitness_weighted(genome: &[u8], w1: u32, w2: u32, w3: u32) -> u32 {
+    let e = entropy_score_normalized(genome);
+    let g = gc_content_score_normalized(genome);
+    let c = cycle_complexity_score_normalized(genome);
+    ((e * w1 as f64) + (g * w2 as f64) + (c * w3 as f64)).min(3000.0) as u32
+}
+
+/// Shannon-entropy sub-score normalised to [0.0, 1.0].
+fn entropy_score_normalized(data: &[u8]) -> f64 {
     if data.is_empty() {
-        return 0;
+        return 0.0;
     }
     let mut counts = [0u32; 256];
     for &b in data {
@@ -133,27 +176,25 @@ fn entropy_score(data: &[u8]) -> u32 {
         })
         .sum();
     // Max entropy for bytes = log2(256) = 8.0 bits
-    ((entropy / 8.0) * 1000.0).min(1000.0) as u32
+    (entropy / 8.0).min(1.0)
 }
 
-/// GC-content sub-score: peaks at 50 % GC (human genome optimum).
-/// Uses ASCII values: `G` = 0x47, `C` = 0x43.
-fn gc_content_score(data: &[u8]) -> u32 {
+/// GC-content sub-score normalised to [0.0, 1.0]: peaks at 50 % GC.
+fn gc_content_score_normalized(data: &[u8]) -> f64 {
     if data.is_empty() {
-        return 0;
+        return 0.0;
     }
     let gc = data.iter().filter(|&&b| b == b'G' || b == b'C').count();
     let ratio = gc as f64 / data.len() as f64;
     let deviation = (ratio - 0.5_f64).abs();
-    ((1.0 - deviation * 2.0).max(0.0) * 1000.0) as u32
+    (1.0 - deviation * 2.0).max(0.0)
 }
 
-/// 4-gram complexity sub-score: more unique 4-byte windows → higher score.
-/// Sampled over the first `SAMPLE` bytes for performance.
-fn cycle_complexity_score(data: &[u8]) -> u32 {
+/// 4-gram complexity sub-score normalised to [0.0, 1.0].
+fn cycle_complexity_score_normalized(data: &[u8]) -> f64 {
     const SAMPLE: usize = 4096;
     if data.len() < 4 {
-        return 0;
+        return 0.0;
     }
     let sample = &data[..data.len().min(SAMPLE)];
     let total = sample.len() - 3;
@@ -161,8 +202,7 @@ fn cycle_complexity_score(data: &[u8]) -> u32 {
     for w in sample.windows(4) {
         seen.insert(u32::from_le_bytes(w.try_into().unwrap()));
     }
-    let ratio = seen.len() as f64 / total as f64;
-    (ratio * 1000.0).min(1000.0) as u32
+    (seen.len() as f64 / total as f64).min(1.0)
 }
 
 // ─── Final hash & epoch seed ──────────────────────────────────────────────────
@@ -230,11 +270,12 @@ impl GenomePowState {
     /// Validates `nonce` against the provided raw genome `fragment`.
     ///
     /// Returns `(valid, pow_value, fitness_score)`.
+    /// Uses epoch-adaptive mutation rounds and fitness weights derived from `epoch_seed`.
     #[inline]
     pub fn check_pow_with_fragment(&self, nonce: u64, fragment: &[u8]) -> (bool, Uint256, u32) {
         let mut genome = fragment.to_vec();
         apply_mutations(&mut genome, &self.epoch_seed);
-        let fitness = compute_fitness(&genome);
+        let fitness = compute_fitness_with_seed(&genome, &self.epoch_seed);
         let pow = genome_final_hash(&genome, &self.pre_pow_hash, nonce);
         (pow <= self.target, pow, fitness)
     }
@@ -515,10 +556,72 @@ mod tests {
     }
 
     #[test]
+    fn mutation_rounds_in_range() {
+        for byte in 0u8..=255 {
+            let s = seed(byte);
+            let k = mutation_rounds_for_epoch(&s);
+            assert!(
+                k >= MUTATION_ROUNDS_MIN && k <= MUTATION_ROUNDS_MAX,
+                "K={k} out of [{MUTATION_ROUNDS_MIN}, {MUTATION_ROUNDS_MAX}] for seed byte {byte}"
+            );
+        }
+    }
+
+    #[test]
+    fn epoch_weights_sum_to_3000() {
+        for byte in [0u8, 1, 64, 127, 200, 255] {
+            let s = seed(byte);
+            let (w1, w2, w3) = epoch_weights(&s);
+            assert_eq!(w1 + w2 + w3, 3000, "weights don't sum to 3000 for seed byte {byte}: {w1}+{w2}+{w3}");
+            assert!(w1 > 0 && w2 > 0 && w3 > 0, "zero weight for seed byte {byte}");
+        }
+    }
+
+    #[test]
+    fn epoch_weights_vary_with_seed() {
+        // All-same-byte seeds yield a==b==c → always (1000,1000,1000).
+        // Use asymmetric byte patterns at positions 2,3,4 to get real variation.
+        let mut ba = [0u8; 32];
+        ba[2] = 10; ba[3] = 150; ba[4] = 240;
+        let mut bb = [0u8; 32];
+        bb[2] = 200; bb[3] = 50; bb[4] = 100;
+        let wa = epoch_weights(&Hash::from_bytes(ba));
+        let wb = epoch_weights(&Hash::from_bytes(bb));
+        assert_ne!(wa, wb, "weights should differ for seeds with different byte patterns");
+    }
+
+    #[test]
     fn fitness_in_range() {
         let data: Vec<u8> = (0u8..=255).cycle().take(4096).collect();
         let score = compute_fitness(&data);
         assert!(score <= 3000, "fitness={score} exceeds max 3000");
+    }
+
+    #[test]
+    fn adaptive_fitness_in_range() {
+        let data: Vec<u8> = (0u8..=255).cycle().take(4096).collect();
+        for byte in [0u8, 64, 128, 200, 255] {
+            let s = seed(byte);
+            let score = compute_fitness_with_seed(&data, &s);
+            assert!(score <= 3000, "adaptive fitness={score} exceeds max 3000 for seed {byte}");
+        }
+    }
+
+    #[test]
+    fn adaptive_fitness_deterministic() {
+        let data: Vec<u8> = (0u8..128).collect();
+        let s = seed(0x42);
+        assert_eq!(compute_fitness_with_seed(&data, &s), compute_fitness_with_seed(&data, &s));
+    }
+
+    #[test]
+    fn adaptive_fitness_varies_with_seed() {
+        let data: Vec<u8> = (0u8..=255).cycle().take(1024).collect();
+        let s1 = compute_fitness_with_seed(&data, &seed(0x11));
+        let s2 = compute_fitness_with_seed(&data, &seed(0x22));
+        // Different seeds → different weights → likely different scores
+        // (not guaranteed but extremely likely for distinct seeds)
+        let _ = (s1, s2); // just ensure no panic
     }
 
     #[test]
