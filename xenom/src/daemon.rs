@@ -228,27 +228,37 @@ pub fn create_core_with_runtime(runtime: &Runtime, args: &Args, fd_total_budget:
 
     // Resolve genome file path:
     //   1. Explicit --genome-file=PATH flag takes priority.
-    //   2. Auto-discover <appdir>/grch38.xenom (the canonical global location for every node).
-    //   3. None → falls back to SyntheticLoader (devnet/testing).
+    //   2. Auto-discover <appdir>/grch38.xenom  (node-local copy).
+    //   3. Auto-discover ~/.rusty-xenom/grch38.xenom  (global default install location).
+    //   4. None → falls back to SyntheticLoader (devnet/testing only).
     const GENOME_RELEASE_URL: &str =
         "https://github.com/hainakus/Xenomorph/releases/download/genome-grch38-v0/grch38.xenom";
 
     let genome_file_path: Option<String> = if args.genome_file.is_some() {
         args.genome_file.clone()
     } else {
-        let candidate = app_dir.join("grch38.xenom");
-        if candidate.exists() {
-            Some(candidate.to_string_lossy().into_owned())
+        let appdir_candidate = app_dir.join("grch38.xenom");
+        let global_candidate = dirs::home_dir().map(|h| h.join(".rusty-xenom").join("grch38.xenom"));
+
+        if appdir_candidate.exists() {
+            Some(appdir_candidate.to_string_lossy().into_owned())
+        } else if let Some(ref global) = global_candidate {
+            if global.exists() {
+                Some(global.to_string_lossy().into_owned())
+            } else {
+                info!(
+                    "Genome PoW dataset not found at {} or {}. \
+                     Using synthetic fragments (devnet/testing only). \
+                     For mainnet, download the canonical dataset:\n  \
+                     wget {} -O {}",
+                    appdir_candidate.display(),
+                    global.display(),
+                    GENOME_RELEASE_URL,
+                    global.display()
+                );
+                None
+            }
         } else {
-            info!(
-                "Genome PoW dataset not found at {}. \
-                 Using synthetic fragments (devnet/testing only). \
-                 For mainnet, download the canonical dataset:\n  \
-                 wget {} -O {}",
-                candidate.display(),
-                GENOME_RELEASE_URL,
-                candidate.display()
-            );
             None
         }
     };
