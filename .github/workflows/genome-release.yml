@@ -12,6 +12,9 @@ on:
         required: false
         default: "1048576"
 
+permissions:
+  contents: write
+
 jobs:
   build-and-publish:
     name: Build genome-freeze, generate grch38.xenom, publish release
