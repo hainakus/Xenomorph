@@ -279,6 +279,20 @@ impl GenomePowState {
         let pow = genome_final_hash(&genome, &self.pre_pow_hash, nonce);
         (pow <= self.target, pow, fitness)
     }
+
+    /// Memory-hard PoW check using the full packed genome dataset.
+    ///
+    /// Uses `genome_mix_hash` — 8 rounds of random 32-byte reads spread across
+    /// the full 739 MB packed genome — instead of a single precomputed fragment hash.
+    /// This is the production validation path when `grch38.xenom` is present.
+    ///
+    /// Returns `(valid, pow_value)`.  Fitness is computed separately via
+    /// `check_pow_with_fragment` on the specific fragment for coinbase validation.
+    #[inline]
+    pub fn check_pow_memory_hard(&self, nonce: u64, packed: &[u8]) -> (bool, Uint256) {
+        let pow = genome_mix_hash(packed, &self.epoch_seed, nonce, &self.pre_pow_hash);
+        (pow <= self.target, pow)
+    }
 }
 
 // ─── Merkle proof verification ────────────────────────────────────────────────
@@ -441,6 +455,55 @@ impl GenomeFragmentCache {
 
 // ─── GenomeDatasetLoader ──────────────────────────────────────────────────────
 
+/// Number of mixing rounds in `genome_mix_hash`.
+pub const MIX_ROUNDS: u32 = 8;
+/// Bytes read per mixing round (32 bytes = 8 × u32, matches one WGSL `array<u32,8>`).
+pub const MIX_CHUNK_BYTES: usize = 32;
+
+/// Memory-hard PoW hash — 8 rounds of random 32-byte reads from the full packed genome.
+///
+/// Forces miners to hold the entire 739 MB dataset in fast memory (GPU VRAM or RAM).
+/// Each round's read position is derived from the evolving state, making pre-computation
+/// of positions impossible without evaluating the prior rounds first.
+///
+/// Algorithm:
+/// ```text
+/// state = blake3(epoch_seed || nonce)
+/// for _ in 0..8:
+///     pos   = state[0..8] as u64 % (packed.len() / 32)
+///     state = blake3(state || packed[pos*32 .. pos*32+32])
+/// pow   = blake3(state || pre_pow_hash || nonce)  [Uint256 LE]
+/// ```
+/// This matches the WGSL `genome_mix_hash` in `genome_pow.wgsl`.
+pub fn genome_mix_hash(packed: &[u8], epoch_seed: &Hash, nonce: u64, pre_pow_hash: &Hash) -> Uint256 {
+    let num_chunks = (packed.len() / MIX_CHUNK_BYTES) as u64;
+
+    let mut state: [u8; 32] = {
+        let mut h = blake3::Hasher::new();
+        h.update(epoch_seed.as_ref());
+        h.update(&nonce.to_le_bytes());
+        *h.finalize().as_bytes()
+    };
+
+    for _ in 0..MIX_ROUNDS {
+        if num_chunks == 0 {
+            break;
+        }
+        let pos = u64::from_le_bytes(state[0..8].try_into().unwrap()) % num_chunks;
+        let offset = (pos * MIX_CHUNK_BYTES as u64) as usize;
+        let mut h = blake3::Hasher::new();
+        h.update(&state);
+        h.update(&packed[offset..offset + MIX_CHUNK_BYTES]);
+        state = *h.finalize().as_bytes();
+    }
+
+    let mut h = blake3::Hasher::new();
+    h.update(&state);
+    h.update(pre_pow_hash.as_ref());
+    h.update(&nonce.to_le_bytes());
+    Uint256::from_le_bytes(*h.finalize().as_bytes())
+}
+
 /// Abstraction over the source of genome fragment data.
 ///
 /// The production implementation reads 1 MB chunks from the local GRCh38
@@ -449,6 +512,9 @@ impl GenomeFragmentCache {
 pub trait GenomeDatasetLoader: Send + Sync {
     /// Returns the raw bytes for fragment `idx`, or `None` if unavailable.
     fn load_fragment(&self, idx: u64) -> Option<Vec<u8>>;
+    /// Returns the full 2-bit packed genome bytes for memory-hard PoW, or `None`
+    /// if only a synthetic dataset is available (devnet/testing).
+    fn packed_dataset(&self) -> Option<&[u8]>;
 }
 
 /// Loader that synthesises fragments deterministically from the fragment index
@@ -466,6 +532,10 @@ impl SyntheticLoader {
 }
 
 impl GenomeDatasetLoader for SyntheticLoader {
+    fn packed_dataset(&self) -> Option<&[u8]> {
+        None
+    }
+
     fn load_fragment(&self, idx: u64) -> Option<Vec<u8>> {
         let size = self.fragment_size_bytes as usize;
         let mut out = Vec::with_capacity(size);
@@ -496,6 +566,10 @@ impl<L: GenomeDatasetLoader> CachedLoader<L> {
 }
 
 impl<L: GenomeDatasetLoader> GenomeDatasetLoader for CachedLoader<L> {
+    fn packed_dataset(&self) -> Option<&[u8]> {
+        self.inner.packed_dataset()
+    }
+
     fn load_fragment(&self, idx: u64) -> Option<Vec<u8>> {
         if let Some(cached) = self.cache.get(idx) {
             return Some(cached.as_ref().clone());

@@ -273,6 +273,10 @@ impl FileGenomeLoader {
 }
 
 impl GenomeDatasetLoader for FileGenomeLoader {
+    fn packed_dataset(&self) -> Option<&[u8]> {
+        Some(&self.mmap[GENOME_FILE_HEADER_SIZE as usize..])
+    }
+
     fn load_fragment(&self, idx: u64) -> Option<Vec<u8>> {
         if idx >= self.num_fragments {
             return None;

@@ -128,31 +128,33 @@ impl HeaderProcessor {
 
     /// Validates genome PoW for `header`.
     ///
-    /// Derives the genome fragment deterministically from `(epoch_seed, nonce, fragment_index)`.
-    /// When the real on-disk GRCh38 dataset loader is integrated, replace the
-    /// `synthesize_fragment` call with an actual disk read keyed on `fragment_idx`.
+    /// When the GRCh38 packed dataset is available (production), uses the
+    /// memory-hard `genome_mix_hash` path (8×32-byte random reads across 739 MB).
+    /// Falls back to the synthetic fragment path for devnet/testing.
     fn check_genome_pow(&self, header: &Header) -> BlockProcessResult<kaspa_math::Uint256> {
-        use kaspa_pow::genome_pow::{fragment_index, GenomePowState};
-        let state = GenomePowState::new(
-            kaspa_consensus_core::hashing::header::hash_override_nonce_time(header, 0, 0),
-            kaspa_math::Uint256::from_compact_target_bits(header.bits),
-            header.epoch_seed,
-            self.genome_fragment_size_bytes,
-        );
-        let fragment_idx = fragment_index(&header.epoch_seed, header.nonce, self.genome_fragment_size_bytes);
-        let fragment = match &self.genome_dataset_loader {
-            Some(loader) => match loader.load_fragment(fragment_idx) {
-                Some(f) => f,
-                None => return Err(RuleError::InvalidPoW), // loader present but fragment unavailable
-            },
-            None => self.synthesize_fragment(fragment_idx, &header.epoch_seed),
-        };
-        let (passed, pow, _fitness) = state.check_pow_with_fragment(header.nonce, &fragment);
-        if passed {
-            Ok(pow)
-        } else {
-            Err(RuleError::InvalidPoW)
+        use kaspa_pow::genome_pow::{fragment_index, genome_mix_hash, GenomePowState};
+        let pre_pow_hash = kaspa_consensus_core::hashing::header::hash_override_nonce_time(header, 0, 0);
+        let target = kaspa_math::Uint256::from_compact_target_bits(header.bits);
+        let state = GenomePowState::new(pre_pow_hash, target, header.epoch_seed, self.genome_fragment_size_bytes);
+
+        if let Some(loader) = &self.genome_dataset_loader {
+            if let Some(packed) = loader.packed_dataset() {
+                // Memory-hard path: 8 × 32-byte random reads from the full 739 MB dataset.
+                let pow = genome_mix_hash(packed, &header.epoch_seed, header.nonce, &pre_pow_hash);
+                return if pow <= state.target { Ok(pow) } else { Err(RuleError::InvalidPoW) };
+            }
+            // Loader present but no packed bytes (SyntheticLoader) — fragment path.
+            let frag_idx = fragment_index(&header.epoch_seed, header.nonce, self.genome_fragment_size_bytes);
+            let fragment = loader.load_fragment(frag_idx).ok_or(RuleError::InvalidPoW)?;
+            let (passed, pow, _fitness) = state.check_pow_with_fragment(header.nonce, &fragment);
+            return if passed { Ok(pow) } else { Err(RuleError::InvalidPoW) };
         }
+
+        // No loader at all: deterministic synthetic fragment (devnet / before activation).
+        let frag_idx = fragment_index(&header.epoch_seed, header.nonce, self.genome_fragment_size_bytes);
+        let fragment = self.synthesize_fragment(frag_idx, &header.epoch_seed);
+        let (passed, pow, _fitness) = state.check_pow_with_fragment(header.nonce, &fragment);
+        if passed { Ok(pow) } else { Err(RuleError::InvalidPoW) }
     }
 
     /// Produces a deterministic pseudo-fragment of `genome_fragment_size_bytes` bytes.

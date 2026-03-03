@@ -1,8 +1,14 @@
-// Genome PoW GPU compute shader
-// Per-nonce work:
-//   1. blake3(epoch_seed||nonce)[0..8] % num_fragments → fragment_index
-//   2. fragment_hashes[fragment_index]  (pre-computed on CPU, uploaded to VRAM)
-//   3. blake3(fragment_hash||pre_pow_hash||nonce) → compare ≤ target
+// Genome PoW GPU compute shader  — memory-hard algorithm
+//
+// Per-nonce work (8 × 32-byte random reads from the full 739 MB packed genome):
+//   state  = blake3_40(epoch_seed || nonce)
+//   for 8 rounds:
+//     pos    = state[0..2] as u64 % num_mix_chunks
+//     chunk  = packed_genome[pos*8 .. pos*8+8]   (8 u32 = 32 bytes)
+//     state  = blake3_64(state, chunk)
+//   pow    = blake3_72(state || pre_pow_hash || nonce)  → compare ≤ target
+//
+// Miners must hold all 739 MB in GPU VRAM; random positions make pre-computation impossible.
 
 // ── Blake3 IV ─────────────────────────────────────────────────────────────────
 
@@ -129,7 +135,18 @@ fn b3_hash_40(d0: u32, d1: u32, d2: u32, d3: u32, d4: u32, d5: u32, d6: u32, d7:
     return b3_compress(IV0,IV1,IV2,IV3,IV4,IV5,IV6,IV7, &m, 0u,0u, 40u, 11u);
 }
 
-// ── blake3 of 72 bytes: frag_hash(32)||pre_pow_hash(32)||nonce(8) ─────────────
+// ── blake3 of 64 bytes: state(32) || chunk(32) — single block ──────────────────
+// flags = CHUNK_START(1) | CHUNK_END(2) | ROOT(8) = 11
+fn b3_hash_64(a: array<u32, 8>, b: array<u32, 8>) -> array<u32, 8> {
+    var m: array<u32, 16>;
+    m[0]=a[0]; m[1]=a[1]; m[2]=a[2];  m[3]=a[3];
+    m[4]=a[4]; m[5]=a[5]; m[6]=a[6];  m[7]=a[7];
+    m[8]=b[0]; m[9]=b[1]; m[10]=b[2]; m[11]=b[3];
+    m[12]=b[4];m[13]=b[5];m[14]=b[6]; m[15]=b[7];
+    return b3_compress(IV0,IV1,IV2,IV3,IV4,IV5,IV6,IV7, &m, 0u,0u, 64u, 11u);
+}
+
+// ── blake3 of 72 bytes: state(32)||pre_pow_hash(32)||nonce(8) ────────────────
 fn b3_hash_72(fh: array<u32, 8>, ph: array<u32, 8>, nonce_lo: u32, nonce_hi: u32) -> array<u32, 8> {
     // Block 1: 64 bytes (frag_hash||pre_pow_hash), flags=CHUNK_START=1
     var m1: array<u32, 16>;
@@ -149,13 +166,13 @@ fn b3_hash_72(fh: array<u32, 8>, ph: array<u32, 8>, nonce_lo: u32, nonce_hi: u32
 // ── Inputs/outputs ───────────────────────────────────────────────────────────
 
 struct Params {
-    epoch_seed:    array<u32, 8>,  // 32 bytes
-    pre_pow_hash:  array<u32, 8>,  // 32 bytes
-    pow_target:    array<u32, 8>,  // 256-bit LE target (8×u32 little-endian)
-    nonce_base_lo: u32,
-    nonce_base_hi: u32,
-    num_fragments: u32,
-    pad0:          u32,
+    epoch_seed:     array<u32, 8>,  // 32 bytes
+    pre_pow_hash:   array<u32, 8>,  // 32 bytes
+    pow_target:     array<u32, 8>,  // 256-bit LE target (8×u32 little-endian)
+    nonce_base_lo:  u32,
+    nonce_base_hi:  u32,
+    num_mix_chunks: u32,            // packed_genome_bytes / 32
+    pad0:           u32,
 }
 
 struct Output {
@@ -165,9 +182,9 @@ struct Output {
     pad0:     u32,
 }
 
-@group(0) @binding(0) var<storage, read>        params:          Params;
-@group(0) @binding(1) var<storage, read>       frag_hashes:     array<u32>;  // num_fragments × 8 u32s
-@group(0) @binding(2) var<storage, read_write> out_buf:         Output;
+@group(0) @binding(0) var<storage, read>        params:        Params;
+@group(0) @binding(1) var<storage, read>        packed_genome: array<u32>;  // full 739 MB packed dataset
+@group(0) @binding(2) var<storage, read_write>  out_buf:       Output;
 
 // ── 256-bit LE comparison: returns true if a ≤ b ─────────────────────────────
 fn le256(a: array<u32, 8>, b: array<u32, 8>) -> bool {
@@ -192,39 +209,34 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var nonce_hi = params.nonce_base_hi;
     if nonce_lo < delta { nonce_hi += 1u; }  // carry
 
-    // Step 1: fragment_index = blake3(epoch_seed||nonce)[0..8] % num_fragments
-    // Matches Rust: u64::from_le_bytes(hash[0..8]) % num_fragments
-    let h40 = b3_hash_40(
+    // Step 1: initial state = blake3(epoch_seed || nonce)
+    var state: array<u32, 8> = b3_hash_40(
         params.epoch_seed[0], params.epoch_seed[1],
         params.epoch_seed[2], params.epoch_seed[3],
         params.epoch_seed[4], params.epoch_seed[5],
         params.epoch_seed[6], params.epoch_seed[7],
         nonce_lo, nonce_hi);
-    var frag_idx: u32;
-    if params.num_fragments == 0u {
-        frag_idx = 0u;
-    } else {
-        // 64-bit modulo in 32-bit arithmetic:
-        //   raw64 = h40[0] + h40[1] * 2^32
-        //   raw64 % n = (h40[0] % n + h40[1] % n * (2^32 % n)) % n
-        // 2^32 % n = (0xFFFFFFFF % n + 1) % n  (avoids u32 overflow)
-        let n  = params.num_fragments;
-        let lo = h40[0] % n;
-        let hi = h40[1] % n;
-        let p  = (0xFFFFFFFFu % n + 1u) % n;  // 2^32 mod n
-        frag_idx = (hi * p + lo) % n;
+
+    // Step 2: 8 mixing rounds — random 32-byte reads from full packed genome.
+    // pos_idx uses 64-bit mod in 32-bit arithmetic (same pattern as old frag_idx).
+    // packed_genome is array<u32>, so 8 u32s = 32 bytes per chunk.
+    let n = params.num_mix_chunks;
+    if n > 0u {
+        for (var i = 0u; i < 8u; i++) {
+            let p   = (0xFFFFFFFFu % n + 1u) % n;
+            let pos = (state[1] % n * p + state[0] % n) % n;
+            let base = pos * 8u;
+            let chunk = array<u32, 8>(
+                packed_genome[base],      packed_genome[base + 1u],
+                packed_genome[base + 2u], packed_genome[base + 3u],
+                packed_genome[base + 4u], packed_genome[base + 5u],
+                packed_genome[base + 6u], packed_genome[base + 7u]);
+            state = b3_hash_64(state, chunk);
+        }
     }
 
-    // Step 2: lookup fragment hash (unrolled)
-    let base = frag_idx * 8u;
-    let fh = array<u32, 8>(
-        frag_hashes[base],     frag_hashes[base + 1u],
-        frag_hashes[base + 2u],frag_hashes[base + 3u],
-        frag_hashes[base + 4u],frag_hashes[base + 5u],
-        frag_hashes[base + 6u],frag_hashes[base + 7u]);
-
-    // Step 3: genome_final_hash = blake3(frag_hash||pre_pow_hash||nonce) ≤ target?
-    let pow_hash = b3_hash_72(fh, params.pre_pow_hash, nonce_lo, nonce_hi);
+    // Step 3: pow = blake3(state || pre_pow_hash || nonce) ≤ target?
+    let pow_hash = b3_hash_72(state, params.pre_pow_hash, nonce_lo, nonce_hi);
 
     if le256(pow_hash, params.pow_target) {
         // atomicAdd returns the OLD value; the invocation that gets 0 is first winner
