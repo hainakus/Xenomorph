@@ -225,7 +225,7 @@ impl Consensus {
         // Pipeline processors
         //
 
-        let header_processor = Arc::new(HeaderProcessor::new(
+        let header_processor_base = HeaderProcessor::new(
             receiver,
             body_sender,
             block_processors_pool.clone(),
@@ -235,7 +235,19 @@ impl Consensus {
             &services,
             pruning_lock.clone(),
             counters.clone(),
-        ));
+        );
+        let header_processor = Arc::new(if let Some(ref genome_path) = config.genome_file {
+            let loader = kaspa_pow::genome_file::FileGenomeLoader::open(
+                std::path::Path::new(genome_path),
+                params.genome_fragment_size_bytes,
+                true,
+            )
+            .unwrap_or_else(|e| panic!("Failed to open genome file '{genome_path}': {e}"));
+            kaspa_core::info!("Genome PoW: loaded {genome_path} ({} fragments)", loader.num_fragments());
+            header_processor_base.with_genome_loader(std::sync::Arc::new(loader))
+        } else {
+            header_processor_base
+        });
 
         let body_processor = Arc::new(BlockBodyProcessor::new(
             body_receiver,
