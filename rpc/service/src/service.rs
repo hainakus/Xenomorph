@@ -386,11 +386,16 @@ NOTE: This error usually indicates an RPC conversion error between the node and 
             return Err(RpcError::CoinbasePayloadLengthAboveMax(self.config.max_coinbase_payload_len));
         }
 
-        let is_nearly_synced = self.config.is_nearly_synced(block_template.selected_parent_timestamp, block_template.selected_parent_daa_score)
-            || (!self.flow_context.is_ibd_running() && self.flow_context.hub().has_peers());
+        let is_real_network = matches!(self.flow_context.config.net.network_type, Mainnet | Testnet);
+        let is_synced = !is_real_network
+            || (self.has_sufficient_peer_connectivity()
+                && (self.config.is_nearly_synced(
+                    block_template.selected_parent_timestamp,
+                    block_template.selected_parent_daa_score,
+                ) || (!self.flow_context.is_ibd_running() && self.flow_context.hub().has_peers())));
         Ok(GetBlockTemplateResponse {
             block: block_template.block.into(),
-            is_synced: self.has_sufficient_peer_connectivity() && is_nearly_synced,
+            is_synced,
         })
     }
 

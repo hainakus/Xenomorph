@@ -10,7 +10,7 @@ use kaspa_core::{info, warn};
 use kaspa_grpc_client::GrpcClient;
 use kaspa_pow::{genome_pow::{
     apply_mutations, fragment_index, genome_fragment_pow_hash, GenomeDatasetLoader,
-    SyntheticLoader, GENOME_BASE_SIZE,
+    GenomePowState, SyntheticLoader, GENOME_BASE_SIZE,
 }, matrix::Matrix, State as KHeavyState};
 use kaspa_rpc_core::{api::rpc::RpcApi, model::message::GetBlockTemplateRequest, RpcRawBlock};
 use tokio::time::sleep;
@@ -523,9 +523,26 @@ pub async fn cmd_gpu(m: &ArgMatches) {
         nonce_base = nonce_base.wrapping_add(batch_size as u64);
 
         if let Some(nonce) = solution {
+            // CPU cross-check: verify the GPU nonce before submitting
+            let pre_pow   = kaspa_consensus_core::hashing::header::hash_override_nonce_time(&header, 0, 0);
+            let target    = kaspa_math::Uint256::from_compact_target_bits(header.bits);
+            let state     = GenomePowState::new(pre_pow, target, header.epoch_seed, frag_size);
+            let frag_idx  = fragment_index(&header.epoch_seed, nonce, frag_size);
+            let cpu_loader = SyntheticLoader::new(frag_size, header.epoch_seed);
+            let fragment = cpu_loader.load_fragment(frag_idx).unwrap_or_else(|| vec![0u8; frag_size as usize]);
+            let (cpu_valid, cpu_pow, cpu_fitness) = state.check_pow_with_fragment(nonce, &fragment);
+            if !cpu_valid {
+                warn!(
+                    "GPU Genome PoW false-positive nonce={:#018x} cpu_pow_msb={:08x} — skipping invalid block",
+                    nonce, cpu_pow.to_le_bytes()[31]
+                );
+                last_template_id = None;
+                continue;
+            }
+            info!("CPU cross-check PASSED nonce={:#018x} fitness={}", nonce, cpu_fitness);
             let solved = build_raw_block_nonce(&rpc_block, nonce);
             match rpc.submit_block(solved, false).await {
-                Ok(r)  => info!("Block submitted: {:?}", r.report),
+                Ok(r)  => info!("Block submitted (Genome PoW): {:?}", r.report),
                 Err(e) => warn!("submit_block: {e}"),
             }
             last_template_id = None;
