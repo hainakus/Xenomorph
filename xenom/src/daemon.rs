@@ -230,11 +230,27 @@ pub fn create_core_with_runtime(runtime: &Runtime, args: &Args, fd_total_budget:
     //   1. Explicit --genome-file=PATH flag takes priority.
     //   2. Auto-discover <appdir>/grch38.xenom (the canonical global location for every node).
     //   3. None → falls back to SyntheticLoader (devnet/testing).
+    const GENOME_RELEASE_URL: &str =
+        "https://github.com/hainakus/Xenomorph/releases/download/genome-grch38-v0/grch38.xenom";
+
     let genome_file_path: Option<String> = if args.genome_file.is_some() {
         args.genome_file.clone()
     } else {
         let candidate = app_dir.join("grch38.xenom");
-        if candidate.exists() { Some(candidate.to_string_lossy().into_owned()) } else { None }
+        if candidate.exists() {
+            Some(candidate.to_string_lossy().into_owned())
+        } else {
+            info!(
+                "Genome PoW dataset not found at {}. \
+                 Using synthetic fragments (devnet/testing only). \
+                 For mainnet, download the canonical dataset:\n  \
+                 wget {} -O {}",
+                candidate.display(),
+                GENOME_RELEASE_URL,
+                candidate.display()
+            );
+            None
+        }
     };
 
     let config = Arc::new(
