@@ -39,8 +39,23 @@ impl GpuContext {
 
         info!("GPU: {}", adapter.get_info().name);
 
+        // Request the adapter's actual max buffer size.
+        // The WebGPU default (256 MB) is too small for the 739 MB packed genome.
+        let adapter_limits = adapter.limits();
+        info!("GPU max_buffer_size: {} MB", adapter_limits.max_buffer_size / 1_048_576);
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default(), None)
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    required_limits: wgpu::Limits {
+                        max_buffer_size: adapter_limits.max_buffer_size,
+                        max_storage_buffer_binding_size: adapter_limits
+                            .max_storage_buffer_binding_size,
+                        ..wgpu::Limits::default()
+                    },
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .expect("Failed to get GPU device");
 
@@ -366,7 +381,11 @@ pub async fn cmd_gpu(m: &ArgMatches) {
     let batch_size = m.get_one::<u32>("batch-size").copied().unwrap_or(1 << 20); // 1M nonces/dispatch
     let frag_size  = m.get_one::<u32>("genome-fragment-size").copied().unwrap_or(1_048_576);
     let genome_activation = crate::resolve_activation(m);
-    let genome_path = m.get_one::<String>("genome-file").cloned();
+    // Resolve genome file: explicit --genome-file flag → auto-discover ~/.rusty-xenom/grch38.xenom → None
+    let genome_path: Option<String> = m.get_one::<String>("genome-file").cloned().or_else(|| {
+        let default = dirs::home_dir()?.join(".rusty-xenom").join("grch38.xenom");
+        if default.exists() { Some(default.to_string_lossy().into_owned()) } else { None }
+    });
 
     info!("Initialising GPU ...");
     let ctx = Arc::new(GpuContext::new().await);
