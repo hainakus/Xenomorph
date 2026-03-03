@@ -151,7 +151,7 @@ pub fn encode_base(b: u8) -> u8 {
 /// 4 bases per byte, MSB-first.  Pads with `A` if `bases.len()` is not a
 /// multiple of 4.
 pub fn pack_2bit(bases: &[u8]) -> Vec<u8> {
-    let chunks = (bases.len() + 3) / 4;
+    let chunks = bases.len().div_ceil(4);
     let mut out = Vec::with_capacity(chunks);
     for chunk in bases.chunks(4) {
         let b0 = encode_base(*chunk.first().unwrap_or(&b'A'));
