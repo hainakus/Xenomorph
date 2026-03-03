@@ -58,7 +58,7 @@ jobs:
       - name: Extract merkle root
         id: merkle
         run: |
-          ROOT=$(grep -m 1 "Merkle root:" genome-freeze.log | awk '{print $3}')
+          ROOT=$(grep "^GENOME_MERKLE_ROOT=" genome-freeze.log | head -1 | cut -d= -f2 | tr -d '[:space:]')
           echo "root=${ROOT}" >> "$GITHUB_OUTPUT"
           echo "Merkle root: ${ROOT}"
 

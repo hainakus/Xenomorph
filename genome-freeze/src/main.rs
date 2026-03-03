@@ -184,12 +184,15 @@ fn main() {
     println!("  Fragments:       {} × {} unpacked bytes", num_fragments(total_packed_bytes, args.fragment_size), args.fragment_size);
     println!("  Dataset version: {}", args.dataset_version);
     if !args.skip_merkle {
+        let root_hex = merkle_root.iter().map(|b| format!("{b:02x}")).collect::<String>();
         println!(
             "  Merkle root:     {}",
-            merkle_root.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            root_hex
         );
         println!("\n  Add to consensus Params:");
-        println!("    genome_merkle_root: \"{}\"", merkle_root.iter().map(|b| format!("{b:02x}")).collect::<String>());
+        println!("    genome_merkle_root: \"{}\"", root_hex);
+        // Machine-readable line for CI extraction (grep GENOME_MERKLE_ROOT=)
+        println!("GENOME_MERKLE_ROOT={}", root_hex);
     }
 }
 
