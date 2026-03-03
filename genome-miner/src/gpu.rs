@@ -12,7 +12,8 @@ use kaspa_pow::{genome_pow::{
     fragment_index, genome_mix_hash, GenomeDatasetLoader,
     GenomePowState, SyntheticLoader, GENOME_BASE_SIZE, MIX_CHUNK_BYTES,
 }, matrix::Matrix, State as KHeavyState};
-use kaspa_rpc_core::{api::rpc::RpcApi, model::message::GetBlockTemplateRequest, RpcRawBlock};
+use kaspa_rpc_core::{api::rpc::RpcApi, model::message::GetBlockTemplateRequest, RpcRawBlock,
+    SubmitBlockReport, SubmitBlockRejectReason};
 use tokio::time::sleep;
 use wgpu::util::DeviceExt;
 
@@ -464,7 +465,11 @@ pub async fn cmd_gpu(m: &ArgMatches) {
             Err(e) => { warn!("get_block_template: {e}"); sleep(Duration::from_secs(1)).await; continue; }
         };
         let rpc_block: RpcRawBlock = resp.block;
-        if !resp.is_synced { warn!("Node not synced"); }
+        if !resp.is_synced {
+            warn!("Node not synced — waiting for IBD to complete");
+            sleep(Duration::from_secs(2)).await;
+            continue;
+        }
 
         let current_id = rpc_block.header.accepted_id_merkle_root;
         if last_template_id == Some(current_id) {
@@ -521,11 +526,15 @@ pub async fn cmd_gpu(m: &ArgMatches) {
                     continue;
                 }
                 let solved = build_raw_block_nonce(&rpc_block, nonce);
-                match rpc.submit_block(solved, false).await {
-                    Ok(r)  => info!("Block submitted (KHeavyHash GPU): {:?}", r.report),
-                    Err(e) => warn!("submit_block: {e}"),
-                }
-                last_template_id = None;
+                let ibd = match rpc.submit_block(solved, false).await {
+                    Ok(r) => {
+                        let is_ibd = matches!(r.report, SubmitBlockReport::Reject(SubmitBlockRejectReason::IsInIBD));
+                        info!("Block submitted (KHeavyHash GPU): {:?}", r.report);
+                        is_ibd
+                    }
+                    Err(e) => { warn!("submit_block: {e}"); false }
+                };
+                if !ibd { last_template_id = None; }
             }
             if report_timer.elapsed() >= Duration::from_secs(5) {
                 let elapsed = report_timer.elapsed().as_secs_f64();
@@ -579,11 +588,15 @@ pub async fn cmd_gpu(m: &ArgMatches) {
             let (_, _cpu_pow2, cpu_fitness) = state.check_pow_with_fragment(nonce, &fragment);
             info!("CPU cross-check PASSED nonce={:#018x} fitness={}", nonce, cpu_fitness);
             let solved = build_raw_block_nonce(&rpc_block, nonce);
-            match rpc.submit_block(solved, false).await {
-                Ok(r)  => info!("Block submitted (Genome PoW): {:?}", r.report),
-                Err(e) => warn!("submit_block: {e}"),
-            }
-            last_template_id = None;
+            let ibd = match rpc.submit_block(solved, false).await {
+                Ok(r) => {
+                    let is_ibd = matches!(r.report, SubmitBlockReport::Reject(SubmitBlockRejectReason::IsInIBD));
+                    info!("Block submitted (Genome PoW): {:?}", r.report);
+                    is_ibd
+                }
+                Err(e) => { warn!("submit_block: {e}"); false }
+            };
+            if !ibd { last_template_id = None; }
         }
 
         if report_timer.elapsed() >= Duration::from_secs(5) {
