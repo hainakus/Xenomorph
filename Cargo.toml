@@ -20,6 +20,7 @@ members = [
     "xenom",
     "simpa",
     "genome-miner",
+    "genome-freeze",
     "wasm",
     "wasm/core",
     "math",
@@ -137,6 +138,7 @@ kaspa-wrpc-example-subscriber = { version = "0.15.2", path = "rpc/wrpc/examples/
 xenom = { version = "0.15.2", path = "xenom" }
 kaspa-alloc = { version = "0.15.2", path = "utils/alloc" }
 blake3 = "1.5.4"
+memmap2 = "0.9"
 pqcrypto-dilithium = "0.5"
 pqcrypto-traits = "0.3"
 # external

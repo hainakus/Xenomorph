@@ -1,0 +1,126 @@
+name: Publish grch38.xenom
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag for the genome dataset (e.g. genome-grch38-v0)"
+        required: true
+        default: "genome-grch38-v0"
+      fragment_size:
+        description: "Fragment size in bytes (must match genome_fragment_size_bytes in Params)"
+        required: false
+        default: "1048576"
+
+jobs:
+  build-and-publish:
+    name: Build genome-freeze, generate grch38.xenom, publish release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-genome-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-genome-
+
+      - name: Build genome-freeze (release)
+        run: cargo build --release -p genome-freeze
+
+      - name: Download GRCh38 primary assembly FASTA
+        run: |
+          mkdir -p grch38
+          curl -L --retry 3 --progress-bar \
+            -o grch38/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz \
+            "https://ftp.ensembl.org/pub/release-113/fasta/homo_sapiens/dna/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz"
+          gunzip grch38/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz
+          ls -lh grch38/
+
+      - name: Run genome-freeze
+        run: |
+          ./target/release/genome-freeze \
+            --fasta grch38/Homo_sapiens.GRCh38.dna.primary_assembly.fa \
+            --output grch38.xenom \
+            --fragment-size ${{ github.event.inputs.fragment_size }} \
+            2>&1 | tee genome-freeze.log
+          ls -lh grch38.xenom
+
+      - name: Extract merkle root
+        id: merkle
+        run: |
+          ROOT=$(grep "Merkle root:" genome-freeze.log | awk '{print $3}')
+          echo "root=$ROOT" >> $GITHUB_OUTPUT
+          echo "Merkle root: $ROOT"
+
+      - name: Verify merkle root matches params.rs
+        run: |
+          PARAMS_ROOT=$(grep -o 'genome_merkle_root: "[a-f0-9]*"' \
+            consensus/core/src/config/params.rs | head -1 | grep -o '"[a-f0-9]*"' | tr -d '"')
+          FILE_ROOT="${{ steps.merkle.outputs.root }}"
+          echo "Params root: $PARAMS_ROOT"
+          echo "File root:   $FILE_ROOT"
+          if [ "$PARAMS_ROOT" != "$FILE_ROOT" ]; then
+            echo "ERROR: Merkle root mismatch! Update params.rs before publishing."
+            exit 1
+          fi
+          echo "✓ Merkle root matches params.rs"
+
+      - name: Create GitHub Release and upload grch38.xenom
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          name: "GRCh38 Genome Dataset (${{ github.event.inputs.tag }})"
+          body: |
+            ## Xenom Genome PoW Dataset — GRCh38
+
+            Canonical human reference genome packed for Xenom Genome PoW.
+
+            | Field              | Value |
+            |--------------------|-------|
+            | Source             | Ensembl GRCh38 release-113 primary assembly |
+            | Total bases        | 3,099,750,718 |
+            | Packed size        | ~739 MB |
+            | Fragment size      | ${{ github.event.inputs.fragment_size }} bytes |
+            | Fragments          | 2956 |
+            | Merkle root        | `${{ steps.merkle.outputs.root }}` |
+            | SHA-256            | *(see checksum file)* |
+
+            ### Node operator setup
+
+            ```bash
+            # Linux / macOS
+            mkdir -p ~/.rusty-xenom
+            wget https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag }}/grch38.xenom \
+              -O ~/.rusty-xenom/grch38.xenom
+
+            # Start the node — genome file is discovered automatically
+            ./xenom --utxoindex --rpclisten-borsh
+            ```
+
+            > The node verifies the Merkle root on startup and aborts if the file is wrong or corrupted.
+          files: grch38.xenom
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Print download URL
+        run: |
+          echo ""
+          echo "✓ grch38.xenom published!"
+          echo ""
+          echo "Download URL:"
+          echo "  https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag }}/grch38.xenom"
+          echo ""
+          echo "Node operator one-liner:"
+          echo "  mkdir -p ~/.rusty-xenom && wget https://github.com/${{ github.repository }}/releases/download/${{ github.event.inputs.tag }}/grch38.xenom -O ~/.rusty-xenom/grch38.xenom"

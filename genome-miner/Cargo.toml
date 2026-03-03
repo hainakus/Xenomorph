@@ -26,6 +26,7 @@ kaspa-rpc-core.workspace = true
 kaspa-txscript.workspace = true
 
 clap.workspace = true
+dirs.workspace = true
 faster-hex.workspace = true
 log.workspace = true
 rayon.workspace = true

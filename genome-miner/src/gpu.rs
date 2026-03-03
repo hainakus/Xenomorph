@@ -9,8 +9,8 @@ use kaspa_consensus_core::header::Header;
 use kaspa_core::{info, warn};
 use kaspa_grpc_client::GrpcClient;
 use kaspa_pow::{genome_pow::{
-    apply_mutations, fragment_index, genome_fragment_pow_hash, GenomeDatasetLoader,
-    SyntheticLoader, GENOME_BASE_SIZE,
+    fragment_index, genome_mix_hash, GenomeDatasetLoader,
+    GenomePowState, SyntheticLoader, GENOME_BASE_SIZE, MIX_CHUNK_BYTES,
 }, matrix::Matrix, State as KHeavyState};
 use kaspa_rpc_core::{api::rpc::RpcApi, model::message::GetBlockTemplateRequest, RpcRawBlock};
 use tokio::time::sleep;
@@ -39,8 +39,23 @@ impl GpuContext {
 
         info!("GPU: {}", adapter.get_info().name);
 
+        // Request the adapter's actual max buffer size.
+        // The WebGPU default (256 MB) is too small for the 739 MB packed genome.
+        let adapter_limits = adapter.limits();
+        info!("GPU max_buffer_size: {} MB", adapter_limits.max_buffer_size / 1_048_576);
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default(), None)
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    required_limits: wgpu::Limits {
+                        max_buffer_size: adapter_limits.max_buffer_size,
+                        max_storage_buffer_binding_size: adapter_limits
+                            .max_storage_buffer_binding_size,
+                        ..wgpu::Limits::default()
+                    },
+                    ..Default::default()
+                },
+                None,
+            )
             .await
             .expect("Failed to get GPU device");
 
@@ -123,26 +138,15 @@ impl GpuContext {
     }
 }
 
-// ── Fragment hash table pre-computation ──────────────────────────────────────
+// ── Packed genome helpers ────────────────────────────────────────
 
-/// Pre-compute blake3(apply_mutations(fragment, epoch_seed)) for every fragment.
-/// Returns a flat Vec<u8> of shape [num_fragments × 32 bytes].
-fn precompute_fragment_hashes(
-    loader: &dyn GenomeDatasetLoader,
-    epoch_seed: &kaspa_hashes::Hash,
-    fragment_size_bytes: u32,
-) -> Vec<u8> {
-    let num_fragments = (GENOME_BASE_SIZE / fragment_size_bytes.max(1) as u64) as usize;
-    info!("Pre-computing {num_fragments} fragment hashes for GPU ...");
-    let mut out = vec![0u8; num_fragments * 32];
-    for idx in 0..num_fragments {
-        let mut frag = loader.load_fragment(idx as u64).unwrap_or_else(|| vec![0u8; fragment_size_bytes as usize]);
-        apply_mutations(&mut frag, epoch_seed);
-        let h = genome_fragment_pow_hash(&frag);
-        out[idx * 32..(idx + 1) * 32].copy_from_slice(&h);
-    }
-    info!("Fragment hashes pre-computed.");
-    out
+/// Build a synthetic packed genome for devnet/testing (no real file).
+/// Not consensus-relevant — only used when genome PoW is active at daa_score=0 on devnet.
+fn synthetic_packed_genome(frag_size: u32) -> Vec<u8> {
+    let num_fragments = (GENOME_BASE_SIZE / frag_size.max(1) as u64) as usize;
+    let packed_frag = frag_size as usize / 4;
+    // Deterministic repeating pattern per fragment index.
+    (0..num_fragments).flat_map(|i| std::iter::repeat((i & 0xFF) as u8).take(packed_frag)).collect()
 }
 
 // ── KHeavyHash matrix helpers ────────────────────────────────────────────────
@@ -356,7 +360,7 @@ fn build_params_full(
     pre_pow_hash: &kaspa_hashes::Hash,
     target: &kaspa_math::Uint256,
     nonce_base: u64,
-    num_fragments: u32,
+    num_mix_chunks: u32,
 ) -> Vec<u8> {
     let mut buf = vec![0u8; 112];
     buf[0..32].copy_from_slice(epoch_seed.as_ref());
@@ -364,7 +368,7 @@ fn build_params_full(
     buf[64..96].copy_from_slice(&target.to_le_bytes());
     buf[96..100].copy_from_slice(&(nonce_base as u32).to_le_bytes());
     buf[100..104].copy_from_slice(&((nonce_base >> 32) as u32).to_le_bytes());
-    buf[104..108].copy_from_slice(&num_fragments.to_le_bytes());
+    buf[104..108].copy_from_slice(&num_mix_chunks.to_le_bytes());
     // buf[108..112] = 0 (pad)
     buf
 }
@@ -377,6 +381,11 @@ pub async fn cmd_gpu(m: &ArgMatches) {
     let batch_size = m.get_one::<u32>("batch-size").copied().unwrap_or(1 << 20); // 1M nonces/dispatch
     let frag_size  = m.get_one::<u32>("genome-fragment-size").copied().unwrap_or(1_048_576);
     let genome_activation = crate::resolve_activation(m);
+    // Resolve genome file: explicit --genome-file flag → auto-discover ~/.rusty-xenom/grch38.xenom → None
+    let genome_path: Option<String> = m.get_one::<String>("genome-file").cloned().or_else(|| {
+        let default = dirs::home_dir()?.join(".rusty-xenom").join("grch38.xenom");
+        if default.exists() { Some(default.to_string_lossy().into_owned()) } else { None }
+    });
 
     info!("Initialising GPU ...");
     let ctx = Arc::new(GpuContext::new().await);
@@ -388,18 +397,44 @@ pub async fn cmd_gpu(m: &ArgMatches) {
     let pay_address: kaspa_rpc_core::RpcAddress =
         Address::try_from(addr_str.as_str()).expect("Invalid --mining-address");
 
-    let num_fragments = (GENOME_BASE_SIZE / frag_size.max(1) as u64) as u32;
-
-    // Initial fragment hashes with zero epoch_seed
     let epoch_seed_zero = kaspa_hashes::Hash::from_bytes([0u8; 32]);
-    let loader = SyntheticLoader::new(frag_size, epoch_seed_zero);
-    let frag_hashes_bytes = precompute_fragment_hashes(&loader, &epoch_seed_zero, frag_size);
 
-    // Upload fragment hashes to GPU VRAM — COPY_DST so we can update on epoch boundary
-    let frag_hash_buf = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label:    Some("frag_hashes"),
-        contents: &frag_hashes_bytes,
-        usage:    wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+    // Open FileGenomeLoader if --genome-file was provided.
+    let file_loader: Option<kaspa_pow::genome_file::FileGenomeLoader> =
+        genome_path.as_deref().map(|path| {
+            kaspa_pow::genome_file::FileGenomeLoader::open(
+                std::path::Path::new(path), frag_size, false,
+            )
+            .unwrap_or_else(|e| panic!("Failed to open genome file '{path}': {e}"))
+        });
+
+    // Synthetic fallback for devnet (only allocated if no file loader).
+    let synthetic_bytes: Vec<u8> = if file_loader.is_none() {
+        synthetic_packed_genome(frag_size)
+    } else {
+        Vec::new()
+    };
+
+    let (packed_genome_ref, num_mix_chunks): (&[u8], u32) = match file_loader.as_ref() {
+        Some(loader) => {
+            let packed = loader.packed_dataset().unwrap();
+            let chunks = (packed.len() / MIX_CHUNK_BYTES) as u32;
+            info!("Genome PoW: loaded {} ({} MB, {chunks} mix-chunks)",
+                genome_path.as_deref().unwrap_or(""), packed.len() / 1_048_576);
+            (packed, chunks)
+        }
+        None => {
+            let chunks = (synthetic_bytes.len() / MIX_CHUNK_BYTES) as u32;
+            info!("Genome PoW: synthetic dataset ({chunks} mix-chunks) — devnet/testing only");
+            (&synthetic_bytes, chunks)
+        }
+    };
+
+    // Upload packed genome to GPU VRAM — uploaded ONCE, never changes between epochs.
+    let packed_genome_buf = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label:    Some("packed_genome"),
+        contents: packed_genome_ref,
+        usage:    wgpu::BufferUsages::STORAGE,
     });
 
     // KHeavyHash matrix buffer: 4096 × u32 = 16 KB, updated per template
@@ -411,7 +446,6 @@ pub async fn cmd_gpu(m: &ArgMatches) {
     });
 
     let mut last_template_id: Option<kaspa_hashes::Hash> = None;
-    let mut last_epoch_seed: kaspa_hashes::Hash = epoch_seed_zero;
     let mut last_pre_pow_hash: Option<kaspa_hashes::Hash> = None;
     let mut nonce_base: u64 = 0;
     let mut total_hashes: u64 = 0;
@@ -437,15 +471,7 @@ pub async fn cmd_gpu(m: &ArgMatches) {
 
         let header: Header = (&rpc_block.header).into();
 
-        // Re-compute fragment hashes when epoch_seed rotates (every epoch_len blocks)
-        if header.epoch_seed != last_epoch_seed {
-            info!("Epoch seed changed at daa={} — recomputing {} fragment hashes ...", header.daa_score, num_fragments);
-            let new_loader = SyntheticLoader::new(frag_size, header.epoch_seed);
-            let new_bytes = precompute_fragment_hashes(&new_loader, &header.epoch_seed, frag_size);
-            ctx.queue.write_buffer(&frag_hash_buf, 0, &new_bytes);
-            last_epoch_seed = header.epoch_seed;
-            info!("Fragment hashes updated.");
-        }
+        // epoch_seed is included in the Params buffer per-batch — no VRAM update needed.
 
         if header.daa_score < genome_activation {
             // Pre-activation: mine KHeavyHash (PyrinHashv2) on GPU.
@@ -515,17 +541,40 @@ pub async fn cmd_gpu(m: &ArgMatches) {
             &pre_pow_hash,
             &target,
             nonce_base,
-            num_fragments,
+            num_mix_chunks,
         );
 
-        let solution = gpu_search_batch(&ctx, &params_bytes, &frag_hash_buf, batch_size).await;
+        let solution = gpu_search_batch(&ctx, &params_bytes, &packed_genome_buf, batch_size).await;
         total_hashes += batch_size as u64;
         nonce_base = nonce_base.wrapping_add(batch_size as u64);
 
         if let Some(nonce) = solution {
+            // CPU cross-check: re-run genome_mix_hash on CPU before submitting.
+            let pre_pow   = kaspa_consensus_core::hashing::header::hash_override_nonce_time(&header, 0, 0);
+            let target    = kaspa_math::Uint256::from_compact_target_bits(header.bits);
+            let state     = GenomePowState::new(pre_pow, target, header.epoch_seed, frag_size);
+            let cpu_pow   = genome_mix_hash(packed_genome_ref, &header.epoch_seed, nonce, &pre_pow);
+            if cpu_pow > state.target {
+                warn!(
+                    "GPU Genome PoW false-positive nonce={:#018x} cpu_pow_msb={:08x} — skipping invalid block",
+                    nonce, cpu_pow.to_le_bytes()[31]
+                );
+                last_template_id = None;
+                continue;
+            }
+            // Compute fitness separately for the coinbase (still needed for block reward)
+            let frag_idx = fragment_index(&header.epoch_seed, nonce, frag_size);
+            let synthetic_frag_loader = SyntheticLoader::new(frag_size, header.epoch_seed);
+            let frag_loader: &dyn GenomeDatasetLoader = match file_loader.as_ref() {
+                Some(fl) => fl,
+                None => &synthetic_frag_loader,
+            };
+            let fragment = frag_loader.load_fragment(frag_idx).unwrap_or_else(|| vec![0u8; frag_size as usize]);
+            let (_, _cpu_pow2, cpu_fitness) = state.check_pow_with_fragment(nonce, &fragment);
+            info!("CPU cross-check PASSED nonce={:#018x} fitness={}", nonce, cpu_fitness);
             let solved = build_raw_block_nonce(&rpc_block, nonce);
             match rpc.submit_block(solved, false).await {
-                Ok(r)  => info!("Block submitted: {:?}", r.report),
+                Ok(r)  => info!("Block submitted (Genome PoW): {:?}", r.report),
                 Err(e) => warn!("submit_block: {e}"),
             }
             last_template_id = None;

@@ -89,6 +89,7 @@ pub struct Args {
     #[serde(rename = "nogrpc")]
     pub disable_grpc: bool,
     pub ram_scale: f64,
+    pub genome_file: Option<String>,
 }
 
 impl Default for Args {
@@ -138,6 +139,7 @@ impl Default for Args {
             disable_dns_seeding: false,
             disable_grpc: false,
             ram_scale: 1.0,
+            genome_file: None,
         }
     }
 }
@@ -156,6 +158,7 @@ impl Args {
         config.p2p_listen_address = self.listen.unwrap_or(ContextualNetAddress::unspecified());
         config.externalip = self.externalip.map(|v| v.normalize(config.default_p2p_port()));
         config.ram_scale = self.ram_scale;
+        config.genome_file.clone_from(&self.genome_file);
 
         #[cfg(feature = "devnet-prealloc")]
         if let Some(num_prealloc_utxos) = self.num_prealloc_utxos {
@@ -358,6 +361,14 @@ Setting to 0 prevents the preallocation and sets the maximum to {}, leading to 0
         .arg(arg!(--"nodnsseed" "Disable DNS seeding for peers"))
         .arg(arg!(--"nogrpc" "Disable gRPC server"))
         .arg(
+            Arg::new("genome-file")
+                .long("genome-file")
+                .value_name("PATH")
+                .require_equals(true)
+                .value_parser(clap::value_parser!(String))
+                .help("Path to a .xenom packed GRCh38 genome file. Enables real-dataset Genome PoW validation and mining."),
+        )
+        .arg(
             Arg::new("ram-scale")
                 .long("ram-scale")
                 .require_equals(true)
@@ -443,6 +454,7 @@ impl Args {
             disable_dns_seeding: arg_match_unwrap_or::<bool>(&m, "nodnsseed", defaults.disable_dns_seeding),
             disable_grpc: arg_match_unwrap_or::<bool>(&m, "nogrpc", defaults.disable_grpc),
             ram_scale: arg_match_unwrap_or::<f64>(&m, "ram-scale", defaults.ram_scale),
+            genome_file: m.get_one::<String>("genome-file").cloned().or(defaults.genome_file),
 
             #[cfg(feature = "devnet-prealloc")]
             num_prealloc_utxos: m.get_one::<u64>("num-prealloc-utxos").cloned(),

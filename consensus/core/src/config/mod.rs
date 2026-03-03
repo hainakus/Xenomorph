@@ -64,6 +64,10 @@ pub struct Config {
 
     /// A scale factor to apply to memory allocation bounds
     pub ram_scale: f64,
+
+    /// Optional path to a `.xenom` packed GRCh38 genome file.
+    /// When set the node uses real genome fragments for PoW validation.
+    pub genome_file: Option<String>,
 }
 
 impl Config {
@@ -90,6 +94,7 @@ impl Config {
             initial_utxo_set: Default::default(),
             disable_upnp: false,
             ram_scale: 3.0,
+            genome_file: None,
         }
     }
 

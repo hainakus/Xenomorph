@@ -3,7 +3,7 @@
 use super::collector::{CollectorFromConsensus, CollectorFromIndex};
 use crate::converter::feerate_estimate::{FeeEstimateConverter, FeeEstimateVerboseConverter};
 use crate::converter::{consensus::ConsensusConverter, index::IndexConverter, protocol::ProtocolConverter};
-use crate::service::NetworkType::{Mainnet, Testnet};
+use crate::service::NetworkType::{Devnet, Mainnet, Testnet};
 use async_trait::async_trait;
 use kaspa_consensus_core::api::counters::ProcessingCounters;
 use kaspa_consensus_core::errors::block::RuleError;
@@ -386,11 +386,28 @@ NOTE: This error usually indicates an RPC conversion error between the node and 
             return Err(RpcError::CoinbasePayloadLengthAboveMax(self.config.max_coinbase_payload_len));
         }
 
-        let is_nearly_synced = self.config.is_nearly_synced(block_template.selected_parent_timestamp, block_template.selected_parent_daa_score)
-            || (!self.flow_context.is_ibd_running() && self.flow_context.hub().has_peers());
+        // Devnet: always report synced so manual mining works on an idle chain with no peers.
+        // Simnet/other: use timestamp-based check (sanity tests assert !is_synced for lone nodes).
+        // Mainnet/Testnet: require peer connectivity + nearly-synced or at-tip.
+        let is_synced = match self.flow_context.config.net.network_type {
+            Devnet => true,
+            Mainnet | Testnet => {
+                self.has_sufficient_peer_connectivity()
+                    && (self.config.is_nearly_synced(
+                        block_template.selected_parent_timestamp,
+                        block_template.selected_parent_daa_score,
+                    ) || (!self.flow_context.is_ibd_running() && self.flow_context.hub().has_peers()))
+            }
+            _ => {
+                self.config.is_nearly_synced(
+                    block_template.selected_parent_timestamp,
+                    block_template.selected_parent_daa_score,
+                ) || (!self.flow_context.is_ibd_running() && self.flow_context.hub().has_peers())
+            }
+        };
         Ok(GetBlockTemplateResponse {
             block: block_template.block.into(),
-            is_synced: self.has_sufficient_peer_connectivity() && is_nearly_synced,
+            is_synced,
         })
     }
 

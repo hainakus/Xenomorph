@@ -222,17 +222,54 @@ pub fn create_core_with_runtime(runtime: &Runtime, args: &Args, fd_total_budget:
         exit(1);
     }
 
+    // Resolve app_dir early so we can auto-discover the genome file before building config.
+    let app_dir = get_app_dir_from_args(args);
+    let db_dir = app_dir.join(network.to_prefixed()).join(DEFAULT_DATA_DIR);
+
+    // Resolve genome file path:
+    //   1. Explicit --genome-file=PATH flag takes priority.
+    //   2. Auto-discover <appdir>/grch38.xenom  (node-local copy).
+    //   3. Auto-discover ~/.rusty-xenom/grch38.xenom  (global default install location).
+    //   4. None → falls back to SyntheticLoader (devnet/testing only).
+    const GENOME_RELEASE_URL: &str =
+        "https://github.com/hainakus/Xenomorph/releases/download/genome-grch38-v0/grch38.xenom";
+
+    let genome_file_path: Option<String> = if args.genome_file.is_some() {
+        args.genome_file.clone()
+    } else {
+        let appdir_candidate = app_dir.join("grch38.xenom");
+        let global_candidate = dirs::home_dir().map(|h| h.join(".rusty-xenom").join("grch38.xenom"));
+
+        if appdir_candidate.exists() {
+            Some(appdir_candidate.to_string_lossy().into_owned())
+        } else if let Some(ref global) = global_candidate {
+            if global.exists() {
+                Some(global.to_string_lossy().into_owned())
+            } else {
+                info!(
+                    "Genome PoW dataset not found at {} or {}. \
+                     Using synthetic fragments (devnet/testing only). \
+                     For mainnet, download the canonical dataset:\n  \
+                     wget {} -O {}",
+                    appdir_candidate.display(),
+                    global.display(),
+                    GENOME_RELEASE_URL,
+                    global.display()
+                );
+                None
+            }
+        } else {
+            None
+        }
+    };
+
     let config = Arc::new(
         ConfigBuilder::new(network.into())
             .adjust_perf_params_to_consensus_params()
             .apply_args(|config| args.apply_to_config(config))
+            .apply_args(|config| config.genome_file.clone_from(&genome_file_path))
             .build(),
     );
-
-    // TODO: Validate `config` forms a valid set of properties
-
-    let app_dir = get_app_dir_from_args(args);
-    let db_dir = app_dir.join(network.to_prefixed()).join(DEFAULT_DATA_DIR);
 
     // Print package name and version
     info!("{} v{}", env!("CARGO_PKG_NAME"), git::with_short_hash(version()));
