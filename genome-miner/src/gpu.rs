@@ -28,14 +28,20 @@ struct GpuContext {
 
 impl GpuContext {
     async fn new() -> Self {
-        let instance = wgpu::Instance::default();
+        // Restrict to modern GPU backends only (Metal / Vulkan / DX12).
+        // This skips Mesa/OpenGL entirely — old Intel iGPUs (HD 2000-4000) fail with
+        // "DYNAMIC_ARRAY_SIZE not supported" when compiling the storage-buffer shader.
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::METAL | wgpu::Backends::VULKAN | wgpu::Backends::DX12,
+            ..Default::default()
+        });
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 ..Default::default()
             })
             .await
-            .expect("No GPU adapter found");
+            .expect("No supported GPU adapter found (requires Metal, Vulkan, or DX12 — Apple M / Nvidia / AMD)");
 
         info!("GPU: {}", adapter.get_info().name);
 
