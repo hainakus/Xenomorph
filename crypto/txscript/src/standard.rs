@@ -6,7 +6,9 @@ use crate::{
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_consensus_core::tx::{ScriptPublicKey, ScriptVec};
 use kaspa_txscript_errors::TxScriptError;
+#[cfg(not(target_arch = "wasm32"))]
 use pqcrypto_dilithium::dilithium3;
+#[cfg(not(target_arch = "wasm32"))]
 use pqcrypto_traits::sign::{PublicKey as _, SecretKey as _};
 use smallvec::SmallVec;
 use std::iter::once;
@@ -125,6 +127,7 @@ pub fn build_pq_sigscript(sig_with_hashtype: &[u8], pk_bytes: &[u8]) -> Vec<u8> 
 /// Generates a fresh ML-DSA-65 (Dilithium3) key pair.
 /// Returns `(secret_key_bytes, public_key_bytes)`.
 /// Use `pq_address_from_pubkey` to obtain the corresponding `PubKeyPQ` address.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn pq_keypair() -> (Vec<u8>, Vec<u8>) {
     let (pk, sk) = dilithium3::keypair();
     (sk.as_bytes().to_vec(), pk.as_bytes().to_vec())

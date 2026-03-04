@@ -1,198 +1,172 @@
-name: Build and Upload Xenomorph Project Assets
+name: Build and Release Xenomorph
 
 on:
   push:
     tags:
-      - 'v*.*.*'  # Triggers on version tags like v1.0.0
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.15.3)'
+        required: true
 
 jobs:
-  build-linux:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: xenom-linux-x86_64
+            archive_ext: tar.gz
+
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: xenom-macos-aarch64
+            archive_ext: tar.gz
+
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: xenom-macos-x86_64
+            archive_ext: tar.gz
+
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: xenom-windows-x86_64
+            archive_ext: zip
+
+    runs-on: ${{ matrix.os }}
+
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Install dependencies (including protobuf-compiler)
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler libvulkan-dev
+          sudo apt-get install -y protobuf-compiler libvulkan-dev vulkan-tools
 
-      - name: Verify protoc installation
-        run: protoc --version
-
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-          override: true
-
-      - name: Cache cargo registry
-        uses: actions/cache@v3
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v3
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-build-
-
-      - name: Build for Linux
-        run: |
-          cargo build --release --bin xenom-wallet --bin xenom --bin genome-miner
-          mkdir -p linux
-          cp target/release/xenom-wallet linux/xenom-wallet
-          cp target/release/xenom linux/xenom
-          cp target/release/genome-miner linux/genome-miner
-
-      - name: Upload release artifacts (Linux)
-        uses: actions/upload-artifact@v3
-        with:
-          name: release-binaries-linux
-          path: |
-            target/release/xenom-wallet
-            target/release/xenom
-            target/release/genome-miner
-
-  build-macos:
-    runs-on: macos-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Install Protobuf Compiler
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
         run: brew install protobuf
 
-      - name: Verify protoc installation
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        run: choco install protoc --yes
+
+      - name: Verify protoc
         run: protoc --version
 
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          profile: minimal
-          override: true
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo registry
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.target }}-registry-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-registry-
 
       - name: Cache cargo build
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-build-
+          key: ${{ runner.os }}-${{ matrix.target }}-build-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-build-
 
-      - name: Build for macOS
+      - name: Build binaries
+        run: cargo build --release --bin xenom-wallet --bin xenom --bin genome-miner --target ${{ matrix.target }}
+
+      # ── Package (Linux / macOS) ─────────────────────────────────────────────
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
         run: |
-          cargo build --release --bin xenom-wallet --bin xenom --bin genome-miner
-          mkdir -p macos
-          cp target/release/xenom-wallet macos/xenom-wallet
-          cp target/release/xenom macos/xenom
-          cp target/release/genome-miner macos/genome-miner
-      - name: Upload release artifacts (macOS)
-        uses: actions/upload-artifact@v3
+          OUTDIR=dist/${{ matrix.artifact }}
+          mkdir -p "$OUTDIR"
+          cp target/${{ matrix.target }}/release/xenom-wallet "$OUTDIR/"
+          cp target/${{ matrix.target }}/release/xenom        "$OUTDIR/"
+          cp target/${{ matrix.target }}/release/genome-miner "$OUTDIR/"
+          cd dist
+          tar -czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}/
+
+      # ── Package (Windows) ───────────────────────────────────────────────────
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $outdir = "dist\${{ matrix.artifact }}"
+          New-Item -ItemType Directory -Force -Path $outdir | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\xenom-wallet.exe" $outdir
+          Copy-Item "target\${{ matrix.target }}\release\xenom.exe"        $outdir
+          Copy-Item "target\${{ matrix.target }}\release\genome-miner.exe" $outdir
+          Compress-Archive -Path "$outdir\*" -DestinationPath "dist\${{ matrix.artifact }}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: release-binaries-macos
-          path: |
-            target/release/xenom-wallet
-            target/release/xenom
-            target/release/genome-miner
-
-  build-windows:
-    runs-on: windows-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Install Protobuf Compiler
-        run: choco install protoc
-
-      - name: Verify protoc installation
-        run: protoc --version
-
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          profile: minimal
-          override: true
-
-      - name: Cache cargo registry
-        uses: actions/cache@v3
-        with:
-          path: C:\Users\runneradmin\.cargo\registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v3
-        with:
-          path: target
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-build-
-
-      - name: Build for Windows
-        run: | 
-          cargo build --release --bin xenom-wallet --bin xenom --bin genome-miner
-          mkdir -p windows
-          cp target/release/xenom-wallet.exe windows/xenom-wallet.exe
-          cp target/release/xenom.exe windows/xenom.exe
-          cp target/release/genome-miner.exe windows/genome-miner.exe
-      - name: Upload release artifacts (Windows)
-        uses: actions/upload-artifact@v3
-        with:
-          name: release-binaries-windows
-          path: |
-            target\release\xenom-wallet.exe
-            target\release\xenom.exe
-            target\release\genome-miner.exe
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}.${{ matrix.archive_ext }}
 
   release:
-    needs: [build-linux, build-macos, build-windows]
+    needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
-      - name: Download Linux build artifacts
-        uses: actions/download-artifact@v3
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
         with:
-          name: release-binaries-linux
+          path: dist/
 
-      - name: Download macOS build artifacts
-        uses: actions/download-artifact@v3
-        with:
-          name: release-binaries-macos
+      - name: List artifacts
+        run: find dist/ -type f
 
-      - name: Download Windows build artifacts
-        uses: actions/download-artifact@v3
-        with:
-          name: release-binaries-windows
-
-      - name: List files in the workspace
-        run: ls -la
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "Xenomorph ${{ steps.tag.outputs.tag }}"
+          body: |
+            ## Xenomorph ${{ steps.tag.outputs.tag }}
+
+            ### Binaries included
+            - `xenom` — node daemon
+            - `xenom-wallet` — CLI wallet
+            - `genome-miner` — GPU miner (Vulkan / Metal)
+
+            ### Downloads
+            | Platform | File |
+            |----------|------|
+            | Linux x86_64 | `xenom-linux-x86_64.tar.gz` |
+            | macOS Apple Silicon | `xenom-macos-aarch64.tar.gz` |
+            | macOS Intel | `xenom-macos-x86_64.tar.gz` |
+            | Windows x86_64 | `xenom-windows-x86_64.zip` |
+
+            ### Quick start
+            ```bash
+            tar -xzf xenom-linux-x86_64.tar.gz
+            ./xenom --utxoindex --rpclisten-borsh --mainnet
+            ```
           files: |
-            linux/xenom-wallet
-            linux/xenom
-            linux/genome-miner
-            macos/xenom-wallet
-            macos/xenom
-            macos/genome-miner
-            windows/xenom-wallet.exe
-            windows/xenom.exe
-            windows/genome-miner.exe
+            dist/xenom-linux-x86_64/xenom-linux-x86_64.tar.gz
+            dist/xenom-macos-aarch64/xenom-macos-aarch64.tar.gz
+            dist/xenom-macos-x86_64/xenom-macos-x86_64.tar.gz
+            dist/xenom-windows-x86_64/xenom-windows-x86_64.zip
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Notify success
-        run: echo "Release created successfully!"
