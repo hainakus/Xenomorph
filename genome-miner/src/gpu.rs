@@ -29,20 +29,38 @@ struct GpuContext {
 
 impl GpuContext {
     async fn new() -> Self {
-        // Restrict to modern GPU backends only (Metal / Vulkan / DX12).
-        // This skips Mesa/OpenGL entirely — old Intel iGPUs (HD 2000-4000) fail with
-        // "DYNAMIC_ARRAY_SIZE not supported" when compiling the storage-buffer shader.
+        // Allow all real GPU vendors: NVIDIA (Vulkan/DX12), AMD (Vulkan/DX12),
+        // Intel (Vulkan/DX12), Apple (Metal).
+        // Software renderers (llvmpipe, lavapipe) are rejected via DeviceType::Cpu check.
+        let all_backends = wgpu::Backends::METAL | wgpu::Backends::VULKAN | wgpu::Backends::DX12;
+
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::METAL | wgpu::Backends::VULKAN | wgpu::Backends::DX12,
+            backends: all_backends,
             ..Default::default()
         });
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                ..Default::default()
-            })
-            .await
-            .expect("No supported GPU adapter found (requires Metal, Vulkan, or DX12 — Apple M / Nvidia / AMD)");
+
+        // Prefer discrete GPU over integrated; skip CPU/software renderers entirely.
+        let adapter = {
+            let mut candidates: Vec<wgpu::Adapter> = instance
+                .enumerate_adapters(all_backends)
+                .into_iter()
+                .filter(|a| {
+                    let info = a.get_info();
+                    info.device_type != wgpu::DeviceType::Cpu
+                        && !info.name.to_lowercase().contains("llvmpipe")
+                        && !info.name.to_lowercase().contains("lavapipe")
+                        && !info.name.to_lowercase().contains("softpipe")
+                })
+                .collect();
+            // Sort: discrete first, then integrated, then other
+            candidates.sort_by_key(|a| match a.get_info().device_type {
+                wgpu::DeviceType::DiscreteGpu   => 0,
+                wgpu::DeviceType::IntegratedGpu => 1,
+                _                               => 2,
+            });
+            candidates.into_iter().next()
+                .expect("No real GPU adapter found. genome-miner requires Metal, Vulkan, or DX12 (NVIDIA / AMD / Intel / Apple).")
+        };
 
         info!("GPU: {}", adapter.get_info().name);
 
