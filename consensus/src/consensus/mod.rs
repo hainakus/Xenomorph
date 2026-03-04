@@ -255,7 +255,9 @@ impl Consensus {
                 loader.num_fragments(),
                 &file_root[..12]
             );
-            header_processor_base.with_genome_loader(std::sync::Arc::new(loader))
+            let loader = std::sync::Arc::new(loader);
+            services.pruning_proof_manager.set_genome_loader(loader.clone());
+            header_processor_base.with_genome_loader(loader)
         } else {
             header_processor_base
         });
