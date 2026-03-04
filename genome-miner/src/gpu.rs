@@ -39,17 +39,34 @@ impl GpuContext {
             ..Default::default()
         });
 
-        // Prefer discrete GPU over integrated; skip CPU/software renderers entirely.
+        // Intel integrated GPU vendor ID (UHD 600/700/Arc iGPU) — excluded because
+        // max_storage_buffer_binding_size is limited to 128 MB, too small for the 739 MB genome.
+        const INTEL_VENDOR_ID: u32 = 0x8086;
+
+        // Prefer discrete GPU over integrated; skip CPU/software renderers and Intel iGPU entirely.
         let adapter = {
             let mut candidates: Vec<wgpu::Adapter> = instance
                 .enumerate_adapters(all_backends)
                 .into_iter()
                 .filter(|a| {
                     let info = a.get_info();
-                    info.device_type != wgpu::DeviceType::Cpu
-                        && !info.name.to_lowercase().contains("llvmpipe")
-                        && !info.name.to_lowercase().contains("lavapipe")
-                        && !info.name.to_lowercase().contains("softpipe")
+                    let name_lc = info.name.to_lowercase();
+                    // Reject software renderers
+                    if info.device_type == wgpu::DeviceType::Cpu
+                        || name_lc.contains("llvmpipe")
+                        || name_lc.contains("lavapipe")
+                        || name_lc.contains("softpipe")
+                    {
+                        return false;
+                    }
+                    // Reject Intel integrated GPUs (UHD Graphics) — insufficient binding size
+                    if info.vendor == INTEL_VENDOR_ID
+                        && info.device_type == wgpu::DeviceType::IntegratedGpu
+                    {
+                        warn!("Skipping Intel integrated GPU '{}' (insufficient max_storage_buffer_binding_size for 739 MB genome)", info.name);
+                        return false;
+                    }
+                    true
                 })
                 .collect();
             // Sort: discrete first, then integrated, then other
