@@ -269,20 +269,28 @@ pub fn create_core_with_runtime(runtime: &Runtime, args: &Args, fd_total_budget:
 
             if global_valid {
                 Some(global.to_string_lossy().into_owned())
-            } else if network.network_type == NetworkType::Simnet {
-                // Simnet uses skip_proof_of_work=true; never download the genome dataset.
+            } else if matches!(network.network_type, NetworkType::Simnet | NetworkType::Devnet) {
+                // Simnet/Devnet: genome PoW is never active in tests/dev — skip download.
                 None
             } else {
                 // Not found anywhere — attempt auto-download.
                 info!("Genome PoW dataset not found. Downloading from GitHub Releases...");
                 info!("  Source:      {}", GENOME_RELEASE_URL);
                 info!("  Destination: {}", global.display());
-                match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("tokio rt")
-                    .block_on(download_genome_file(GENOME_RELEASE_URL, global))
-                {
+                // Handle both cases:
+                //   • called before the main Tokio runtime (daemon startup) → create a one-shot rt
+                //   • called from within a Tokio runtime (tests, nested) → block_in_place
+                let dl_result = match tokio::runtime::Handle::try_current() {
+                    Ok(handle) => tokio::task::block_in_place(|| {
+                        handle.block_on(download_genome_file(GENOME_RELEASE_URL, global))
+                    }),
+                    Err(_) => tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("tokio rt for genome download")
+                        .block_on(download_genome_file(GENOME_RELEASE_URL, global)),
+                };
+                match dl_result {
                     Ok(()) => {
                         info!("Genome dataset download complete: {}", global.display());
                         Some(global.to_string_lossy().into_owned())
