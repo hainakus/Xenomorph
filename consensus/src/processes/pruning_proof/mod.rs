@@ -28,7 +28,7 @@ use kaspa_consensus_core::{
 use kaspa_core::{debug, info, trace};
 use kaspa_database::prelude::{CachePolicy, ConnBuilder, StoreResultEmptyTuple, StoreResultExtensions};
 use kaspa_hashes::Hash;
-use kaspa_pow::{calc_block_level, genome_pow::GenomeDatasetLoader};
+use kaspa_pow::genome_pow::GenomeDatasetLoader;
 use kaspa_utils::{binary_heap::BinaryHeapExtensions, vec::VecExtensions};
 use thiserror::Error;
 
