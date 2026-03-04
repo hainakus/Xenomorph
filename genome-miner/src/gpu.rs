@@ -27,58 +27,66 @@ struct GpuContext {
     bind_layout: wgpu::BindGroupLayout,   // shared: 3×storage bindings
 }
 
+// ── Adapter enumeration ──────────────────────────────────────────────────────
+
+/// Returns all eligible mining adapters sorted by preference (discrete > integrated).
+/// Excludes: software renderers (llvmpipe/lavapipe/softpipe) and Intel integrated GPUs
+/// (UHD 600/700) whose max_storage_buffer_binding_size is too small for the 739 MB genome.
+pub async fn enumerate_mining_adapters() -> Vec<wgpu::Adapter> {
+    const INTEL_VENDOR_ID: u32 = 0x8086;
+    let all_backends = wgpu::Backends::METAL | wgpu::Backends::VULKAN | wgpu::Backends::DX12;
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: all_backends,
+        ..Default::default()
+    });
+    let mut candidates: Vec<wgpu::Adapter> = instance
+        .enumerate_adapters(all_backends)
+        .into_iter()
+        .filter(|a| {
+            let info = a.get_info();
+            let name_lc = info.name.to_lowercase();
+            if info.device_type == wgpu::DeviceType::Cpu
+                || name_lc.contains("llvmpipe")
+                || name_lc.contains("lavapipe")
+                || name_lc.contains("softpipe")
+            {
+                return false;
+            }
+            if info.vendor == INTEL_VENDOR_ID
+                && info.device_type == wgpu::DeviceType::IntegratedGpu
+            {
+                warn!("Skipping Intel integrated GPU '{}' (binding size too small for 739 MB genome)", info.name);
+                return false;
+            }
+            true
+        })
+        .collect();
+    candidates.sort_by_key(|a| match a.get_info().device_type {
+        wgpu::DeviceType::DiscreteGpu   => 0,
+        wgpu::DeviceType::IntegratedGpu => 1,
+        _                               => 2,
+    });
+    candidates
+}
+
+/// Select adapters by `--gpu` value: "all" returns all, otherwise parses comma-separated indices.
+pub fn select_adapters(gpu_arg: &str, adapters: Vec<wgpu::Adapter>) -> Vec<wgpu::Adapter> {
+    if gpu_arg.trim().eq_ignore_ascii_case("all") {
+        return adapters;
+    }
+    let idx_set: std::collections::HashSet<usize> = gpu_arg
+        .split(',')
+        .filter_map(|s| s.trim().parse::<usize>().ok())
+        .collect();
+    adapters.into_iter().enumerate()
+        .filter(|(i, _)| idx_set.contains(i))
+        .map(|(_, a)| a)
+        .collect()
+}
+
 impl GpuContext {
-    async fn new() -> Self {
-        // Allow all real GPU vendors: NVIDIA (Vulkan/DX12), AMD (Vulkan/DX12),
-        // Intel (Vulkan/DX12), Apple (Metal).
-        // Software renderers (llvmpipe, lavapipe) are rejected via DeviceType::Cpu check.
-        let all_backends = wgpu::Backends::METAL | wgpu::Backends::VULKAN | wgpu::Backends::DX12;
-
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: all_backends,
-            ..Default::default()
-        });
-
-        // Intel integrated GPU vendor ID (UHD 600/700/Arc iGPU) — excluded because
-        // max_storage_buffer_binding_size is limited to 128 MB, too small for the 739 MB genome.
-        const INTEL_VENDOR_ID: u32 = 0x8086;
-
-        // Prefer discrete GPU over integrated; skip CPU/software renderers and Intel iGPU entirely.
-        let adapter = {
-            let mut candidates: Vec<wgpu::Adapter> = instance
-                .enumerate_adapters(all_backends)
-                .into_iter()
-                .filter(|a| {
-                    let info = a.get_info();
-                    let name_lc = info.name.to_lowercase();
-                    // Reject software renderers
-                    if info.device_type == wgpu::DeviceType::Cpu
-                        || name_lc.contains("llvmpipe")
-                        || name_lc.contains("lavapipe")
-                        || name_lc.contains("softpipe")
-                    {
-                        return false;
-                    }
-                    // Reject Intel integrated GPUs (UHD Graphics) — insufficient binding size
-                    if info.vendor == INTEL_VENDOR_ID
-                        && info.device_type == wgpu::DeviceType::IntegratedGpu
-                    {
-                        warn!("Skipping Intel integrated GPU '{}' (insufficient max_storage_buffer_binding_size for 739 MB genome)", info.name);
-                        return false;
-                    }
-                    true
-                })
-                .collect();
-            // Sort: discrete first, then integrated, then other
-            candidates.sort_by_key(|a| match a.get_info().device_type {
-                wgpu::DeviceType::DiscreteGpu   => 0,
-                wgpu::DeviceType::IntegratedGpu => 1,
-                _                               => 2,
-            });
-            candidates.into_iter().next()
-                .expect("No real GPU adapter found. genome-miner requires Metal, Vulkan, or DX12 (NVIDIA / AMD / Intel / Apple).")
-        };
-
+    /// Create a `GpuContext` from a specific pre-selected adapter.
+    pub async fn from_adapter(adapter: wgpu::Adapter) -> Self {
         info!("GPU: {}", adapter.get_info().name);
 
         // Request the adapter's actual max buffer size.
@@ -177,6 +185,14 @@ impl GpuContext {
         });
 
         Self { device, queue, pipeline, kh_pipeline, bind_layout }
+    }
+
+    /// Convenience: pick the first eligible adapter and create a context.
+    async fn new() -> Self {
+        let adapters = enumerate_mining_adapters().await;
+        let adapter = adapters.into_iter().next()
+            .expect("No real GPU adapter found. genome-miner requires Metal, Vulkan, or DX12 (NVIDIA / AMD / Intel Arc / Apple).");
+        Self::from_adapter(adapter).await
     }
 }
 
@@ -418,46 +434,50 @@ fn build_params_full(
 // ── `gpu` subcommand entry point ──────────────────────────────────────────────
 
 pub async fn cmd_gpu(m: &ArgMatches) {
-    let rpcserver  = m.get_one::<String>("rpcserver").cloned().unwrap_or_else(|| "localhost:36669".to_owned());
-    let addr_str   = m.get_one::<String>("mining-address").cloned().expect("--mining-address required");
-    let batch_size = m.get_one::<u32>("batch-size").copied().unwrap_or(1 << 20); // 1M nonces/dispatch
-    let frag_size  = m.get_one::<u32>("genome-fragment-size").copied().unwrap_or(1_048_576);
+    let rpcserver         = m.get_one::<String>("rpcserver").cloned().unwrap_or_else(|| "localhost:36669".to_owned());
+    let addr_str          = m.get_one::<String>("mining-address").cloned().expect("--mining-address required");
+    let batch_size        = m.get_one::<u32>("batch-size").copied().unwrap_or(1 << 20);
+    let frag_size         = m.get_one::<u32>("genome-fragment-size").copied().unwrap_or(1_048_576);
     let genome_activation = crate::resolve_activation(m);
-    // Resolve genome file: explicit --genome-file flag → auto-discover ~/.rusty-xenom/grch38.xenom → None
+    let gpu_arg           = m.get_one::<String>("gpu").cloned().unwrap_or_else(|| "0".to_owned());
+    let list_gpus         = m.get_flag("list-gpus");
     let genome_path: Option<String> = m.get_one::<String>("genome-file").cloned().or_else(|| {
         let default = dirs::home_dir()?.join(".rusty-xenom").join("grch38.xenom");
         if default.exists() { Some(default.to_string_lossy().into_owned()) } else { None }
     });
 
-    info!("Initialising GPU ...");
-    let ctx = Arc::new(GpuContext::new().await);
+    // Enumerate eligible adapters first (needed for both --list-gpus and mining)
+    let all_adapters = enumerate_mining_adapters().await;
 
-    let url = format!("grpc://{rpcserver}");
-    info!("Connecting to {url}");
-    let rpc = Arc::new(GrpcClient::connect(url).await.expect("Failed to connect"));
+    // --list-gpus: print and exit
+    if list_gpus {
+        if all_adapters.is_empty() {
+            info!("No eligible GPU adapters found (software renderers and Intel iGPU excluded).");
+        } else {
+            info!("{} eligible GPU adapter(s):", all_adapters.len());
+            for (i, a) in all_adapters.iter().enumerate() {
+                let inf = a.get_info();
+                info!("  [{}] {} — {:?} (vendor: {:#06x})", i, inf.name, inf.device_type, inf.vendor);
+            }
+        }
+        return;
+    }
 
-    let pay_address: kaspa_rpc_core::RpcAddress =
-        Address::try_from(addr_str.as_str()).expect("Invalid --mining-address");
+    let selected = select_adapters(&gpu_arg, all_adapters);
+    if selected.is_empty() {
+        warn!("No GPUs matched '--gpu {gpu_arg}'. Run with --list-gpus to see available indices.");
+        return;
+    }
 
-    let epoch_seed_zero = kaspa_hashes::Hash::from_bytes([0u8; 32]);
-
-    // Open FileGenomeLoader if --genome-file was provided.
+    // Load genome data once — bytes uploaded to each GPU's VRAM separately below.
     let file_loader: Option<kaspa_pow::genome_file::FileGenomeLoader> =
         genome_path.as_deref().map(|path| {
-            kaspa_pow::genome_file::FileGenomeLoader::open(
-                std::path::Path::new(path), frag_size, false,
-            )
-            .unwrap_or_else(|e| panic!("Failed to open genome file '{path}': {e}"))
+            kaspa_pow::genome_file::FileGenomeLoader::open(std::path::Path::new(path), frag_size, false)
+                .unwrap_or_else(|e| panic!("Failed to open genome file '{path}': {e}"))
         });
-
-    // Synthetic fallback for devnet (only allocated if no file loader).
-    let synthetic_bytes: Vec<u8> = if file_loader.is_none() {
-        synthetic_packed_genome(frag_size)
-    } else {
-        Vec::new()
-    };
-
-    let (packed_genome_ref, num_mix_chunks): (&[u8], u32) = match file_loader.as_ref() {
+    let synthetic_bytes: Vec<u8> =
+        if file_loader.is_none() { synthetic_packed_genome(frag_size) } else { Vec::new() };
+    let (packed_genome_bytes, num_mix_chunks): (&[u8], u32) = match file_loader.as_ref() {
         Some(loader) => {
             let packed = loader.packed_dataset().unwrap();
             let chunks = (packed.len() / MIX_CHUNK_BYTES) as u32;
@@ -472,29 +492,46 @@ pub async fn cmd_gpu(m: &ArgMatches) {
         }
     };
 
-    // Upload packed genome to GPU VRAM — uploaded ONCE, never changes between epochs.
-    let packed_genome_buf = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label:    Some("packed_genome"),
-        contents: packed_genome_ref,
-        usage:    wgpu::BufferUsages::STORAGE,
-    });
+    // Per-GPU worker state
+    struct GpuWorker {
+        ctx:               Arc<GpuContext>,
+        genome_buf:        Arc<wgpu::Buffer>,
+        matrix_buf:        Arc<wgpu::Buffer>,
+        last_pre_pow_hash: Option<kaspa_hashes::Hash>,
+    }
 
-    // KHeavyHash matrix buffer: 4096 × u32 = 16 KB, updated per template
-    let matrix_buf = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-        label:              Some("kh_matrix"),
-        size:               4096 * 4,
-        usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
+    info!("Initialising {} GPU(s) ...", selected.len());
+    let mut workers: Vec<GpuWorker> = Vec::with_capacity(selected.len());
+    for adapter in selected {
+        let ctx = Arc::new(GpuContext::from_adapter(adapter).await);
+        let genome_buf = Arc::new(ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label:    Some("packed_genome"),
+            contents: packed_genome_bytes,
+            usage:    wgpu::BufferUsages::STORAGE,
+        }));
+        let matrix_buf = Arc::new(ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label:              Some("kh_matrix"),
+            size:               4096 * 4,
+            usage:              wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        workers.push(GpuWorker { ctx, genome_buf, matrix_buf, last_pre_pow_hash: None });
+    }
+    let num_gpus = workers.len();
+    info!("{num_gpus} GPU(s) ready — batch_size={batch_size} nonces/GPU/dispatch");
+
+    let url = format!("grpc://{rpcserver}");
+    info!("Connecting to {url}");
+    let rpc = Arc::new(GrpcClient::connect(url).await.expect("Failed to connect"));
+    let pay_address: kaspa_rpc_core::RpcAddress =
+        Address::try_from(addr_str.as_str()).expect("Invalid --mining-address");
 
     let mut last_template_id: Option<kaspa_hashes::Hash> = None;
-    let mut last_pre_pow_hash: Option<kaspa_hashes::Hash> = None;
     let mut nonce_base: u64 = 0;
     let mut total_hashes: u64 = 0;
     let mut report_timer = Instant::now();
 
     loop {
-        // Fetch template
         let resp = match rpc.get_block_template_call(None, GetBlockTemplateRequest::new(pay_address.clone(), vec![])).await {
             Ok(r) => r,
             Err(e) => { warn!("get_block_template: {e}"); sleep(Duration::from_secs(1)).await; continue; }
@@ -517,134 +554,98 @@ pub async fn cmd_gpu(m: &ArgMatches) {
 
         let header: Header = (&rpc_block.header).into();
 
-        // epoch_seed is included in the Params buffer per-batch — no VRAM update needed.
-
         if header.daa_score < genome_activation {
-            // Pre-activation: mine KHeavyHash (PyrinHashv2) on GPU.
-            // epoch_seed is included when non-zero (activation=0), matching mainnet block semantics.
+            // ── KHeavyHash path: dispatch all GPUs with interleaved nonce ranges ──
             let pre_pow_hash = kaspa_consensus_core::hashing::header::hash_override_nonce_time(&header, 0, 0);
             let target = kaspa_math::Uint256::from_compact_target_bits(header.bits);
+            let mut found: Option<(u64, [u32; 8])> = None;
 
-            // Re-upload matrix when template changes (pre_pow_hash → new matrix)
-            if last_pre_pow_hash != Some(pre_pow_hash) {
-                let mat_bytes = build_matrix_bytes(&pre_pow_hash);
-                ctx.queue.write_buffer(&matrix_buf, 0, &mat_bytes);
-                last_pre_pow_hash = Some(pre_pow_hash);
+            for (i, w) in workers.iter_mut().enumerate() {
+                if w.last_pre_pow_hash != Some(pre_pow_hash) {
+                    w.ctx.queue.write_buffer(&*w.matrix_buf, 0, &build_matrix_bytes(&pre_pow_hash));
+                    w.last_pre_pow_hash = Some(pre_pow_hash);
+                }
+                let gpu_nonce = nonce_base.wrapping_add(i as u64 * batch_size as u64);
+                let kh_params = build_kheavy_params(&pre_pow_hash, header.timestamp, &target, gpu_nonce);
+                if let Some(result) = gpu_search_kheavy(&w.ctx, &kh_params, &*w.matrix_buf, batch_size).await {
+                    found = Some(result);
+                    break;
+                }
+                total_hashes += batch_size as u64;
             }
+            nonce_base = nonce_base.wrapping_add(num_gpus as u64 * batch_size as u64);
 
-            let kh_params = build_kheavy_params(&pre_pow_hash, header.timestamp, &target, nonce_base);
-            let solution = gpu_search_kheavy(&ctx, &kh_params, &matrix_buf, batch_size).await;
-            total_hashes += batch_size as u64;
-            nonce_base = nonce_base.wrapping_add(batch_size as u64);
-
-            if let Some((nonce, gpu_hash)) = solution {
-                // CPU cross-check: verify the GPU nonce before submitting
+            if let Some((nonce, gpu_hash)) = found {
                 let pow_state = KHeavyState::new(&header);
                 let (cpu_valid, cpu_pow) = pow_state.check_pow(nonce);
-                // Convert CPU Uint256 → [u32; 8] LE for comparison
                 let cpu_bytes = cpu_pow.to_le_bytes();
                 let mut cpu_hash = [0u32; 8];
-                for i in 0..8 {
-                    cpu_hash[i] = u32::from_le_bytes(cpu_bytes[i*4..i*4+4].try_into().unwrap());
-                }
+                for k in 0..8 { cpu_hash[k] = u32::from_le_bytes(cpu_bytes[k*4..k*4+4].try_into().unwrap()); }
                 if gpu_hash != cpu_hash {
-                    warn!(
-                        "GPU KHeavyHash hash mismatch nonce={}: gpu={:08x}{:08x} cpu={:08x}{:08x}",
-                        nonce,
-                        gpu_hash[7], gpu_hash[6],
-                        cpu_hash[7], cpu_hash[6]
-                    );
+                    warn!("GPU KHeavyHash mismatch nonce={}: gpu={:08x}{:08x} cpu={:08x}{:08x}",
+                        nonce, gpu_hash[7], gpu_hash[6], cpu_hash[7], cpu_hash[6]);
                 }
                 if !cpu_valid {
-                    warn!("GPU KHeavyHash false-positive nonce={} — skipping invalid block", nonce);
+                    warn!("GPU KHeavyHash false-positive nonce={} — skipping", nonce);
                     last_template_id = None;
                     continue;
                 }
-                let solved = build_raw_block_nonce(&rpc_block, nonce);
-                let ibd = match rpc.submit_block(solved, false).await {
-                    Ok(r) => {
-                        let is_ibd = matches!(r.report, SubmitBlockReport::Reject(SubmitBlockRejectReason::IsInIBD));
-                        info!("Block submitted (KHeavyHash GPU): {:?}", r.report);
-                        is_ibd
-                    }
+                let ibd = match rpc.submit_block(build_raw_block_nonce(&rpc_block, nonce), false).await {
+                    Ok(r) => { let ibd = matches!(r.report, SubmitBlockReport::Reject(SubmitBlockRejectReason::IsInIBD)); info!("Block submitted (KHeavyHash): {:?}", r.report); ibd }
                     Err(e) => { warn!("submit_block: {e}"); false }
                 };
                 if !ibd { last_template_id = None; }
             }
             if report_timer.elapsed() >= Duration::from_secs(5) {
-                let elapsed = report_timer.elapsed().as_secs_f64();
-                let mhs = total_hashes as f64 / elapsed / 1_000_000.0;
-                info!("GPU [KHeavyHash] [{:.2} MH/s] daa={} (genome activates at {})",
-                    mhs, header.daa_score, genome_activation);
-                total_hashes = 0;
-                report_timer = Instant::now();
+                let mhs = total_hashes as f64 / report_timer.elapsed().as_secs_f64() / 1_000_000.0;
+                info!("GPU×{num_gpus} [KHeavyHash] [{mhs:.2} MH/s] daa={} (genome activates at {genome_activation})", header.daa_score);
+                total_hashes = 0; report_timer = Instant::now();
             }
             continue;
         }
 
+        // ── Genome PoW path: dispatch all GPUs with interleaved nonce ranges ──
         let pre_pow_hash = kaspa_consensus_core::hashing::header::hash_override_nonce_time(&header, 0, 0);
         let target = kaspa_math::Uint256::from_compact_target_bits(header.bits);
+        let mut solution: Option<u64> = None;
 
-        // Build params for this batch
-        let params_bytes = build_params_full(
-            &header.epoch_seed,
-            &pre_pow_hash,
-            &target,
-            nonce_base,
-            num_mix_chunks,
-        );
-
-        let solution = gpu_search_batch(&ctx, &params_bytes, &packed_genome_buf, batch_size).await;
-        total_hashes += batch_size as u64;
-        nonce_base = nonce_base.wrapping_add(batch_size as u64);
+        for (i, w) in workers.iter().enumerate() {
+            let gpu_nonce = nonce_base.wrapping_add(i as u64 * batch_size as u64);
+            let params = build_params_full(&header.epoch_seed, &pre_pow_hash, &target, gpu_nonce, num_mix_chunks);
+            if let Some(nonce) = gpu_search_batch(&w.ctx, &params, &*w.genome_buf, batch_size).await {
+                solution = Some(nonce);
+                break;
+            }
+            total_hashes += batch_size as u64;
+        }
+        nonce_base = nonce_base.wrapping_add(num_gpus as u64 * batch_size as u64);
 
         if let Some(nonce) = solution {
-            // CPU cross-check: re-run genome_mix_hash on CPU before submitting.
-            let pre_pow   = kaspa_consensus_core::hashing::header::hash_override_nonce_time(&header, 0, 0);
-            let target    = kaspa_math::Uint256::from_compact_target_bits(header.bits);
-            let state     = GenomePowState::new(pre_pow, target, header.epoch_seed, frag_size);
-            let cpu_pow   = genome_mix_hash(packed_genome_ref, &header.epoch_seed, nonce, &pre_pow);
+            let state   = GenomePowState::new(pre_pow_hash, target, header.epoch_seed, frag_size);
+            let cpu_pow = genome_mix_hash(packed_genome_bytes, &header.epoch_seed, nonce, &pre_pow_hash);
             if cpu_pow > state.target {
-                warn!(
-                    "GPU Genome PoW false-positive nonce={:#018x} cpu_pow_msb={:08x} — skipping invalid block",
-                    nonce, cpu_pow.to_le_bytes()[31]
-                );
+                warn!("GPU Genome PoW false-positive nonce={:#018x} — skipping", nonce);
                 last_template_id = None;
                 continue;
             }
-            // Compute fitness separately for the coinbase (still needed for block reward)
             let frag_idx = fragment_index(&header.epoch_seed, nonce, frag_size);
-            let synthetic_frag_loader = SyntheticLoader::new(frag_size, header.epoch_seed);
-            let frag_loader: &dyn GenomeDatasetLoader = match file_loader.as_ref() {
-                Some(fl) => fl,
-                None => &synthetic_frag_loader,
-            };
-            let fragment = frag_loader.load_fragment(frag_idx).unwrap_or_else(|| vec![0u8; frag_size as usize]);
-            let (_, _cpu_pow2, cpu_fitness) = state.check_pow_with_fragment(nonce, &fragment);
+            let synth    = SyntheticLoader::new(frag_size, header.epoch_seed);
+            let fl: &dyn GenomeDatasetLoader = match file_loader.as_ref() { Some(f) => f, None => &synth };
+            let fragment = fl.load_fragment(frag_idx).unwrap_or_else(|| vec![0u8; frag_size as usize]);
+            let (_, _, cpu_fitness) = state.check_pow_with_fragment(nonce, &fragment);
             info!("CPU cross-check PASSED nonce={:#018x} fitness={}", nonce, cpu_fitness);
-            let solved = build_raw_block_nonce(&rpc_block, nonce);
-            let ibd = match rpc.submit_block(solved, false).await {
-                Ok(r) => {
-                    let is_ibd = matches!(r.report, SubmitBlockReport::Reject(SubmitBlockRejectReason::IsInIBD));
-                    info!("Block submitted (Genome PoW): {:?}", r.report);
-                    is_ibd
-                }
+            let ibd = match rpc.submit_block(build_raw_block_nonce(&rpc_block, nonce), false).await {
+                Ok(r) => { let ibd = matches!(r.report, SubmitBlockReport::Reject(SubmitBlockRejectReason::IsInIBD)); info!("Block submitted (Genome PoW): {:?}", r.report); ibd }
                 Err(e) => { warn!("submit_block: {e}"); false }
             };
             if !ibd { last_template_id = None; }
         }
 
         if report_timer.elapsed() >= Duration::from_secs(5) {
-            let elapsed = report_timer.elapsed().as_secs_f64();
-            let mhs = total_hashes as f64 / elapsed / 1_000_000.0;
-            info!(
-                "GPU [{:.0} MH/s] daa={} epoch_seed={}...",
-                mhs,
-                header.daa_score,
-                &format!("{:?}", header.epoch_seed)[..8],
-            );
-            total_hashes = 0;
-            report_timer = Instant::now();
+            let mhs = total_hashes as f64 / report_timer.elapsed().as_secs_f64() / 1_000_000.0;
+            info!("GPU×{num_gpus} [{mhs:.0} MH/s] daa={} epoch_seed={}...",
+                header.daa_score, &format!("{:?}", header.epoch_seed)[..8]);
+            total_hashes = 0; report_timer = Instant::now();
         }
     }
 }
