@@ -243,10 +243,31 @@ pub fn create_core_with_runtime(runtime: &Runtime, args: &Args, fd_total_budget:
         let appdir_candidate = app_dir.join("grch38.xenom");
         let global_candidate = dirs::home_dir().map(|h| h.join(".rusty-xenom").join("grch38.xenom"));
 
-        if appdir_candidate.exists() {
+        // Minimum plausible genome file size (64-byte header + at least some data).
+        // A real grch38.xenom is ~739 MB; anything under 1 MB is a corrupt/partial download.
+        const GENOME_MIN_BYTES: u64 = 1_048_576;
+
+        let appdir_valid = appdir_candidate.exists()
+            && fs::metadata(&appdir_candidate).map(|m| m.len()).unwrap_or(0) >= GENOME_MIN_BYTES;
+
+        if appdir_valid {
             Some(appdir_candidate.to_string_lossy().into_owned())
         } else if let Some(ref global) = global_candidate {
-            if global.exists() {
+            // Check if the global file exists AND is large enough to be valid.
+            let global_valid = global.exists()
+                && fs::metadata(global).map(|m| m.len()).unwrap_or(0) >= GENOME_MIN_BYTES;
+
+            if !global_valid && global.exists() {
+                // File is present but corrupt/truncated — remove it so we re-download below.
+                kaspa_core::warn!(
+                    "Genome file at {} is corrupt or incomplete ({} bytes). Removing and re-downloading.",
+                    global.display(),
+                    fs::metadata(global).map(|m| m.len()).unwrap_or(0)
+                );
+                let _ = fs::remove_file(global);
+            }
+
+            if global_valid {
                 Some(global.to_string_lossy().into_owned())
             } else if network.network_type == NetworkType::Simnet {
                 // Simnet uses skip_proof_of_work=true; never download the genome dataset.
@@ -256,9 +277,12 @@ pub fn create_core_with_runtime(runtime: &Runtime, args: &Args, fd_total_budget:
                 info!("Genome PoW dataset not found. Downloading from GitHub Releases...");
                 info!("  Source:      {}", GENOME_RELEASE_URL);
                 info!("  Destination: {}", global.display());
-                match tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(download_genome_file(GENOME_RELEASE_URL, global))
-                }) {
+                match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("tokio rt")
+                    .block_on(download_genome_file(GENOME_RELEASE_URL, global))
+                {
                     Ok(()) => {
                         info!("Genome dataset download complete: {}", global.display());
                         Some(global.to_string_lossy().into_owned())
