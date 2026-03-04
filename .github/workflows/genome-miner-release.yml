@@ -21,12 +21,12 @@ jobs:
             artifact: genome-miner-linux-x86_64
             binary: genome-miner
 
-          - os: macos-13          # last GitHub x86_64 macOS runner
+          - os: macos-latest      # arm64 runner, cross-compile to Intel x86_64
             target: x86_64-apple-darwin
             artifact: genome-miner-macos-x86_64
             binary: genome-miner
 
-          - os: macos-latest      # macos-14 — Apple Silicon (M1/M2/M3/M4)
+          - os: macos-latest      # Apple Silicon (M1/M2/M3/M4)
             target: aarch64-apple-darwin
             artifact: genome-miner-macos-aarch64
             binary: genome-miner

@@ -23,7 +23,9 @@ use kaspa_txscript_errors::TxScriptError;
 use log::trace;
 use opcodes::codes::OpReturn;
 use opcodes::{codes, to_small_int, OpCond};
+#[cfg(not(target_arch = "wasm32"))]
 use pqcrypto_dilithium::dilithium3;
+#[cfg(not(target_arch = "wasm32"))]
 use pqcrypto_traits::sign::{DetachedSignature as _, PublicKey as _};
 use script_class::ScriptClass;
 
@@ -516,6 +518,9 @@ impl<'a, T: VerifiableTransaction> TxScriptEngine<'a, T> {
         pubkey_bytes: &[u8],
         sig: &[u8],
     ) -> Result<bool, TxScriptError> {
+        #[cfg(target_arch = "wasm32")]
+        { let _ = (hash_type, pubkey_hash, pubkey_bytes, sig); return Err(TxScriptError::InvalidState("PQ sig verify not supported in wasm32".into())); }
+        #[cfg(not(target_arch = "wasm32"))]
         match self.script_source {
             ScriptSource::TxInput { tx, id, .. } => {
                 let computed_hash = blake2b_simd::Params::new().hash_length(32).hash(pubkey_bytes);

@@ -219,6 +219,26 @@ impl Account {
                     }
                 }
             }
+            "address" => {
+                let account = ctx.account().await?;
+                if argv.is_empty() {
+                    let addr = account.receive_address()?.to_string();
+                    tprintln!(ctx, "\n{addr}\n");
+                } else {
+                    match argv.remove(0).as_str() {
+                        "new" => {
+                            let account = account.as_derivation_capable()?;
+                            let ident = account.name_with_id();
+                            let new_address = account.new_receive_address().await?;
+                            tprintln!(ctx, "New address for account {}: {}", style(ident).cyan(), style(new_address).blue());
+                        }
+                        v => {
+                            tprintln!(ctx, "unknown sub-command: '{v}'");
+                            tprintln!(ctx, "usage: 'account address' or 'account address new'\r\n");
+                        }
+                    }
+                }
+            }
             "scan" | "sweep" => {
                 let len = argv.len();
                 let mut start = 0;
@@ -256,6 +276,8 @@ impl Account {
                 (KDX and kaspanet web wallet). Use 'account import' for additional help.",
                 ),
                 ("name <name>", "Name or rename the selected account (use 'remove' to remove the name"),
+                ("address", "Show the current receive address for this account"),
+                ("address new", "Generate and register a new receive address for this account"),
                 ("scan [<derivations>] or scan [<start>] [<derivations>]", "Scan extended address derivation chain (legacy accounts)"),
                 (
                     "sweep [<derivations>] or sweep [<start>] [<derivations>]",
