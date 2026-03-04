@@ -15,7 +15,7 @@ jobs:
       - name: Install dependencies (including protobuf-compiler)
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y protobuf-compiler libvulkan-dev
 
       - name: Verify protoc installation
         run: protoc --version
@@ -43,10 +43,11 @@ jobs:
 
       - name: Build for Linux
         run: |
-          cargo build --release --bin xenom-wallet --bin xenom
+          cargo build --release --bin xenom-wallet --bin xenom --bin genome-miner
           mkdir -p linux
           cp target/release/xenom-wallet linux/xenom-wallet
           cp target/release/xenom linux/xenom
+          cp target/release/genome-miner linux/genome-miner
 
       - name: Upload release artifacts (Linux)
         uses: actions/upload-artifact@v3
@@ -55,6 +56,7 @@ jobs:
           path: |
             target/release/xenom-wallet
             target/release/xenom
+            target/release/genome-miner
 
   build-macos:
     runs-on: macos-latest
@@ -91,10 +93,11 @@ jobs:
 
       - name: Build for macOS
         run: |
-          cargo build --release --bin xenom-wallet --bin xenom
+          cargo build --release --bin xenom-wallet --bin xenom --bin genome-miner
           mkdir -p macos
           cp target/release/xenom-wallet macos/xenom-wallet
           cp target/release/xenom macos/xenom
+          cp target/release/genome-miner macos/genome-miner
       - name: Upload release artifacts (macOS)
         uses: actions/upload-artifact@v3
         with:
@@ -102,6 +105,7 @@ jobs:
           path: |
             target/release/xenom-wallet
             target/release/xenom
+            target/release/genome-miner
 
   build-windows:
     runs-on: windows-latest
@@ -138,10 +142,11 @@ jobs:
 
       - name: Build for Windows
         run: | 
-          cargo build --release --bin xenom-wallet --bin xenom
+          cargo build --release --bin xenom-wallet --bin xenom --bin genome-miner
           mkdir -p windows
           cp target/release/xenom-wallet.exe windows/xenom-wallet.exe
           cp target/release/xenom.exe windows/xenom.exe
+          cp target/release/genome-miner.exe windows/genome-miner.exe
       - name: Upload release artifacts (Windows)
         uses: actions/upload-artifact@v3
         with:
@@ -149,6 +154,7 @@ jobs:
           path: |
             target\release\xenom-wallet.exe
             target\release\xenom.exe
+            target\release\genome-miner.exe
 
   release:
     needs: [build-linux, build-macos, build-windows]
@@ -178,10 +184,13 @@ jobs:
           files: |
             linux/xenom-wallet
             linux/xenom
+            linux/genome-miner
             macos/xenom-wallet
             macos/xenom
+            macos/genome-miner
             windows/xenom-wallet.exe
             windows/xenom.exe
+            windows/genome-miner.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

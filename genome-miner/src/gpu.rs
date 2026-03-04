@@ -29,10 +29,41 @@ struct GpuContext {
 
 // ── Adapter enumeration ──────────────────────────────────────────────────────
 
+/// On headless Linux (HiveOS, mining rigs) the NVIDIA Vulkan ICD is often installed
+/// but not in the Vulkan loader's default search path, so only `llvmpipe` is visible.
+/// This function probes common ICD locations and sets `VK_ICD_FILENAMES` so that wgpu
+/// finds the real NVIDIA GPU. It is a no-op if the variable is already set by the user.
+fn maybe_set_nvidia_vulkan_icd() {
+    // Already overridden by the user — respect it.
+    if std::env::var_os("VK_ICD_FILENAMES").is_some()
+        || std::env::var_os("VK_DRIVER_FILES").is_some()
+    {
+        return;
+    }
+
+    let candidates = [
+        "/usr/share/vulkan/icd.d/nvidia_icd.json",
+        "/etc/vulkan/icd.d/nvidia_icd.json",
+        "/usr/lib/x86_64-linux-gnu/nvidia/icd/nvidia_icd.json",
+        "/usr/lib64/vulkan/icd/nvidia_icd.json",
+        "/usr/lib/vulkan/icd/nvidia_icd.json",
+    ];
+
+    for path in &candidates {
+        if std::path::Path::new(path).exists() {
+            // SAFETY: single-threaded init before wgpu Instance is created.
+            std::env::set_var("VK_ICD_FILENAMES", path);
+            info!("NVIDIA Vulkan ICD auto-detected: {path} (set VK_ICD_FILENAMES to override)");
+            return;
+        }
+    }
+}
+
 /// Returns all eligible mining adapters sorted by preference (discrete > integrated).
 /// Excludes: software renderers (llvmpipe/lavapipe/softpipe) and Intel integrated GPUs
 /// (UHD 600/700) whose max_storage_buffer_binding_size is too small for the 739 MB genome.
 pub async fn enumerate_mining_adapters() -> Vec<wgpu::Adapter> {
+    maybe_set_nvidia_vulkan_icd();
     const INTEL_VENDOR_ID: u32 = 0x8086;
     let all_backends = wgpu::Backends::METAL | wgpu::Backends::VULKAN | wgpu::Backends::DX12;
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
