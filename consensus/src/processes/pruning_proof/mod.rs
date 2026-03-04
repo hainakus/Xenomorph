@@ -28,7 +28,7 @@ use kaspa_consensus_core::{
 use kaspa_core::{debug, info, trace};
 use kaspa_database::prelude::{CachePolicy, ConnBuilder, StoreResultEmptyTuple, StoreResultExtensions};
 use kaspa_hashes::Hash;
-use kaspa_pow::calc_block_level;
+use kaspa_pow::{calc_block_level, genome_pow::GenomeDatasetLoader};
 use kaspa_utils::{binary_heap::BinaryHeapExtensions, vec::VecExtensions};
 use thiserror::Error;
 
@@ -118,6 +118,8 @@ pub struct PruningProofManager {
     pruning_proof_m: u64,
     anticone_finalization_depth: u64,
     ghostdag_k: KType,
+    genome_pow_activation_daa_score: u64,
+    genome_dataset_loader: parking_lot::Mutex<Option<Arc<dyn GenomeDatasetLoader>>>,
 
     is_consensus_exiting: Arc<AtomicBool>,
 }
@@ -137,6 +139,7 @@ impl PruningProofManager {
         pruning_proof_m: u64,
         anticone_finalization_depth: u64,
         ghostdag_k: KType,
+        genome_pow_activation_daa_score: u64,
         is_consensus_exiting: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -168,9 +171,52 @@ impl PruningProofManager {
             pruning_proof_m,
             anticone_finalization_depth,
             ghostdag_k,
+            genome_pow_activation_daa_score,
+            genome_dataset_loader: parking_lot::Mutex::new(None),
 
             is_consensus_exiting,
         }
+    }
+
+    /// Attaches a genome dataset loader so that pruning proof validation
+    /// uses `genome_mix_hash` for genome-activated blocks instead of legacy KHeavyHash.
+    /// Can be called on the `Arc`-wrapped instance after construction.
+    pub fn set_genome_loader(&self, loader: Arc<dyn GenomeDatasetLoader>) {
+        *self.genome_dataset_loader.lock() = Some(loader);
+    }
+
+    /// Computes the block level for `header`, using `genome_mix_hash` for blocks
+    /// at or past the genome PoW activation DAA score, falling back to KHeavyHash.
+    fn calc_header_block_level(&self, header: &Header) -> BlockLevel {
+        if header.parents_by_level.is_empty() {
+            return self.max_block_level;
+        }
+        let pow = if header.daa_score >= self.genome_pow_activation_daa_score {
+            let loader_guard = self.genome_dataset_loader.lock();
+            if let Some(loader) = loader_guard.as_ref() {
+                if let Some(packed) = loader.packed_dataset() {
+                    let pre_pow_hash =
+                        kaspa_consensus_core::hashing::header::hash_override_nonce_time(header, 0, 0);
+                    kaspa_pow::genome_pow::genome_mix_hash(packed, &header.epoch_seed, header.nonce, &pre_pow_hash)
+                } else {
+                    drop(loader_guard);
+                    let state = kaspa_pow::State::new(header);
+                    let (_, pow) = state.check_pow(header.nonce);
+                    pow
+                }
+            } else {
+                drop(loader_guard);
+                let state = kaspa_pow::State::new(header);
+                let (_, pow) = state.check_pow(header.nonce);
+                pow
+            }
+        } else {
+            let state = kaspa_pow::State::new(header);
+            let (_, pow) = state.check_pow(header.nonce);
+            pow
+        };
+        let signed_block_level = self.max_block_level as i64 - pow.bits() as i64;
+        std::cmp::max(signed_block_level, 0) as BlockLevel
     }
 
     pub fn import_pruning_points(&self, pruning_points: &[Arc<Header>]) {
@@ -181,10 +227,7 @@ impl PruningProofManager {
                 continue;
             }
 
-            let state = kaspa_pow::State::new(header);
-            let (_, pow) = state.check_pow(header.nonce);
-            let signed_block_level = self.max_block_level as i64 - pow.bits() as i64;
-            let block_level = max(signed_block_level, 0) as BlockLevel;
+            let block_level = self.calc_header_block_level(header);
             self.headers_store.insert(header.hash, header.clone(), block_level).unwrap();
         }
 
@@ -399,7 +442,7 @@ impl PruningProofManager {
         let headers_estimate = self.estimate_proof_unique_size(proof);
         let proof_pp_header = proof[0].last().expect("checked if empty");
         let proof_pp = proof_pp_header.hash;
-        let proof_pp_level = calc_block_level(proof_pp_header, self.max_block_level);
+        let proof_pp_level = self.calc_header_block_level(proof_pp_header);
         let (db_lifetime, db) = kaspa_database::create_temp_db!(ConnBuilder::default().with_files_limit(10));
         let cache_policy = CachePolicy::Count(2 * self.pruning_proof_m as usize);
         let headers_store =
@@ -456,7 +499,7 @@ impl PruningProofManager {
             let level_idx = level as usize;
             let mut selected_tip = None;
             for (i, header) in proof[level as usize].iter().enumerate() {
-                let header_level = calc_block_level(header, self.max_block_level);
+                let header_level = self.calc_header_block_level(header);
                 if header_level < level {
                     return Err(PruningImportError::PruningProofWrongBlockLevel(header.hash, header_level, level));
                 }

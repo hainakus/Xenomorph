@@ -197,6 +197,7 @@ impl ConsensusServices {
             params.pruning_proof_m,
             params.anticone_finalization_depth(),
             params.ghostdag_k,
+            params.genome_pow_activation_daa_score,
             is_consensus_exiting,
         ));
 
