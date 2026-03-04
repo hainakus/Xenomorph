@@ -12,6 +12,9 @@ on:
         required: false
         default: "1048576"
 
+permissions:
+  contents: write
+
 jobs:
   build-and-publish:
     name: Build genome-freeze, generate grch38.xenom, publish release
@@ -58,9 +61,9 @@ jobs:
       - name: Extract merkle root
         id: merkle
         run: |
-          ROOT=$(grep "Merkle root:" genome-freeze.log | awk '{print $3}')
-          echo "root=$ROOT" >> $GITHUB_OUTPUT
-          echo "Merkle root: $ROOT"
+          ROOT=$(grep "^GENOME_MERKLE_ROOT=" genome-freeze.log | head -1 | cut -d= -f2 | tr -d '[:space:]')
+          echo "root=${ROOT}" >> "$GITHUB_OUTPUT"
+          echo "Merkle root: ${ROOT}"
 
       - name: Verify merkle root matches params.rs
         run: |

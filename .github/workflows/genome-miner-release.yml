@@ -1,0 +1,161 @@
+name: Build and Release genome-miner
+
+on:
+  push:
+    tags:
+      - 'genome-miner-v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. genome-miner-v0.1.0)'
+        required: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: genome-miner-linux-x86_64
+            binary: genome-miner
+
+          - os: macos-13          # last GitHub x86_64 macOS runner
+            target: x86_64-apple-darwin
+            artifact: genome-miner-macos-x86_64
+            binary: genome-miner
+
+          - os: macos-latest      # macos-14 — Apple Silicon (M1/M2/M3/M4)
+            target: aarch64-apple-darwin
+            artifact: genome-miner-macos-aarch64
+            binary: genome-miner
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── Linux deps ──────────────────────────────────────────────────────────
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            protobuf-compiler \
+            libvulkan-dev \
+            vulkan-tools
+
+      # ── macOS deps ──────────────────────────────────────────────────────────
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Verify protoc installation
+        run: protoc --version
+
+      # ── Rust toolchain ──────────────────────────────────────────────────────
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # ── Cargo caches ────────────────────────────────────────────────────────
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-registry-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-build-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-build-
+
+      # ── Build ────────────────────────────────────────────────────────────────
+      - name: Build genome-miner (release)
+        run: cargo build --release --package genome-miner --target ${{ matrix.target }}
+
+      # ── Package ─────────────────────────────────────────────────────────────
+      - name: Package binary
+        run: |
+          BIN=target/${{ matrix.target }}/release/${{ matrix.binary }}
+          OUTDIR=dist/${{ matrix.artifact }}
+          mkdir -p "$OUTDIR"
+          cp "$BIN" "$OUTDIR/${{ matrix.binary }}"
+          cd dist
+          tar -czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}/
+          echo "Created dist/${{ matrix.artifact }}.tar.gz"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}.tar.gz
+
+  # ── GitHub Release ────────────────────────────────────────────────────────
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+
+      - name: List artifacts
+        run: find dist/ -type f
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "genome-miner ${{ steps.tag.outputs.tag }}"
+          body: |
+            ## genome-miner GPU miner release
+
+            Supports: **Apple M** (Metal), **Nvidia** (Vulkan), **AMD** (Vulkan).
+            Requires: `grch38.xenom` dataset at `~/.rusty-xenom/grch38.xenom`
+            (auto-discovered — no `--genome-file` flag needed).
+
+            ### Downloads
+            | Platform | File |
+            |----------|------|
+            | Linux x86_64 | `genome-miner-linux-x86_64.tar.gz` |
+            | macOS x86_64 (Intel) | `genome-miner-macos-x86_64.tar.gz` |
+            | macOS aarch64 (Apple M) | `genome-miner-macos-aarch64.tar.gz` |
+
+            ### Quick start
+            ```bash
+            tar -xzf genome-miner-<platform>.tar.gz
+            ./genome-miner gpu \
+              --mining-address xenom:<your-address> \
+              --rpcserver 127.0.0.1:36669 \
+              --mainnet
+            ```
+          files: |
+            dist/genome-miner-linux-x86_64/genome-miner-linux-x86_64.tar.gz
+            dist/genome-miner-macos-x86_64/genome-miner-macos-x86_64.tar.gz
+            dist/genome-miner-macos-aarch64/genome-miner-macos-aarch64.tar.gz
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

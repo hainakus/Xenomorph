@@ -1,9 +1,11 @@
-use std::{fs, path::PathBuf, process::exit, sync::Arc, time::Duration};
+use std::{fs, io::Write, path::PathBuf, process::exit, sync::Arc, time::Duration};
+use futures_util::StreamExt;
 
 use async_channel::unbounded;
 use kaspa_consensus_core::{
     config::ConfigBuilder,
     errors::config::{ConfigError, ConfigResult},
+    network::NetworkType,
 };
 use kaspa_consensus_notify::{root::ConsensusNotificationRoot, service::NotifyService};
 use kaspa_core::{core::Core, debug, info};
@@ -230,7 +232,8 @@ pub fn create_core_with_runtime(runtime: &Runtime, args: &Args, fd_total_budget:
     //   1. Explicit --genome-file=PATH flag takes priority.
     //   2. Auto-discover <appdir>/grch38.xenom  (node-local copy).
     //   3. Auto-discover ~/.rusty-xenom/grch38.xenom  (global default install location).
-    //   4. None → falls back to SyntheticLoader (devnet/testing only).
+    //   4. Auto-download from GitHub Releases to ~/.rusty-xenom/grch38.xenom.
+    //   5. None → falls back to SyntheticLoader (devnet/testing only — download failed).
     const GENOME_RELEASE_URL: &str =
         "https://github.com/hainakus/Xenomorph/releases/download/genome-grch38-v0/grch38.xenom";
 
@@ -245,18 +248,29 @@ pub fn create_core_with_runtime(runtime: &Runtime, args: &Args, fd_total_budget:
         } else if let Some(ref global) = global_candidate {
             if global.exists() {
                 Some(global.to_string_lossy().into_owned())
-            } else {
-                info!(
-                    "Genome PoW dataset not found at {} or {}. \
-                     Using synthetic fragments (devnet/testing only). \
-                     For mainnet, download the canonical dataset:\n  \
-                     wget {} -O {}",
-                    appdir_candidate.display(),
-                    global.display(),
-                    GENOME_RELEASE_URL,
-                    global.display()
-                );
+            } else if network.network_type == NetworkType::Simnet {
+                // Simnet uses skip_proof_of_work=true; never download the genome dataset.
                 None
+            } else {
+                // Not found anywhere — attempt auto-download.
+                info!("Genome PoW dataset not found. Downloading from GitHub Releases...");
+                info!("  Source:      {}", GENOME_RELEASE_URL);
+                info!("  Destination: {}", global.display());
+                match tokio::task::block_in_place(|| {
+                    tokio::runtime::Handle::current().block_on(download_genome_file(GENOME_RELEASE_URL, global))
+                }) {
+                    Ok(()) => {
+                        info!("Genome dataset download complete: {}", global.display());
+                        Some(global.to_string_lossy().into_owned())
+                    }
+                    Err(e) => {
+                        kaspa_core::warn!(
+                            "Failed to download genome dataset: {e}. \
+                             Falling back to synthetic fragments (devnet/testing only)."
+                        );
+                        None
+                    }
+                }
             }
         } else {
             None
@@ -576,4 +590,44 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
     core.bind(async_runtime);
 
     (core, rpc_core_service)
+}
+
+/// Download the GRCh38 genome dataset from `url` and save it to `dest`.
+/// Streams the response body and logs progress every ~10%.
+async fn download_genome_file(url: &str, dest: &PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()?;
+
+    let resp = client.get(url).send().await?.error_for_status()?;
+    let total = resp.content_length().unwrap_or(0);
+
+    let tmp_path = dest.with_extension("xenom.tmp");
+    let mut file = fs::File::create(&tmp_path)?;
+
+    let mut downloaded: u64 = 0;
+    let mut last_pct: u64 = 0;
+    let mut stream = resp.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        file.write_all(&chunk)?;
+        downloaded += chunk.len() as u64;
+        if total > 0 {
+            let pct = downloaded * 100 / total;
+            if pct >= last_pct + 10 {
+                last_pct = pct;
+                info!("Downloading grch38.xenom … {pct}% ({} / {} MB)",
+                    downloaded / 1_048_576, total / 1_048_576);
+            }
+        }
+    }
+
+    drop(file);
+    fs::rename(&tmp_path, dest)?;
+    Ok(())
 }
