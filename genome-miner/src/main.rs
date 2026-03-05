@@ -14,7 +14,7 @@ use kaspa_addresses::Address;
 use kaspa_consensus_core::header::Header;
 use kaspa_core::{info, warn};
 use kaspa_grpc_client::GrpcClient;
-use kaspa_pow::genome_pow::{build_merkle_root, fragment_index, fragment_leaf_hash, CachedLoader, GenomeDatasetLoader, GenomePowState, SyntheticLoader};
+use kaspa_pow::genome_pow::{build_merkle_root, fragment_index, fragment_leaf_hash, genome_mix_hash, CachedLoader, GenomeDatasetLoader, GenomePowState, SyntheticLoader};
 use kaspa_rpc_core::{
     api::rpc::RpcApi,
     model::message::GetBlockTemplateRequest,
@@ -206,10 +206,23 @@ async fn cmd_mine(m: &ArgMatches) {
         let batch     = state.cfg.nonce_batch;
         let frag_size = state.cfg.genome_fragment_size_bytes;
 
-        // Select loader: real file (full packed data in RAM) or synthetic fallback.
-        let template_loader: Arc<dyn GenomeDatasetLoader> = match file_loader.as_ref() {
-            Some(fl) => fl.clone() as Arc<dyn GenomeDatasetLoader>,
-            None     => Arc::new(CachedLoader::new(SyntheticLoader::new(frag_size, header.epoch_seed), 256)),
+        // Pre-compute per-template constants once (not per-nonce).
+        let pre_pow_hash = kaspa_consensus_core::hashing::header::hash_override_nonce_time(&header, 0, 0);
+        let target       = kaspa_math::Uint256::from_compact_target_bits(header.bits);
+        let epoch_seed   = header.epoch_seed;
+
+        // When a real packed dataset is available, use genome_mix_hash directly
+        // (same algorithm as the GPU shader + node validator — no per-nonce unpack).
+        // Fall back to SyntheticLoader + check_pow_with_fragment for devnet.
+        let packed_opt: Option<&[u8]> = if genome_active {
+            file_loader.as_ref().and_then(|fl| fl.packed_dataset())
+        } else {
+            None
+        };
+        let synth_loader: Option<Arc<dyn GenomeDatasetLoader>> = if genome_active && packed_opt.is_none() {
+            Some(Arc::new(CachedLoader::new(SyntheticLoader::new(frag_size, epoch_seed), 256)))
+        } else {
+            None
         };
 
         let mut nonce_base: u64 = 0;
@@ -217,11 +230,16 @@ async fn cmd_mine(m: &ArgMatches) {
             if state.template_generation.load(Ordering::Relaxed) != gen { break 'search None; }
             let range_start = nonce_base;
             nonce_base = nonce_base.saturating_add(batch * state.cfg.threads as u64);
-            let loader_ref = template_loader.as_ref();
             let winning = pool.install(|| {
                 (0..state.cfg.threads as u64).into_par_iter().find_map_first(|tid| {
                     let start = range_start + tid * batch;
-                    try_nonce_range(&header, start, start + batch, genome_active, frag_size, loader_ref)
+                    if let Some(packed) = packed_opt {
+                        try_nonce_range_genome_packed(packed, &epoch_seed, &pre_pow_hash, &target, start, start + batch)
+                    } else if let Some(loader) = synth_loader.as_ref() {
+                        try_nonce_range_genome(&header, start, start + batch, frag_size, loader.as_ref())
+                    } else {
+                        try_nonce_range_legacy(&header, start, start + batch)
+                    }
                 })
             });
             total_hashes += batch * state.cfg.threads as u64;
@@ -340,8 +358,29 @@ fn cmd_address_to_script(m: &ArgMatches) {
 
 // ── PoW search helpers ────────────────────────────────────────────────────────
 
+/// Fast Genome PoW path when the full packed dataset is in RAM.
+/// Uses `genome_mix_hash` (same algorithm as GPU shader + node validator).
+/// No per-nonce fragment unpacking — 9 blake3 hashes + 8 random 32-byte reads.
+fn try_nonce_range_genome_packed(
+    packed: &[u8],
+    epoch_seed: &kaspa_hashes::Hash,
+    pre_pow_hash: &kaspa_hashes::Hash,
+    target: &kaspa_math::Uint256,
+    start: u64,
+    end: u64,
+) -> Option<u64> {
+    for nonce in start..end {
+        let pow = genome_mix_hash(packed, epoch_seed, nonce, pre_pow_hash);
+        if pow <= *target {
+            return Some(nonce);
+        }
+    }
+    None
+}
+
 /// Tries all nonces in `[start, end)` using either Genome PoW or legacy KHeavyHash.
 /// Returns the first winning nonce or `None` if none found in range.
+#[allow(dead_code)]
 fn try_nonce_range(
     header: &Header,
     start: u64,
