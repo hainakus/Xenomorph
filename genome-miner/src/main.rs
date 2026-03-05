@@ -81,6 +81,7 @@ fn cli() -> Command {
                 .arg(Arg::new("genome-file").long("genome-file").value_name("PATH").help("Path to grch38.xenom (required for mainnet Genome PoW; auto-detected from ~/.rusty-xenom/grch38.xenom if absent)"))
                 .arg(Arg::new("gpu").long("gpu").value_name("INDICES|all").default_value("0").help("GPU adapter(s) to mine on: '0', '1', '0,1,2', or 'all'. Run --list-gpus to see indices."))
                 .arg(Arg::new("list-gpus").long("list-gpus").action(clap::ArgAction::SetTrue).help("List available GPU adapters with their indices and exit"))
+                .arg(Arg::new("nonce-offset").long("nonce-offset").value_name("N").value_parser(clap::value_parser!(u64)).default_value("0").help("Instance index for multi-process setups (0=first, 1=second …). Each instance mines a non-overlapping nonce segment."))
                 .arg(Arg::new("no-tui").long("no-tui").action(clap::ArgAction::SetTrue).help("Disable TUI dashboard (plain log output)"))
         )
 }
