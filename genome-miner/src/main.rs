@@ -127,6 +127,11 @@ async fn main() {
         // no raw bytes bleed into the TUI alternate screen. Events are shown
         // in the TUI log pane via DashStats::push_log() instead.
         log::set_max_level(log::LevelFilter::Off);
+        // Suppress Mesa/Vulkan loader's XDG_RUNTIME_DIR stderr warning which
+        // bypasses the log crate and would corrupt the TUI alternate screen.
+        if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+            std::env::set_var("XDG_RUNTIME_DIR", "/tmp");
+        }
     } else {
         kaspa_core::log::init_logger(None, "info,wgpu_core=warn,wgpu_hal=warn,naga=warn");
     }
