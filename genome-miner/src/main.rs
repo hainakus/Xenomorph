@@ -1,14 +1,16 @@
 mod gpu;
+mod tui;
 
 use std::{
     io::Read,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::{Duration, Instant},
 };
 
+use crate::tui::DashStats;
 use clap::{Arg, ArgMatches, Command};
 use kaspa_addresses::Address;
 use kaspa_consensus_core::header::Header;
@@ -44,6 +46,7 @@ fn cli() -> Command {
                 .arg(Arg::new("mainnet").long("mainnet").action(clap::ArgAction::SetTrue).help("Mainnet (genome activation DAA 21_370_801)"))
                 .arg(Arg::new("testnet").long("testnet").action(clap::ArgAction::SetTrue).help("Testnet (genome activation DAA 0)"))
                 .arg(Arg::new("devnet").long("devnet").action(clap::ArgAction::SetTrue).help("Devnet (genome activation DAA 0)"))
+                .arg(Arg::new("no-tui").long("no-tui").action(clap::ArgAction::SetTrue).help("Disable TUI dashboard (plain log output)"))
         )
         .subcommand(
             Command::new("suggest-params")
@@ -78,6 +81,7 @@ fn cli() -> Command {
                 .arg(Arg::new("genome-file").long("genome-file").value_name("PATH").help("Path to grch38.xenom (required for mainnet Genome PoW; auto-detected from ~/.rusty-xenom/grch38.xenom if absent)"))
                 .arg(Arg::new("gpu").long("gpu").value_name("INDICES|all").default_value("0").help("GPU adapter(s) to mine on: '0', '1', '0,1,2', or 'all'. Run --list-gpus to see indices."))
                 .arg(Arg::new("list-gpus").long("list-gpus").action(clap::ArgAction::SetTrue).help("List available GPU adapters with their indices and exit"))
+                .arg(Arg::new("no-tui").long("no-tui").action(clap::ArgAction::SetTrue).help("Disable TUI dashboard (plain log output)"))
         )
 }
 
@@ -109,14 +113,60 @@ impl MinerState {
 
 #[tokio::main]
 async fn main() {
-    kaspa_core::log::init_logger(None, "info,wgpu_core=warn,wgpu_hal=warn,naga=warn");
     let matches = cli().get_matches();
+    // When TUI is active the alternate screen owns the terminal; redirect log
+    // output to /tmp/genome-miner.log so it doesn't bleed into the TUI display.
+    let tui_active = matches!(matches.subcommand_name(), Some("mine") | Some("gpu"))
+        && !matches
+            .subcommand()
+            .map(|(_, m)| m.get_flag("no-tui"))
+            .unwrap_or(true);
+    if tui_active {
+        kaspa_core::log::init_logger(Some("/tmp"), "info,wgpu_core=warn,wgpu_hal=warn,naga=warn");
+        // init_logger always adds a stdout appender; silence it completely so
+        // no raw bytes bleed into the TUI alternate screen. Events are shown
+        // in the TUI log pane via DashStats::push_log() instead.
+        log::set_max_level(log::LevelFilter::Off);
+        // Suppress Mesa/Vulkan loader's XDG_RUNTIME_DIR stderr warning which
+        // bypasses the log crate and would corrupt the TUI alternate screen.
+        if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+            std::env::set_var("XDG_RUNTIME_DIR", "/tmp");
+        }
+    } else {
+        kaspa_core::log::init_logger(None, "info,wgpu_core=warn,wgpu_hal=warn,naga=warn");
+    }
     match matches.subcommand() {
-        Some(("mine", m))                => cmd_mine(m).await,
+        Some(("mine", m)) => {
+            let no_tui = m.get_flag("no-tui");
+            let rpc    = m.get_one::<String>("rpcserver").cloned().unwrap_or_else(|| "localhost:16668".to_owned());
+            let dash   = Arc::new(Mutex::new(DashStats::new(
+                rpc,
+                "CPU · Genome PoW".to_owned(),
+                m.get_one::<usize>("threads").copied().unwrap_or_else(rayon::current_num_threads),
+            )));
+            if !no_tui {
+                let d2 = dash.clone();
+                std::thread::spawn(move || tui::run_tui(d2));
+            }
+            cmd_mine(m, dash).await;
+        }
         Some(("suggest-params", m))      => cmd_suggest_params(m).await,
         Some(("compute-merkle-root", m)) => cmd_compute_merkle_root(m),
         Some(("address-to-script", m))   => cmd_address_to_script(m),
-        Some(("gpu", m))                 => gpu::cmd_gpu(m).await,
+        Some(("gpu", m)) => {
+            let no_tui = m.get_flag("no-tui");
+            let rpc    = m.get_one::<String>("rpcserver").cloned().unwrap_or_else(|| "localhost:36669".to_owned());
+            let dash   = Arc::new(Mutex::new(DashStats::new(
+                rpc,
+                "GPU · initialising".to_owned(),
+                0,
+            )));
+            if !no_tui {
+                let d2 = dash.clone();
+                std::thread::spawn(move || tui::run_tui(d2));
+            }
+            gpu::cmd_gpu(m, dash).await;
+        }
         _ => unreachable!(),
     }
 }
@@ -137,7 +187,7 @@ fn resolve_activation(m: &ArgMatches) -> u64 {
 
 // ── mine ─────────────────────────────────────────────────────────────────────
 
-async fn cmd_mine(m: &ArgMatches) {
+async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
     let threads  = m.get_one::<usize>("threads").copied().unwrap_or_else(|| rayon::current_num_threads());
     let frag_size = m.get_one::<u32>("genome-fragment-size").copied().unwrap_or(1_048_576);
     let genome_activation = resolve_activation(m);
@@ -173,6 +223,7 @@ async fn cmd_mine(m: &ArgMatches) {
     let rpc = Arc::new(GrpcClient::connect(url).await.expect("Failed to connect"));
     info!("Connected — threads={} genome_activation={} genome_file={}",
         cfg.threads, cfg.genome_pow_activation_daa_score, genome_path.as_deref().unwrap_or("(synthetic)"));
+    dash.lock().unwrap().connected = true;
 
     let pay_address: kaspa_rpc_core::RpcAddress =
         Address::try_from(cfg.mining_address.as_str()).expect("Invalid --mining-address");
@@ -201,6 +252,15 @@ async fn cmd_mine(m: &ArgMatches) {
         let genome_active = header.daa_score >= state.cfg.genome_pow_activation_daa_score;
         let gen = state.template_generation.fetch_add(1, Ordering::Relaxed) + 1;
         state.found.store(false, Ordering::Relaxed);
+        {
+            let mut s = dash.lock().unwrap();
+            s.daa_score     = header.daa_score;
+            s.bits          = header.bits;
+            s.genome_active = genome_active;
+            let mode_str    = if genome_active { "Genome PoW" } else { "KHeavyHash" };
+            s.mode          = format!("CPU×{} · {mode_str}", state.cfg.threads);
+            s.push_log(format!("New template daa={} bits={:#010x} genome={}", header.daa_score, header.bits, genome_active));
+        }
         info!("New template daa={} bits={:#010x} genome={}", header.daa_score, header.bits, genome_active);
 
         let batch     = state.cfg.nonce_batch;
@@ -245,7 +305,10 @@ async fn cmd_mine(m: &ArgMatches) {
             total_hashes += batch * state.cfg.threads as u64;
             if let Some(n) = winning { break 'search Some(n); }
             if report_timer.elapsed() >= Duration::from_secs(10) {
-                info!("Hashrate: {:.2} kH/s", total_hashes as f64 / report_timer.elapsed().as_secs_f64() / 1000.0);
+                let elapsed = report_timer.elapsed().as_secs_f64();
+                let mhs = total_hashes as f64 / elapsed / 1_000_000.0;
+                info!("Hashrate: {:.3} MH/s", mhs);
+                dash.lock().unwrap().total_mhs = mhs;
                 total_hashes = 0;
                 report_timer = Instant::now();
             }
@@ -254,8 +317,14 @@ async fn cmd_mine(m: &ArgMatches) {
 
         if let Some(nonce) = solution {
             match rpc.submit_block(build_raw_block(&rpc_block, nonce), false).await {
-                Ok(r)  => info!("Block submitted: {:?}", r.report),
-                Err(e) => warn!("submit_block: {e}"),
+                Ok(r) => {
+                    info!("Block submitted: {:?}", r.report);
+                    let accepted = matches!(r.report, kaspa_rpc_core::SubmitBlockReport::Success);
+                    let mut s = dash.lock().unwrap();
+                    if accepted { s.accepted += 1; s.push_log(format!("Block accepted  daa={}", header.daa_score)); }
+                    else        { s.rejected += 1; s.push_log(format!("Block rejected  {:?}", r.report)); }
+                }
+                Err(e) => { warn!("submit_block: {e}"); dash.lock().unwrap().push_log(format!("submit error: {e}")); }
             }
         }
     }
