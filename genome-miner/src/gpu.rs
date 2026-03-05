@@ -172,11 +172,13 @@ struct Solution {
 
 // ── Adapter enumeration ──────────────────────────────────────────────────────
 
-/// On headless Linux (HiveOS, mining rigs) the NVIDIA Vulkan ICD is often installed
-/// but not in the Vulkan loader's default search path, so only `llvmpipe` is visible.
-/// This function probes common ICD locations and sets `VK_ICD_FILENAMES` so that wgpu
-/// finds the real NVIDIA GPU. It is a no-op if the variable is already set by the user.
-fn maybe_set_nvidia_vulkan_icd() {
+/// On headless Linux (HiveOS, mining rigs) GPU Vulkan ICDs are often not in the
+/// Vulkan loader's default search path, so only `llvmpipe` is visible.
+/// This function scans known ICD directories for NVIDIA, AMD (RADV + AMDVLK), and
+/// Intel Arc ICDs, then sets `VK_ICD_FILENAMES` to a colon-separated list of all
+/// found ICDs so wgpu can see every real GPU.
+/// No-op if the variable is already set by the user.
+fn maybe_set_vulkan_icds() {
     // Already overridden by the user — respect it.
     if std::env::var_os("VK_ICD_FILENAMES").is_some()
         || std::env::var_os("VK_DRIVER_FILES").is_some()
@@ -184,37 +186,71 @@ fn maybe_set_nvidia_vulkan_icd() {
         return;
     }
 
-    let candidates = [
-        "/usr/share/vulkan/icd.d/nvidia_icd.json",
-        "/etc/vulkan/icd.d/nvidia_icd.json",
-        "/usr/lib/x86_64-linux-gnu/nvidia/icd/nvidia_icd.json",
-        "/usr/lib64/vulkan/icd/nvidia_icd.json",
-        "/usr/lib/vulkan/icd/nvidia_icd.json",
+    // Known ICD filenames for each vendor.  Checked in every ICD directory.
+    const ICD_NAMES: &[&str] = &[
+        // NVIDIA
+        "nvidia_icd.json",
+        "nvidia_icd.x86_64.json",
+        // AMD — Mesa RADV (open-source, preferred on HiveOS)
+        "radeon_icd.x86_64.json",
+        "radeon_icd.i686.json",
+        // AMD — AMDVLK (AMD proprietary)
+        "amdvlk_x86_64.json",
+        "amdvlk_i686.json",
+        // Intel Arc (discrete)
+        "intel_icd.x86_64.json",
     ];
 
-    for path in &candidates {
-        if std::path::Path::new(path).exists() {
-            // SAFETY: single-threaded init before wgpu Instance is created.
-            std::env::set_var("VK_ICD_FILENAMES", path);
-            info!("NVIDIA Vulkan ICD auto-detected: {path} (set VK_ICD_FILENAMES to override)");
-            return;
+    const ICD_DIRS: &[&str] = &[
+        "/etc/vulkan/icd.d",
+        "/usr/share/vulkan/icd.d",
+        "/usr/lib/x86_64-linux-gnu/nvidia/icd",
+        "/usr/lib64/vulkan/icd",
+        "/usr/lib/vulkan/icd",
+    ];
+
+    let mut found: Vec<String> = Vec::new();
+    for dir in ICD_DIRS {
+        for name in ICD_NAMES {
+            let path = format!("{dir}/{name}");
+            if std::path::Path::new(&path).exists() {
+                if !found.contains(&path) {
+                    found.push(path);
+                }
+            }
         }
+    }
+
+    if !found.is_empty() {
+        let joined = found.join(":");
+        info!("Vulkan ICDs auto-detected: {joined} (set VK_ICD_FILENAMES to override)");
+        // SAFETY: single-threaded init before wgpu Instance is created.
+        std::env::set_var("VK_ICD_FILENAMES", &joined);
     }
 }
 
 /// Returns all eligible mining adapters sorted by preference (discrete > integrated).
-/// Excludes: software renderers (llvmpipe/lavapipe/softpipe) and Intel integrated GPUs
+/// Excludes: software renderers (llvmpipe/lavapipe/softpipe) and Intel *integrated* GPUs
 /// (UHD 600/700) whose max_storage_buffer_binding_size is too small for the 739 MB genome.
 pub async fn enumerate_mining_adapters() -> Vec<wgpu::Adapter> {
-    maybe_set_nvidia_vulkan_icd();
+    maybe_set_vulkan_icds();
     const INTEL_VENDOR_ID: u32 = 0x8086;
     let all_backends = wgpu::Backends::METAL | wgpu::Backends::VULKAN | wgpu::Backends::DX12;
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: all_backends,
         ..Default::default()
     });
-    let mut candidates: Vec<wgpu::Adapter> = instance
-        .enumerate_adapters(all_backends)
+    let raw = instance.enumerate_adapters(all_backends);
+    if raw.is_empty() {
+        warn!("wgpu found zero Vulkan/Metal/DX12 adapters. Check that GPU drivers and libvulkan are installed.");
+    } else {
+        info!("wgpu enumerated {} raw adapter(s):", raw.len());
+        for a in &raw {
+            let i = a.get_info();
+            info!("  {:?} vendor={:#06x} name={}", i.device_type, i.vendor, i.name);
+        }
+    }
+    let mut candidates: Vec<wgpu::Adapter> = raw
         .into_iter()
         .filter(|a| {
             let info = a.get_info();
