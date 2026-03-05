@@ -203,6 +203,9 @@ fn le256(a: array<u32, 8>, b: array<u32, 8>) -> bool {
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    // Skip work if another thread already found a solution this dispatch.
+    if atomicLoad(&out_buf.found) != 0u { return; }
+
     // Nonce = nonce_base + global_id (64-bit add)
     let delta = gid.x;
     var nonce_lo = params.nonce_base_lo + delta;

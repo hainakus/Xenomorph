@@ -14,12 +14,13 @@ use kaspa_addresses::Address;
 use kaspa_consensus_core::header::Header;
 use kaspa_core::{info, warn};
 use kaspa_grpc_client::GrpcClient;
-use kaspa_pow::genome_pow::{build_merkle_root, fragment_index, fragment_leaf_hash, CachedLoader, GenomeDatasetLoader, GenomePowState, SyntheticLoader};
+use kaspa_pow::genome_pow::{build_merkle_root, fragment_index, fragment_leaf_hash, genome_mix_hash, CachedLoader, GenomeDatasetLoader, GenomePowState, SyntheticLoader};
 use kaspa_rpc_core::{
     api::rpc::RpcApi,
-    model::message::{GetBlockDagInfoRequest, GetBlockTemplateRequest},
+    model::message::GetBlockTemplateRequest,
     RpcRawBlock, RpcRawHeader,
 };
+use kaspa_pow::genome_file::FileGenomeLoader;
 use kaspa_txscript::pay_to_address_script;
 use rayon::prelude::*;
 use tokio::time::sleep;
@@ -39,6 +40,7 @@ fn cli() -> Command {
                 .arg(Arg::new("nonce-batch").long("nonce-batch").value_name("N").value_parser(clap::value_parser!(u64)).default_value("50000").help("Nonces per rayon task"))
                 .arg(Arg::new("genome-activation-daa-score").long("genome-activation-daa-score").value_name("SCORE").value_parser(clap::value_parser!(u64)).help("DAA score where Genome PoW activates (overrides --mainnet/--testnet/--devnet)"))
                 .arg(Arg::new("genome-fragment-size").long("genome-fragment-size").value_name("BYTES").value_parser(clap::value_parser!(u32)).default_value("1048576").help("Fragment size in bytes"))
+                .arg(Arg::new("genome-file").long("genome-file").value_name("PATH").help("Path to grch38.xenom (required for mainnet Genome PoW; auto-detected from ~/.rusty-xenom/grch38.xenom)"))
                 .arg(Arg::new("mainnet").long("mainnet").action(clap::ArgAction::SetTrue).help("Mainnet (genome activation DAA 21_370_801)"))
                 .arg(Arg::new("testnet").long("testnet").action(clap::ArgAction::SetTrue).help("Testnet (genome activation DAA 0)"))
                 .arg(Arg::new("devnet").long("devnet").action(clap::ArgAction::SetTrue).help("Devnet (genome activation DAA 0)"))
@@ -136,25 +138,46 @@ fn resolve_activation(m: &ArgMatches) -> u64 {
 // ── mine ─────────────────────────────────────────────────────────────────────
 
 async fn cmd_mine(m: &ArgMatches) {
-    let threads = m.get_one::<usize>("threads").copied().unwrap_or_else(|| rayon::current_num_threads());
+    let threads  = m.get_one::<usize>("threads").copied().unwrap_or_else(|| rayon::current_num_threads());
+    let frag_size = m.get_one::<u32>("genome-fragment-size").copied().unwrap_or(1_048_576);
+    let genome_activation = resolve_activation(m);
+    let genome_path: Option<String> = m.get_one::<String>("genome-file").cloned().or_else(|| {
+        let default = dirs::home_dir()?.join(".rusty-xenom").join("grch38.xenom");
+        if default.exists() { Some(default.to_string_lossy().into_owned()) } else { None }
+    });
+
+    // Load the real genome dataset if available; otherwise fall back to SyntheticLoader.
+    // The Arc<dyn GenomeDatasetLoader> is shared across all rayon worker threads.
+    let file_loader: Option<Arc<FileGenomeLoader>> = genome_path.as_deref().map(|path| {
+        info!("Loading genome file {path} ...");
+        let loader = FileGenomeLoader::open(std::path::Path::new(path), frag_size, false)
+            .unwrap_or_else(|e| panic!("Failed to open genome file '{path}': {e}"));
+        info!("Genome file loaded — {} MB", loader.packed_dataset().map(|b| b.len() / 1_048_576).unwrap_or(0));
+        Arc::new(loader)
+    });
+    if genome_path.is_some() && file_loader.is_none() {
+        warn!("Genome file not found — mainnet Genome PoW will fail. Use --genome-file <PATH>.");
+    }
+
     let cfg = MineConfig {
         rpcserver: m.get_one::<String>("rpcserver").cloned().unwrap_or_else(|| "localhost:16668".to_owned()),
         mining_address: m.get_one::<String>("mining-address").cloned().expect("--mining-address required"),
         threads,
         nonce_batch: m.get_one::<u64>("nonce-batch").copied().unwrap_or(50_000),
-        genome_pow_activation_daa_score: resolve_activation(m),
-        genome_fragment_size_bytes: m.get_one::<u32>("genome-fragment-size").copied().unwrap_or(1_048_576),
+        genome_pow_activation_daa_score: genome_activation,
+        genome_fragment_size_bytes: frag_size,
     };
 
     let url = format!("grpc://{}", cfg.rpcserver);
     info!("Connecting to {url}");
     let rpc = Arc::new(GrpcClient::connect(url).await.expect("Failed to connect"));
-    info!("Connected — threads={} genome_activation={}", cfg.threads, cfg.genome_pow_activation_daa_score);
+    info!("Connected — threads={} genome_activation={} genome_file={}",
+        cfg.threads, cfg.genome_pow_activation_daa_score, genome_path.as_deref().unwrap_or("(synthetic)"));
 
     let pay_address: kaspa_rpc_core::RpcAddress =
         Address::try_from(cfg.mining_address.as_str()).expect("Invalid --mining-address");
     let state = Arc::new(MinerState::new(cfg));
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(state.cfg.threads).build().expect("rayon pool");
+    let pool  = rayon::ThreadPoolBuilder::new().num_threads(state.cfg.threads).build().expect("rayon pool");
 
     let mut total_hashes: u64 = 0;
     let mut report_timer = Instant::now();
@@ -180,23 +203,43 @@ async fn cmd_mine(m: &ArgMatches) {
         state.found.store(false, Ordering::Relaxed);
         info!("New template daa={} bits={:#010x} genome={}", header.daa_score, header.bits, genome_active);
 
-        let batch = state.cfg.nonce_batch;
+        let batch     = state.cfg.nonce_batch;
         let frag_size = state.cfg.genome_fragment_size_bytes;
-        // Build a per-template loader keyed on the template's epoch_seed so that
-        // synthesized fragment content matches what the validator computes.
-        let template_loader: Arc<dyn GenomeDatasetLoader> = Arc::new(
-            CachedLoader::new(SyntheticLoader::new(frag_size, header.epoch_seed), 256)
-        );
+
+        // Pre-compute per-template constants once (not per-nonce).
+        let pre_pow_hash = kaspa_consensus_core::hashing::header::hash_override_nonce_time(&header, 0, 0);
+        let target       = kaspa_math::Uint256::from_compact_target_bits(header.bits);
+        let epoch_seed   = header.epoch_seed;
+
+        // When a real packed dataset is available, use genome_mix_hash directly
+        // (same algorithm as the GPU shader + node validator — no per-nonce unpack).
+        // Fall back to SyntheticLoader + check_pow_with_fragment for devnet.
+        let packed_opt: Option<&[u8]> = if genome_active {
+            file_loader.as_ref().and_then(|fl| fl.packed_dataset())
+        } else {
+            None
+        };
+        let synth_loader: Option<Arc<dyn GenomeDatasetLoader>> = if genome_active && packed_opt.is_none() {
+            Some(Arc::new(CachedLoader::new(SyntheticLoader::new(frag_size, epoch_seed), 256)))
+        } else {
+            None
+        };
+
         let mut nonce_base: u64 = 0;
         let solution: Option<u64> = 'search: loop {
             if state.template_generation.load(Ordering::Relaxed) != gen { break 'search None; }
             let range_start = nonce_base;
             nonce_base = nonce_base.saturating_add(batch * state.cfg.threads as u64);
-            let loader_ref = template_loader.as_ref();
             let winning = pool.install(|| {
                 (0..state.cfg.threads as u64).into_par_iter().find_map_first(|tid| {
                     let start = range_start + tid * batch;
-                    try_nonce_range(&header, start, start + batch, genome_active, frag_size, loader_ref)
+                    if let Some(packed) = packed_opt {
+                        try_nonce_range_genome_packed(packed, &epoch_seed, &pre_pow_hash, &target, start, start + batch)
+                    } else if let Some(loader) = synth_loader.as_ref() {
+                        try_nonce_range_genome(&header, start, start + batch, frag_size, loader.as_ref())
+                    } else {
+                        try_nonce_range_legacy(&header, start, start + batch)
+                    }
                 })
             });
             total_hashes += batch * state.cfg.threads as u64;
@@ -315,8 +358,29 @@ fn cmd_address_to_script(m: &ArgMatches) {
 
 // ── PoW search helpers ────────────────────────────────────────────────────────
 
+/// Fast Genome PoW path when the full packed dataset is in RAM.
+/// Uses `genome_mix_hash` (same algorithm as GPU shader + node validator).
+/// No per-nonce fragment unpacking — 9 blake3 hashes + 8 random 32-byte reads.
+fn try_nonce_range_genome_packed(
+    packed: &[u8],
+    epoch_seed: &kaspa_hashes::Hash,
+    pre_pow_hash: &kaspa_hashes::Hash,
+    target: &kaspa_math::Uint256,
+    start: u64,
+    end: u64,
+) -> Option<u64> {
+    for nonce in start..end {
+        let pow = genome_mix_hash(packed, epoch_seed, nonce, pre_pow_hash);
+        if pow <= *target {
+            return Some(nonce);
+        }
+    }
+    None
+}
+
 /// Tries all nonces in `[start, end)` using either Genome PoW or legacy KHeavyHash.
 /// Returns the first winning nonce or `None` if none found in range.
+#[allow(dead_code)]
 fn try_nonce_range(
     header: &Header,
     start: u64,
