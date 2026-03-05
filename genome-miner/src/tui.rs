@@ -6,9 +6,9 @@ use std::{
 };
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyModifiers},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -99,7 +99,13 @@ pub fn run_tui(stats: Arc<Mutex<DashStats>>) {
         return;
     }
     let mut stdout = io::stdout();
-    if execute!(stdout, EnterAlternateScreen).is_err() {
+    if execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,         // capture scroll so it can't show old content
+        Clear(ClearType::Purge),    // purge scrollback buffer
+        Clear(ClearType::All),
+    ).is_err() {
         let _ = disable_raw_mode();
         return;
     }
@@ -120,20 +126,25 @@ pub fn run_tui(stats: Arc<Mutex<DashStats>>) {
         }
 
         if event::poll(Duration::from_millis(150)).unwrap_or(false) {
-            if let Ok(Event::Key(k)) = event::read() {
-                let quit = k.code == KeyCode::Char('q')
-                    || k.code == KeyCode::Char('Q')
-                    || (k.code == KeyCode::Char('c')
-                        && k.modifiers.contains(KeyModifiers::CONTROL));
-                if quit {
-                    break;
+            match event::read() {
+                Ok(Event::Key(k)) => {
+                    let quit = k.code == KeyCode::Char('q')
+                        || k.code == KeyCode::Char('Q')
+                        || (k.code == KeyCode::Char('c')
+                            && k.modifiers.contains(KeyModifiers::CONTROL));
+                    if quit { break; }
                 }
+                // Swallow all mouse events (scroll, click) — keep display locked
+                Ok(Event::Mouse(m)) => {
+                    let _ = m.kind; // suppress unused warning
+                }
+                _ => {}
             }
         }
     }
 
     let _ = disable_raw_mode();
-    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen);
+    let _ = execute!(terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen);
     let _ = terminal.show_cursor();
     std::process::exit(0);
 }
