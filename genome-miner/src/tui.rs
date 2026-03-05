@@ -19,7 +19,8 @@ use ratatui::{
     Frame, Terminal,
 };
 
-const LOG_CAP: usize = 500;
+const LOG_CAP: usize = 200;
+const LOG_DISPLAY: usize = 25;
 
 // ── Shared state ──────────────────────────────────────────────────────────────
 
@@ -148,7 +149,7 @@ fn draw(f: &mut Frame, s: &DashStats) {
             Constraint::Length(3),
             Constraint::Length(4),
             Constraint::Length(workers_h),
-            Constraint::Min(5),
+            Constraint::Length((LOG_DISPLAY + 2) as u16), // 25 lines + 2 borders, fixed
         ])
         .split(f.size());
 
@@ -321,13 +322,11 @@ fn render_workers(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
 // ── Log pane ─────────────────────────────────────────────────────────────────
 
 fn render_log(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
-    let inner_h = area.height.saturating_sub(2) as usize;
-
     let lines: Vec<Line> = s
         .log
         .iter()
         .rev()
-        .take(inner_h)
+        .take(LOG_DISPLAY)
         .collect::<Vec<_>>()
         .into_iter()
         .rev()
