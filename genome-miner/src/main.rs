@@ -123,6 +123,10 @@ async fn main() {
             .unwrap_or(true);
     if tui_active {
         kaspa_core::log::init_logger(Some("/tmp"), "info,wgpu_core=warn,wgpu_hal=warn,naga=warn");
+        // init_logger always adds a stdout appender; silence it completely so
+        // no raw bytes bleed into the TUI alternate screen. Events are shown
+        // in the TUI log pane via DashStats::push_log() instead.
+        log::set_max_level(log::LevelFilter::Off);
     } else {
         kaspa_core::log::init_logger(None, "info,wgpu_core=warn,wgpu_hal=warn,naga=warn");
     }
