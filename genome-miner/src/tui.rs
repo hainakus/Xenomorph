@@ -112,6 +112,7 @@ pub fn run_tui(stats: Arc<Mutex<DashStats>>) {
             return;
         }
     };
+    let _ = terminal.clear();
 
     loop {
         if let Ok(s) = stats.lock() {
@@ -149,7 +150,7 @@ fn draw(f: &mut Frame, s: &DashStats) {
             Constraint::Length(3),
             Constraint::Length(4),
             Constraint::Length(workers_h),
-            Constraint::Length((LOG_DISPLAY + 2) as u16), // 25 lines + 2 borders, fixed
+            Constraint::Min(7), // expands to fill remaining terminal height
         ])
         .split(f.size());
 
