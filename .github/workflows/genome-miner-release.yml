@@ -20,16 +20,25 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact: genome-miner-linux-x86_64
             binary: genome-miner
+            archive_ext: tar.gz
 
           - os: macos-latest      # arm64 runner, cross-compile to Intel x86_64
             target: x86_64-apple-darwin
             artifact: genome-miner-macos-x86_64
             binary: genome-miner
+            archive_ext: tar.gz
 
           - os: macos-latest      # Apple Silicon (M1/M2/M3/M4)
             target: aarch64-apple-darwin
             artifact: genome-miner-macos-aarch64
             binary: genome-miner
+            archive_ext: tar.gz
+
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: genome-miner-windows-x86_64
+            binary: genome-miner.exe
+            archive_ext: zip
 
     runs-on: ${{ matrix.os }}
 
@@ -51,6 +60,12 @@ jobs:
       - name: Install macOS build dependencies
         if: runner.os == 'macOS'
         run: brew install protobuf
+
+      # ── Windows deps ────────────────────────────────────────────────────────
+      - name: Install Windows build dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install protoc --yes
 
       - name: Verify protoc installation
         run: protoc --version
@@ -82,8 +97,9 @@ jobs:
       - name: Build genome-miner (release)
         run: cargo build --release --package genome-miner --target ${{ matrix.target }}
 
-      # ── Package ─────────────────────────────────────────────────────────────
-      - name: Package binary
+      # ── Package (Linux / macOS) ──────────────────────────────────────────────
+      - name: Package binary (Unix)
+        if: runner.os != 'Windows'
         run: |
           BIN=target/${{ matrix.target }}/release/${{ matrix.binary }}
           OUTDIR=dist/${{ matrix.artifact }}
@@ -93,11 +109,23 @@ jobs:
           tar -czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}/
           echo "Created dist/${{ matrix.artifact }}.tar.gz"
 
+      # ── Package (Windows) ───────────────────────────────────────────────────
+      - name: Package binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin    = "target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          $outdir = "dist/${{ matrix.artifact }}"
+          New-Item -ItemType Directory -Force -Path $outdir | Out-Null
+          Copy-Item $bin "$outdir/${{ matrix.binary }}"
+          Compress-Archive -Path $outdir -DestinationPath "dist/${{ matrix.artifact }}.zip"
+          Write-Host "Created dist/${{ matrix.artifact }}.zip"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}.tar.gz
+          path: dist/${{ matrix.artifact }}.${{ matrix.archive_ext }}
 
   # ── GitHub Release ────────────────────────────────────────────────────────
   release:
@@ -132,7 +160,7 @@ jobs:
           body: |
             ## genome-miner GPU miner release
 
-            Supports: **Apple M** (Metal), **Nvidia** (Vulkan), **AMD** (Vulkan).
+            Supports: **Apple M** (Metal), **Nvidia** (Vulkan/DX12), **AMD** (Vulkan/DX12).
             Requires: `grch38.xenom` dataset at `~/.rusty-xenom/grch38.xenom`
             (auto-discovered — no `--genome-file` flag needed).
 
@@ -142,8 +170,9 @@ jobs:
             | Linux x86_64 | `genome-miner-linux-x86_64.tar.gz` |
             | macOS x86_64 (Intel) | `genome-miner-macos-x86_64.tar.gz` |
             | macOS aarch64 (Apple M) | `genome-miner-macos-aarch64.tar.gz` |
+            | Windows x86_64 | `genome-miner-windows-x86_64.zip` |
 
-            ### Quick start
+            ### Quick start (Linux / macOS)
             ```bash
             tar -xzf genome-miner-<platform>.tar.gz
             ./genome-miner gpu \
@@ -151,10 +180,20 @@ jobs:
               --rpcserver 127.0.0.1:36669 \
               --mainnet
             ```
+
+            ### Quick start (Windows)
+            ```powershell
+            Expand-Archive genome-miner-windows-x86_64.zip
+            .\genome-miner.exe gpu `
+              --mining-address xenom:<your-address> `
+              --rpcserver 127.0.0.1:36669 `
+              --mainnet
+            ```
           files: |
             dist/genome-miner-linux-x86_64/genome-miner-linux-x86_64.tar.gz
             dist/genome-miner-macos-x86_64/genome-miner-macos-x86_64.tar.gz
             dist/genome-miner-macos-aarch64/genome-miner-macos-aarch64.tar.gz
+            dist/genome-miner-windows-x86_64/genome-miner-windows-x86_64.zip
           draft: false
           prerelease: false
         env:
