@@ -464,7 +464,7 @@ async fn dispatch_genome(worker: &mut GpuWorker, params_data: &[u8; 112], batch_
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
         pass.set_pipeline(&worker.ctx.pipeline);
         pass.set_bind_group(0, &worker.g_bind_group, &[]);
-        pass.dispatch_workgroups((batch_size + 255) / 256, 1, 1);
+        pass.dispatch_workgroups(batch_size.div_ceil(256), 1, 1);
     }
     encoder.copy_buffer_to_buffer(&worker.g_output_buf, 0, &worker.g_readback_buf, 0, 16);
     queue.submit(once(encoder.finish()));
@@ -499,7 +499,7 @@ async fn dispatch_kheavy(worker: &mut GpuWorker, params_data: &[u8; 88], batch_s
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
         pass.set_pipeline(&worker.ctx.kh_pipeline);
         pass.set_bind_group(0, &worker.kh_bind_group, &[]);
-        pass.dispatch_workgroups((batch_size + 255) / 256, 1, 1);
+        pass.dispatch_workgroups(batch_size.div_ceil(256), 1, 1);
     }
     encoder.copy_buffer_to_buffer(&worker.kh_output_buf, 0, &worker.kh_readback_buf, 0, 48);
     queue.submit(once(encoder.finish()));
@@ -857,7 +857,7 @@ async fn handle_solution(
 
     if header.daa_score >= genome_activation {
         let cpu_pow = genome_mix_hash(packed_bytes, &header.epoch_seed, nonce, &template.pre_pow_hash);
-        let state   = GenomePowState::new(template.pre_pow_hash, template.target.clone(), header.epoch_seed, frag_size);
+        let state   = GenomePowState::new(template.pre_pow_hash, template.target, header.epoch_seed, frag_size);
         if cpu_pow > state.target {
             warn!("[GPU{}] Genome PoW false-positive nonce={:#018x} — skipping", gpu_id, nonce);
             return;

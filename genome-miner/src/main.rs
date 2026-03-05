@@ -189,7 +189,7 @@ fn resolve_activation(m: &ArgMatches) -> u64 {
 // ── mine ─────────────────────────────────────────────────────────────────────
 
 async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
-    let threads  = m.get_one::<usize>("threads").copied().unwrap_or_else(|| rayon::current_num_threads());
+    let threads  = m.get_one::<usize>("threads").copied().unwrap_or_else(rayon::current_num_threads);
     let frag_size = m.get_one::<u32>("genome-fragment-size").copied().unwrap_or(1_048_576);
     let genome_activation = resolve_activation(m);
     let genome_path: Option<String> = m.get_one::<String>("genome-file").cloned().or_else(|| {
@@ -245,7 +245,11 @@ async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
         let current_id = rpc_block.header.accepted_id_merkle_root;
         {
             let mut guard = state.template_id.lock().unwrap();
-            if *guard == Some(current_id) { sleep(Duration::from_millis(200)).await; continue; }
+            if *guard == Some(current_id) {
+                drop(guard); // must drop before .await
+                sleep(Duration::from_millis(200)).await;
+                continue;
+            }
             *guard = Some(current_id);
         }
 
@@ -379,7 +383,7 @@ fn cmd_compute_merkle_root(m: &ArgMatches) {
     let mut data = Vec::new();
     file.read_to_end(&mut data).expect("Read failed");
 
-    let total_fragments = (data.len() + fragment_size - 1) / fragment_size;
+    let total_fragments = data.len().div_ceil(fragment_size);
     eprintln!("File size: {} bytes → {total_fragments} fragments", data.len());
 
     // Compute leaf hashes in parallel
