@@ -11,6 +11,7 @@ use clap::ArgMatches;
 use kaspa_addresses::Address;
 use kaspa_consensus_core::header::Header;
 use kaspa_core::{info, warn};
+use crate::tui::{DashStats, GpuStats};
 use kaspa_grpc_client::GrpcClient;
 use kaspa_pow::{
     genome_pow::{
@@ -44,6 +45,7 @@ struct GpuContext {
 
 struct GpuWorker {
     id:   usize,
+    name: String,
     ctx:  Arc<GpuContext>,
 
     // 739 MB packed genome in VRAM (uploaded once at startup, referenced by g_bind_group)
@@ -68,7 +70,7 @@ struct GpuWorker {
 }
 
 impl GpuWorker {
-    fn new(id: usize, ctx: Arc<GpuContext>, genome_buf: Arc<wgpu::Buffer>) -> Self {
+    fn new(id: usize, name: String, ctx: Arc<GpuContext>, genome_buf: Arc<wgpu::Buffer>) -> Self {
         let dev = &ctx.device;
 
         // ── Genome PoW buffers ──
@@ -141,6 +143,7 @@ impl GpuWorker {
 
         Self {
             id,
+            name,
             ctx,
             genome_buf,
             matrix_buf,
@@ -612,7 +615,7 @@ async fn gpu_mining_task(
 
 // ── `gpu` subcommand entry point ──────────────────────────────────────────────
 
-pub async fn cmd_gpu(m: &ArgMatches) {
+pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashStats>>) {
     let rpcserver         = m.get_one::<String>("rpcserver").cloned().unwrap_or_else(|| "localhost:36669".to_owned());
     let addr_str          = m.get_one::<String>("mining-address").cloned().expect("--mining-address required");
     let batch_size        = m.get_one::<u32>("batch-size").copied().unwrap_or(1 << 20);
@@ -675,15 +678,28 @@ pub async fn cmd_gpu(m: &ArgMatches) {
     info!("Initialising {} GPU(s) ...", selected.len());
     let mut workers: Vec<GpuWorker> = Vec::with_capacity(selected.len());
     for (i, adapter) in selected.into_iter().enumerate() {
+        let gpu_name = adapter.get_info().name.clone();
         let ctx = Arc::new(GpuContext::from_adapter(adapter).await);
         let genome_buf = Arc::new(ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("packed_genome"),
             contents: &packed_genome_bytes,
             usage:    wgpu::BufferUsages::STORAGE,
         }));
-        workers.push(GpuWorker::new(i, ctx, genome_buf));
+        workers.push(GpuWorker::new(i, gpu_name, ctx, genome_buf));
     }
     let num_gpus = workers.len();
+    {
+        let mut s = dash.lock().unwrap();
+        s.gpus = workers.iter().map(|w| GpuStats {
+            id:       w.id,
+            name:     w.name.clone(),
+            hashrate: 0.0,
+            accepted: 0,
+            rejected: 0,
+        }).collect();
+        s.connected = true;
+        s.push_log(format!("{num_gpus} GPU(s) ready — batch={batch_size}"));
+    }
     info!("{num_gpus} GPU(s) ready — batch_size={batch_size} nonces/dispatch/GPU");
 
     let url = format!("grpc://{rpcserver}");
@@ -699,8 +715,9 @@ pub async fn cmd_gpu(m: &ArgMatches) {
     let (template_tx, template_rx) =
         tokio::sync::watch::channel::<Option<Arc<MiningTemplate>>>(None);
     {
-        let rpc2 = rpc.clone();
-        let pay2 = pay_address.clone();
+        let rpc2  = rpc.clone();
+        let pay2  = pay_address.clone();
+        let dash2 = dash.clone();
         tokio::spawn(async move {
             loop {
                 match rpc2.get_block_template_call(None, GetBlockTemplateRequest::new(pay2.clone(), vec![])).await {
@@ -729,6 +746,19 @@ pub async fn cmd_gpu(m: &ArgMatches) {
                         let changed = template_tx.borrow().as_ref().map(|prev| prev.id) != Some(id);
                         if changed {
                             info!("New template daa={}", t.header.daa_score);
+                            {
+                                let mut s = dash2.lock().unwrap();
+                                s.daa_score     = t.header.daa_score;
+                                s.bits          = t.header.bits;
+                                s.genome_active = t.genome_active;
+                                s.connected     = true;
+                                let mode = if t.genome_active { "Genome PoW" } else { "KHeavyHash" };
+                                s.mode = format!("GPU×{num_gpus} · {mode}");
+                                s.push_log(format!(
+                                    "New template daa={} bits={:#010x} genome={}",
+                                    t.header.daa_score, t.header.bits, t.genome_active
+                                ));
+                            }
                             let _ = template_tx.send(Some(t));
                         }
                     }
@@ -774,7 +804,7 @@ pub async fn cmd_gpu(m: &ArgMatches) {
                 Ok(sol) => {
                     handle_solution(
                         sol, &rpc, &file_loader, &packed_gpu,
-                        frag_size, genome_activation,
+                        frag_size, genome_activation, &dash,
                     ).await;
                 }
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
@@ -783,10 +813,22 @@ pub async fn cmd_gpu(m: &ArgMatches) {
         }
 
         if report_timer.elapsed() >= Duration::from_secs(5) {
-            let total: u64 = hash_counters.iter().map(|c| c.swap(0, Ordering::Relaxed)).sum();
-            let mhs = total as f64 / report_timer.elapsed().as_secs_f64() / 1_000_000.0;
-            let mode = template_rx.borrow().as_ref().map(|t| if t.genome_active { "Genome" } else { "KHeavyHash" }).unwrap_or("—");
-            info!("GPU×{num_gpus} [{mode}] [{mhs:.2} MH/s]");
+            let elapsed = report_timer.elapsed().as_secs_f64();
+            let per_gpu: Vec<f64> = hash_counters.iter()
+                .map(|c| c.swap(0, Ordering::Relaxed) as f64 / elapsed / 1_000_000.0)
+                .collect();
+            let total_mhs: f64 = per_gpu.iter().sum();
+            let mode = template_rx.borrow().as_ref()
+                .map(|t| if t.genome_active { "Genome" } else { "KHeavyHash" })
+                .unwrap_or("—");
+            info!("GPU×{num_gpus} [{mode}] [{total_mhs:.2} MH/s]");
+            {
+                let mut s = dash.lock().unwrap();
+                s.total_mhs = total_mhs;
+                for (i, &mhs) in per_gpu.iter().enumerate() {
+                    if let Some(g) = s.gpus.get_mut(i) { g.hashrate = mhs; }
+                }
+            }
             report_timer = Instant::now();
         }
 
@@ -803,6 +845,7 @@ async fn handle_solution(
     packed_bytes:     &Arc<Vec<u8>>,
     frag_size:        u32,
     genome_activation: u64,
+    dash:             &std::sync::Arc<std::sync::Mutex<DashStats>>,
 ) {
     let Solution { nonce, template, gpu_id } = sol;
     let header = &template.header;
@@ -829,9 +872,26 @@ async fn handle_solution(
         Ok(r) => {
             let is_ibd = matches!(r.report, SubmitBlockReport::Reject(SubmitBlockRejectReason::IsInIBD));
             info!("[GPU{}] submit_block: {:?}", gpu_id, r.report);
+            let accepted = matches!(r.report, SubmitBlockReport::Success);
+            {
+                let mut s = dash.lock().unwrap();
+                let g_idx = s.gpus.iter().position(|g| g.id == gpu_id);
+                if accepted {
+                    s.accepted += 1;
+                    if let Some(i) = g_idx { s.gpus[i].accepted += 1; }
+                    s.push_log(format!("[GPU{gpu_id}] Block accepted  daa={}", template.header.daa_score));
+                } else {
+                    s.rejected += 1;
+                    if let Some(i) = g_idx { s.gpus[i].rejected += 1; }
+                    s.push_log(format!("[GPU{gpu_id}] Block rejected  {:?}", r.report));
+                }
+            }
             if is_ibd { warn!("Node still in IBD"); }
         }
-        Err(e) => warn!("[GPU{}] submit_block error: {e}", gpu_id),
+        Err(e) => {
+            warn!("[GPU{}] submit_block error: {e}", gpu_id);
+            dash.lock().unwrap().push_log(format!("[GPU{gpu_id}] submit error: {e}"));
+        }
     }
 }
 
