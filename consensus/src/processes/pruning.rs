@@ -15,7 +15,7 @@ use crate::model::{
 use kaspa_hashes::Hash;
 use kaspa_utils::option::OptionExtensions;
 use parking_lot::RwLock;
-use kaspa_core::{info, warn};
+use kaspa_core::warn;
 
 #[derive(Clone)]
 pub struct PruningPointManager<
@@ -239,23 +239,13 @@ impl<
             let pp_header = self.headers_store.get_header(pp).unwrap();
 
             // Use `find` to check for the presence of `expected_pp` in the queue without consuming it.
-            if let Some(&expected_pp) = expected_pps_queue.iter().find(|&&h| h == pp_header.pruning_point) {
-                // Optionally handle the match case.
-                info!("expected {} pp {}", expected_pp, pp);
-            } else {
-                // If we don't find the expected pruning point.
-                info!("BYPASS: Expected pruning point not found.");
-                    continue; // Skip the missing block and continue processing others
-
+            if expected_pps_queue.iter().all(|&h| h != pp_header.pruning_point) {
+                continue;
             }
-
-
-
 
             if idx == 0 {
                 // The 0th pruning point should always be genesis, and no
                 // more pruning points should be expected below it.
-                info!("PRUNNING {} {}", pp , self.genesis_hash );
                 if !expected_pps_queue.is_empty() || pp != self.genesis_hash {
                     return false;
                 }
