@@ -179,6 +179,27 @@ struct Solution {
 /// but not in the Vulkan loader's default search path, so only `llvmpipe` is visible.
 /// This function probes common ICD locations and sets `VK_ICD_FILENAMES` so that wgpu
 /// finds the real NVIDIA GPU. It is a no-op if the variable is already set by the user.
+/// On Linux, NVIDIA's Vulkan driver creates ~500-1000 mmap regions per GPU.
+/// With many GPUs the default vm.max_map_count (65536) is easily exceeded,
+/// causing the kernel to kill the miner with no error message.
+#[cfg(target_os = "linux")]
+fn check_linux_mmap_limit(n_gpus: usize) {
+    if let Ok(val) = std::fs::read_to_string("/proc/sys/vm/max_map_count") {
+        let current: u64 = val.trim().parse().unwrap_or(0);
+        let needed:  u64 = n_gpus as u64 * 1_000;
+        if current < needed.max(262_144) {
+            warn!(
+                "vm.max_map_count={current} is too low for {n_gpus} GPU(s) (need ~{needed}).\
+                \n  NVIDIA Vulkan uses ~500-1000 mmap regions per GPU — process may be killed!\
+                \n  Fix (immediate): sudo sysctl -w vm.max_map_count=1048576\
+                \n  Fix (persist):   echo 'vm.max_map_count=1048576' | sudo tee -a /etc/sysctl.conf"
+            );
+        }
+    }
+}
+#[cfg(not(target_os = "linux"))]
+fn check_linux_mmap_limit(_n_gpus: usize) {}
+
 fn maybe_set_nvidia_vulkan_icd() {
     // Already overridden by the user — respect it.
     if std::env::var_os("VK_ICD_FILENAMES").is_some()
@@ -263,8 +284,9 @@ pub fn select_adapters(gpu_arg: &str, adapters: Vec<wgpu::Adapter>) -> Vec<wgpu:
 
 impl GpuContext {
     /// Create a `GpuContext` from a specific pre-selected adapter.
-    pub async fn from_adapter(adapter: wgpu::Adapter) -> Self {
-        info!("GPU: {}", adapter.get_info().name);
+    pub async fn from_adapter(adapter: wgpu::Adapter) -> Result<Self, String> {
+        let gpu_name = adapter.get_info().name;
+        info!("GPU: {gpu_name}");
 
         // Request the adapter's actual max buffer size.
         // The WebGPU default (256 MB) is too small for the 739 MB packed genome.
@@ -284,7 +306,7 @@ impl GpuContext {
                 None,
             )
             .await
-            .expect("Failed to get GPU device");
+            .map_err(|e| format!("[{gpu_name}] request_device failed: {e}"))?;
 
         let shader_src = include_str!("genome_pow.wgsl");
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -361,7 +383,7 @@ impl GpuContext {
             cache: None,
         });
 
-        Self { device, queue, pipeline, kh_pipeline, bind_layout }
+        Ok(Self { device, queue, pipeline, kh_pipeline, bind_layout })
     }
 
     #[allow(dead_code)]
@@ -369,7 +391,7 @@ impl GpuContext {
         let adapters = enumerate_mining_adapters().await;
         let adapter = adapters.into_iter().next()
             .expect("No real GPU adapter found. genome-miner requires Metal, Vulkan, or DX12 (NVIDIA / AMD / Intel Arc / Apple).");
-        Self::from_adapter(adapter).await
+        Self::from_adapter(adapter).await.expect("Failed to init GPU context")
     }
 }
 
@@ -442,7 +464,7 @@ async fn dispatch_genome(worker: &mut GpuWorker, params_data: &[u8; 112], batch_
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
         pass.set_pipeline(&worker.ctx.pipeline);
         pass.set_bind_group(0, &worker.g_bind_group, &[]);
-        pass.dispatch_workgroups((batch_size + 255) / 256, 1, 1);
+        pass.dispatch_workgroups(batch_size.div_ceil(256), 1, 1);
     }
     encoder.copy_buffer_to_buffer(&worker.g_output_buf, 0, &worker.g_readback_buf, 0, 16);
     queue.submit(once(encoder.finish()));
@@ -477,7 +499,7 @@ async fn dispatch_kheavy(worker: &mut GpuWorker, params_data: &[u8; 88], batch_s
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
         pass.set_pipeline(&worker.ctx.kh_pipeline);
         pass.set_bind_group(0, &worker.kh_bind_group, &[]);
-        pass.dispatch_workgroups((batch_size + 255) / 256, 1, 1);
+        pass.dispatch_workgroups(batch_size.div_ceil(256), 1, 1);
     }
     encoder.copy_buffer_to_buffer(&worker.kh_output_buf, 0, &worker.kh_readback_buf, 0, 48);
     queue.submit(once(encoder.finish()));
@@ -515,11 +537,15 @@ async fn gpu_mining_task(
     hash_counter:    Arc<AtomicU64>,
     batch_size:      u32,
     num_gpus:        usize,
+    nonce_offset:    u64,  // multi-instance offset: instance N passes N here
 ) {
     let gpu_id = worker.id;
     let mut current_id: Option<kaspa_hashes::Hash> = None;
-    // Interleave starting nonces: GPU i starts at i * batch_size
-    let mut nonce_base: u64 = gpu_id as u64 * batch_size as u64;
+    // Interleave starting nonces across GPUs; offset by instance index so
+    // multiple processes don't mine the same nonce space.
+    let stride = num_gpus as u64 * batch_size as u64;
+    let base_nonce = |gid: u64| gid * batch_size as u64 + nonce_offset * stride;
+    let mut nonce_base: u64 = base_nonce(gpu_id as u64);
 
     loop {
         let template: Option<Arc<MiningTemplate>> = template_rx.borrow().clone();
@@ -529,8 +555,8 @@ async fn gpu_mining_task(
         };
 
         if Some(template.id) != current_id {
-            current_id    = Some(template.id);
-            nonce_base    = gpu_id as u64 * batch_size as u64;
+            current_id = Some(template.id);
+            nonce_base = base_nonce(gpu_id as u64);
         }
 
         let result: Option<u64> = if template.genome_active {
@@ -586,6 +612,7 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
     let frag_size         = m.get_one::<u32>("genome-fragment-size").copied().unwrap_or(1_048_576);
     let genome_activation = crate::resolve_activation(m);
     let gpu_arg           = m.get_one::<String>("gpu").cloned().unwrap_or_else(|| "0".to_owned());
+    let nonce_offset      = m.get_one::<u64>("nonce-offset").copied().unwrap_or(0);
     let list_gpus         = m.get_flag("list-gpus");
     let genome_path: Option<String> = m.get_one::<String>("genome-file").cloned().or_else(|| {
         let default = dirs::home_dir()?.join(".rusty-xenom").join("grch38.xenom");
@@ -638,18 +665,32 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
         }
     };
 
+    // Check Linux mmap limit before initialising GPUs (NVIDIA Vulkan needs ~1000 mmaps/GPU).
+    check_linux_mmap_limit(selected.len());
+
     // Init GPU workers (pre-allocated persistent buffers + bind groups).
     info!("Initialising {} GPU(s) ...", selected.len());
     let mut workers: Vec<GpuWorker> = Vec::with_capacity(selected.len());
     for (i, adapter) in selected.into_iter().enumerate() {
         let gpu_name = adapter.get_info().name.clone();
-        let ctx = Arc::new(GpuContext::from_adapter(adapter).await);
+        let ctx = match GpuContext::from_adapter(adapter).await {
+            Ok(c)  => Arc::new(c),
+            Err(e) => {
+                warn!("Skipping GPU {i} ({gpu_name}): {e}");
+                dash.lock().unwrap().push_log(format!("GPU {i} init failed — skipped: {e}"));
+                continue;
+            }
+        };
         let genome_buf = Arc::new(ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label:    Some("packed_genome"),
             contents: &packed_genome_bytes,
             usage:    wgpu::BufferUsages::STORAGE,
         }));
         workers.push(GpuWorker::new(i, gpu_name, ctx, genome_buf));
+    }
+    if workers.is_empty() {
+        warn!("No GPU workers could be initialised — exiting.");
+        return;
     }
     let num_gpus = workers.len();
     {
@@ -751,7 +792,7 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
         let tx  = sol_tx.clone();
         let hc  = hash_counters[worker.id].clone();
         tokio::spawn(async move {
-            gpu_mining_task(worker, rx, tx, hc, batch_size, num_gpus).await;
+            gpu_mining_task(worker, rx, tx, hc, batch_size, num_gpus, nonce_offset).await;
         });
     }
     drop(sol_tx); // close when all GPU tasks exit
@@ -816,7 +857,7 @@ async fn handle_solution(
 
     if header.daa_score >= genome_activation {
         let cpu_pow = genome_mix_hash(packed_bytes, &header.epoch_seed, nonce, &template.pre_pow_hash);
-        let state   = GenomePowState::new(template.pre_pow_hash, template.target.clone(), header.epoch_seed, frag_size);
+        let state   = GenomePowState::new(template.pre_pow_hash, template.target, header.epoch_seed, frag_size);
         if cpu_pow > state.target {
             warn!("[GPU{}] Genome PoW false-positive nonce={:#018x} — skipping", gpu_id, nonce);
             return;
