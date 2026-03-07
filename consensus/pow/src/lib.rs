@@ -30,9 +30,12 @@ impl State {
     #[inline]
     pub fn new(header: &Header) -> Self {
         let target = Uint256::from_compact_target_bits(header.bits);
-        // epoch_seed is included in the pre-pow hash when non-zero (activation=0).
-        // Xenomorph mainnet blocks were mined with this hash semantics.
-        let pre_pow_hash = hashing::header::hash_override_nonce_time(header, 0, 0);
+        // KHeavyHash NEVER includes epoch_seed — epoch_seed is exclusive to Genome PoW
+        // and is handled explicitly by genome_pow_state / GenomePowState.
+        // Including it here (activation=0) caused block-level mis-computation during IBD
+        // for blocks whose headers carry a non-zero epoch_seed set by the virtual processor
+        // but that were mined without it in the pre-pow hash.
+        let pre_pow_hash = hashing::header::hash_override_nonce_time_with_activation(header, 0, 0, u64::MAX);
         // PRE_POW_HASH || TIME || 32 zero byte padding || NONCE
         let hasher = PowHash::new(pre_pow_hash, header.timestamp);
         let matrix = Matrix::generate(pre_pow_hash);
@@ -61,6 +64,9 @@ impl State {
 /// Builds a `GenomePowState` from a block header (used when genome PoW is active).
 pub fn genome_pow_state(header: &Header, fragment_size_bytes: u32) -> GenomePowState {
     let target = Uint256::from_compact_target_bits(header.bits);
+    // Genome PoW miners include epoch_seed in the pre-pow hash (activation=0 means
+    // include when non-zero).  epoch_seed is ALSO fed into GenomePowState explicitly
+    // as the fragment-selection seed — both usages are intentional for security.
     let pre_pow_hash = hashing::header::hash_override_nonce_time(header, 0, 0);
     GenomePowState::new(pre_pow_hash, target, header.epoch_seed, fragment_size_bytes)
 }
