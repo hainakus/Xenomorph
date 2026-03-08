@@ -472,7 +472,7 @@ async fn dispatch_genome(worker: &mut GpuWorker, params_data: &[u8; 112], batch_
     let slice = worker.g_readback_buf.slice(..);
     let (tx, rx) = tokio::sync::oneshot::channel();
     slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-    dev.poll(wgpu::Maintain::Wait);
+    tokio::task::block_in_place(|| dev.poll(wgpu::Maintain::Wait));
     rx.await.ok()?.ok()?;
 
     let data     = slice.get_mapped_range();
@@ -507,7 +507,7 @@ async fn dispatch_kheavy(worker: &mut GpuWorker, params_data: &[u8; 88], batch_s
     let slice = worker.kh_readback_buf.slice(..);
     let (tx, rx) = tokio::sync::oneshot::channel();
     slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-    dev.poll(wgpu::Maintain::Wait);
+    tokio::task::block_in_place(|| dev.poll(wgpu::Maintain::Wait));
     rx.await.ok()?.ok()?;
 
     let data     = slice.get_mapped_range();
@@ -817,8 +817,9 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
             }
         }
 
-        if report_timer.elapsed() >= Duration::from_secs(5) {
-            let elapsed = report_timer.elapsed().as_secs_f64();
+        let report_elapsed = report_timer.elapsed();
+        if report_elapsed >= Duration::from_secs(5) {
+            let elapsed = report_elapsed.as_secs_f64();
             let per_gpu: Vec<f64> = hash_counters.iter()
                 .map(|c| c.swap(0, Ordering::Relaxed) as f64 / elapsed / 1_000_000.0)
                 .collect();
