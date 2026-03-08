@@ -696,11 +696,17 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
     {
         let mut s = dash.lock().unwrap();
         s.gpus = workers.iter().map(|w| GpuStats {
-            id:       w.id,
-            name:     w.name.clone(),
-            hashrate: 0.0,
-            accepted: 0,
-            rejected: 0,
+            id:        w.id,
+            name:      w.name.clone(),
+            hashrate:  0.0,
+            accepted:  0,
+            rejected:  0,
+            temp:      0,
+            fan:       0,
+            util:      0,
+            power:     0.0,
+            mem_used:  0,
+            mem_total: 0,
         }).collect();
         s.connected = true;
         s.push_log(format!("{num_gpus} GPU(s) ready — batch={batch_size}"));
