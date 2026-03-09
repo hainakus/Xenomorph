@@ -34,7 +34,9 @@ log.workspace = true
 serde_json.workspace = true
 rayon.workspace = true
 ratatui = "0.26"
-tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread"] }
+serde = { workspace = true }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread", "net", "io-util"] }
 wgpu = { version = "22", features = ["metal", "vulkan-portability"] }
 
 [lints]

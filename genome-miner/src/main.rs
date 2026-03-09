@@ -1,3 +1,4 @@
+mod api;
 mod gpu;
 mod stratum_client;
 mod tui;
@@ -48,6 +49,7 @@ fn cli() -> Command {
                 .arg(Arg::new("testnet").long("testnet").action(clap::ArgAction::SetTrue).help("Testnet (genome activation DAA 0)"))
                 .arg(Arg::new("devnet").long("devnet").action(clap::ArgAction::SetTrue).help("Devnet (genome activation DAA 0)"))
                 .arg(Arg::new("no-tui").long("no-tui").action(clap::ArgAction::SetTrue).help("Disable TUI dashboard (plain log output)"))
+                .arg(Arg::new("api-port").long("api-port").value_name("PORT").value_parser(clap::value_parser!(u16)).default_value("4000").help("HiveOS stats API port (0 = disabled)"))
         )
         .subcommand(
             Command::new("suggest-params")
@@ -87,6 +89,7 @@ fn cli() -> Command {
                 .arg(Arg::new("stratum").long("stratum").value_name("URL").help("Stratum pool URL, e.g. stratum+tcp://pool.example.com:1444 (mutually exclusive with --rpcserver)"))
                 .arg(Arg::new("stratum-worker").long("stratum-worker").value_name("NAME").help("Stratum worker name (default: --mining-address)"))
                 .arg(Arg::new("stratum-password").long("stratum-password").value_name("PASS").default_value("x").help("Stratum password (default: x)"))
+                .arg(Arg::new("api-port").long("api-port").value_name("PORT").value_parser(clap::value_parser!(u16)).default_value("4000").help("HiveOS stats API port (0 = disabled)"))
         )
 }
 
@@ -142,9 +145,10 @@ async fn main() {
     }
     match matches.subcommand() {
         Some(("mine", m)) => {
-            let no_tui = m.get_flag("no-tui");
-            let rpc    = m.get_one::<String>("rpcserver").cloned().unwrap_or_else(|| "localhost:16668".to_owned());
-            let dash   = Arc::new(Mutex::new(DashStats::new(
+            let no_tui  = m.get_flag("no-tui");
+            let api_port = m.get_one::<u16>("api-port").copied().unwrap_or(4000);
+            let rpc     = m.get_one::<String>("rpcserver").cloned().unwrap_or_else(|| "localhost:16668".to_owned());
+            let dash    = Arc::new(Mutex::new(DashStats::new(
                 rpc,
                 "CPU · Genome PoW".to_owned(),
                 m.get_one::<usize>("threads").copied().unwrap_or_else(rayon::current_num_threads),
@@ -153,15 +157,21 @@ async fn main() {
                 let d2 = dash.clone();
                 std::thread::spawn(move || tui::run_tui(d2));
             }
+            if api_port > 0 {
+                let d2 = dash.clone();
+                let start = std::time::Instant::now();
+                tokio::spawn(api::run_api_server(api_port, d2, start));
+            }
             cmd_mine(m, dash).await;
         }
         Some(("suggest-params", m))      => cmd_suggest_params(m).await,
         Some(("compute-merkle-root", m)) => cmd_compute_merkle_root(m),
         Some(("address-to-script", m))   => cmd_address_to_script(m),
         Some(("gpu", m)) => {
-            let no_tui = m.get_flag("no-tui");
-            let rpc    = m.get_one::<String>("rpcserver").cloned().unwrap_or_else(|| "localhost:36669".to_owned());
-            let dash   = Arc::new(Mutex::new(DashStats::new(
+            let no_tui   = m.get_flag("no-tui");
+            let api_port = m.get_one::<u16>("api-port").copied().unwrap_or(4000);
+            let rpc      = m.get_one::<String>("rpcserver").cloned().unwrap_or_else(|| "localhost:36669".to_owned());
+            let dash     = Arc::new(Mutex::new(DashStats::new(
                 rpc,
                 "GPU · initialising".to_owned(),
                 0,
@@ -169,6 +179,11 @@ async fn main() {
             if !no_tui {
                 let d2 = dash.clone();
                 std::thread::spawn(move || tui::run_tui(d2));
+            }
+            if api_port > 0 {
+                let start = std::time::Instant::now();
+                tokio::spawn(api::run_api_server(api_port, dash.clone(), start));
+                tokio::spawn(api::hw_poll_task(dash.clone()));
             }
             gpu::cmd_gpu(m, dash).await;
         }
