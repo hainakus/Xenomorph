@@ -60,6 +60,46 @@ impl Default for PaymentConfig {
 /// Coinbase outputs must wait this many DAA-score steps before they can be spent.
 const COINBASE_MATURITY: u64 = 100;
 
+// ── Mass estimation (KIP-9 Alpha: total = compute + storage) ─────────────────
+/// C parameter: 100_000_000 (SOMPI_PER_XENOM) * 10_000 = 10^12
+const STORAGE_MASS_PARAMETER: u64 = 100_000_000 * 10_000;
+/// 5% headroom below the 100,000 node limit.
+const MAX_SELECTABLE_MASS: u64 = 95_000;
+/// Blank transaction bytes * mass_per_tx_byte(1) = 94
+const BLANK_TX_MASS: u64 = 94;
+/// Per signed P2PK input: 118 bytes * 1 + 1 sig_op * 1000 = 1118
+const MASS_PER_INPUT: u64 = 1_118;
+/// Per P2PK output: 52 bytes * 1 + (2+34) script bytes * 10 = 412
+const MASS_PER_OUTPUT: u64 = 412;
+/// Cap on inputs per transaction (keeps compute mass < 95k by itself).
+const MAX_INPUTS: usize = 84;
+
+/// Estimate storage mass using KIP-9 Alpha formula:
+///   max(0, C·Σ(1/output_i) − C·N_inputs/mean_input)
+fn estimate_storage_mass(input_amounts: &[u64], output_amounts: &[u64]) -> u64 {
+    let n_ins = input_amounts.len() as u64;
+    if n_ins == 0 {
+        return u64::MAX;
+    }
+    let sum_ins: u64 = input_amounts.iter().sum();
+    let mean_ins = (sum_ins / n_ins).max(1);
+    let harmonic_outs: u64 = output_amounts
+        .iter()
+        .map(|&v| STORAGE_MASS_PARAMETER / v.max(1))
+        .fold(0u64, |acc, x| acc.saturating_add(x));
+    let arithmetic_ins = n_ins.saturating_mul(STORAGE_MASS_PARAMETER / mean_ins);
+    harmonic_outs.saturating_sub(arithmetic_ins)
+}
+
+/// Estimate total transaction mass (compute + storage).
+fn estimate_tx_mass(input_amounts: &[u64], output_amounts: &[u64]) -> u64 {
+    let compute = BLANK_TX_MASS
+        + input_amounts.len() as u64 * MASS_PER_INPUT
+        + output_amounts.len() as u64 * MASS_PER_OUTPUT;
+    let storage = estimate_storage_mass(input_amounts, output_amounts);
+    compute.saturating_add(storage)
+}
+
 // ── Payout execution ──────────────────────────────────────────────────────────
 
 /// Build, sign and broadcast a payout transaction for one confirmed block.
@@ -100,32 +140,23 @@ pub async fn execute_payout(
         )));
     }
 
-    // ── 2. UTXO selection (before computing distribution) ────────────────────
-    // Xenom limits transaction mass to 100,000.  Each P2PK Schnorr input adds
-    // roughly 1,100–1,200 mass units, so cap at 84 inputs (~92 K mass).
-    // Select the largest-value UTXOs so we maximise funds per transaction.
-    // Distribution is then based ONLY on what this transaction can actually spend.
-    const MAX_INPUTS: usize = 84;
+    // ── 2. UTXO pool: sort by value DESC (largest inputs → lowest storage mass) ─
     let mut sorted_utxos: Vec<_> = utxo_entries.iter().collect();
     sorted_utxos.sort_unstable_by(|a, b| b.utxo_entry.amount.cmp(&a.utxo_entry.amount));
-    let selected: Vec<_> = sorted_utxos.into_iter().take(MAX_INPUTS).collect();
-    let selected_total: u64 = selected.iter().map(|e| e.utxo_entry.amount).sum();
+    let total_pool: u64 = sorted_utxos.iter().map(|e| e.utxo_entry.amount).sum();
 
-    if selected_total == 0 {
+    if total_pool == 0 {
         return Err(anyhow::Error::new(RetryablePayoutError(
             format!("No spendable UTXOs for pool address {pool_address} — will retry next cycle")
         )));
     }
 
-    // ── 3. Calculate funds and outputs ───────────────────────────────────────
-    // Base distribution on selected_total only — not the full pool balance —
-    // so that total_out never exceeds what the selected UTXOs can cover.
-    let after_fee = (selected_total as f64 * (1.0 - cfg.pool_fee_percent / 100.0)) as u64;
+    // ── 3. Plan all payout outputs ───────────────────────────────────────────
+    let after_fee = (total_pool as f64 * (1.0 - cfg.pool_fee_percent / 100.0)) as u64;
 
-    // Plan per-miner outputs; skip miners below minimum payout or with no valid address
     let mut invalid_addr_count = 0usize;
     let mut below_min_count    = 0usize;
-    let outputs_plan: Vec<(RpcAddress, u64)> = payout
+    let mut outputs_plan: Vec<(RpcAddress, u64)> = payout
         .proportions
         .iter()
         .filter_map(|(worker, proportion)| {
@@ -167,99 +198,166 @@ pub async fn execute_payout(
         return Err(anyhow::Error::new(RetryablePayoutError(msg)));
     }
 
-    let total_out: u64 = outputs_plan.iter().map(|(_, v)| *v).sum();
-    let fee_total: u64 = cfg.fee_per_output * (outputs_plan.len() as u64 + 1); // +1 for change
+    // Sort outputs DESC so the largest (lowest storage-mass) outputs go first.
+    outputs_plan.sort_unstable_by(|a, b| b.1.cmp(&a.1));
 
-    // Sanity: selected_total must cover outputs + fees (should always hold given above)
-    if selected_total < total_out + fee_total {
-        return Err(anyhow::Error::new(RetryablePayoutError(
-            format!(
-                "Selected {} sompi across {} UTXOs insufficient to cover {} sompi outputs + {} sompi fees",
-                selected_total, selected.len(), total_out, fee_total
-            )
-        )));
-    }
+    // ── 4. Batch loop: build/sign/submit one tx per mass-safe batch ───────────
+    //
+    // Storage mass formula (KIP-9 Alpha):
+    //   storage = max(0, C·Σ(1/output_i) − C·N_inputs/mean_input)
+    // Each batch uses a fresh, non-overlapping slice of sorted_utxos so that
+    // no UTXO is double-spent across batches.  The change output of each batch
+    // is sent back to the pool address and will be re-spendable in future cycles.
+    let mut utxo_cursor  = 0usize;
+    let mut out_cursor   = 0usize;
+    let mut first_tx_id: Option<RpcTransactionId> = None;
+    let mut batch_num    = 0u32;
 
-    // ── 4. Build transaction outputs ─────────────────────────────────────────
-    let mut tx_outputs: Vec<TransactionOutput> = outputs_plan
-        .iter()
-        .map(|(addr, amount)| TransactionOutput {
-            value:             *amount,
-            script_public_key: pay_to_address_script(addr),
-        })
-        .collect();
+    while out_cursor < outputs_plan.len() {
+        batch_num += 1;
 
-    // Change output back to the pool address
-    let change = selected_total.saturating_sub(total_out + fee_total);
-    if change >= cfg.min_payout_sompi {
-        tx_outputs.push(TransactionOutput {
-            value:             change,
-            script_public_key: pay_to_address_script(pool_address),
-        });
-    }
+        // Greedily add outputs while estimated mass stays under the safe limit.
+        let batch_start_utxo = utxo_cursor;
+        let mut batch_inputs_end   = utxo_cursor;   // exclusive
+        let mut batch_input_total  = 0u64;
+        let mut batch_outputs: Vec<(RpcAddress, u64)> = vec![];
 
-    // ── 5. Build unsigned inputs ──────────────────────────────────────────────
-    let tx_inputs: Vec<TransactionInput> = selected
-        .iter()
-        .map(|e| TransactionInput {
-            previous_outpoint: TransactionOutpoint {
-                transaction_id: e.outpoint.transaction_id,
-                index:          e.outpoint.index,
-            },
-            signature_script: vec![],
-            sequence:         0,
-            sig_op_count:     1,
-        })
-        .collect();
+        'outer: for (addr, amount) in outputs_plan.iter().skip(out_cursor) {
 
-    let tx = Transaction::new(0, tx_inputs, tx_outputs, 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
+            // Minimum inputs needed to cover this tentative batch.
+            let tentative_n_out  = batch_outputs.len() + 1;
+            let tentative_out_sum: u64 = batch_outputs.iter().map(|(_, v)| v).sum::<u64>() + amount;
+            let tentative_fees   = cfg.fee_per_output * (tentative_n_out as u64 + 1); // +1 change
+            let tentative_needed = tentative_out_sum + tentative_fees;
 
-    // ── 6. Sign each input (P2PK Schnorr) ────────────────────────────────────
-    let utxo_for_signing: Vec<UtxoEntry> = selected
-        .iter()
-        .map(|e| UtxoEntry {
-            amount:           e.utxo_entry.amount,
-            script_public_key: e.utxo_entry.script_public_key.clone(),
-            block_daa_score:  e.utxo_entry.block_daa_score,
-            is_coinbase:      e.utxo_entry.is_coinbase,
-        })
-        .collect();
+            // Expand input slice until we have enough funds, up to MAX_INPUTS.
+            let mut temp_end   = batch_inputs_end;
+            let mut temp_total = batch_input_total;
+            while temp_total < tentative_needed {
+                if temp_end >= sorted_utxos.len() || temp_end - batch_start_utxo >= MAX_INPUTS {
+                    break 'outer; // ran out of UTXOs or hit input cap
+                }
+                temp_total += sorted_utxos[temp_end].utxo_entry.amount;
+                temp_end   += 1;
+            }
 
-    let mut mutable_tx     = MutableTransaction::with_entries(tx, utxo_for_signing);
-    let mut reused_values  = SigHashReusedValues::new();
-    let n_inputs           = mutable_tx.tx.inputs.len();
+            // Estimate mass for this tentative batch (include change output).
+            let tentative_change = temp_total.saturating_sub(tentative_needed);
+            let input_amts: Vec<u64> = sorted_utxos[batch_start_utxo..temp_end]
+                .iter().map(|e| e.utxo_entry.amount).collect();
+            let mut out_amts: Vec<u64> = batch_outputs.iter().map(|(_, v)| *v).collect();
+            out_amts.push(*amount);
+            if tentative_change >= cfg.min_payout_sompi {
+                out_amts.push(tentative_change);
+            }
+            let mass = estimate_tx_mass(&input_amts, &out_amts);
 
-    for i in 0..n_inputs {
-        let sig_hash = calc_schnorr_signature_hash(
-            &mutable_tx.as_verifiable(), i, SIG_HASH_ALL, &mut reused_values,
+            if mass <= MAX_SELECTABLE_MASS || batch_outputs.is_empty() {
+                // Fits (or force-include the very first output even if it alone is heavy).
+                batch_outputs.push((addr.clone(), *amount));
+                batch_inputs_end  = temp_end;
+                batch_input_total = temp_total;
+            } else {
+                break; // this output would push mass over limit — start a new batch
+            }
+        }
+
+        if batch_outputs.is_empty() {
+            break; // no outputs could be processed (UTXO pool exhausted)
+        }
+
+        out_cursor  += batch_outputs.len();
+        utxo_cursor  = batch_inputs_end;
+
+        let batch_out_sum: u64 = batch_outputs.iter().map(|(_, v)| v).sum();
+        let batch_fees = cfg.fee_per_output * (batch_outputs.len() as u64 + 1);
+        let batch_change = batch_input_total.saturating_sub(batch_out_sum + batch_fees);
+
+        // ── Build outputs ────────────────────────────────────────────────────
+        let mut tx_outputs: Vec<TransactionOutput> = batch_outputs
+            .iter()
+            .map(|(addr, amount)| TransactionOutput {
+                value:             *amount,
+                script_public_key: pay_to_address_script(addr),
+            })
+            .collect();
+        if batch_change >= cfg.min_payout_sompi {
+            tx_outputs.push(TransactionOutput {
+                value:             batch_change,
+                script_public_key: pay_to_address_script(pool_address),
+            });
+        }
+
+        // ── Build inputs ─────────────────────────────────────────────────────
+        let batch_utxos = &sorted_utxos[batch_start_utxo..batch_inputs_end];
+        let tx_inputs: Vec<TransactionInput> = batch_utxos
+            .iter()
+            .map(|e| TransactionInput {
+                previous_outpoint: TransactionOutpoint {
+                    transaction_id: e.outpoint.transaction_id,
+                    index:          e.outpoint.index,
+                },
+                signature_script: vec![],
+                sequence:         0,
+                sig_op_count:     1,
+            })
+            .collect();
+
+        let tx = Transaction::new(0, tx_inputs, tx_outputs, 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
+
+        // ── Sign (P2PK Schnorr) ──────────────────────────────────────────────
+        let utxo_for_signing: Vec<UtxoEntry> = batch_utxos
+            .iter()
+            .map(|e| UtxoEntry {
+                amount:            e.utxo_entry.amount,
+                script_public_key: e.utxo_entry.script_public_key.clone(),
+                block_daa_score:   e.utxo_entry.block_daa_score,
+                is_coinbase:       e.utxo_entry.is_coinbase,
+            })
+            .collect();
+
+        let mut mutable_tx    = MutableTransaction::with_entries(tx, utxo_for_signing);
+        let mut reused_values = SigHashReusedValues::new();
+        let n_inputs          = mutable_tx.tx.inputs.len();
+
+        for i in 0..n_inputs {
+            let sig_hash = calc_schnorr_signature_hash(
+                &mutable_tx.as_verifiable(), i, SIG_HASH_ALL, &mut reused_values,
+            );
+            let msg = Message::from_digest_slice(sig_hash.as_bytes().as_slice())
+                .context("secp256k1 message from sig_hash")?;
+            let sig = keypair.sign_schnorr(msg);
+            let mut sig_script = Vec::with_capacity(66);
+            sig_script.push(0x41u8); // OP_DATA_65
+            sig_script.extend_from_slice(sig.as_ref());
+            sig_script.push(SIG_HASH_ALL.to_u8());
+            mutable_tx.tx.inputs[i].signature_script = sig_script;
+        }
+
+        // ── Submit ───────────────────────────────────────────────────────────
+        let rpc_tx = consensus_tx_to_rpc(mutable_tx.tx);
+        let tx_id  = rpc
+            .submit_transaction(rpc_tx, false)
+            .await
+            .map_err(|e| anyhow::Error::new(RetryablePayoutError(
+                format!("submit_transaction batch {batch_num} RPC failed: {e} — will retry")
+            )))?;
+
+        info!(
+            "Payout batch {batch_num}/{} submitted: {tx_id}  outputs={}  total_out={} sompi",
+            (outputs_plan.len() + batch_outputs.len() - 1) / batch_outputs.len().max(1),
+            batch_outputs.len(),
+            batch_out_sum,
         );
-        let msg = Message::from_digest_slice(sig_hash.as_bytes().as_slice())
-            .context("secp256k1 message from sig_hash")?;
-        let sig = keypair.sign_schnorr(msg);
 
-        // P2PK Schnorr sig_script: OP_DATA_65 (0x41) || sig[64] || SIG_HASH_ALL
-        let mut sig_script = Vec::with_capacity(66);
-        sig_script.push(0x41u8); // OP_DATA_65
-        sig_script.extend_from_slice(sig.as_ref());
-        sig_script.push(SIG_HASH_ALL.to_u8());
-        mutable_tx.tx.inputs[i].signature_script = sig_script;
+        if first_tx_id.is_none() {
+            first_tx_id = Some(tx_id);
+        }
     }
 
-    // ── 7. Convert and submit ─────────────────────────────────────────────────
-    let rpc_tx = consensus_tx_to_rpc(mutable_tx.tx);
-    let tx_id  = rpc
-        .submit_transaction(rpc_tx, false)
-        .await
-        .map_err(|e| anyhow::Error::new(RetryablePayoutError(
-            format!("submit_transaction RPC failed: {e} — will retry")
-        )))?;
-
-    info!(
-        "Payout tx submitted: {tx_id}  outputs={}  total_out={} sompi",
-        outputs_plan.len(),
-        total_out
-    );
-    Ok(tx_id)
+    first_tx_id.ok_or_else(|| anyhow::anyhow!(
+        "No UTXOs available to cover any payout output — will retry next cycle"
+    ))
 }
 
 // ── UTXO consolidation sweep ──────────────────────────────────────────────────

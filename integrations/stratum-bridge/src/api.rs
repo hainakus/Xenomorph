@@ -73,23 +73,27 @@ pub struct ApiState {
     pub pool_name:       String,
     /// SQLite database — `None` if `--db-path` was not provided
     pub db:              Option<Arc<Db>>,
+    /// Stratum TCP listen address e.g. "0.0.0.0:1444" — exposed in the API
+    pub stratum_endpoint: String,
 }
 
 impl ApiState {
     pub fn new(
-        accounting: Arc<Mutex<Accounting>>,
-        rpc:        Arc<GrpcClient>,
-        pool_name:  String,
-        db:         Option<Arc<Db>>,
+        accounting:       Arc<Mutex<Accounting>>,
+        rpc:              Arc<GrpcClient>,
+        pool_name:        String,
+        db:               Option<Arc<Db>>,
+        stratum_endpoint: String,
     ) -> Self {
         Self {
             accounting,
             rpc,
-            miners:          Arc::new(Mutex::new(HashMap::new())),
-            connected_count: Arc::new(AtomicU32::new(0)),
-            start_unix:      unix_now(),
+            miners:           Arc::new(Mutex::new(HashMap::new())),
+            connected_count:  Arc::new(AtomicU32::new(0)),
+            start_unix:       unix_now(),
             pool_name,
             db,
+            stratum_endpoint,
         }
     }
 }
@@ -99,6 +103,7 @@ impl ApiState {
 #[derive(Serialize)]
 struct PoolStats {
     name:              String,
+    stratum_endpoint:  String,
     uptime_secs:       u64,
     connected_miners:  u32,
     pool_hashrate_hps: f64,
@@ -196,7 +201,7 @@ async fn get_miner(
 
 async fn get_blocks(State(s): State<ApiState>) -> Json<Vec<BlockRecord>> {
     if let Some(db) = &s.db {
-        if let Ok(blocks) = db.get_blocks(200).await {
+        if let Ok(blocks) = db.get_blocks(30).await {
             let mut records = Vec::with_capacity(blocks.len());
             for b in &blocks {
                 let payouts = db.get_block_payouts(&b.job_id).await.unwrap_or_default();
@@ -242,32 +247,16 @@ async fn get_blocks(State(s): State<ApiState>) -> Json<Vec<BlockRecord>> {
 }
 
 async fn get_payments(State(s): State<ApiState>) -> Json<Vec<PaymentRecord>> {
-    if let Some(db) = &s.db {
-        if let Ok(blocks) = db.get_blocks(200).await {
-            let mut records = Vec::with_capacity(blocks.len());
-            for b in &blocks {
-                let payouts = db.get_block_payouts(&b.job_id).await.unwrap_or_default();
-                records.push(PaymentRecord {
-                    job_id:          b.job_id.clone(),
-                    found_at:        b.found_at as u64,
-                    block_daa_score: b.block_daa_score as u64,
-                    status:          b.status.clone(),
-                    tx_id:           b.tx_id.clone(),
-                    payouts:         payouts
-                        .iter()
-                        .map(|p| PayoutShare { worker: p.worker.clone(), proportion: p.proportion })
-                        .collect(),
-                });
-            }
-            return Json(records);
-        }
-    }
-    // Fallback: in-memory accounting
-    let acct = s.accounting.lock().await;
-    Json(
+    use std::collections::HashSet;
+
+    // Always collect in-memory paid/failed entries first — mark_paid is synchronous
+    // so these are always up to date even if the DB write hasn't committed yet.
+    let mem_records: Vec<PaymentRecord> = {
+        let acct = s.accounting.lock().await;
         acct.pending_payouts()
             .iter()
             .rev()
+            .filter(|p| matches!(p.status, PayoutStatus::Paid { .. } | PayoutStatus::Failed { .. }))
             .map(|p| {
                 let (status, tx_id) = status_pair(&p.status);
                 PaymentRecord {
@@ -282,8 +271,42 @@ async fn get_payments(State(s): State<ApiState>) -> Json<Vec<PaymentRecord>> {
                         .collect(),
                 }
             })
-            .collect(),
-    )
+            .collect()
+    };
+
+    if let Some(db) = &s.db {
+        if let Ok(blocks) = db.get_paid_blocks(30).await {
+            let mut records = Vec::new();
+            // Track which job_ids came from DB so we can add missing in-memory ones below.
+            let mut seen: HashSet<String> = HashSet::new();
+            for b in &blocks {
+                seen.insert(b.job_id.clone());
+                let payouts = db.get_block_payouts(&b.job_id).await.unwrap_or_default();
+                records.push(PaymentRecord {
+                    job_id:          b.job_id.clone(),
+                    found_at:        b.found_at as u64,
+                    block_daa_score: b.block_daa_score as u64,
+                    status:          b.status.clone(),
+                    tx_id:           b.tx_id.clone(),
+                    payouts:         payouts
+                        .iter()
+                        .map(|p| PayoutShare { worker: p.worker.clone(), proportion: p.proportion })
+                        .collect(),
+                });
+            }
+            // Prepend any in-memory paid/failed entries not yet written to DB.
+            for r in mem_records {
+                if !seen.contains(&r.job_id) {
+                    records.insert(0, r);
+                }
+            }
+            records.sort_by(|a, b| b.found_at.cmp(&a.found_at));
+            return Json(records);
+        }
+    }
+
+    // No DB configured — return in-memory only.
+    Json(mem_records)
 }
 
 async fn get_network(
@@ -358,6 +381,7 @@ async fn build_pool_stats(s: &ApiState) -> PoolStats {
 
         return PoolStats {
             name:              s.pool_name.clone(),
+            stratum_endpoint:  s.stratum_endpoint.clone(),
             uptime_secs:       unix_now().saturating_sub(s.start_unix),
             connected_miners:  connected,
             pool_hashrate_hps: pool_hps,
@@ -379,6 +403,7 @@ async fn build_pool_stats(s: &ApiState) -> PoolStats {
 
     PoolStats {
         name:              s.pool_name.clone(),
+        stratum_endpoint:  s.stratum_endpoint.clone(),
         uptime_secs:       unix_now().saturating_sub(s.start_unix),
         connected_miners:  s.connected_count.load(Ordering::Relaxed),
         pool_hashrate_hps: pool_hps,

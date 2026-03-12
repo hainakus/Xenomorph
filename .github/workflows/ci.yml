@@ -114,12 +114,19 @@ jobs:
           key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-release-
 
-      - name: Build release binary
-        run: cargo build --release --bin xenom
+      - name: Build release binaries
+        run: cargo build --release --bin xenom --bin xenom-stratum-bridge
 
       - name: Upload xenom binary
         uses: actions/upload-artifact@v4
         with:
           name: xenom-linux-x86_64
           path: target/release/xenom
+          retention-days: 7
+
+      - name: Upload xenom-stratum-bridge binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: xenom-stratum-bridge-linux-x86_64
+          path: target/release/xenom-stratum-bridge
           retention-days: 7

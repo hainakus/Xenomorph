@@ -137,6 +137,7 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
       <div class="stat"><div class="stat-lbl">Total Shares</div><div class="stat-val" id="s-shares">…</div><div class="stat-sub" id="s-shares-sub">&nbsp;</div></div>
       <div class="stat"><div class="stat-lbl">Pending Payouts</div><div class="stat-val" id="s-pending">…</div><div class="stat-sub" id="s-pending-sub">&nbsp;</div></div>
       <div class="stat"><div class="stat-lbl">Network Hashrate</div><div class="stat-val" id="s-nethash">…</div><div class="stat-sub" id="s-nethash-sub">&nbsp;</div></div>
+      <div class="stat" style="cursor:pointer" title="Click to copy" onclick="navigator.clipboard.writeText(document.getElementById('s-stratum-full').textContent)"><div class="stat-lbl">Stratum Endpoint</div><div class="stat-val" id="s-stratum" style="font-size:.85rem;word-break:break-all">…</div><div class="stat-sub" id="s-stratum-sub">Click to copy</div><span id="s-stratum-full" style="display:none"></span></div>
     </div>
 
     <div class="grid2">
@@ -332,6 +333,12 @@ function renderPool(p){
   const h=Math.floor((p.uptime_secs||0)/3600),m=Math.floor(((p.uptime_secs||0)%3600)/60);
   set('s-blocks-sub','Uptime: '+h+'h '+m+'m');
   set('s-shares-sub','PPLNS window');
+  if(p.stratum_endpoint){
+    const ep=p.stratum_endpoint.replace(/^0\.0\.0\.0/,window.location.hostname);
+    const full='stratum+tcp://'+ep;
+    set('s-stratum',full);
+    set('s-stratum-full',full);
+  }
 }
 function renderNetSmall(n){
   set('s-nethash',fmtHash(n.network_hashrate_hps));
@@ -397,9 +404,10 @@ function renderBlocks(blocks){
 }
 function renderPayments(payments){
   const tb=document.getElementById('payments-table');
-  if(!payments?.length){tb.innerHTML='<tr><td colspan="7" class="empty">No payment records yet</td></tr>';return;}
-  window._payData=payments;
-  tb.innerHTML=payments.map((p,i)=>`
+  const visible=(payments||[]).filter(p=>p.status==='paid'||p.status==='failed'||p.status==='payout-failed');
+  if(!visible.length){tb.innerHTML='<tr><td colspan="7" class="empty">No completed payments yet</td></tr>';return;}
+  window._payData=visible;
+  tb.innerHTML=visible.map((p,i)=>`
     <tr>
       <td class="expand-btn" id="pebtn-${i}" onclick="toggleExpand(${i},'payments')"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></td>
       <td><span class="lnk">${trunc(p.job_id,10)}</span></td>

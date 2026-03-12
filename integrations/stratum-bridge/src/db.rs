@@ -102,6 +102,13 @@ impl Db {
         .execute(self.pool())
         .await?;
 
+        // Migration: add tx_id column to existing DBs that predate the column.
+        // SQLite has no ADD COLUMN IF NOT EXISTS — try it and ignore the error
+        // if the column already exists ("duplicate column name").
+        let _ = sqlx::query("ALTER TABLE blocks ADD COLUMN tx_id TEXT")
+            .execute(self.pool())
+            .await;
+
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS block_payouts (
                 job_id     TEXT NOT NULL,
@@ -323,6 +330,29 @@ impl Db {
             hashrate_hps: r.get("hashrate_hps"),
             connected:    r.get::<i64, _>("connected") != 0,
         }))
+    }
+
+    pub async fn get_paid_blocks(&self, limit: i64) -> Result<Vec<DbBlock>> {
+        let rows = sqlx::query(
+            "SELECT job_id, found_at, block_daa_score, status, tx_id
+             FROM blocks
+             WHERE status IN ('paid', 'failed', 'payout-failed')
+             ORDER BY found_at DESC LIMIT ?1",
+        )
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| DbBlock {
+                job_id:          r.get("job_id"),
+                found_at:        r.get("found_at"),
+                block_daa_score: r.get("block_daa_score"),
+                status:          r.get("status"),
+                tx_id:           r.get("tx_id"),
+            })
+            .collect())
     }
 
     pub async fn get_blocks(&self, limit: i64) -> Result<Vec<DbBlock>> {
