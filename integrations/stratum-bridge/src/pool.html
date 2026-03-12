@@ -397,9 +397,10 @@ function renderBlocks(blocks){
 }
 function renderPayments(payments){
   const tb=document.getElementById('payments-table');
-  if(!payments?.length){tb.innerHTML='<tr><td colspan="7" class="empty">No payment records yet</td></tr>';return;}
-  window._payData=payments;
-  tb.innerHTML=payments.map((p,i)=>`
+  const visible=(payments||[]).filter(p=>p.status==='paid'||p.status==='payout-failed');
+  if(!visible.length){tb.innerHTML='<tr><td colspan="7" class="empty">No completed payments yet</td></tr>';return;}
+  window._payData=visible;
+  tb.innerHTML=visible.map((p,i)=>`
     <tr>
       <td class="expand-btn" id="pebtn-${i}" onclick="toggleExpand(${i},'payments')"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></td>
       <td><span class="lnk">${trunc(p.job_id,10)}</span></td>
