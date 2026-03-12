@@ -1,4 +1,5 @@
 mod gpu;
+mod stratum_client;
 mod tui;
 
 use std::{
@@ -71,7 +72,7 @@ fn cli() -> Command {
             Command::new("gpu")
                 .about("Run the GPU miner (wgpu — Metal on Mac, Vulkan elsewhere)")
                 .arg(Arg::new("rpcserver").long("rpcserver").short('s').value_name("HOST:PORT").help("gRPC node endpoint (default: localhost:36669)"))
-                .arg(Arg::new("mining-address").long("mining-address").short('a').value_name("ADDRESS").required(true).help("Reward address"))
+                .arg(Arg::new("mining-address").long("mining-address").short('a').value_name("ADDRESS").help("Reward address (required for node mode; optional in stratum mode)"))
                 .arg(Arg::new("batch-size").long("batch-size").value_name("N").value_parser(clap::value_parser!(u32)).default_value("1048576").help("Nonces per GPU dispatch (default: 1M)"))
                 .arg(Arg::new("genome-activation-daa-score").long("genome-activation-daa-score").value_name("SCORE").value_parser(clap::value_parser!(u64)).help("DAA score where Genome PoW activates (overrides --mainnet/--testnet/--devnet)"))
                 .arg(Arg::new("genome-fragment-size").long("genome-fragment-size").value_name("BYTES").value_parser(clap::value_parser!(u32)).default_value("1048576").help("Fragment size in bytes"))
@@ -83,6 +84,9 @@ fn cli() -> Command {
                 .arg(Arg::new("list-gpus").long("list-gpus").action(clap::ArgAction::SetTrue).help("List available GPU adapters with their indices and exit"))
                 .arg(Arg::new("nonce-offset").long("nonce-offset").value_name("N").value_parser(clap::value_parser!(u64)).default_value("0").help("Instance index for multi-process setups (0=first, 1=second …). Each instance mines a non-overlapping nonce segment."))
                 .arg(Arg::new("no-tui").long("no-tui").action(clap::ArgAction::SetTrue).help("Disable TUI dashboard (plain log output)"))
+                .arg(Arg::new("stratum").long("stratum").value_name("URL").help("Stratum pool URL, e.g. stratum+tcp://pool.example.com:1444 (mutually exclusive with --rpcserver)"))
+                .arg(Arg::new("stratum-worker").long("stratum-worker").value_name("NAME").help("Stratum worker name (default: --mining-address)"))
+                .arg(Arg::new("stratum-password").long("stratum-password").value_name("PASS").default_value("x").help("Stratum password (default: x)"))
         )
 }
 
