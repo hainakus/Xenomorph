@@ -222,8 +222,7 @@ pub async fn execute_payout(
         let mut batch_input_total  = 0u64;
         let mut batch_outputs: Vec<(RpcAddress, u64)> = vec![];
 
-        'outer: for oi in out_cursor..outputs_plan.len() {
-            let (addr, amount) = &outputs_plan[oi];
+        'outer: for (addr, amount) in outputs_plan.iter().skip(out_cursor) {
 
             // Minimum inputs needed to cover this tentative batch.
             let tentative_n_out  = batch_outputs.len() + 1;
