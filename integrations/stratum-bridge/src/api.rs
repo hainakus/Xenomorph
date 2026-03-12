@@ -196,7 +196,7 @@ async fn get_miner(
 
 async fn get_blocks(State(s): State<ApiState>) -> Json<Vec<BlockRecord>> {
     if let Some(db) = &s.db {
-        if let Ok(blocks) = db.get_blocks(200).await {
+        if let Ok(blocks) = db.get_blocks(30).await {
             let mut records = Vec::with_capacity(blocks.len());
             for b in &blocks {
                 let payouts = db.get_block_payouts(&b.job_id).await.unwrap_or_default();
@@ -270,7 +270,7 @@ async fn get_payments(State(s): State<ApiState>) -> Json<Vec<PaymentRecord>> {
     };
 
     if let Some(db) = &s.db {
-        if let Ok(blocks) = db.get_paid_blocks(200).await {
+        if let Ok(blocks) = db.get_paid_blocks(30).await {
             let mut records = Vec::new();
             // Track which job_ids came from DB so we can add missing in-memory ones below.
             let mut seen: HashSet<String> = HashSet::new();
