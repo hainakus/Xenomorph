@@ -57,6 +57,9 @@ impl Default for PaymentConfig {
     }
 }
 
+/// Coinbase outputs must wait this many DAA-score steps before they can be spent.
+const COINBASE_MATURITY: u64 = 100;
+
 // ── Payout execution ──────────────────────────────────────────────────────────
 
 /// Build, sign and broadcast a payout transaction for one confirmed block.
@@ -69,17 +72,31 @@ pub async fn execute_payout(
     payout:       &PendingPayout,
     cfg:          &PaymentConfig,
 ) -> Result<RpcTransactionId> {
-    // ── 1. Fetch all pool UTXOs ───────────────────────────────────────────────
-    let utxo_entries = rpc
+    // ── 1. Fetch all pool UTXOs (mature only) ───────────────────────────────
+    let current_daa = rpc
+        .get_block_dag_info()
+        .await
+        .map_err(|e| anyhow::Error::new(RetryablePayoutError(
+            format!("get_block_dag_info RPC failed: {e} — will retry")
+        )))?
+        .virtual_daa_score;
+
+    let utxo_entries: Vec<_> = rpc
         .get_utxos_by_addresses(vec![pool_address.clone()])
         .await
         .map_err(|e| anyhow::Error::new(RetryablePayoutError(
             format!("get_utxos_by_addresses RPC failed (node needs --utxoindex?): {e} — will retry")
-        )))?;
+        )))?
+        .into_iter()
+        .filter(|e| {
+            !e.utxo_entry.is_coinbase
+                || current_daa.saturating_sub(e.utxo_entry.block_daa_score) >= COINBASE_MATURITY
+        })
+        .collect();
 
     if utxo_entries.is_empty() {
         return Err(anyhow::Error::new(RetryablePayoutError(
-            format!("No UTXOs available for pool address {pool_address} — will retry next cycle")
+            format!("No mature UTXOs available for pool address {pool_address} — will retry next cycle")
         )));
     }
 
@@ -267,10 +284,22 @@ pub async fn consolidate_utxos(
     pool_address: &RpcAddress,
     keypair:      &Keypair,
 ) -> Result<Option<RpcTransactionId>> {
-    let utxo_entries = rpc
+    let current_daa = rpc
+        .get_block_dag_info()
+        .await
+        .map_err(|e| anyhow::anyhow!("consolidate_utxos get_block_dag_info failed: {e}"))?
+        .virtual_daa_score;
+
+    let utxo_entries: Vec<_> = rpc
         .get_utxos_by_addresses(vec![pool_address.clone()])
         .await
-        .map_err(|e| anyhow::anyhow!("consolidate_utxos get_utxos RPC failed: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("consolidate_utxos get_utxos RPC failed: {e}"))?
+        .into_iter()
+        .filter(|e| {
+            !e.utxo_entry.is_coinbase
+                || current_daa.saturating_sub(e.utxo_entry.block_daa_score) >= COINBASE_MATURITY
+        })
+        .collect();
 
     if utxo_entries.len() <= SWEEP_THRESHOLD {
         return Ok(None);
