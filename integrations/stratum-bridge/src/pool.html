@@ -61,6 +61,9 @@ main{flex:1;width:100%;padding:1.5rem 2rem}
 .tbl tr:last-child td{border-bottom:none}
 .lnk{color:var(--c);font-family:var(--fm);cursor:pointer;font-size:inherit;text-align:left;background:none;border:none;padding:0;text-decoration:none;transition:color .2s,text-shadow .2s}
 .lnk:hover{color:var(--g);text-shadow:0 0 8px #0f86}
+a.lnk{text-decoration:underline dotted;text-underline-offset:3px;}
+a.lnk::after{content:' ↗';font-size:.7em;opacity:.6}
+a.lnk:hover::after{opacity:1}
 
 .badge{font-family:var(--fm);text-transform:uppercase;letter-spacing:.1em;border:1px solid;padding:.12rem .38rem;font-size:.58rem;display:inline-block}
 .bg{color:var(--g);border-color:var(--gd);background:var(--gg)}
@@ -387,7 +390,7 @@ function renderBlocks(blocks){
       <td style="color:var(--c)">${trunc(b.top_miner,12)||'–'}</td>
       <td style="color:var(--y)">${b.top_proportion?(b.top_proportion*100).toFixed(1)+'%':'–'}</td>
       <td>${badge(b.status)}</td>
-      <td>${b.tx_id?`<span class="lnk">${trunc(b.tx_id,10)}</span>`:'–'}</td>
+      <td>${b.tx_id?`<a class="lnk" href="https://explorer.xenom.space/txs/${b.tx_id}" target="_blank" rel="noopener" title="${b.tx_id}">${trunc(b.tx_id,10)}</a>`:'–'}</td>
     </tr>
     <tr class="expand-row"><td colspan="8"><div class="expand-inner" id="br-${i}"><span style="color:var(--txd)">▶ click to expand payouts</span></div></td></tr>
   `).join('');
@@ -404,7 +407,7 @@ function renderPayments(payments){
       <td>${fmtNum(p.block_daa_score)}</td>
       <td>${p.payouts?.length||0} miners</td>
       <td>${badge(p.status)}</td>
-      <td>${p.tx_id?`<span class="lnk">${trunc(p.tx_id,10)}</span>`:'–'}</td>
+      <td>${p.tx_id?`<a class="lnk" href="https://explorer.xenom.space/txs/${p.tx_id}" target="_blank" rel="noopener" title="${p.tx_id}">${trunc(p.tx_id,10)}</a>`:'–'}</td>
     </tr>
     <tr class="expand-row"><td colspan="7"><div class="expand-inner" id="pr-${i}">${payoutTable(p.payouts)}</div></td></tr>
   `).join('');

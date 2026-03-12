@@ -290,6 +290,22 @@ async fn main() -> Result<()> {
 
     // ── Auto-payout confirmation monitor ─────────────────────────────────
     if let Some(keypair) = pool_keypair {
+        // ── UTXO consolidation sweep (every 15 s) ────────────────────────
+        // Prevents mass-limit failures by keeping the UTXO set small.
+        let rpc_sweep  = rpc.clone();
+        let addr_sweep = pay_address.clone();
+        tokio::spawn(async move {
+            let interval = Duration::from_secs(15);
+            loop {
+                sleep(interval).await;
+                match payments::consolidate_utxos(&rpc_sweep, &addr_sweep, &keypair).await {
+                    Ok(Some(tx_id)) => info!("UTXO sweep OK: {tx_id}"),
+                    Ok(None)        => {}
+                    Err(e)          => warn!("UTXO sweep skipped: {e}"),
+                }
+            }
+        });
+
         let rpc3           = rpc.clone();
         let acct3          = accounting.clone();
         let pay_addr       = pay_address.clone();
@@ -314,7 +330,10 @@ async fn main() -> Result<()> {
                 let confirmed = acct3.lock().await
                     .take_confirmed_payouts(current_daa, pcfg.confirm_depth);
 
-                for payout in confirmed {
+                // Process ONE block per cycle — multiple sequential payouts would reuse
+                // the same unconfirmed UTXOs and cause double-spend RPC failures.
+                // Remaining confirmed blocks are picked up on the next cycle.
+                if let Some(payout) = confirmed.into_iter().next() {
                     info!(
                         "Block {} confirmed (daa_score={} current={}), executing payout …",
                         payout.job_id, payout.block_daa_score, current_daa
