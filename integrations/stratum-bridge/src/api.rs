@@ -244,8 +244,11 @@ async fn get_blocks(State(s): State<ApiState>) -> Json<Vec<BlockRecord>> {
 async fn get_payments(State(s): State<ApiState>) -> Json<Vec<PaymentRecord>> {
     if let Some(db) = &s.db {
         if let Ok(blocks) = db.get_blocks(200).await {
-            let mut records = Vec::with_capacity(blocks.len());
+            let mut records = Vec::new();
             for b in &blocks {
+                if !matches!(b.status.as_str(), "paid" | "failed" | "payout-failed") {
+                    continue;
+                }
                 let payouts = db.get_block_payouts(&b.job_id).await.unwrap_or_default();
                 records.push(PaymentRecord {
                     job_id:          b.job_id.clone(),
@@ -268,6 +271,7 @@ async fn get_payments(State(s): State<ApiState>) -> Json<Vec<PaymentRecord>> {
         acct.pending_payouts()
             .iter()
             .rev()
+            .filter(|p| matches!(p.status, PayoutStatus::Paid { .. } | PayoutStatus::Failed { .. }))
             .map(|p| {
                 let (status, tx_id) = status_pair(&p.status);
                 PaymentRecord {
