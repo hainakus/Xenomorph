@@ -387,7 +387,7 @@ function renderBlocks(blocks){
       <td style="color:var(--c)">${trunc(b.top_miner,12)||'–'}</td>
       <td style="color:var(--y)">${b.top_proportion?(b.top_proportion*100).toFixed(1)+'%':'–'}</td>
       <td>${badge(b.status)}</td>
-      <td>${b.tx_id?`<span class="lnk">${trunc(b.tx_id,10)}</span>`:'–'}</td>
+      <td>${b.tx_id?`<a class="lnk" href="https://explorer.xenom.space/txs/${b.tx_id}" target="_blank" rel="noopener" title="${b.tx_id}">${trunc(b.tx_id,10)}</a>`:'–'}</td>
     </tr>
     <tr class="expand-row"><td colspan="8"><div class="expand-inner" id="br-${i}"><span style="color:var(--txd)">▶ click to expand payouts</span></div></td></tr>
   `).join('');
@@ -404,7 +404,7 @@ function renderPayments(payments){
       <td>${fmtNum(p.block_daa_score)}</td>
       <td>${p.payouts?.length||0} miners</td>
       <td>${badge(p.status)}</td>
-      <td>${p.tx_id?`<span class="lnk">${trunc(p.tx_id,10)}</span>`:'–'}</td>
+      <td>${p.tx_id?`<a class="lnk" href="https://explorer.xenom.space/txs/${p.tx_id}" target="_blank" rel="noopener" title="${p.tx_id}">${trunc(p.tx_id,10)}</a>`:'–'}</td>
     </tr>
     <tr class="expand-row"><td colspan="7"><div class="expand-inner" id="pr-${i}">${payoutTable(p.payouts)}</div></td></tr>
   `).join('');
