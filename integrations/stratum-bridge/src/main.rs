@@ -412,6 +412,43 @@ async fn main() -> Result<()> {
         None
     };
 
+    // ── Stale-miner cleanup (every 60 s) ────────────────────────────────────
+    {
+        const STALE_SECS: u64 = 300;
+        let db4         = database.clone();
+        let api4        = api_state.clone();
+        tokio::spawn(async move {
+            loop {
+                sleep(Duration::from_secs(60)).await;
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+                let stale_before = (now.saturating_sub(STALE_SECS)) as i64;
+
+                // Persist zeroed hashrate / offline state to DB
+                if let Some(ref d) = db4 {
+                    if let Ok(n) = d.zero_stale_miners(stale_before).await {
+                        if n > 0 {
+                            info!("Zeroed {n} stale miner(s) in DB (no share for >{}s)", STALE_SECS);
+                        }
+                    }
+                }
+
+                // Also zero in-memory MinerApiEntry hashrate for stale workers
+                if let Some(ref api) = api4 {
+                    let mut miners = api.miners.lock().await;
+                    for entry in miners.values_mut() {
+                        if entry.last_share_at > 0
+                            && now.saturating_sub(entry.last_share_at) > STALE_SECS
+                        {
+                            entry.hashrate_hps = 0.0;
+                            entry.connected    = false;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     // ── Stratum TCP server (blocks forever) ─────────────────────────────────────
     stratum::run_server(listen_addr, job_rx, job_mgr, rpc, vardiff_cfg, accounting, api_state, database.clone()).await?;
 

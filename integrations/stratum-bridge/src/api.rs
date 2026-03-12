@@ -45,6 +45,9 @@ pub const DIFF_TO_HASHES: f64 = 2.0;
 /// α=0.20 gives a ~5-sample rolling average (heavier weight on recent shares).
 const EWMA_ALPHA: f64 = 0.20;
 
+/// Miners with no share for longer than this are considered stale (hashrate=0, offline).
+const STALE_MINER_SECS: u64 = 300;
+
 // ── Shared miner entry (live map updated by stratum connections) ───────────────
 
 #[derive(Clone, Debug)]
@@ -379,20 +382,27 @@ fn db_miner_to_stats(
     m:    &crate::db::DbMiner,
     live: Option<&MinerApiEntry>,
 ) -> MinerStats {
+    let last_share = m.last_share as u64;
+    let stale      = last_share > 0 && unix_now().saturating_sub(last_share) > STALE_MINER_SECS;
+    let hashrate   = if stale { 0.0 } else { live.map(|e| e.hashrate_hps).unwrap_or(m.hashrate_hps) };
+    let connected  = if stale { false } else { live.map(|e| e.connected).unwrap_or(m.connected) };
     MinerStats {
         worker:             m.worker.clone(),
         address:            m.address.clone(),
         connected_since:    live.map(|e| e.connected_since).unwrap_or(m.first_seen as u64),
-        last_share_at:      m.last_share as u64,
+        last_share_at:      last_share,
         shares_submitted:   m.shares_total as u64,
         blocks_found:       m.blocks_total as u64,
         current_difficulty: live.map(|e| e.current_difficulty).unwrap_or(m.current_diff),
-        hashrate_hps:       live.map(|e| e.hashrate_hps).unwrap_or(m.hashrate_hps),
-        connected:          live.map(|e| e.connected).unwrap_or(m.connected),
+        hashrate_hps:       hashrate,
+        connected,
     }
 }
 
 fn entry_to_stats(m: &MinerApiEntry) -> MinerStats {
+    let stale     = m.last_share_at > 0 && unix_now().saturating_sub(m.last_share_at) > STALE_MINER_SECS;
+    let hashrate  = if stale { 0.0 } else { m.hashrate_hps };
+    let connected = if stale { false } else { m.connected };
     MinerStats {
         worker:             m.worker.clone(),
         address:            m.address.clone(),
@@ -401,8 +411,8 @@ fn entry_to_stats(m: &MinerApiEntry) -> MinerStats {
         shares_submitted:   m.shares_submitted,
         blocks_found:       m.blocks_found,
         current_difficulty: m.current_difficulty,
-        hashrate_hps:       m.hashrate_hps,
-        connected:          m.connected,
+        hashrate_hps:       hashrate,
+        connected,
     }
 }
 

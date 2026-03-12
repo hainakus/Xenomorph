@@ -445,6 +445,19 @@ impl Db {
         Ok(row.get("n"))
     }
 
+    /// Zero out hashrate and mark offline for every miner whose last share
+    /// timestamp is older than `stale_before` (unix seconds).
+    pub async fn zero_stale_miners(&self, stale_before: i64) -> Result<u64> {
+        let r = sqlx::query(
+            "UPDATE miners SET hashrate_hps = 0.0, connected = 0
+             WHERE last_share > 0 AND last_share < ?1",
+        )
+        .bind(stale_before)
+        .execute(self.pool())
+        .await?;
+        Ok(r.rows_affected())
+    }
+
     // ── Transaction log ────────────────────────────────────────────────────────
 
     /// Record a payout TX submission.  `status` = "confirmed" or "failed".
