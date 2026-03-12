@@ -73,23 +73,27 @@ pub struct ApiState {
     pub pool_name:       String,
     /// SQLite database — `None` if `--db-path` was not provided
     pub db:              Option<Arc<Db>>,
+    /// Stratum TCP listen address e.g. "0.0.0.0:1444" — exposed in the API
+    pub stratum_endpoint: String,
 }
 
 impl ApiState {
     pub fn new(
-        accounting: Arc<Mutex<Accounting>>,
-        rpc:        Arc<GrpcClient>,
-        pool_name:  String,
-        db:         Option<Arc<Db>>,
+        accounting:       Arc<Mutex<Accounting>>,
+        rpc:              Arc<GrpcClient>,
+        pool_name:        String,
+        db:               Option<Arc<Db>>,
+        stratum_endpoint: String,
     ) -> Self {
         Self {
             accounting,
             rpc,
-            miners:          Arc::new(Mutex::new(HashMap::new())),
-            connected_count: Arc::new(AtomicU32::new(0)),
-            start_unix:      unix_now(),
+            miners:           Arc::new(Mutex::new(HashMap::new())),
+            connected_count:  Arc::new(AtomicU32::new(0)),
+            start_unix:       unix_now(),
             pool_name,
             db,
+            stratum_endpoint,
         }
     }
 }
@@ -99,6 +103,7 @@ impl ApiState {
 #[derive(Serialize)]
 struct PoolStats {
     name:              String,
+    stratum_endpoint:  String,
     uptime_secs:       u64,
     connected_miners:  u32,
     pool_hashrate_hps: f64,
@@ -376,6 +381,7 @@ async fn build_pool_stats(s: &ApiState) -> PoolStats {
 
         return PoolStats {
             name:              s.pool_name.clone(),
+            stratum_endpoint:  s.stratum_endpoint.clone(),
             uptime_secs:       unix_now().saturating_sub(s.start_unix),
             connected_miners:  connected,
             pool_hashrate_hps: pool_hps,
@@ -397,6 +403,7 @@ async fn build_pool_stats(s: &ApiState) -> PoolStats {
 
     PoolStats {
         name:              s.pool_name.clone(),
+        stratum_endpoint:  s.stratum_endpoint.clone(),
         uptime_secs:       unix_now().saturating_sub(s.start_unix),
         connected_miners:  s.connected_count.load(Ordering::Relaxed),
         pool_hashrate_hps: pool_hps,

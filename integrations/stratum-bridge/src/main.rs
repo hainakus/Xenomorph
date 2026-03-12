@@ -389,6 +389,7 @@ async fn main() -> Result<()> {
             rpc.clone(),
             pool_name,
             database.clone(),
+            listen_str.clone(),
         );
         let state2 = state.clone();
         tokio::spawn(async move {
