@@ -39,7 +39,11 @@ async fn serve_index() -> impl IntoResponse {
 // ── Pool-wide factor to convert share-difficulty → hash-attempts ──────────────
 // 2^256 / MAX_DIFFICULTY_TARGET_F64 ≈ 2.0  (exact: ~2.00)
 // Keeps pool hashrate on the same H/s scale as estimateNetworkHashesPerSecond.
-const DIFF_TO_HASHES: f64 = 2.0;
+pub const DIFF_TO_HASHES: f64 = 2.0;
+
+/// EWMA smoothing factor for per-share instant hashrate estimates.
+/// α=0.20 gives a ~5-sample rolling average (heavier weight on recent shares).
+const EWMA_ALPHA: f64 = 0.20;
 
 // ── Shared miner entry (live map updated by stratum connections) ───────────────
 
@@ -441,9 +445,22 @@ fn status_pair(s: &PayoutStatus) -> (String, Option<String>) {
     }
 }
 
-pub fn update_miner_hashrate(entry: &mut MinerApiEntry, diff: f64, target_spm: f64) {
+/// Update per-miner hashrate from the *current* share timing.
+///
+/// Call this **before** writing `entry.last_share_at = now_secs` so that
+/// `entry.last_share_at` still holds the previous share timestamp.
+/// On the first share (last_share_at == 0) the hashrate is left at 0.
+pub fn update_miner_hashrate(entry: &mut MinerApiEntry, diff: f64, now_secs: u64) {
     entry.current_difficulty = diff;
-    entry.hashrate_hps       = diff * (target_spm / 60.0) * DIFF_TO_HASHES;
+    if entry.last_share_at > 0 && now_secs > entry.last_share_at {
+        let elapsed   = (now_secs - entry.last_share_at) as f64;
+        let instant   = diff * DIFF_TO_HASHES / elapsed;
+        entry.hashrate_hps = if entry.hashrate_hps > 0.0 {
+            EWMA_ALPHA * instant + (1.0 - EWMA_ALPHA) * entry.hashrate_hps
+        } else {
+            instant
+        };
+    }
 }
 
 fn unix_now() -> u64 {

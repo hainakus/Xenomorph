@@ -1,8 +1,10 @@
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use anyhow::{bail, Context, Result};
 use kaspa_addresses::Address;
 use kaspa_consensus_core::{
+    hashing::sighash::{calc_schnorr_signature_hash, SigHashReusedValues},
+    hashing::sighash_type::SIG_HASH_ALL,
     subnets::SUBNETWORK_ID_NATIVE,
     tx::{
         MutableTransaction, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput,
@@ -15,12 +17,19 @@ use kaspa_rpc_core::{
     api::rpc::RpcApi, RpcAddress, RpcTransaction, RpcTransactionInput, RpcTransactionOutput,
     RpcTransactionOutpoint, RpcTransactionId,
 };
-use kaspa_consensus_core::hashing::sighash::{calc_schnorr_signature_hash, SigHashReusedValues};
-use kaspa_consensus_core::hashing::sighash_type::SIG_HASH_ALL;
 use kaspa_txscript::pay_to_address_script;
 use secp256k1::{Keypair, Message};
 
 use crate::accounting::PendingPayout;
+
+/// Signals that a payout failure is **transient** — the block stays `confirmed`
+/// and will be retried on the next monitor cycle.
+#[derive(Debug)]
+pub struct RetryablePayoutError(pub String);
+impl fmt::Display for RetryablePayoutError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(&self.0) }
+}
+impl std::error::Error for RetryablePayoutError {}
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -67,7 +76,9 @@ pub async fn execute_payout(
         .context("get_utxos_by_addresses (node must be started with --utxoindex)")?;
 
     if utxo_entries.is_empty() {
-        bail!("No UTXOs available for pool address {pool_address}");
+        return Err(anyhow::Error::new(RetryablePayoutError(
+            format!("No UTXOs available for pool address {pool_address} — will retry next cycle")
+        )));
     }
 
     // ── 2. Calculate funds and outputs ───────────────────────────────────────
@@ -76,24 +87,49 @@ pub async fn execute_payout(
     // Apply pool fee
     let after_fee = (total_available as f64 * (1.0 - cfg.pool_fee_percent / 100.0)) as u64;
 
-    // Plan per-miner outputs; skip miners below minimum payout
+    // Plan per-miner outputs; skip miners below minimum payout or with no valid address
+    let mut invalid_addr_count = 0usize;
+    let mut below_min_count    = 0usize;
     let outputs_plan: Vec<(RpcAddress, u64)> = payout
         .proportions
         .iter()
         .filter_map(|(worker, proportion)| {
             let addr_str = worker.split('.').next().unwrap_or(worker);
-            let amount   = (after_fee as f64 * proportion) as u64;
+            let addr: RpcAddress = match Address::try_from(addr_str) {
+                Ok(a)  => a,
+                Err(_) => {
+                    warn!(
+                        "Skipping payout to '{worker}': '{addr_str}' is not a valid xenom: address. \
+                         Miners must connect with username  xenom:qYOURADDR[.workername]"
+                    );
+                    invalid_addr_count += 1;
+                    return None;
+                }
+            };
+            let amount = (after_fee as f64 * proportion) as u64;
             if amount < cfg.min_payout_sompi {
                 warn!("Skipping payout to {worker}: {amount} sompi < min {}", cfg.min_payout_sompi);
+                below_min_count += 1;
                 return None;
             }
-            let addr: RpcAddress = Address::try_from(addr_str).ok()?;
             Some((addr, amount))
         })
         .collect();
 
     if outputs_plan.is_empty() {
-        bail!("No miner payouts above minimum threshold ({})", cfg.min_payout_sompi);
+        let msg = if invalid_addr_count > 0 && below_min_count == 0 {
+            format!(
+                "No payable miners: {invalid_addr_count} worker(s) have no valid xenom: address — \
+                 miners must connect with username  xenom:qYOURADDR[.workername]  (will retry)"
+            )
+        } else {
+            format!(
+                "No miner payouts above minimum threshold ({} sompi): \
+                 {invalid_addr_count} invalid address(es), {below_min_count} below minimum (will retry)",
+                cfg.min_payout_sompi
+            )
+        };
+        return Err(anyhow::Error::new(RetryablePayoutError(msg)));
     }
 
     let total_out: u64  = outputs_plan.iter().map(|(_, v)| *v).sum();
@@ -109,7 +145,9 @@ pub async fn execute_payout(
         if selected_total >= need { break; }
     }
     if selected_total < need {
-        bail!("Insufficient pool funds: available {selected_total} sompi, need {need} sompi");
+        return Err(anyhow::Error::new(RetryablePayoutError(
+            format!("Insufficient pool funds: available {selected_total} sompi, need {need} sompi — will retry next cycle")
+        )));
     }
 
     // ── 4. Build transaction outputs ─────────────────────────────────────────

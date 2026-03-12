@@ -204,6 +204,15 @@ async fn handle_miner(
                             .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
                         let miner_address = worker_name.split('.').next().unwrap_or(&worker_name).to_owned();
 
+                        // Warn if worker name doesn't start with a valid xenom: address — payouts will fail
+                        if kaspa_addresses::Address::try_from(miner_address.as_str()).is_err() {
+                            warn!(
+                                "{peer}: worker '{worker_name}' does not start with a valid xenom: address. \
+                                 Auto-payouts require username format  xenom:qYOURADDR[.workername]  — \
+                                 shares will be recorded but payouts CANNOT be sent to this worker."
+                            );
+                        }
+
                         if let Some(ref api) = api_state {
                             let mut e = MinerApiEntry {
                                 worker:             worker_name.clone(),
@@ -216,7 +225,7 @@ async fn handle_miner(
                                 hashrate_hps:       0.0,
                                 connected:          true,
                             };
-                            update_miner_hashrate(&mut e, vardiff.current_diff, api.target_spm);
+                            update_miner_hashrate(&mut e, vardiff.current_diff, conn_now);
                             api.miners.lock().await.insert(worker_name.clone(), e);
                         }
 
@@ -269,12 +278,8 @@ async fn handle_miner(
                                         &mut writer,
                                         &StratumNotification::set_difficulty(new_diff),
                                     ).await?;
-                                    // update API hashrate estimate on retarget
-                                    if let Some(ref api) = api_state {
-                                        if let Some(e) = api.miners.lock().await.get_mut(&worker_name) {
-                                            update_miner_hashrate(e, new_diff, api.target_spm);
-                                        }
-                                    }
+                                    // Hashrate update happens below at share-submit time;
+                                    // vardiff.current_diff is already new_diff at that point.
                                 }
 
                                 // ── PPLNS accounting ─────────────────────
@@ -308,9 +313,11 @@ async fn handle_miner(
 
                                 if let Some(ref api) = api_state {
                                     if let Some(e) = api.miners.lock().await.get_mut(&worker_name) {
+                                        // update_miner_hashrate uses e.last_share_at as the
+                                        // *previous* share time — call BEFORE overwriting it.
+                                        update_miner_hashrate(e, vardiff.current_diff, share_now);
                                         e.last_share_at    = share_now;
                                         e.shares_submitted += 1;
-                                        update_miner_hashrate(e, vardiff.current_diff, api.target_spm);
                                         if is_block { e.blocks_found += 1; }
                                     }
                                 }
@@ -321,7 +328,14 @@ async fn handle_miner(
                                     let worker      = worker_name.clone();
                                     let jid         = job_id.to_owned();
                                     let diff        = vardiff.current_diff;
-                                    let hashrate    = diff * (target_spm / 60.0) * 2.0;
+                                    // Read computed hashrate from the entry we just updated
+                                    let hashrate    = api_state.as_ref()
+                                        .and_then(|api| {
+                                            // non-blocking peek — if locked, fall back to 0
+                                            api.miners.try_lock().ok()
+                                                .and_then(|m| m.get(&worker_name).map(|e| e.hashrate_hps))
+                                        })
+                                        .unwrap_or(0.0);
                                     let blk         = is_block;
                                     tokio::spawn(async move {
                                         if let Err(e) = d.insert_share(&worker, &jid, diff, share_now as i64).await {

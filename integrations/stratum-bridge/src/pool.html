@@ -239,8 +239,9 @@ function relTime(u){
 }
 function trunc(h,n=10){if(!h||h.length<=n*2+3)return h||'–';return h.slice(0,n)+'…'+h.slice(-6);}
 function badge(s){
-  const m={paid:'bg',pending:'by',failed:'br'};
-  return`<span class="badge ${m[s]||'bc'}">${s}</span>`;
+  const m={paid:'bg',pending:'by',confirmed:'bc','payout-failed':'br',failed:'br'};
+  const lbl={pending:'pending',confirmed:'confirmed',paid:'paid','payout-failed':'payout failed',failed:'failed'};
+  return`<span class="badge ${m[s]||'bc'}" title="${s==='payout-failed'?'Block accepted by network — payout distribution failed':''}">${lbl[s]||s}</span>`;
 }
 function set(id,v){const e=document.getElementById(id);if(e)e.textContent=v;}
 

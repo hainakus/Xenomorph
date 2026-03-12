@@ -25,7 +25,7 @@ use crate::{
     api::ApiState,
     db::Db,
     job::JobManager,
-    payments::{execute_payout, PaymentConfig},
+    payments::{execute_payout, PaymentConfig, RetryablePayoutError},
     vardiff::VarDiffConfig,
 };
 
@@ -319,6 +319,18 @@ async fn main() -> Result<()> {
                         "Block {} confirmed (daa_score={} current={}), executing payout …",
                         payout.job_id, payout.block_daa_score, current_daa
                     );
+
+                    // Mark as confirmed immediately — block IS valid even if payout later fails
+                    if let Some(ref d) = db3 {
+                        let d = d.clone();
+                        let jid = payout.job_id.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = d.update_block_status(&jid, "confirmed", None).await {
+                                warn!("DB update_block_status confirmed: {e}");
+                            }
+                        });
+                    }
+
                     match execute_payout(&rpc3, &pay_addr, &keypair, &payout, &pcfg).await {
                         Ok(tx_id) => {
                             let tx_str = tx_id.to_string();
@@ -337,16 +349,22 @@ async fn main() -> Result<()> {
                         }
                         Err(e) => {
                             let reason = e.to_string();
-                            warn!("Payout FAILED for job {}: {reason}", payout.job_id);
-                            acct3.lock().await.mark_failed(&payout.job_id, reason);
-                            if let Some(ref d) = db3 {
-                                let d = d.clone();
-                                let jid = payout.job_id.clone();
-                                tokio::spawn(async move {
-                                    if let Err(e) = d.update_block_status(&jid, "failed", None).await {
-                                        warn!("DB update_block_status failed: {e}");
-                                    }
-                                });
+                            if e.downcast_ref::<RetryablePayoutError>().is_some() {
+                                // Transient — block stays 'confirmed', will retry next cycle
+                                warn!("Payout retry (job {}): {reason}", payout.job_id);
+                            } else {
+                                // Permanent failure — mark so it won't be retried
+                                warn!("Payout FAILED (job {}): {reason}", payout.job_id);
+                                acct3.lock().await.mark_failed(&payout.job_id, reason);
+                                if let Some(ref d) = db3 {
+                                    let d = d.clone();
+                                    let jid = payout.job_id.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = d.update_block_status(&jid, "payout-failed", None).await {
+                                            warn!("DB update_block_status payout-failed: {e}");
+                                        }
+                                    });
+                                }
                             }
                         }
                     }
