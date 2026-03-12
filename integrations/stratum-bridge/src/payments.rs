@@ -1,6 +1,6 @@
 use std::{fmt, sync::Arc};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use kaspa_addresses::Address;
 use kaspa_consensus_core::{
     hashing::sighash::{calc_schnorr_signature_hash, SigHashReusedValues},

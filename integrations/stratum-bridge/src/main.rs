@@ -382,7 +382,6 @@ async fn main() -> Result<()> {
             accounting.clone(),
             rpc.clone(),
             pool_name,
-            vardiff_cfg.target_shares_per_min,
             database.clone(),
         );
         let state2 = state.clone();

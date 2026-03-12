@@ -135,7 +135,6 @@ async fn handle_miner(
 
     let mut authorized   = false;
     let mut worker_name  = String::from("unknown");
-    let target_spm       = vardiff_cfg.target_shares_per_min;
     let mut vardiff      = VarDiff::new(vardiff_cfg);
     // Per-miner duplicate tracker: cleared whenever a new job replaces the old one.
     let mut seen_shares: HashSet<(String, u32)> = HashSet::new();

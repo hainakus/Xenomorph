@@ -71,7 +71,6 @@ pub struct ApiState {
     pub connected_count: Arc<AtomicU32>,
     pub start_unix:      u64,
     pub pool_name:       String,
-    pub target_spm:      f64,
     /// SQLite database — `None` if `--db-path` was not provided
     pub db:              Option<Arc<Db>>,
 }
@@ -81,7 +80,6 @@ impl ApiState {
         accounting: Arc<Mutex<Accounting>>,
         rpc:        Arc<GrpcClient>,
         pool_name:  String,
-        target_spm: f64,
         db:         Option<Arc<Db>>,
     ) -> Self {
         Self {
@@ -91,7 +89,6 @@ impl ApiState {
             connected_count: Arc::new(AtomicU32::new(0)),
             start_unix:      unix_now(),
             pool_name,
-            target_spm,
             db,
         }
     }
