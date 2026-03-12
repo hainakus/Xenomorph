@@ -262,10 +262,13 @@ async fn get_payments(State(s): State<ApiState>) -> Json<Vec<PaymentRecord>> {
                         .collect(),
                 });
             }
-            return Json(records);
+            if !records.is_empty() {
+                return Json(records);
+            }
+            // DB has no paid/failed entries yet — fall through to in-memory below.
         }
     }
-    // Fallback: in-memory accounting
+    // In-memory accounting (primary when DB is absent or has no terminal-state entries).
     let acct = s.accounting.lock().await;
     Json(
         acct.pending_payouts()

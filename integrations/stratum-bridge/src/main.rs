@@ -341,13 +341,9 @@ async fn main() -> Result<()> {
 
                     // Mark as confirmed immediately — block IS valid even if payout later fails
                     if let Some(ref d) = db3 {
-                        let d = d.clone();
-                        let jid = payout.job_id.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = d.update_block_status(&jid, "confirmed", None).await {
-                                warn!("DB update_block_status confirmed: {e}");
-                            }
-                        });
+                        if let Err(e) = d.update_block_status(&payout.job_id, "confirmed", None).await {
+                            warn!("DB update_block_status confirmed: {e}");
+                        }
                     }
 
                     match execute_payout(&rpc3, &pay_addr, &keypair, &payout, &pcfg).await {
@@ -356,14 +352,9 @@ async fn main() -> Result<()> {
                             info!("Payout OK: job={} tx={tx_str}", payout.job_id);
                             acct3.lock().await.mark_paid(&payout.job_id, tx_str.clone());
                             if let Some(ref d) = db3 {
-                                let d = d.clone();
-                                let jid = payout.job_id.clone();
-                                let tx  = tx_str.clone();
-                                tokio::spawn(async move {
-                                    if let Err(e) = d.update_block_status(&jid, "paid", Some(&tx)).await {
-                                        warn!("DB update_block_status paid: {e}");
-                                    }
-                                });
+                                if let Err(e) = d.update_block_status(&payout.job_id, "paid", Some(&tx_str)).await {
+                                    warn!("DB update_block_status paid: {e}");
+                                }
                             }
                         }
                         Err(e) => {
@@ -376,13 +367,9 @@ async fn main() -> Result<()> {
                                 warn!("Payout FAILED (job {}): {reason}", payout.job_id);
                                 acct3.lock().await.mark_failed(&payout.job_id, reason);
                                 if let Some(ref d) = db3 {
-                                    let d = d.clone();
-                                    let jid = payout.job_id.clone();
-                                    tokio::spawn(async move {
-                                        if let Err(e) = d.update_block_status(&jid, "payout-failed", None).await {
-                                            warn!("DB update_block_status payout-failed: {e}");
-                                        }
-                                    });
+                                    if let Err(e) = d.update_block_status(&payout.job_id, "payout-failed", None).await {
+                                        warn!("DB update_block_status payout-failed: {e}");
+                                    }
                                 }
                             }
                         }
