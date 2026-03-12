@@ -138,19 +138,11 @@ struct BlockRecord {
 }
 
 #[derive(Serialize)]
-struct PaymentRecord {
-    job_id:          String,
-    found_at:        u64,
-    block_daa_score: u64,
-    status:          String,
-    tx_id:           Option<String>,
-    payouts:         Vec<PayoutShare>,
-}
-
-#[derive(Serialize)]
-struct PayoutShare {
-    worker:     String,
-    proportion: f64,
+struct TxRecord {
+    id:           i64,
+    tx_id:        String,
+    submitted_at: u64,
+    status:       String,
 }
 
 #[derive(Serialize)]
@@ -246,67 +238,22 @@ async fn get_blocks(State(s): State<ApiState>) -> Json<Vec<BlockRecord>> {
     )
 }
 
-async fn get_payments(State(s): State<ApiState>) -> Json<Vec<PaymentRecord>> {
-    use std::collections::HashSet;
-
-    // Always collect in-memory paid/failed entries first — mark_paid is synchronous
-    // so these are always up to date even if the DB write hasn't committed yet.
-    let mem_records: Vec<PaymentRecord> = {
-        let acct = s.accounting.lock().await;
-        acct.pending_payouts()
-            .iter()
-            .rev()
-            .filter(|p| matches!(p.status, PayoutStatus::Paid { .. } | PayoutStatus::Failed { .. }))
-            .map(|p| {
-                let (status, tx_id) = status_pair(&p.status);
-                PaymentRecord {
-                    job_id:          p.job_id.clone(),
-                    found_at:        p.unix_secs,
-                    block_daa_score: p.block_daa_score,
-                    status,
-                    tx_id,
-                    payouts:         p.proportions
-                        .iter()
-                        .map(|(w, v)| PayoutShare { worker: w.clone(), proportion: *v })
-                        .collect(),
-                }
-            })
-            .collect()
-    };
-
+async fn get_payments(State(s): State<ApiState>) -> Json<Vec<TxRecord>> {
     if let Some(db) = &s.db {
-        if let Ok(blocks) = db.get_paid_blocks(30).await {
-            let mut records = Vec::new();
-            // Track which job_ids came from DB so we can add missing in-memory ones below.
-            let mut seen: HashSet<String> = HashSet::new();
-            for b in &blocks {
-                seen.insert(b.job_id.clone());
-                let payouts = db.get_block_payouts(&b.job_id).await.unwrap_or_default();
-                records.push(PaymentRecord {
-                    job_id:          b.job_id.clone(),
-                    found_at:        b.found_at as u64,
-                    block_daa_score: b.block_daa_score as u64,
-                    status:          b.status.clone(),
-                    tx_id:           b.tx_id.clone(),
-                    payouts:         payouts
-                        .iter()
-                        .map(|p| PayoutShare { worker: p.worker.clone(), proportion: p.proportion })
-                        .collect(),
-                });
-            }
-            // Prepend any in-memory paid/failed entries not yet written to DB.
-            for r in mem_records {
-                if !seen.contains(&r.job_id) {
-                    records.insert(0, r);
-                }
-            }
-            records.sort_by(|a, b| b.found_at.cmp(&a.found_at));
-            return Json(records);
+        if let Ok(txs) = db.get_transactions(30).await {
+            return Json(
+                txs.into_iter()
+                    .map(|t| TxRecord {
+                        id:           t.id,
+                        tx_id:        t.tx_id,
+                        submitted_at: t.submitted_at as u64,
+                        status:       t.status,
+                    })
+                    .collect(),
+            );
         }
     }
-
-    // No DB configured — return in-memory only.
-    Json(mem_records)
+    Json(vec![])
 }
 
 async fn get_network(

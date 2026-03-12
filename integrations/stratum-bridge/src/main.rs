@@ -7,7 +7,7 @@ mod proto;
 mod stratum;
 mod vardiff;
 
-use std::{net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc, time::{Duration, SystemTime, UNIX_EPOCH}};
 
 use anyhow::{Context, Result};
 use clap::{Arg, Command};
@@ -346,6 +346,9 @@ async fn main() -> Result<()> {
                         }
                     }
 
+                    let now_secs = SystemTime::now()
+                        .duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+
                     match execute_payout(&rpc3, &pay_addr, &keypair, &payout, &pcfg).await {
                         Ok(tx_id) => {
                             let tx_str = tx_id.to_string();
@@ -354,6 +357,9 @@ async fn main() -> Result<()> {
                             if let Some(ref d) = db3 {
                                 if let Err(e) = d.update_block_status(&payout.job_id, "paid", Some(&tx_str)).await {
                                     warn!("DB update_block_status paid: {e}");
+                                }
+                                if let Err(e) = d.insert_transaction(&tx_str, "confirmed", now_secs).await {
+                                    warn!("DB insert_transaction confirmed: {e}");
                                 }
                             }
                         }
@@ -369,6 +375,9 @@ async fn main() -> Result<()> {
                                 if let Some(ref d) = db3 {
                                     if let Err(e) = d.update_block_status(&payout.job_id, "payout-failed", None).await {
                                         warn!("DB update_block_status payout-failed: {e}");
+                                    }
+                                    if let Err(e) = d.insert_transaction("", "failed", now_secs).await {
+                                        warn!("DB insert_transaction failed: {e}");
                                     }
                                 }
                             }
