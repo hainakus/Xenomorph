@@ -397,7 +397,7 @@ function renderBlocks(blocks){
 }
 function renderPayments(payments){
   const tb=document.getElementById('payments-table');
-  const visible=(payments||[]).filter(p=>p.status==='paid'||p.status==='failed');
+  const visible=(payments||[]).filter(p=>p.status==='paid'||p.status==='failed'||p.status==='payout-failed');
   if(!visible.length){tb.innerHTML='<tr><td colspan="7" class="empty">No completed payments yet</td></tr>';return;}
   window._payData=visible;
   tb.innerHTML=visible.map((p,i)=>`
