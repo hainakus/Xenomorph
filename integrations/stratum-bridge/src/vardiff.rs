@@ -65,7 +65,7 @@ impl VarDiff {
 
         // Prune entries older than rolling window
         let cutoff = now.checked_sub(self.window).unwrap_or(Instant::now());
-        while self.share_times.front().map_or(false, |&t| t < cutoff) {
+        while self.share_times.front().is_some_and(|&t| t < cutoff) {
             self.share_times.pop_front();
         }
 

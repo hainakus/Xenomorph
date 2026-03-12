@@ -87,7 +87,7 @@ pub async fn execute_payout(
                 warn!("Skipping payout to {worker}: {amount} sompi < min {}", cfg.min_payout_sompi);
                 return None;
             }
-            let addr: RpcAddress = Address::try_from(addr_str).ok()?.into();
+            let addr: RpcAddress = Address::try_from(addr_str).ok()?;
             Some((addr, amount))
         })
         .collect();
