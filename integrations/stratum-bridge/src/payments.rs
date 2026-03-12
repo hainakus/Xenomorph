@@ -73,7 +73,9 @@ pub async fn execute_payout(
     let utxo_entries = rpc
         .get_utxos_by_addresses(vec![pool_address.clone()])
         .await
-        .context("get_utxos_by_addresses (node must be started with --utxoindex)")?;
+        .map_err(|e| anyhow::Error::new(RetryablePayoutError(
+            format!("get_utxos_by_addresses RPC failed (node needs --utxoindex?): {e} — will retry")
+        )))?;
 
     if utxo_entries.is_empty() {
         return Err(anyhow::Error::new(RetryablePayoutError(
@@ -220,7 +222,9 @@ pub async fn execute_payout(
     let tx_id  = rpc
         .submit_transaction(rpc_tx, false)
         .await
-        .context("submit_transaction")?;
+        .map_err(|e| anyhow::Error::new(RetryablePayoutError(
+            format!("submit_transaction RPC failed: {e} — will retry")
+        )))?;
 
     info!(
         "Payout tx submitted: {tx_id}  outputs={}  total_out={} sompi",

@@ -314,7 +314,10 @@ async fn main() -> Result<()> {
                 let confirmed = acct3.lock().await
                     .take_confirmed_payouts(current_daa, pcfg.confirm_depth);
 
-                for payout in confirmed {
+                // Process ONE block per cycle — multiple sequential payouts would reuse
+                // the same unconfirmed UTXOs and cause double-spend RPC failures.
+                // Remaining confirmed blocks are picked up on the next cycle.
+                if let Some(payout) = confirmed.into_iter().next() {
                     info!(
                         "Block {} confirmed (daa_score={} current={}), executing payout …",
                         payout.job_id, payout.block_daa_score, current_daa
