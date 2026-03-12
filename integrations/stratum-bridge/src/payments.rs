@@ -139,16 +139,31 @@ pub async fn execute_payout(
     let need:       u64 = total_out + fee_total;
 
     // ── 3. Greedy UTXO selection ──────────────────────────────────────────────
+    // Xenom limits transaction mass to 100,000.  Each P2PK Schnorr input adds
+    // roughly 1,100–1,200 mass units, so cap at 84 inputs (~92 K mass, leaving
+    // headroom for outputs and tx overhead).
+    // Sort largest-value UTXOs first so we cover the required amount with as
+    // few inputs as possible.
+    const MAX_INPUTS: usize = 84;
+    let mut sorted_utxos: Vec<_> = utxo_entries.iter().collect();
+    sorted_utxos.sort_unstable_by(|a, b| {
+        b.utxo_entry.amount.cmp(&a.utxo_entry.amount)
+    });
+
     let mut selected       = Vec::new();
     let mut selected_total = 0u64;
-    for entry in &utxo_entries {
-        selected.push(entry);
+    for entry in sorted_utxos.iter().take(MAX_INPUTS) {
+        selected.push(*entry);
         selected_total += entry.utxo_entry.amount;
         if selected_total >= need { break; }
     }
     if selected_total < need {
         return Err(anyhow::Error::new(RetryablePayoutError(
-            format!("Insufficient pool funds: available {selected_total} sompi, need {need} sompi — will retry next cycle")
+            format!(
+                "Insufficient selectable funds: best {} UTXOs cover {} sompi, need {} sompi \
+                 (max {} inputs/tx to stay under mass limit) — will retry next cycle",
+                selected.len(), selected_total, need, MAX_INPUTS
+            )
         )));
     }
 
