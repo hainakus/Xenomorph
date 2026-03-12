@@ -325,6 +325,29 @@ impl Db {
         }))
     }
 
+    pub async fn get_paid_blocks(&self, limit: i64) -> Result<Vec<DbBlock>> {
+        let rows = sqlx::query(
+            "SELECT job_id, found_at, block_daa_score, status, tx_id
+             FROM blocks
+             WHERE status IN ('paid', 'failed', 'payout-failed')
+             ORDER BY found_at DESC LIMIT ?1",
+        )
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| DbBlock {
+                job_id:          r.get("job_id"),
+                found_at:        r.get("found_at"),
+                block_daa_score: r.get("block_daa_score"),
+                status:          r.get("status"),
+                tx_id:           r.get("tx_id"),
+            })
+            .collect())
+    }
+
     pub async fn get_blocks(&self, limit: i64) -> Result<Vec<DbBlock>> {
         let rows = sqlx::query(
             "SELECT job_id, found_at, block_daa_score, status, tx_id
