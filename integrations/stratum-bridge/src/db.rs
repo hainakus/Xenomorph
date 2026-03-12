@@ -102,6 +102,13 @@ impl Db {
         .execute(self.pool())
         .await?;
 
+        // Migration: add tx_id column to existing DBs that predate the column.
+        // SQLite has no ADD COLUMN IF NOT EXISTS — try it and ignore the error
+        // if the column already exists ("duplicate column name").
+        let _ = sqlx::query("ALTER TABLE blocks ADD COLUMN tx_id TEXT")
+            .execute(self.pool())
+            .await;
+
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS block_payouts (
                 job_id     TEXT NOT NULL,
