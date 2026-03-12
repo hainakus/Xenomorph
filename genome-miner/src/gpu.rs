@@ -156,21 +156,39 @@ impl GpuWorker {
 
 // ── Mining template (shared via watch channel) ───────────────────────────────
 
+/// Source of a mining template — determines how solutions are submitted.
 #[derive(Clone)]
-struct MiningTemplate {
-    id:             kaspa_hashes::Hash,
-    rpc_block:      Arc<RpcRawBlock>,
-    header:         Header,
-    pre_pow_hash:   kaspa_hashes::Hash,
-    target:         kaspa_math::Uint256,
-    genome_active:  bool,
-    num_mix_chunks: u32,
+pub(crate) enum MiningSource {
+    /// Direct node connection: solution submitted via gRPC submit_block.
+    Node { rpc_block: Arc<RpcRawBlock>, header: Header },
+    /// Stratum pool: solution submitted as mining.submit extranonce2.
+    Stratum { job_id: String, extranonce1: u32 },
+}
+
+#[derive(Clone)]
+pub(crate) struct MiningTemplate {
+    pub id:             kaspa_hashes::Hash,
+    pub source:         MiningSource,
+    pub pre_pow_hash:   kaspa_hashes::Hash,
+    pub epoch_seed:     kaspa_hashes::Hash,
+    pub timestamp:      u64,
+    pub daa_score:      u64,
+    pub bits:           u32,
+    pub target:         kaspa_math::Uint256,
+    pub genome_active:  bool,
+    pub num_mix_chunks: u32,
 }
 
 struct Solution {
     nonce:    u64,
     template: Arc<MiningTemplate>,
     gpu_id:   usize,
+}
+
+/// Where to send a solved nonce.
+pub(crate) enum SolutionSink {
+    Node(Arc<GrpcClient>),
+    Stratum(tokio::sync::mpsc::Sender<crate::stratum_client::StratumSolution>),
 }
 
 // ── Adapter enumeration ──────────────────────────────────────────────────────
@@ -556,12 +574,17 @@ async fn gpu_mining_task(
 
         if Some(template.id) != current_id {
             current_id = Some(template.id);
-            nonce_base = base_nonce(gpu_id as u64);
+            nonce_base = match &template.source {
+                MiningSource::Stratum { extranonce1, .. } => {
+                    (*extranonce1 as u64) << 32 | (gpu_id as u64 * batch_size as u64)
+                }
+                _ => base_nonce(gpu_id as u64),
+            };
         }
 
         let result: Option<u64> = if template.genome_active {
             let params = build_params_full(
-                &template.header.epoch_seed, &template.pre_pow_hash,
+                &template.epoch_seed, &template.pre_pow_hash,
                 &template.target, nonce_base, template.num_mix_chunks,
             );
             dispatch_genome(&mut worker, &params, batch_size).await
@@ -571,21 +594,29 @@ async fn gpu_mining_task(
                 worker.last_matrix_hash = Some(template.pre_pow_hash);
             }
             let kh_params = build_kheavy_params(
-                &template.pre_pow_hash, template.header.timestamp, &template.target, nonce_base,
+                &template.pre_pow_hash, template.timestamp, &template.target, nonce_base,
             );
             match dispatch_kheavy(&mut worker, &kh_params, batch_size).await {
                 Some((nonce, gpu_hash)) => {
-                    let state = KHeavyState::new(&template.header);
-                    let (cpu_valid, cpu_pow) = state.check_pow(nonce);
-                    let cpu_bytes = cpu_pow.to_le_bytes();
-                    let mut cpu_hash = [0u32; 8];
-                    for k in 0..8 { cpu_hash[k] = u32::from_le_bytes(cpu_bytes[k*4..k*4+4].try_into().unwrap()); }
-                    if gpu_hash != cpu_hash {
-                        warn!("[GPU{}] KHeavyHash mismatch nonce={:#018x}", gpu_id, nonce);
-                    }
-                    if cpu_valid { Some(nonce) } else {
-                        warn!("[GPU{}] KHeavyHash false-positive nonce={:#018x} — skipping", gpu_id, nonce);
-                        None
+                    match &template.source {
+                        MiningSource::Node { header, .. } => {
+                            let state = KHeavyState::new(header);
+                            let (cpu_valid, cpu_pow) = state.check_pow(nonce);
+                            let cpu_bytes = cpu_pow.to_le_bytes();
+                            let mut cpu_hash = [0u32; 8];
+                            for k in 0..8 { cpu_hash[k] = u32::from_le_bytes(cpu_bytes[k*4..k*4+4].try_into().unwrap()); }
+                            if gpu_hash != cpu_hash {
+                                warn!("[GPU{}] KHeavyHash mismatch nonce={:#018x}", gpu_id, nonce);
+                            }
+                            if cpu_valid { Some(nonce) } else {
+                                warn!("[GPU{}] KHeavyHash false-positive nonce={:#018x} — skipping", gpu_id, nonce);
+                                None
+                            }
+                        }
+                        MiningSource::Stratum { .. } => {
+                            // No CPU-verify in stratum mode; bridge validates
+                            Some(nonce)
+                        }
                     }
                 }
                 None => None,
@@ -607,7 +638,7 @@ async fn gpu_mining_task(
 
 pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashStats>>) {
     let rpcserver         = m.get_one::<String>("rpcserver").cloned().unwrap_or_else(|| "localhost:36669".to_owned());
-    let addr_str          = m.get_one::<String>("mining-address").cloned().expect("--mining-address required");
+    let addr_str_opt: Option<String> = m.get_one::<String>("mining-address").cloned();
     let batch_size        = m.get_one::<u32>("batch-size").copied().unwrap_or(1 << 20);
     let frag_size         = m.get_one::<u32>("genome-fragment-size").copied().unwrap_or(1_048_576);
     let genome_activation = crate::resolve_activation(m);
@@ -707,25 +738,110 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
     }
     info!("{num_gpus} GPU(s) ready — batch_size={batch_size} nonces/dispatch/GPU");
 
-    let url = format!("grpc://{rpcserver}");
-    info!("Connecting to {url}");
-    let rpc = Arc::new(GrpcClient::connect(url).await.expect("Failed to connect"));
-    let pay_address: kaspa_rpc_core::RpcAddress =
-        Address::try_from(addr_str.as_str()).expect("Invalid --mining-address");
+    let stratum_url: Option<String> = m.get_one::<String>("stratum").cloned();
 
-    // ── Background template polling ──────────────────────────────────────────
-    //
-    // A dedicated task polls get_block_template every 200 ms and broadcasts
-    // via a watch channel.  GPU tasks read from the watch without blocking RPC.
+    // In node mode --mining-address is mandatory; in stratum mode it is optional
+    // (the pool handles payouts; --stratum-worker identifies the miner).
+    if stratum_url.is_none() && addr_str_opt.is_none() {
+        warn!("--mining-address is required in node mode");
+        return;
+    }
+    let addr_str = addr_str_opt.clone().unwrap_or_default();
+
+    let stratum_worker = m.get_one::<String>("stratum-worker")
+        .cloned()
+        .or_else(|| addr_str_opt.clone())
+        .unwrap_or_else(|| "xenom-miner".to_owned());
+    let stratum_password = m.get_one::<String>("stratum-password")
+        .cloned()
+        .unwrap_or_else(|| "x".to_owned());
+
+    // ── Template watch channel (common to both node and stratum modes) ─────
     let (template_tx, template_rx) =
         tokio::sync::watch::channel::<Option<Arc<MiningTemplate>>>(None);
-    {
-        let rpc2  = rpc.clone();
-        let pay2  = pay_address.clone();
+
+    // ── Solution sink + template source ─────────────────────────────────
+    // Build the SolutionSink first; for stratum mode this allocates the channel
+    // whose Sender is placed inside SolutionSink::Stratum and whose Receiver is
+    // passed into the stratum client's run() loop.
+    let sol_sink: SolutionSink;
+    let stratum_channels: Option<(
+        crate::stratum_client::StratumClient,
+        tokio::sync::mpsc::Sender<crate::stratum_client::StratumJob>,
+        tokio::sync::mpsc::Receiver<crate::stratum_client::StratumJob>,
+        tokio::sync::mpsc::Receiver<crate::stratum_client::StratumSolution>,
+    )>;
+
+    if let Some(ref surl) = stratum_url {
+        // Stratum mode: solutions go back via a channel to the stratum client
+        let (sol_tx_s, sol_rx_s) = tokio::sync::mpsc::channel::<crate::stratum_client::StratumSolution>(32);
+        sol_sink = SolutionSink::Stratum(sol_tx_s);
+        let (job_tx, job_rx) = tokio::sync::mpsc::channel::<crate::stratum_client::StratumJob>(8);
+        let client = crate::stratum_client::StratumClient::new(surl, &stratum_worker, &stratum_password);
+        stratum_channels = Some((client, job_tx, job_rx, sol_rx_s));
+    } else {
+        let url = format!("grpc://{rpcserver}");
+        info!("Connecting to {url}");
+        let rpc = Arc::new(GrpcClient::connect(url).await.expect("Failed to connect"));
+        sol_sink = SolutionSink::Node(rpc);
+        stratum_channels = None;
+    };
+
+    // ── Background template source ────────────────────────────────────────
+    if let Some((client, job_tx, mut job_rx, sol_rx_s)) = stratum_channels {
+        // — Stratum mode: connect to pool and convert jobs to MiningTemplates —
+        let dash2 = dash.clone();
+        tokio::spawn(async move {
+            client.run(job_tx, sol_rx_s, dash2).await;
+        });
+
+        // Job-to-template conversion task
+        let ttx = template_tx.clone();
+        let dash3 = dash.clone();
+        tokio::spawn(async move {
+            while let Some(job) = job_rx.recv().await {
+                let target      = kaspa_math::Uint256::from_compact_target_bits(job.bits);
+                let genome_active = job.epoch_seed != kaspa_hashes::Hash::default();
+                let id          = job.pre_pow_hash;
+                let extranonce1 = job.extranonce1;
+                let job_id      = job.job_id.clone();
+                let t = Arc::new(MiningTemplate {
+                    id,
+                    source: MiningSource::Stratum { job_id, extranonce1 },
+                    pre_pow_hash:   job.pre_pow_hash,
+                    epoch_seed:     job.epoch_seed,
+                    timestamp:      job.timestamp,
+                    daa_score:      0,
+                    bits:           job.bits,
+                    target,
+                    genome_active,
+                    num_mix_chunks,
+                });
+                let changed = ttx.borrow().as_ref().map(|p| p.id) != Some(id);
+                if changed {
+                    info!("Stratum job bits={:#010x} genome={}", t.bits, t.genome_active);
+                    {
+                        let mut s = dash3.lock().unwrap();
+                        s.bits          = t.bits;
+                        s.genome_active = t.genome_active;
+                        s.mode          = format!("GPU×{num_gpus} · Pool Stratum");
+                    }
+                    ttx.send(Some(t)).ok();
+                }
+            }
+        });
+    } else {
+        // — Node mode: poll get_block_template via gRPC —
+        let rpc = match &sol_sink {
+            SolutionSink::Node(r) => r.clone(),
+            _ => unreachable!(),
+        };
+        let pay_address: kaspa_rpc_core::RpcAddress =
+            Address::try_from(addr_str.as_str()).expect("Invalid --mining-address");
         let dash2 = dash.clone();
         tokio::spawn(async move {
             loop {
-                match rpc2.get_block_template_call(None, GetBlockTemplateRequest::new(pay2.clone(), vec![])).await {
+                match rpc.get_block_template_call(None, GetBlockTemplateRequest::new(pay_address.clone(), vec![])).await {
                     Ok(resp) => {
                         if !resp.is_synced {
                             warn!("Node not synced — waiting for IBD to complete");
@@ -740,31 +856,36 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
                         let target = kaspa_math::Uint256::from_compact_target_bits(header.bits);
                         let t = Arc::new(MiningTemplate {
                             id,
-                            rpc_block: Arc::new(block),
-                            header,
+                            source: MiningSource::Node {
+                                rpc_block: Arc::new(block),
+                                header: header.clone(),
+                            },
                             pre_pow_hash,
+                            epoch_seed: header.epoch_seed,
+                            timestamp: header.timestamp,
+                            daa_score: header.daa_score,
+                            bits: header.bits,
                             target,
                             genome_active,
                             num_mix_chunks,
                         });
-                        // Only wake watchers on actual template change
                         let changed = template_tx.borrow().as_ref().map(|prev| prev.id) != Some(id);
                         if changed {
-                            info!("New template daa={}", t.header.daa_score);
+                            info!("New template daa={}", t.daa_score);
                             {
                                 let mut s = dash2.lock().unwrap();
-                                s.daa_score     = t.header.daa_score;
-                                s.bits          = t.header.bits;
+                                s.daa_score     = t.daa_score;
+                                s.bits          = t.bits;
                                 s.genome_active = t.genome_active;
                                 s.connected     = true;
                                 let mode = if t.genome_active { "Genome PoW" } else { "KHeavyHash" };
                                 s.mode = format!("GPU×{num_gpus} · {mode}");
                                 s.push_log(format!(
                                     "New template daa={} bits={:#010x} genome={}",
-                                    t.header.daa_score, t.header.bits, t.genome_active
+                                    t.daa_score, t.bits, t.genome_active
                                 ));
                             }
-                            let _ = template_tx.send(Some(t));
+                            template_tx.send(Some(t)).ok();
                         }
                     }
                     Err(e) => { warn!("get_block_template: {e}"); sleep(Duration::from_secs(1)).await; }
@@ -774,10 +895,10 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
         });
     }
 
-    // ── Per-GPU solution channel ──────────────────────────────────────────────
+    // ── Per-GPU solution channel ─────────────────────────────────────────
     let (sol_tx, mut sol_rx) = tokio::sync::mpsc::channel::<Solution>(num_gpus * 2);
 
-    // ── Per-GPU hash counters ─────────────────────────────────────────────────
+    // ── Per-GPU hash counters ────────────────────────────────────────────
     let hash_counters: Vec<Arc<AtomicU64>> = (0..num_gpus)
         .map(|_| Arc::new(AtomicU64::new(0)))
         .collect();
@@ -808,8 +929,8 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
             match sol_rx.try_recv() {
                 Ok(sol) => {
                     handle_solution(
-                        sol, &rpc, &file_loader, &packed_gpu,
-                        frag_size, genome_activation, &dash,
+                        sol, &sol_sink, &file_loader, &packed_gpu,
+                        frag_size, &dash,
                     ).await;
                 }
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
@@ -842,29 +963,26 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
     }
 }
 
-// ── Solution cross-check + submission ────────────────────────────────────────
-
 async fn handle_solution(
     sol:              Solution,
-    rpc:              &Arc<GrpcClient>,
+    sink:             &SolutionSink,
     file_loader:      &Arc<Option<kaspa_pow::genome_file::FileGenomeLoader>>,
     packed_bytes:     &Arc<Vec<u8>>,
     frag_size:        u32,
-    genome_activation: u64,
     dash:             &std::sync::Arc<std::sync::Mutex<DashStats>>,
 ) {
     let Solution { nonce, template, gpu_id } = sol;
-    let header = &template.header;
 
-    if header.daa_score >= genome_activation {
-        let cpu_pow = genome_mix_hash(packed_bytes, &header.epoch_seed, nonce, &template.pre_pow_hash);
-        let state   = GenomePowState::new(template.pre_pow_hash, template.target, header.epoch_seed, frag_size);
+    // ── Genome PoW CPU cross-check (works in both node and stratum mode) ──
+    if template.genome_active {
+        let cpu_pow = genome_mix_hash(packed_bytes, &template.epoch_seed, nonce, &template.pre_pow_hash);
+        let state   = GenomePowState::new(template.pre_pow_hash, template.target, template.epoch_seed, frag_size);
         if cpu_pow > state.target {
             warn!("[GPU{}] Genome PoW false-positive nonce={:#018x} — skipping", gpu_id, nonce);
             return;
         }
-        let frag_idx = fragment_index(&header.epoch_seed, nonce, frag_size);
-        let synth    = SyntheticLoader::new(frag_size, header.epoch_seed);
+        let frag_idx = fragment_index(&template.epoch_seed, nonce, frag_size);
+        let synth    = SyntheticLoader::new(frag_size, template.epoch_seed);
         let fl: &dyn GenomeDatasetLoader = match file_loader.as_ref() {
             Some(f) => f,
             None    => &synth,
@@ -874,29 +992,54 @@ async fn handle_solution(
         info!("[GPU{}] Genome PoW PASS nonce={:#018x} fitness={}", gpu_id, nonce, fitness);
     }
 
-    match rpc.submit_block(build_raw_block_nonce(&template.rpc_block, nonce), false).await {
-        Ok(r) => {
-            let is_ibd = matches!(r.report, SubmitBlockReport::Reject(SubmitBlockRejectReason::IsInIBD));
-            info!("[GPU{}] submit_block: {:?}", gpu_id, r.report);
-            let accepted = matches!(r.report, SubmitBlockReport::Success);
-            {
-                let mut s = dash.lock().unwrap();
-                let g_idx = s.gpus.iter().position(|g| g.id == gpu_id);
-                if accepted {
-                    s.accepted += 1;
-                    if let Some(i) = g_idx { s.gpus[i].accepted += 1; }
-                    s.push_log(format!("[GPU{gpu_id}] Block accepted  daa={}", template.header.daa_score));
-                } else {
-                    s.rejected += 1;
-                    if let Some(i) = g_idx { s.gpus[i].rejected += 1; }
-                    s.push_log(format!("[GPU{gpu_id}] Block rejected  {:?}", r.report));
+    // ── Submit via node gRPC or stratum pool ──
+    match sink {
+        SolutionSink::Node(rpc) => {
+            let rpc_block = match &template.source {
+                MiningSource::Node { rpc_block, .. } => rpc_block.clone(),
+                MiningSource::Stratum { .. } => {
+                    warn!("[GPU{gpu_id}] Node sink with stratum template — cannot submit");
+                    return;
+                }
+            };
+            match rpc.submit_block(build_raw_block_nonce(&rpc_block, nonce), false).await {
+                Ok(r) => {
+                    let is_ibd = matches!(r.report, SubmitBlockReport::Reject(SubmitBlockRejectReason::IsInIBD));
+                    info!("[GPU{}] submit_block: {:?}", gpu_id, r.report);
+                    let accepted = matches!(r.report, SubmitBlockReport::Success);
+                    {
+                        let mut s = dash.lock().unwrap();
+                        let g_idx = s.gpus.iter().position(|g| g.id == gpu_id);
+                        if accepted {
+                            s.accepted += 1;
+                            if let Some(i) = g_idx { s.gpus[i].accepted += 1; }
+                            s.push_log(format!("[GPU{gpu_id}] Block accepted  daa={}", template.daa_score));
+                        } else {
+                            s.rejected += 1;
+                            if let Some(i) = g_idx { s.gpus[i].rejected += 1; }
+                            s.push_log(format!("[GPU{gpu_id}] Block rejected  {:?}", r.report));
+                        }
+                    }
+                    if is_ibd { warn!("Node still in IBD"); }
+                }
+                Err(e) => {
+                    warn!("[GPU{}] submit_block error: {e}", gpu_id);
+                    dash.lock().unwrap().push_log(format!("[GPU{gpu_id}] submit error: {e}"));
                 }
             }
-            if is_ibd { warn!("Node still in IBD"); }
         }
-        Err(e) => {
-            warn!("[GPU{}] submit_block error: {e}", gpu_id);
-            dash.lock().unwrap().push_log(format!("[GPU{gpu_id}] submit error: {e}"));
+        SolutionSink::Stratum(sol_tx) => {
+            let job_id = match &template.source {
+                MiningSource::Stratum { job_id, .. } => job_id.clone(),
+                MiningSource::Node { .. } => {
+                    warn!("[GPU{gpu_id}] Stratum sink with node template — cannot submit");
+                    return;
+                }
+            };
+            let extranonce2 = (nonce & 0xFFFF_FFFF) as u32;
+            if sol_tx.send(crate::stratum_client::StratumSolution { job_id, extranonce2 }).await.is_err() {
+                warn!("[GPU{gpu_id}] stratum solution channel closed");
+            }
         }
     }
 }
