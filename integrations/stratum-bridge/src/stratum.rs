@@ -35,6 +35,17 @@ use crate::{
 /// Higher share_difficulty → smaller target → harder shares.
 const MAX_DIFFICULTY_TARGET_F64: f64 = 5.8e76_f64;
 
+/// Convert a compact `bits` field to floating-point difficulty.
+/// `difficulty = MAX_DIFFICULTY_TARGET / target`  where
+/// `target = (bits & 0xFFFFFF) * 2^(8 * ((bits >> 24) - 3))`.
+fn bits_to_diff(bits: u32) -> f64 {
+    let exponent  = (bits >> 24) as i32;
+    let mantissa  = (bits & 0x00FF_FFFF) as f64;
+    let target    = mantissa * 2.0_f64.powi(8 * (exponent - 3));
+    if target <= 0.0 { return 1.0; }
+    MAX_DIFFICULTY_TARGET_F64 / target
+}
+
 // Monotonically-increasing extranonce1 counter.
 static EXTRANONCE_COUNTER: AtomicU32 = AtomicU32::new(1);
 
@@ -242,6 +253,16 @@ async fn handle_miner(
 
                         write_line(&mut writer, &StratumResponse::ok(id, Value::Bool(true))).await?;
 
+                        // Seed VarDiff from current block difficulty so the first
+                        // set_difficulty is meaningful and hashrate estimates are correct
+                        // before VarDiff has had time to converge.
+                        if let Some(j) = job_rx.borrow().as_ref() {
+                            let block_diff = bits_to_diff(j.template.header.bits);
+                            if block_diff > vardiff.current_diff {
+                                vardiff.current_diff = block_diff;
+                            }
+                        }
+
                         // Send initial difficulty then the current job
                         write_line(&mut writer, &StratumNotification::set_difficulty(vardiff.current_diff)).await?;
 
@@ -267,8 +288,15 @@ async fn handle_miner(
                             &mut seen_shares,
                             vardiff.current_diff,
                         ).await {
-                            Ok(outcome) => {
+                            Ok((outcome, job_bits)) => {
                                 let is_block = matches!(outcome, SubmitOutcome::Block { .. });
+
+                                // Effective difficulty = max(block difficulty from bits, VarDiff)
+                                // This ensures hashrate is correct even before VarDiff converges.
+                                let effective_diff = {
+                                    let bd = bits_to_diff(job_bits);
+                                    if bd > vardiff.current_diff { bd } else { vardiff.current_diff }
+                                };
 
                                 // ── VarDiff retarget ─────────────────────
                                 if let Some(new_diff) = vardiff.on_share() {
@@ -314,7 +342,7 @@ async fn handle_miner(
                                     if let Some(e) = api.miners.lock().await.get_mut(&worker_name) {
                                         // update_miner_hashrate uses e.last_share_at as the
                                         // *previous* share time — call BEFORE overwriting it.
-                                        update_miner_hashrate(e, vardiff.current_diff, share_now);
+                                        update_miner_hashrate(e, effective_diff, share_now);
                                         e.last_share_at    = share_now;
                                         e.shares_submitted += 1;
                                         if is_block { e.blocks_found += 1; }
@@ -326,7 +354,7 @@ async fn handle_miner(
                                     let d           = d.clone();
                                     let worker      = worker_name.clone();
                                     let jid         = job_id.to_owned();
-                                    let diff        = vardiff.current_diff;
+                                    let diff        = effective_diff;
                                     // Read computed hashrate from the entry we just updated
                                     let hashrate    = api_state.as_ref()
                                         .and_then(|api| {
@@ -430,7 +458,7 @@ async fn process_submit(
     job_mgr:     &Arc<RwLock<JobManager>>,
     seen_shares: &mut HashSet<(String, u32)>,
     share_diff:  f64,
-) -> Result<SubmitOutcome, ShareError> {
+) -> Result<(SubmitOutcome, u32), ShareError> {
     // ── 1. Format: extranonce2 must be exactly 8 hex chars (4 bytes) ──────
     if en2_hex.len() != 8 {
         return Err(ShareError::BadFormat(
@@ -483,12 +511,13 @@ async fn process_submit(
         .await
         .map_err(|e| ShareError::BadFormat(format!("submit_block RPC: {e}")))?;
 
+    let bits = job.template.header.bits;
     if matches!(resp.report, SubmitBlockReport::Success) {
         // Approximate DAA score: template parent score + 1
         let daa_score = job.template.header.daa_score.saturating_add(1);
-        Ok(SubmitOutcome::Block { daa_score })
+        Ok((SubmitOutcome::Block { daa_score }, bits))
     } else {
-        Ok(SubmitOutcome::Share)
+        Ok((SubmitOutcome::Share, bits))
     }
 }
 
