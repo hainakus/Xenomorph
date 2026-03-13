@@ -353,6 +353,7 @@ impl Db {
         }))
     }
 
+    #[allow(dead_code)]
     pub async fn get_paid_blocks(&self, limit: i64) -> Result<Vec<DbBlock>> {
         let rows = sqlx::query(
             "SELECT job_id, found_at, block_daa_score, status, tx_id
