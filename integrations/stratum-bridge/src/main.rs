@@ -126,6 +126,11 @@ fn cli() -> Command {
             .long("keygen")
             .action(clap::ArgAction::SetTrue)
             .help("Generate a fresh secp256k1 keypair, print the private key hex and matching xenom: address, then exit"))
+        .arg(Arg::new("genome-file")
+            .long("genome-file").value_name("PATH")
+            .help("Path to grch38.xenom packed genome dataset. \
+                   When supplied, Genome PoW shares are validated locally and \
+                   only block candidates are forwarded to the node."))
 }
 
 #[tokio::main]
@@ -193,6 +198,27 @@ async fn main() -> Result<()> {
     let api_listen_str = m.get_one::<String>("api-listen").unwrap();
     let pool_name      = m.get_one::<String>("pool-name").unwrap().clone();
     let db_path        = m.get_one::<String>("db-path").unwrap().clone();
+
+    // ── Genome dataset (optional) ─────────────────────────────────────────────
+    let packed_genome: Option<Arc<Vec<u8>>> = match m.get_one::<String>("genome-file") {
+        Some(path) => {
+            use kaspa_pow::genome_file::FileGenomeLoader;
+            use kaspa_pow::genome_pow::GenomeDatasetLoader;
+            match FileGenomeLoader::open(std::path::Path::new(path), 1_048_576, false) {
+                Ok(loader) => {
+                    let packed: Option<Vec<u8>> = loader.packed_dataset().map(|b| b.to_vec());
+                    let data = packed.map(Arc::new);
+                    if let Some(ref v) = data {
+                        info!("Genome file '{}' loaded — {} MB packed data in memory",
+                            path, v.len() / 1_048_576);
+                    }
+                    data
+                }
+                Err(e) => anyhow::bail!("Cannot load genome file '{path}': {e}"),
+            }
+        }
+        None => None,
+    };
 
     let pay_address: kaspa_rpc_core::RpcAddress =
         Address::try_from(mining_address.as_str()).context("Invalid --mining-address")?;
@@ -450,7 +476,7 @@ async fn main() -> Result<()> {
     }
 
     // ── Stratum TCP server (blocks forever) ─────────────────────────────────────
-    stratum::run_server(listen_addr, job_rx, job_mgr, rpc, vardiff_cfg, accounting, api_state, database.clone()).await?;
+    stratum::run_server(listen_addr, job_rx, job_mgr, rpc, vardiff_cfg, accounting, api_state, database.clone(), packed_genome).await?;
 
     Ok(())
 }
