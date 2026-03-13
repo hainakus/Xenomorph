@@ -27,6 +27,14 @@ pub struct DbBlock {
 }
 
 #[derive(Debug, Clone)]
+pub struct DbTransaction {
+    pub id:           i64,
+    pub tx_id:        String,
+    pub submitted_at: i64,
+    pub status:       String,
+}
+
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct DbBlockPayout {
     pub job_id:     String,
@@ -115,6 +123,19 @@ impl Db {
                 worker     TEXT NOT NULL,
                 proportion REAL NOT NULL,
                 PRIMARY KEY (job_id, worker)
+            )",
+        )
+        .execute(self.pool())
+        .await?;
+
+        // Transactions table: INSERT-only log of every payout TX submitted.
+        // Independent of blocks — never needs UPDATEs so it never gets stale.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS transactions (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                tx_id        TEXT    NOT NULL DEFAULT '',
+                submitted_at INTEGER NOT NULL,
+                status       TEXT    NOT NULL DEFAULT 'confirmed'
             )",
         )
         .execute(self.pool())
@@ -332,6 +353,7 @@ impl Db {
         }))
     }
 
+    #[allow(dead_code)]
     pub async fn get_paid_blocks(&self, limit: i64) -> Result<Vec<DbBlock>> {
         let rows = sqlx::query(
             "SELECT job_id, found_at, block_daa_score, status, tx_id
@@ -422,5 +444,55 @@ impl Db {
             .fetch_one(self.pool())
             .await?;
         Ok(row.get("n"))
+    }
+
+    /// Zero out hashrate and mark offline for every miner whose last share
+    /// timestamp is older than `stale_before` (unix seconds).
+    pub async fn zero_stale_miners(&self, stale_before: i64) -> Result<u64> {
+        let r = sqlx::query(
+            "UPDATE miners SET hashrate_hps = 0.0, connected = 0
+             WHERE last_share > 0 AND last_share < ?1",
+        )
+        .bind(stale_before)
+        .execute(self.pool())
+        .await?;
+        Ok(r.rows_affected())
+    }
+
+    // ── Transaction log ────────────────────────────────────────────────────────
+
+    /// Record a payout TX submission.  `status` = "confirmed" or "failed".
+    pub async fn insert_transaction(&self, tx_id: &str, status: &str, now: i64) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO transactions (tx_id, submitted_at, status) VALUES (?1, ?2, ?3)",
+        )
+        .bind(tx_id)
+        .bind(now)
+        .bind(status)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// Return the most-recent `limit` transactions ordered newest-first.
+    pub async fn get_transactions(&self, limit: i64) -> Result<Vec<DbTransaction>> {
+        let rows = sqlx::query(
+            "SELECT id, tx_id, submitted_at, status
+             FROM transactions
+             ORDER BY submitted_at DESC, id DESC LIMIT ?1",
+        )
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+
+        Ok(rows
+            .iter()
+            .map(|r| DbTransaction {
+                id:           r.get("id"),
+                tx_id:        r.get("tx_id"),
+                submitted_at: r.get("submitted_at"),
+                status:       r.get("status"),
+            })
+            .collect())
     }
 }

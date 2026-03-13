@@ -19,7 +19,10 @@ use tokio::{
 };
 
 use kaspa_consensus_core::header::Header;
-use kaspa_pow::State as KHeavyState;
+use kaspa_pow::{genome_pow_state, State as KHeavyState};
+
+/// Fragment size used for Genome PoW validation (must match consensus params).
+const GENOME_FRAGMENT_SIZE: u32 = 1_048_576;
 
 use crate::{
     accounting::Accounting,
@@ -86,17 +89,23 @@ impl std::fmt::Display for ShareError {
 // ── Public entry point ────────────────────────────────────────────────────────
 
 pub async fn run_server(
-    listen_addr:  SocketAddr,
-    job_rx:       watch::Receiver<Option<Arc<Job>>>,
-    job_mgr:      Arc<RwLock<JobManager>>,
-    rpc:          Arc<GrpcClient>,
-    vardiff_cfg:  VarDiffConfig,
-    accounting:   Arc<Mutex<Accounting>>,
-    api_state:    Option<ApiState>,
-    db:           Option<Arc<Db>>,
+    listen_addr:   SocketAddr,
+    job_rx:        watch::Receiver<Option<Arc<Job>>>,
+    job_mgr:       Arc<RwLock<JobManager>>,
+    rpc:           Arc<GrpcClient>,
+    vardiff_cfg:   VarDiffConfig,
+    accounting:    Arc<Mutex<Accounting>>,
+    api_state:     Option<ApiState>,
+    db:            Option<Arc<Db>>,
+    packed_genome: Option<Arc<Vec<u8>>>,
 ) -> Result<()> {
     let listener = TcpListener::bind(listen_addr).await.context("bind stratum port")?;
     info!("Stratum server listening on {listen_addr}");
+    if packed_genome.is_some() {
+        info!("Genome PoW: local share validation ENABLED (genome dataset loaded)");
+    } else {
+        info!("Genome PoW: local share validation DISABLED (no --genome-file; only block-target shares reach the node)");
+    }
 
     loop {
         let (stream, peer) = listener.accept().await.context("accept")?;
@@ -109,9 +118,10 @@ pub async fn run_server(
         let acct   = accounting.clone();
         let api    = api_state.clone();
         let db2    = db.clone();
+        let genome = packed_genome.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = handle_miner(stream, peer, jrx, jmgr, rpc2, vdcfg, acct, api, db2).await {
+            if let Err(e) = handle_miner(stream, peer, jrx, jmgr, rpc2, vdcfg, acct, api, db2, genome).await {
                 warn!("Miner {peer} disconnected: {e}");
             } else {
                 info!("Miner {peer} disconnected");
@@ -123,15 +133,16 @@ pub async fn run_server(
 // ── Per-miner connection ──────────────────────────────────────────────────────
 
 async fn handle_miner(
-    stream:      TcpStream,
-    peer:        SocketAddr,
-    mut job_rx:  watch::Receiver<Option<Arc<Job>>>,
-    job_mgr:     Arc<RwLock<JobManager>>,
-    rpc:         Arc<GrpcClient>,
-    vardiff_cfg: VarDiffConfig,
-    accounting:  Arc<Mutex<Accounting>>,
-    api_state:   Option<ApiState>,
-    db:          Option<Arc<Db>>,
+    stream:        TcpStream,
+    peer:          SocketAddr,
+    mut job_rx:    watch::Receiver<Option<Arc<Job>>>,
+    job_mgr:       Arc<RwLock<JobManager>>,
+    rpc:           Arc<GrpcClient>,
+    vardiff_cfg:   VarDiffConfig,
+    accounting:    Arc<Mutex<Accounting>>,
+    api_state:     Option<ApiState>,
+    db:            Option<Arc<Db>>,
+    packed_genome: Option<Arc<Vec<u8>>>,
 ) -> Result<()> {
     // ── API: register connection ──────────────────────────────────────────────
     if let Some(ref api) = api_state {
@@ -287,6 +298,7 @@ async fn handle_miner(
                             &rpc, &job_mgr,
                             &mut seen_shares,
                             vardiff.current_diff,
+                            packed_genome.as_ref().map(|v| v.as_slice()),
                         ).await {
                             Ok((outcome, job_bits)) => {
                                 let is_block = matches!(outcome, SubmitOutcome::Block { .. });
@@ -451,13 +463,14 @@ async fn handle_miner(
 // ── submit processing ──────────────────────────────────────────────────
 
 async fn process_submit(
-    job_id:      &str,
-    en2_hex:     &str,
-    extranonce1: u32,
-    rpc:         &Arc<GrpcClient>,
-    job_mgr:     &Arc<RwLock<JobManager>>,
-    seen_shares: &mut HashSet<(String, u32)>,
-    share_diff:  f64,
+    job_id:        &str,
+    en2_hex:       &str,
+    extranonce1:   u32,
+    rpc:           &Arc<GrpcClient>,
+    job_mgr:       &Arc<RwLock<JobManager>>,
+    seen_shares:   &mut HashSet<(String, u32)>,
+    share_diff:    f64,
+    packed_genome: Option<&[u8]>,
 ) -> Result<(SubmitOutcome, u32), ShareError> {
     // ── 1. Format: extranonce2 must be exactly 8 hex chars (4 bytes) ──────
     if en2_hex.len() != 8 {
@@ -487,36 +500,67 @@ async fn process_submit(
         return Err(ShareError::Duplicate);
     }
 
-    // ── 4. Share difficulty check ─────────────────────────────────
+    let bits = job.template.header.bits;
+    let header: Header = (&job.template.header).into();
+
+    // ── 4. Local PoW validation + share difficulty check ──────────────────
     //
-    // For KHeavyHash (pre-Genome-PoW) we can compute the actual hash locally.
-    // For Genome PoW the hash requires the packed genome dataset (739 MB);
-    // the bridge doesn’t hold it so we rely on the node’s full validation
-    // and accept that misbehaving miners will be limited by VarDiff.
-    if !job.genome_active {
-        let header: Header = (&job.template.header).into();
+    // Every share is validated here in the stratum bridge.
+    // Shares that do NOT meet the block difficulty target are accepted as
+    // valid pool shares (PPLNS accounting) but NEVER forwarded to the node.
+    // Only block candidates (hash ≤ block target) are submitted via RPC.
+    //
+    // KHeavyHash: fully deterministic — always validated locally.
+    // Genome PoW + genome file present: validated with memory-hard mix hash.
+    // Genome PoW + no genome file: pool-diff check skipped; forward to node.
+    let is_block_candidate: bool = if !job.genome_active {
+        // ── KHeavyHash path ─────────────────────────────────────────────────
         let kh_state = KHeavyState::new(&header);
-        let (_, pow_hash) = kh_state.check_pow(nonce);
-        let share_target  = MAX_DIFFICULTY_TARGET_F64 / share_diff;
-        let hash_f64      = pow_hash.as_f64();
+        let (meets_block, pow_hash) = kh_state.check_pow(nonce);
+        let share_target = MAX_DIFFICULTY_TARGET_F64 / share_diff;
+        let hash_f64     = pow_hash.as_f64();
         if hash_f64 > share_target {
             return Err(ShareError::LowDifficulty { hash: hash_f64, target: share_target });
         }
+        meets_block
+    } else if let Some(packed) = packed_genome {
+        // ── Genome PoW path — local memory-hard validation ─────────────────
+        let gs = genome_pow_state(&header, GENOME_FRAGMENT_SIZE);
+        let (meets_block, pow_hash) = gs.check_pow_memory_hard(nonce, packed);
+        let share_target = MAX_DIFFICULTY_TARGET_F64 / share_diff;
+        let hash_f64     = pow_hash.as_f64();
+        if hash_f64 > share_target {
+            return Err(ShareError::LowDifficulty { hash: hash_f64, target: share_target });
+        }
+        meets_block
+    } else {
+        // ── Genome PoW — no local dataset, forward to node for validation ───
+        true
+    };
+
+    // ── 5. Only submit to node when the share meets the BLOCK target ───────
+    if !is_block_candidate {
+        return Ok((SubmitOutcome::Share, bits));
     }
 
-    // ── 5. Submit to node for full Genome PoW / block validation ────────
     let block = job.build_block(nonce);
     let resp  = rpc
         .submit_block(block, false)
         .await
         .map_err(|e| ShareError::BadFormat(format!("submit_block RPC: {e}")))?;
 
-    let bits = job.template.header.bits;
     if matches!(resp.report, SubmitBlockReport::Success) {
-        // Approximate DAA score: template parent score + 1
         let daa_score = job.template.header.daa_score.saturating_add(1);
         Ok((SubmitOutcome::Block { daa_score }, bits))
+    } else if job.genome_active && packed_genome.is_none() {
+        // No local Genome PoW validation was possible; the node is the only
+        // arbiter.  A non-Success response means the PoW itself is invalid
+        // (not just "not a block") — discard, no PPLNS credit.
+        Err(ShareError::BadFormat("node rejected genome pow share".to_owned()))
     } else {
+        // Local validation already confirmed the PoW is correct.
+        // Node rejection here is a timing / orphan race — the work is still
+        // valid so the miner earns a pool share.
         Ok((SubmitOutcome::Share, bits))
     }
 }

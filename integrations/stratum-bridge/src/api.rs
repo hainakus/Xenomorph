@@ -45,6 +45,9 @@ pub const DIFF_TO_HASHES: f64 = 2.0;
 /// α=0.20 gives a ~5-sample rolling average (heavier weight on recent shares).
 const EWMA_ALPHA: f64 = 0.20;
 
+/// Miners with no share for longer than this are considered stale (hashrate=0, offline).
+const STALE_MINER_SECS: u64 = 300;
+
 // ── Shared miner entry (live map updated by stratum connections) ───────────────
 
 #[derive(Clone, Debug)]
@@ -138,19 +141,11 @@ struct BlockRecord {
 }
 
 #[derive(Serialize)]
-struct PaymentRecord {
-    job_id:          String,
-    found_at:        u64,
-    block_daa_score: u64,
-    status:          String,
-    tx_id:           Option<String>,
-    payouts:         Vec<PayoutShare>,
-}
-
-#[derive(Serialize)]
-struct PayoutShare {
-    worker:     String,
-    proportion: f64,
+struct TxRecord {
+    id:           i64,
+    tx_id:        String,
+    submitted_at: u64,
+    status:       String,
 }
 
 #[derive(Serialize)]
@@ -246,67 +241,22 @@ async fn get_blocks(State(s): State<ApiState>) -> Json<Vec<BlockRecord>> {
     )
 }
 
-async fn get_payments(State(s): State<ApiState>) -> Json<Vec<PaymentRecord>> {
-    use std::collections::HashSet;
-
-    // Always collect in-memory paid/failed entries first — mark_paid is synchronous
-    // so these are always up to date even if the DB write hasn't committed yet.
-    let mem_records: Vec<PaymentRecord> = {
-        let acct = s.accounting.lock().await;
-        acct.pending_payouts()
-            .iter()
-            .rev()
-            .filter(|p| matches!(p.status, PayoutStatus::Paid { .. } | PayoutStatus::Failed { .. }))
-            .map(|p| {
-                let (status, tx_id) = status_pair(&p.status);
-                PaymentRecord {
-                    job_id:          p.job_id.clone(),
-                    found_at:        p.unix_secs,
-                    block_daa_score: p.block_daa_score,
-                    status,
-                    tx_id,
-                    payouts:         p.proportions
-                        .iter()
-                        .map(|(w, v)| PayoutShare { worker: w.clone(), proportion: *v })
-                        .collect(),
-                }
-            })
-            .collect()
-    };
-
+async fn get_payments(State(s): State<ApiState>) -> Json<Vec<TxRecord>> {
     if let Some(db) = &s.db {
-        if let Ok(blocks) = db.get_paid_blocks(30).await {
-            let mut records = Vec::new();
-            // Track which job_ids came from DB so we can add missing in-memory ones below.
-            let mut seen: HashSet<String> = HashSet::new();
-            for b in &blocks {
-                seen.insert(b.job_id.clone());
-                let payouts = db.get_block_payouts(&b.job_id).await.unwrap_or_default();
-                records.push(PaymentRecord {
-                    job_id:          b.job_id.clone(),
-                    found_at:        b.found_at as u64,
-                    block_daa_score: b.block_daa_score as u64,
-                    status:          b.status.clone(),
-                    tx_id:           b.tx_id.clone(),
-                    payouts:         payouts
-                        .iter()
-                        .map(|p| PayoutShare { worker: p.worker.clone(), proportion: p.proportion })
-                        .collect(),
-                });
-            }
-            // Prepend any in-memory paid/failed entries not yet written to DB.
-            for r in mem_records {
-                if !seen.contains(&r.job_id) {
-                    records.insert(0, r);
-                }
-            }
-            records.sort_by(|a, b| b.found_at.cmp(&a.found_at));
-            return Json(records);
+        if let Ok(txs) = db.get_transactions(30).await {
+            return Json(
+                txs.into_iter()
+                    .map(|t| TxRecord {
+                        id:           t.id,
+                        tx_id:        t.tx_id,
+                        submitted_at: t.submitted_at as u64,
+                        status:       t.status,
+                    })
+                    .collect(),
+            );
         }
     }
-
-    // No DB configured — return in-memory only.
-    Json(mem_records)
+    Json(vec![])
 }
 
 async fn get_network(
@@ -432,20 +382,27 @@ fn db_miner_to_stats(
     m:    &crate::db::DbMiner,
     live: Option<&MinerApiEntry>,
 ) -> MinerStats {
+    let last_share = m.last_share as u64;
+    let stale      = last_share > 0 && unix_now().saturating_sub(last_share) > STALE_MINER_SECS;
+    let hashrate   = if stale { 0.0 } else { live.map(|e| e.hashrate_hps).unwrap_or(m.hashrate_hps) };
+    let connected  = if stale { false } else { live.map(|e| e.connected).unwrap_or(m.connected) };
     MinerStats {
         worker:             m.worker.clone(),
         address:            m.address.clone(),
         connected_since:    live.map(|e| e.connected_since).unwrap_or(m.first_seen as u64),
-        last_share_at:      m.last_share as u64,
+        last_share_at:      last_share,
         shares_submitted:   m.shares_total as u64,
         blocks_found:       m.blocks_total as u64,
         current_difficulty: live.map(|e| e.current_difficulty).unwrap_or(m.current_diff),
-        hashrate_hps:       live.map(|e| e.hashrate_hps).unwrap_or(m.hashrate_hps),
-        connected:          live.map(|e| e.connected).unwrap_or(m.connected),
+        hashrate_hps:       hashrate,
+        connected,
     }
 }
 
 fn entry_to_stats(m: &MinerApiEntry) -> MinerStats {
+    let stale     = m.last_share_at > 0 && unix_now().saturating_sub(m.last_share_at) > STALE_MINER_SECS;
+    let hashrate  = if stale { 0.0 } else { m.hashrate_hps };
+    let connected = if stale { false } else { m.connected };
     MinerStats {
         worker:             m.worker.clone(),
         address:            m.address.clone(),
@@ -454,8 +411,8 @@ fn entry_to_stats(m: &MinerApiEntry) -> MinerStats {
         shares_submitted:   m.shares_submitted,
         blocks_found:       m.blocks_found,
         current_difficulty: m.current_difficulty,
-        hashrate_hps:       m.hashrate_hps,
-        connected:          m.connected,
+        hashrate_hps:       hashrate,
+        connected,
     }
 }
 

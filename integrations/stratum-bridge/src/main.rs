@@ -7,7 +7,7 @@ mod proto;
 mod stratum;
 mod vardiff;
 
-use std::{net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc, time::{Duration, SystemTime, UNIX_EPOCH}};
 
 use anyhow::{Context, Result};
 use clap::{Arg, Command};
@@ -126,6 +126,11 @@ fn cli() -> Command {
             .long("keygen")
             .action(clap::ArgAction::SetTrue)
             .help("Generate a fresh secp256k1 keypair, print the private key hex and matching xenom: address, then exit"))
+        .arg(Arg::new("genome-file")
+            .long("genome-file").value_name("PATH")
+            .help("Path to grch38.xenom packed genome dataset. \
+                   When supplied, Genome PoW shares are validated locally and \
+                   only block candidates are forwarded to the node."))
 }
 
 #[tokio::main]
@@ -193,6 +198,27 @@ async fn main() -> Result<()> {
     let api_listen_str = m.get_one::<String>("api-listen").unwrap();
     let pool_name      = m.get_one::<String>("pool-name").unwrap().clone();
     let db_path        = m.get_one::<String>("db-path").unwrap().clone();
+
+    // ── Genome dataset (optional) ─────────────────────────────────────────────
+    let packed_genome: Option<Arc<Vec<u8>>> = match m.get_one::<String>("genome-file") {
+        Some(path) => {
+            use kaspa_pow::genome_file::FileGenomeLoader;
+            use kaspa_pow::genome_pow::GenomeDatasetLoader;
+            match FileGenomeLoader::open(std::path::Path::new(path), 1_048_576, false) {
+                Ok(loader) => {
+                    let packed: Option<Vec<u8>> = loader.packed_dataset().map(|b| b.to_vec());
+                    let data = packed.map(Arc::new);
+                    if let Some(ref v) = data {
+                        info!("Genome file '{}' loaded — {} MB packed data in memory",
+                            path, v.len() / 1_048_576);
+                    }
+                    data
+                }
+                Err(e) => anyhow::bail!("Cannot load genome file '{path}': {e}"),
+            }
+        }
+        None => None,
+    };
 
     let pay_address: kaspa_rpc_core::RpcAddress =
         Address::try_from(mining_address.as_str()).context("Invalid --mining-address")?;
@@ -346,6 +372,9 @@ async fn main() -> Result<()> {
                         }
                     }
 
+                    let now_secs = SystemTime::now()
+                        .duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+
                     match execute_payout(&rpc3, &pay_addr, &keypair, &payout, &pcfg).await {
                         Ok(tx_id) => {
                             let tx_str = tx_id.to_string();
@@ -354,6 +383,9 @@ async fn main() -> Result<()> {
                             if let Some(ref d) = db3 {
                                 if let Err(e) = d.update_block_status(&payout.job_id, "paid", Some(&tx_str)).await {
                                     warn!("DB update_block_status paid: {e}");
+                                }
+                                if let Err(e) = d.insert_transaction(&tx_str, "confirmed", now_secs).await {
+                                    warn!("DB insert_transaction confirmed: {e}");
                                 }
                             }
                         }
@@ -369,6 +401,9 @@ async fn main() -> Result<()> {
                                 if let Some(ref d) = db3 {
                                     if let Err(e) = d.update_block_status(&payout.job_id, "payout-failed", None).await {
                                         warn!("DB update_block_status payout-failed: {e}");
+                                    }
+                                    if let Err(e) = d.insert_transaction("", "failed", now_secs).await {
+                                        warn!("DB insert_transaction failed: {e}");
                                     }
                                 }
                             }
@@ -403,8 +438,45 @@ async fn main() -> Result<()> {
         None
     };
 
+    // ── Stale-miner cleanup (every 60 s) ────────────────────────────────────
+    {
+        const STALE_SECS: u64 = 300;
+        let db4         = database.clone();
+        let api4        = api_state.clone();
+        tokio::spawn(async move {
+            loop {
+                sleep(Duration::from_secs(60)).await;
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+                let stale_before = (now.saturating_sub(STALE_SECS)) as i64;
+
+                // Persist zeroed hashrate / offline state to DB
+                if let Some(ref d) = db4 {
+                    if let Ok(n) = d.zero_stale_miners(stale_before).await {
+                        if n > 0 {
+                            info!("Zeroed {n} stale miner(s) in DB (no share for >{}s)", STALE_SECS);
+                        }
+                    }
+                }
+
+                // Also zero in-memory MinerApiEntry hashrate for stale workers
+                if let Some(ref api) = api4 {
+                    let mut miners = api.miners.lock().await;
+                    for entry in miners.values_mut() {
+                        if entry.last_share_at > 0
+                            && now.saturating_sub(entry.last_share_at) > STALE_SECS
+                        {
+                            entry.hashrate_hps = 0.0;
+                            entry.connected    = false;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     // ── Stratum TCP server (blocks forever) ─────────────────────────────────────
-    stratum::run_server(listen_addr, job_rx, job_mgr, rpc, vardiff_cfg, accounting, api_state, database.clone()).await?;
+    stratum::run_server(listen_addr, job_rx, job_mgr, rpc, vardiff_cfg, accounting, api_state, database.clone(), packed_genome).await?;
 
     Ok(())
 }

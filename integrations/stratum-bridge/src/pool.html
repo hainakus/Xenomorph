@@ -191,10 +191,10 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
   <!-- PAYMENTS -->
   <div id="page-payments" style="display:none">
     <div class="panel">
-      <div class="panel-hdr"><span class="sec-title">Payment Records</span></div>
+      <div class="panel-hdr"><span class="sec-title">Transaction Log</span></div>
       <table class="tbl">
-        <thead><tr><th></th><th>Job ID</th><th>Found At</th><th>DAA Score</th><th>Miners</th><th>Status</th><th>TX</th></tr></thead>
-        <tbody id="payments-table"><tr><td colspan="7" class="loading"><span class="spinner">↻</span> Loading…</td></tr></tbody>
+        <thead><tr><th>#</th><th>TX ID</th><th>Submitted At</th><th>Status</th></tr></thead>
+        <tbody id="payments-table"><tr><td colspan="4" class="loading"><span class="spinner">↻</span> Loading…</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -404,21 +404,17 @@ function renderBlocks(blocks){
 }
 function renderPayments(payments){
   const tb=document.getElementById('payments-table');
-  const visible=(payments||[]).filter(p=>p.status==='paid'||p.status==='failed'||p.status==='payout-failed');
-  if(!visible.length){tb.innerHTML='<tr><td colspan="7" class="empty">No completed payments yet</td></tr>';return;}
-  window._payData=visible;
-  tb.innerHTML=visible.map((p,i)=>`
-    <tr>
-      <td class="expand-btn" id="pebtn-${i}" onclick="toggleExpand(${i},'payments')"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg></td>
-      <td><span class="lnk">${trunc(p.job_id,10)}</span></td>
-      <td style="color:var(--txd)">${fmtTime(p.found_at)}</td>
-      <td>${fmtNum(p.block_daa_score)}</td>
-      <td>${p.payouts?.length||0} miners</td>
-      <td>${badge(p.status)}</td>
-      <td>${p.tx_id?`<a class="lnk" href="https://explorer.xenom.space/txs/${p.tx_id}" target="_blank" rel="noopener" title="${p.tx_id}">${trunc(p.tx_id,10)}</a>`:'–'}</td>
-    </tr>
-    <tr class="expand-row"><td colspan="7"><div class="expand-inner" id="pr-${i}">${payoutTable(p.payouts)}</div></td></tr>
-  `).join('');
+  if(!(payments||[]).length){tb.innerHTML='<tr><td colspan="4" class="empty">No transactions yet</td></tr>';return;}
+  tb.innerHTML=(payments||[]).map((p,i)=>{
+    const txLink=p.tx_id?`<a class="lnk" href="https://explorer.xenom.space/txs/${p.tx_id}" target="_blank" rel="noopener" title="${p.tx_id}">${trunc(p.tx_id,14)}</a>`:'<span style="color:var(--txd)">–</span>';
+    const st=p.status==='confirmed'?'<span class="badge bg">confirmed</span>':'<span class="badge br">failed</span>';
+    return`<tr>
+      <td style="color:var(--txd);font-size:.75rem">${p.id}</td>
+      <td>${txLink}</td>
+      <td style="color:var(--txd)">${fmtTime(p.submitted_at)}</td>
+      <td>${st}</td>
+    </tr>`;
+  }).join('');
 }
 function payoutTable(payouts){
   if(!payouts?.length)return'<span style="color:var(--txd)">No payout data</span>';
