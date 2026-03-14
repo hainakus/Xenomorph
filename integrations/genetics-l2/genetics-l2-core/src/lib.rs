@@ -14,6 +14,8 @@ pub enum ExternalSource {
     Boinc,
     /// DREAM Challenges (synapse.org / dreamchallenges.org).
     Dream,
+    /// EU Horizon Prize Challenges (cordis.europa.eu / EIC).
+    HorizonPrize,
     BioContest,
     Custom(String),
 }
@@ -26,6 +28,7 @@ impl std::fmt::Display for ExternalSource {
             Self::NihChallenge => write!(f, "nih_challenge"),
             Self::Boinc        => write!(f, "boinc"),
             Self::Dream        => write!(f, "dream"),
+            Self::HorizonPrize => write!(f, "horizon_prize"),
             Self::BioContest   => write!(f, "bio_contest"),
             Self::Custom(s)    => write!(f, "{s}"),
         }
@@ -58,6 +61,10 @@ pub enum Algorithm {
     NetworkBiology,
     /// Bulk / single-cell gene expression prediction (DREAM, GTEx).
     GeneExpression,
+    /// Digital health / e-health / health data analytics (Horizon, WHO).
+    DigitalHealth,
+    /// Biotechnology — synthetic biology, cell engineering, fermentation.
+    Biotechnology,
     Custom(String),
 }
 
@@ -79,6 +86,8 @@ impl std::fmt::Display for Algorithm {
             Self::BiomarkerDiscovery     => write!(f, "biomarker_discovery"),
             Self::NetworkBiology         => write!(f, "network_biology"),
             Self::GeneExpression         => write!(f, "gene_expression"),
+            Self::DigitalHealth          => write!(f, "digital_health"),
+            Self::Biotechnology          => write!(f, "biotechnology"),
             Self::Custom(s)              => write!(f, "{s}"),
         }
     }
