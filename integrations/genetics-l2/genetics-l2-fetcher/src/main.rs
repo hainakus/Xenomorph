@@ -9,11 +9,13 @@ mod kaggle;
 mod nih;
 mod boinc;
 mod dream;
+mod horizon;
 
 pub use kaggle::KaggleFetcher;
 pub use nih::{NihFetcher, NihChallengeFetcher};
 pub use boinc::BoincFetcher;
 pub use dream::DreamFetcher;
+pub use horizon::HorizonFetcher;
 
 #[async_trait::async_trait]
 pub trait SourceFetcher: Send + Sync {
@@ -45,6 +47,7 @@ async fn main() -> Result<()> {
     let competition      = m.get_one::<String>("competition").cloned();
     let nih_challenges   = m.get_flag("nih-challenges");
     let dream_enabled    = m.get_flag("dream");
+    let horizon_enabled  = m.get_flag("horizon");
     let synapse_pat      = m.get_one::<String>("synapse-pat").cloned()
         .or_else(|| std::env::var("SYNAPSE_PAT").ok());
 
@@ -70,6 +73,9 @@ async fn main() -> Result<()> {
         }
         if dream_enabled {
             v.push(Box::new(DreamFetcher::new(synapse_pat)));
+        }
+        if horizon_enabled {
+            v.push(Box::new(HorizonFetcher::new()));
         }
         v
     };
@@ -151,4 +157,8 @@ fn cli() -> Command {
         .arg(Arg::new("synapse-pat")
             .long("synapse-pat").value_name("TOKEN")
             .help("Synapse personal access token for authenticated DREAM challenge access (or env SYNAPSE_PAT)"))
+        .arg(Arg::new("horizon")
+            .long("horizon")
+            .action(clap::ArgAction::SetTrue)
+            .help("Poll EU Horizon Prize Challenges from CORDIS (cordis.europa.eu)"))
 }
