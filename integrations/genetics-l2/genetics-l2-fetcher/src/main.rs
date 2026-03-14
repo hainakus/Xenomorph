@@ -8,10 +8,12 @@ use tokio::time::{sleep, Duration};
 mod kaggle;
 mod nih;
 mod boinc;
+mod dream;
 
 pub use kaggle::KaggleFetcher;
-pub use nih::NihFetcher;
+pub use nih::{NihFetcher, NihChallengeFetcher};
 pub use boinc::BoincFetcher;
+pub use dream::DreamFetcher;
 
 #[async_trait::async_trait]
 pub trait SourceFetcher: Send + Sync {
@@ -39,8 +41,12 @@ async fn main() -> Result<()> {
             let token = v["key"].as_str()?;
             Some(format!("{user}:{token}"))
         });
-    let boinc_url       = m.get_one::<String>("boinc-url").cloned();
-    let competition     = m.get_one::<String>("competition").cloned();
+    let boinc_url        = m.get_one::<String>("boinc-url").cloned();
+    let competition      = m.get_one::<String>("competition").cloned();
+    let nih_challenges   = m.get_flag("nih-challenges");
+    let dream_enabled    = m.get_flag("dream");
+    let synapse_pat      = m.get_one::<String>("synapse-pat").cloned()
+        .or_else(|| std::env::var("SYNAPSE_PAT").ok());
 
     let http = reqwest::Client::new();
 
@@ -53,13 +59,18 @@ async fn main() -> Result<()> {
             }
             v.push(Box::new(fetcher));
         } else if let Some(slug) = competition {
-            // No Kaggle key but --competition given: seed stub job without API call
             v.push(Box::new(KaggleFetcher::new(String::new()).with_competition(slug)));
         }
         if let Some(url) = boinc_url {
             v.push(Box::new(BoincFetcher::new(url)));
         }
         v.push(Box::new(NihFetcher::new()));
+        if nih_challenges {
+            v.push(Box::new(NihChallengeFetcher::new()));
+        }
+        if dream_enabled {
+            v.push(Box::new(DreamFetcher::new(synapse_pat)));
+        }
         v
     };
 
@@ -129,4 +140,15 @@ fn cli() -> Command {
         .arg(Arg::new("competition")
             .long("competition").value_name("SLUG")
             .help("Seed a specific Kaggle competition (e.g. birdclef-2026)"))
+        .arg(Arg::new("nih-challenges")
+            .long("nih-challenges")
+            .action(clap::ArgAction::SetTrue)
+            .help("Poll NIH Prize Challenges from challenges.nih.gov"))
+        .arg(Arg::new("dream")
+            .long("dream")
+            .action(clap::ArgAction::SetTrue)
+            .help("Poll DREAM Challenges from synapse.org"))
+        .arg(Arg::new("synapse-pat")
+            .long("synapse-pat").value_name("TOKEN")
+            .help("Synapse personal access token for authenticated DREAM challenge access (or env SYNAPSE_PAT)"))
 }
