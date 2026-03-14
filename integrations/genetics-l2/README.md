@@ -11,7 +11,7 @@ Genetics L2 is a **Layer-2 compute network** built on top of Xenom's Layer-1 blo
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                   EXTERNAL SCIENTIFIC SOURCES                   │
-│         Kaggle · NIH/NCBI · BOINC · Bio Contests                │
+│  Kaggle · NIH/NCBI · NIH Challenge · DREAM · Horizon Prize      │
 └───────────────────────────┬─────────────────────────────────────┘
                             │  job-fetcher polls APIs
                             ▼
@@ -70,7 +70,7 @@ external sources (Kaggle / NIH / BOINC)
 |---|---|---|
 | `genetics-l2-core` | — | Shared types: `ScientificJob`, `JobResult`, `ValidationReport`, `SettlementPayload` |
 | `genetics-l2-coordinator` | `genetics-l2-coordinator` | REST API, SQLite job registry, payout tracking |
-| `genetics-l2-fetcher` | `genetics-l2-fetcher` | Polls Kaggle, NIH, BOINC; registers jobs |
+| `genetics-l2-fetcher` | `genetics-l2-fetcher` | Polls Kaggle, NIH/NCBI, NIH Challenge, DREAM, Horizon; registers jobs |
 | `genetics-l2-worker` | `genetics-l2-worker` | Claims + executes jobs, submits results |
 | `genetics-l2-validator` | `genetics-l2-validator` | Partial recomputation, hash verification |
 | `genetics-l2-settlement` | `genetics-l2-settlement` | Creates `results_root`, pays winner, anchors on Xenom |
@@ -90,7 +90,41 @@ cargo build \
 
 ---
 
-## Quick Start
+## Devnet Quick Start (all-in-one)
+
+```bash
+export BIN="/path/to/Xenomorph/target/release"
+export PRIVKEY="<64-hex-secp256k1-key>"
+export MINING_ADDR="xenomdev:<your-devnet-address>"
+export COORDINATOR="http://localhost:8091"
+
+# T1 — Node
+$BIN/xenom --devnet --utxoindex
+
+# T2 — Coordinator
+$BIN/genetics-l2-coordinator --db-path /tmp/genetics-l2.db --listen 0.0.0.0:8091
+
+# T3 — Stratum bridge
+$BIN/xenom-stratum-bridge --mining-address "$MINING_ADDR" --rpcserver 127.0.0.1:18610 --listen 0.0.0.0:5555 --l2-coordinator "$COORDINATOR" --l2-theme genetics --devnet
+
+# T4 — Fetcher (pick one or more sources)
+$BIN/genetics-l2-fetcher --coordinator "$COORDINATOR" --nih-challenges --horizon --poll-secs 300
+
+# T5 — GPU Miner + L2 worker (NIH/Horizon — no perch_infer)
+$BIN/genome-miner gpu --devnet --mining-address "$MINING_ADDR" --stratum stratum+tcp://127.0.0.1:5555 --gpu 0 --l2-coordinator "$COORDINATOR" --l2-private-key "$PRIVKEY"
+
+# T6 — Validator
+$BIN/genetics-l2-validator --private-key "$PRIVKEY" --coordinator "$COORDINATOR"
+
+# T7 — Settlement (--devnet for xenomdev: address prefix)
+$BIN/genetics-l2-settlement --coordinator "$COORDINATOR" --node grpc://localhost:18610 --private-key "$PRIVKEY" --devnet --submit --poll-ms 15000
+```
+
+> **Funding the settlement wallet:** the settlement daemon signs anchor transactions from the `xenomdev:` address derived from `$PRIVKEY`. Mine a few blocks first so that address receives coinbase rewards, then the daemon will anchor automatically.
+
+---
+
+## Detailed Setup
 
 ### 1. Start the coordinator
 
@@ -140,11 +174,19 @@ genetics-l2-settlement \
   --coordinator http://localhost:8091 \
   --node        grpc://localhost:36669
 
-# Submit to chain
+# Submit to chain (mainnet)
 genetics-l2-settlement \
   --coordinator http://localhost:8091 \
   --node        grpc://localhost:36669 \
+  --private-key <HEX> \
   --submit
+
+# Submit to chain (devnet — uses xenomdev: address prefix)
+genetics-l2-settlement \
+  --coordinator http://localhost:8091 \
+  --node        grpc://localhost:18610 \
+  --private-key <HEX> \
+  --devnet --submit
 ```
 
 ---
@@ -260,6 +302,13 @@ open → claimed → completed → validated → settled
 | `rna_expression` | Differential expression | FASTQ + annotation | Count matrix TSV |
 | `metagenomics` | Taxonomy classification | Shotgun reads | Kraken2 report |
 | `molecular_docking` | Ligand binding | PDB + ligand SDF | Docking score |
+| `drug_discovery` | Virtual screening / ADMET | SMILES, PDB | Docking score, toxicity |
+| `cancer_genomics` | Somatic mutation, CNV, fusion | BAM + VCF | Annotated variants |
+| `biomarker_discovery` | Omics biomarker identification | Expression matrix | Biomarker list |
+| `network_biology` | Gene regulatory network inference | Expression data | Network GML |
+| `gene_expression` | Bulk / single-cell prediction | FASTQ / h5ad | Count matrix |
+| `digital_health` | Health data analytics / e-health | HL7, FHIR, CSV | Clinical insights |
+| `biotechnology` | Synthetic biology, cell engineering | Sequence files | Engineered constructs |
 
 ---
 
@@ -274,11 +323,30 @@ open → claimed → completed → validated → settled
 
 Get your key at: https://www.kaggle.com/account → API → Create New Token
 
-### NIH / NCBI (no key required)
+### NIH / NCBI  (no key — `--nih` enabled by default)
 
 - Queries NCBI E-utilities SRA database for recent variant-calling datasets
 - Uses public REST API (100 requests/minute without key)
 - Generates one job per SRA accession
+
+### NIH Prize Challenges  (`--nih-challenges`)
+
+- Queries [challenge.gov](https://api.challenge.gov/api/3/action/package_search?q=NIH) CKAN API
+- Filters results by NIH/HHS/biomedical keywords
+- Maps each open challenge to a `ScientificJob` with appropriate algorithm
+
+### DREAM Challenges  (`--dream [--synapse-pat TOKEN]`)
+
+- Queries [Synapse API](https://repo-prod.prod.sagebase.org/repo/v1/) for active DREAM challenges
+- Supports authenticated access via `--synapse-pat` or `SYNAPSE_PAT` env var
+- Generates sub-tasks per challenge phase
+
+### EU Horizon Prizes  (`--horizon`)
+
+- Queries [EuropePMC REST API](https://europepmc.org/RestfulWebService) (EBI-hosted, no auth)
+- Returns EC-funded biomedical research in genomics / health / biotechnology
+- Maps to `HorizonPrize` source with €1M–€5M reward bracket signals
+- Prize range: **€1M – €5M** per challenge
 
 ### BOINC  (`--boinc-url http://project-server/`)
 
@@ -352,7 +420,8 @@ Both use the same Xenom `tx.payload` mechanism and BLAKE3 + secp256k1 security p
 
 ## Pending
 
-- **Transaction submission** in `genetics-l2-settlement`: UTXO fetch + tx build + sign + submit (shared with `bioproof-daemon` tx support milestone)
+- **Anchor UTXO funding**: settlement wallet must hold mature UTXOs to pay anchor tx fees; add faucet or auto-fund step for devnet CI
 - **Multi-validator consensus**: aggregate reports from N validators before marking as validated
 - **Reward escrow**: lock `reward_sompi` at job posting time so workers are guaranteed payment
 - **climate-l2**: same architecture applied to climate modelling (CMIP, ERA5, ECMWF)
+- **DREAM ensemble scoring**: aggregate miner results before validator, per DREAM challenge rules
