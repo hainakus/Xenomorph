@@ -243,6 +243,12 @@ pub async fn execute_payout(
         }
     }
 
+    if outputs_plan.is_empty() {
+        return Err(anyhow::Error::new(RetryablePayoutError(
+            "All payout outputs dropped by storage-mass filter — raise --min-payout-sompi (will retry)".into()
+        )));
+    }
+
     // ── 4. Batch loop: build/sign/submit one tx per mass-safe batch ───────────
     //
     // Storage mass formula (KIP-9 Alpha):
@@ -401,9 +407,9 @@ pub async fn execute_payout(
         }
     }
 
-    first_tx_id.ok_or_else(|| anyhow::anyhow!(
-        "No UTXOs available to cover any payout output — will retry next cycle"
-    ))
+    first_tx_id.ok_or_else(|| anyhow::Error::new(RetryablePayoutError(
+        "No UTXOs available to cover any payout output — will retry next cycle".into()
+    )))
 }
 
 // ── UTXO consolidation sweep ──────────────────────────────────────────────────
