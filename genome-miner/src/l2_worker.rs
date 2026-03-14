@@ -117,14 +117,18 @@ async fn execute(
     // ── 7. Submit ─────────────────────────────────────────────────────────────
     let result_id = format!("{job_id}-{}", &trace_hash[..8]);
     let result = JobResult {
-        result_id:     result_id.clone(),
-        job_id:        job_id.to_owned(),
-        worker_pubkey: cfg.pubkey_hex.clone(),
+        result_id:              result_id.clone(),
+        job_id:                 job_id.to_owned(),
+        worker_pubkey:          cfg.pubkey_hex.clone(),
         result_root,
         score,
-        trace_hash:    Some(trace_hash),
+        trace_hash:             Some(trace_hash),
+        notebook_or_repo_hash:  None,
+        container_hash:         None,
+        weights_hash:           None,
+        submission_bundle_hash: None,
         worker_sig,
-        submitted_at:  now_secs(),
+        submitted_at:           now_secs(),
     };
 
     let submit = http
