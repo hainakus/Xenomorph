@@ -58,6 +58,7 @@ fn cli() -> Command {
                 .arg(Arg::new("l2-coordinator").long("l2-coordinator").value_name("URL").help("L2 coordinator URL for inline job execution (e.g. http://localhost:8091)"))
                 .arg(Arg::new("l2-private-key").long("l2-private-key").value_name("HEX").help("secp256k1 private key (64 hex) for signing L2 results"))
                 .arg(Arg::new("l2-gpu").long("l2-gpu").action(clap::ArgAction::SetTrue).help("Use GPU for BirdNET inference (requires CUDA + PyTorch GPU)"))
+                .arg(Arg::new("l2-perch-script").long("l2-perch-script").value_name("PATH").help("Path to perch_infer.py (auto-detected if omitted)"))
         )
         .subcommand(
             Command::new("suggest-params")
@@ -259,7 +260,8 @@ async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
         ) {
             (Some(url), Some(key)) => {
                 let use_gpu = m.get_flag("l2-gpu");
-                match l2_worker::L2Config::new(url, key, use_gpu) {
+                let perch_script = m.get_one::<String>("l2-perch-script").map(std::path::PathBuf::from);
+                match l2_worker::L2Config::new(url, key, use_gpu, perch_script) {
                     Ok(c)  => { info!("L2 inline worker enabled — coordinator={}", c.coordinator_url); Some(c) }
                     Err(e) => { warn!("L2 config error: {e} — L2 disabled"); None }
                 }
