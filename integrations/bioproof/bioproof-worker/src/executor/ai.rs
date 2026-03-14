@@ -72,7 +72,7 @@ async fn run_ai(
        .kill_on_drop(true);
 
     // Pass model hash so the script can verify / download the right weights
-    if let Some(ref mh) = job.model_hash {
+    if let Some(ref mh) = job.weights_hash {
         cmd.env("MODEL_HASH", mh);
     }
 

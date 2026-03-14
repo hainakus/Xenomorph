@@ -182,12 +182,18 @@ pub struct ComputeJob {
     pub job_type:        JobType,
     /// BLAKE3 proof_root of the input dataset.
     pub input_root:      String,
-    /// BLAKE3 hash of the pipeline spec (Nextflow/WDL/Snakemake file).
-    pub pipeline_hash:   String,
+    /// BLAKE3 hash of the pipeline spec (Nextflow/WDL/Snakemake file) or the
+    /// Kaggle notebook / git repo used for training (AIcrowd/DrivenData jobs).
+    pub pipeline_hash:          String,
+    /// BLAKE3 hash of the Kaggle notebook or git repo (alias for pipeline_hash
+    /// for AI competition jobs — set both to the same value).
+    pub notebook_or_repo_hash:  Option<String>,
     /// BLAKE3 hash of the container image (for reproducibility).
-    pub container_hash:  Option<String>,
-    /// BLAKE3 hash of model weights (AI jobs).
-    pub model_hash:      Option<String>,
+    pub container_hash:         Option<String>,
+    /// BLAKE3 hash of trained model weights (AI jobs).
+    pub weights_hash:           Option<String>,
+    /// BLAKE3 hash of the submission bundle (ZIP) sent to AIcrowd/DrivenData.
+    pub submission_bundle_hash: Option<String>,
     /// Reward in sompi (smallest XEN unit).
     pub reward_sompi:    u64,
     /// Max wall-clock execution time in seconds.
@@ -222,13 +228,17 @@ pub struct ComputeJobManifest {
     /// BLAKE3 proof_root of input files (must match ComputeJob.input_root).
     pub input_root:           String,
     /// BLAKE3 hash of the pipeline actually executed.
-    pub pipeline_hash:        String,
+    pub pipeline_hash:          String,
+    /// BLAKE3 hash of the Kaggle notebook or git repo used for training.
+    pub notebook_or_repo_hash:  Option<String>,
     /// BLAKE3 hash of the container image used.
-    pub container_hash:       Option<String>,
-    /// BLAKE3 hash of model weights used (AI jobs).
-    pub model_hash:           Option<String>,
+    pub container_hash:         Option<String>,
+    /// BLAKE3 hash of trained model weights used (AI jobs).
+    pub weights_hash:           Option<String>,
+    /// BLAKE3 hash of the submission bundle (ZIP) sent to AIcrowd/DrivenData.
+    pub submission_bundle_hash: Option<String>,
     /// BLAKE3 Merkle root over all output files.
-    pub output_root:          String,
+    pub output_root:            String,
     /// Individual output files: (filename, proof_root).
     pub outputs:              Vec<OutputEntry>,
     /// BLAKE3 hash of the execution log/trace (stdout+stderr).
@@ -267,13 +277,22 @@ impl ComputeJobManifest {
 /// Stored in `tx.payload`, extends the base AnchorPayload concept.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobAnchorPayload {
-    pub app:           String,         // "bioproof-job"
-    pub v:             u32,            // 1
-    pub job_id:        String,
-    pub manifest_hash: String,         // blake3 of ComputeJobManifest
-    pub output_root:   String,         // top-level output Merkle root
-    pub worker_pubkey: String,
-    pub worker_sig:    String,         // sig over manifest_hash
+    pub app:                    String,   // "bioproof-job"
+    pub v:                      u32,      // 1
+    pub job_id:                 String,
+    pub manifest_hash:          String,   // blake3 of ComputeJobManifest
+    /// BLAKE3 Merkle root of all output files.
+    pub output_root:            String,
+    /// BLAKE3 of Kaggle notebook or git repo used.
+    pub notebook_or_repo_hash:  Option<String>,
+    /// Docker/Singularity image digest.
+    pub container_hash:         Option<String>,
+    /// BLAKE3 of trained model weights.
+    pub weights_hash:           Option<String>,
+    /// BLAKE3 of submission bundle ZIP.
+    pub submission_bundle_hash: Option<String>,
+    pub worker_pubkey:          String,
+    pub worker_sig:             String,   // sig over manifest_hash
 }
 
 impl JobAnchorPayload {
@@ -287,14 +306,32 @@ impl JobAnchorPayload {
         worker_sig:    &str,
     ) -> Self {
         Self {
-            app:           Self::APP_ID.to_owned(),
-            v:             1,
-            job_id:        job_id.to_owned(),
-            manifest_hash: manifest_hash.to_owned(),
-            output_root:   output_root.to_owned(),
-            worker_pubkey: worker_pubkey.to_owned(),
-            worker_sig:    worker_sig.to_owned(),
+            app:                    Self::APP_ID.to_owned(),
+            v:                      1,
+            job_id:                 job_id.to_owned(),
+            manifest_hash:          manifest_hash.to_owned(),
+            output_root:            output_root.to_owned(),
+            notebook_or_repo_hash:  None,
+            container_hash:         None,
+            weights_hash:           None,
+            submission_bundle_hash: None,
+            worker_pubkey:          worker_pubkey.to_owned(),
+            worker_sig:             worker_sig.to_owned(),
         }
+    }
+
+    pub fn with_hashes(
+        mut self,
+        notebook_or_repo_hash:  Option<String>,
+        container_hash:         Option<String>,
+        weights_hash:           Option<String>,
+        submission_bundle_hash: Option<String>,
+    ) -> Self {
+        self.notebook_or_repo_hash  = notebook_or_repo_hash;
+        self.container_hash         = container_hash;
+        self.weights_hash           = weights_hash;
+        self.submission_bundle_hash = submission_bundle_hash;
+        self
     }
 
     pub fn to_payload_bytes(&self) -> Vec<u8> {

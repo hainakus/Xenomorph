@@ -169,6 +169,14 @@ pub struct JobResult {
     pub score:          f64,
     /// BLAKE3 hash of the execution trace (stdout + stderr).
     pub trace_hash:     Option<String>,
+    /// BLAKE3 hash of the Kaggle notebook or git repo used for training.
+    pub notebook_or_repo_hash:  Option<String>,
+    /// BLAKE3 hash of the container image used (Docker/Singularity digest).
+    pub container_hash:         Option<String>,
+    /// BLAKE3 hash of the trained model weights file.
+    pub weights_hash:           Option<String>,
+    /// BLAKE3 hash of the submission bundle (ZIP) sent to AIcrowd/DrivenData.
+    pub submission_bundle_hash: Option<String>,
     /// Worker's secp256k1 signature over `result_root`.
     pub worker_sig:     String,
     pub submitted_at:   u64,
@@ -229,6 +237,14 @@ pub struct SettlementPayload {
     pub results_root:   String,   // Merkle root over all validated result_roots
     pub best_score:     f64,
     pub winner_pubkey:  String,
+    /// From the winning result — BLAKE3 of notebook or git repo.
+    pub notebook_or_repo_hash:  Option<String>,
+    /// From the winning result — Docker/Singularity image digest.
+    pub container_hash:         Option<String>,
+    /// From the winning result — BLAKE3 of trained model weights.
+    pub weights_hash:           Option<String>,
+    /// From the winning result — BLAKE3 of competition submission bundle.
+    pub submission_bundle_hash: Option<String>,
     pub settled_at:     u64,
 }
 
