@@ -17,6 +17,7 @@
 #   --stratum-port N        Stratum listen port (default: 5555)
 #   --competition SLUG      Kaggle competition to seed (default: birdclef-2026)
 #   --db PATH               Coordinator DB path (default: /tmp/genetics-l2.db)
+#   --kaggle-key USER:TOKEN Kaggle API key (overrides KAGGLE_KEY env var and ~/.kaggle/kaggle.json)
 #   --build                 Force rebuild of all binaries
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -32,6 +33,7 @@ COORDINATOR_PORT="8091"
 STRATUM_PORT="5555"
 COMPETITION="birdclef-2026"
 DB_PATH="/tmp/genetics-l2.db"
+KAGGLE_KEY="${KAGGLE_KEY:-}"
 BUILD=0
 
 while [[ $# -gt 0 ]]; do
@@ -42,6 +44,7 @@ while [[ $# -gt 0 ]]; do
     --stratum-port)     STRATUM_PORT="$2";    shift 2 ;;
     --competition)      COMPETITION="$2";     shift 2 ;;
     --db)               DB_PATH="$2";         shift 2 ;;
+    --kaggle-key)       KAGGLE_KEY="$2";      shift 2 ;;
     --build)            BUILD=1;              shift 1 ;;
     *) shift 1 ;;
   esac
@@ -113,10 +116,9 @@ fi
 
 # ── 3. Fetcher (seed jobs - once) ─────────────────────────────────────────────
 echo "[pool] Seeding '$COMPETITION' jobs via genetics-l2-fetcher..."
-"$BIN/genetics-l2-fetcher" \
-  --coordinator "$COORDINATOR_URL" \
-  --competition "$COMPETITION" \
-  && echo "[pool] Seed complete."
+FETCHER_ARGS=(--coordinator "$COORDINATOR_URL" --competition "$COMPETITION")
+[[ -n "$KAGGLE_KEY" ]] && FETCHER_ARGS+=(--kaggle-key "$KAGGLE_KEY")
+"$BIN/genetics-l2-fetcher" "${FETCHER_ARGS[@]}" && echo "[pool] Seed complete."
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
