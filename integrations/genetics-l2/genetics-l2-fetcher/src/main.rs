@@ -29,7 +29,16 @@ async fn main() -> Result<()> {
     let coordinator_url = m.get_one::<String>("coordinator").unwrap().clone();
     let poll_secs: u64  = m.get_one::<String>("poll-secs")
         .and_then(|s| s.parse().ok()).unwrap_or(300);
-    let kaggle_key      = m.get_one::<String>("kaggle-key").cloned();
+    let kaggle_key = m.get_one::<String>("kaggle-key").cloned()
+        .or_else(|| std::env::var("KAGGLE_KEY").ok())
+        .or_else(|| {
+            let p = dirs::home_dir()?.join(".kaggle").join("kaggle.json");
+            let s = std::fs::read_to_string(p).ok()?;
+            let v: serde_json::Value = serde_json::from_str(&s).ok()?;
+            let user  = v["username"].as_str()?;
+            let token = v["key"].as_str()?;
+            Some(format!("{user}:{token}"))
+        });
     let boinc_url       = m.get_one::<String>("boinc-url").cloned();
     let competition     = m.get_one::<String>("competition").cloned();
 

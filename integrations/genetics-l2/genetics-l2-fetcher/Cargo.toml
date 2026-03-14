@@ -16,6 +16,7 @@ genetics-l2-core     = { path = "../genetics-l2-core" }
 kaspa-core.workspace = true
 
 anyhow        = "1"
+dirs          = "5"
 async-trait   = "0.1"
 blake3.workspace      = true
 clap.workspace        = true
