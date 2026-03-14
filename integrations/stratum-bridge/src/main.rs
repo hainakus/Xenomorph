@@ -109,6 +109,14 @@ fn cli() -> Command {
             .long("fee-per-output").value_name("N")
             .default_value("2000").value_parser(clap::value_parser!(u64))
             .help("Estimated tx fee per output in sompi (default: 2000)"))
+        .arg(Arg::new("payout-check-interval-secs")
+            .long("payout-check-interval-secs").value_name("N")
+            .default_value("5").value_parser(clap::value_parser!(u64))
+            .help("How often to check for confirmed payouts in seconds (default: 5)"))
+        .arg(Arg::new("payout-batch-size")
+            .long("payout-batch-size").value_name("N")
+            .default_value("10").value_parser(clap::value_parser!(usize))
+            .help("Max confirmed blocks to pay out per check cycle (default: 10)"))
         // ── REST API ───────────────────────────────────────────────────────────
         .arg(Arg::new("api-listen")
             .long("api-listen").value_name("ADDR:PORT")
@@ -174,9 +182,11 @@ async fn main() -> Result<()> {
         ..VarDiffConfig::default()
     };
 
-    let pplns_window    = *m.get_one::<usize>("pplns-window").unwrap();
-    let payout_file     = m.get_one::<String>("payout-file").map(PathBuf::from);
-    let stats_interval  = *m.get_one::<u64>("stats-interval-secs").unwrap();
+    let pplns_window       = *m.get_one::<usize>("pplns-window").unwrap();
+    let payout_file        = m.get_one::<String>("payout-file").map(PathBuf::from);
+    let stats_interval     = *m.get_one::<u64>("stats-interval-secs").unwrap();
+    let payout_check_secs  = *m.get_one::<u64>("payout-check-interval-secs").unwrap();
+    let payout_batch_size  = *m.get_one::<usize>("payout-batch-size").unwrap();
 
     let payment_cfg = PaymentConfig {
         confirm_depth:    *m.get_one::<u64>("confirm-depth").unwrap(),
@@ -337,11 +347,12 @@ async fn main() -> Result<()> {
         let pay_addr       = pay_address.clone();
         let pcfg           = payment_cfg.clone();
         let db3            = database.clone();
-        let check_interval = Duration::from_secs(30);
+        let check_interval = Duration::from_secs(payout_check_secs.max(1));
 
         info!(
-            "Auto-payout enabled: confirm_depth={} min_payout={} sompi pool_fee={:.1}%",
-            pcfg.confirm_depth, pcfg.min_payout_sompi, pcfg.pool_fee_percent
+            "Auto-payout enabled: confirm_depth={} min_payout={} sompi pool_fee={:.1}% check_interval={}s batch_size={}",
+            pcfg.confirm_depth, pcfg.min_payout_sompi, pcfg.pool_fee_percent,
+            payout_check_secs, payout_batch_size
         );
 
         tokio::spawn(async move {
@@ -356,13 +367,19 @@ async fn main() -> Result<()> {
                 let confirmed = acct3.lock().await
                     .take_confirmed_payouts(current_daa, pcfg.confirm_depth);
 
-                // Process ONE block per cycle — multiple sequential payouts would reuse
-                // the same unconfirmed UTXOs and cause double-spend RPC failures.
-                // Remaining confirmed blocks are picked up on the next cycle.
-                if let Some(payout) = confirmed.into_iter().next() {
+                // Process up to payout_batch_size blocks per cycle sequentially.
+                // A 500 ms pause between payouts lets the node UTXO index reflect
+                // each spent output before the next fetch, avoiding double-spend failures.
+                let mut batch_n = 0usize;
+                for payout in confirmed.into_iter().take(payout_batch_size) {
+                    if batch_n > 0 {
+                        sleep(Duration::from_millis(500)).await;
+                    }
+
                     info!(
-                        "Block {} confirmed (daa_score={} current={}), executing payout …",
-                        payout.job_id, payout.block_daa_score, current_daa
+                        "Block {} confirmed (daa_score={} current={}) [batch {}/{}], executing payout …",
+                        payout.job_id, payout.block_daa_score, current_daa,
+                        batch_n + 1, payout_batch_size
                     );
 
                     // Mark as confirmed immediately — block IS valid even if payout later fails
@@ -388,12 +405,15 @@ async fn main() -> Result<()> {
                                     warn!("DB insert_transaction confirmed: {e}");
                                 }
                             }
+                            batch_n += 1;
                         }
                         Err(e) => {
                             let reason = e.to_string();
                             if e.downcast_ref::<RetryablePayoutError>().is_some() {
                                 // Transient — block stays 'confirmed', will retry next cycle
                                 warn!("Payout retry (job {}): {reason}", payout.job_id);
+                                // Stop batch on transient error — UTXOs may be exhausted
+                                break;
                             } else {
                                 // Permanent failure — mark so it won't be retried
                                 warn!("Payout FAILED (job {}): {reason}", payout.job_id);
@@ -406,6 +426,7 @@ async fn main() -> Result<()> {
                                         warn!("DB insert_transaction failed: {e}");
                                     }
                                 }
+                                batch_n += 1;
                             }
                         }
                     }
