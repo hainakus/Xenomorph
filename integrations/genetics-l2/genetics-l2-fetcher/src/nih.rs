@@ -133,7 +133,7 @@ impl SourceFetcher for NihChallengeFetcher {
     fn name(&self) -> &str { "nih_challenge" }
 
     async fn fetch_jobs(&self) -> Result<Vec<ScientificJob>> {
-        let url = "https://api.challenge.gov/api/challenges\
+        let url = "https://www.challenge.gov/api/challenges\
             ?status=open&agency=HHS,NIH&limit=25";
 
         let resp = self.http
