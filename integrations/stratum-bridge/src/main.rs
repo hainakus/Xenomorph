@@ -134,6 +134,19 @@ fn cli() -> Command {
             .help("Path to grch38.xenom packed genome dataset. \
                    When supplied, Genome PoW shares are validated locally and \
                    only block candidates are forwarded to the node."))
+        .arg(Arg::new("genome-activation-daa-score")
+            .long("genome-activation-daa-score").value_name("SCORE")
+            .value_parser(clap::value_parser!(u64))
+            .help("DAA score at which Genome PoW activates (overrides --mainnet/--testnet/--devnet)"))
+        .arg(Arg::new("mainnet")
+            .long("mainnet").action(clap::ArgAction::SetTrue)
+            .help("Mainnet Genome PoW activation (DAA 21_370_801)"))
+        .arg(Arg::new("testnet")
+            .long("testnet").action(clap::ArgAction::SetTrue)
+            .help("Testnet Genome PoW activation (DAA 0)"))
+        .arg(Arg::new("devnet")
+            .long("devnet").action(clap::ArgAction::SetTrue)
+            .help("Devnet Genome PoW activation (DAA 0)"))
         // ── L2 themed pool ────────────────────────────────────────────────────
         .arg(Arg::new("config")
             .long("config").value_name("PATH")
@@ -278,8 +291,20 @@ async fn main() -> Result<()> {
     let rpc = Arc::new(GrpcClient::connect(url.clone()).await.context("gRPC connect")?);
     info!("Connected to {url}");
 
+    // ── Genome PoW activation ────────────────────────────────────────────────
+    let genome_activation: u64 = if let Some(&s) = m.get_one::<u64>("genome-activation-daa-score") {
+        s
+    } else if m.get_flag("testnet") || m.get_flag("devnet") {
+        0
+    } else if m.get_flag("mainnet") {
+        kaspa_consensus_core::hashing::header::EPOCH_SEED_HASH_ACTIVATION_MAINNET
+    } else {
+        kaspa_consensus_core::hashing::header::EPOCH_SEED_HASH_ACTIVATION_MAINNET
+    };
+    info!("Genome PoW activation DAA score: {genome_activation}");
+
     // ── Shared state ──────────────────────────────────────────────────────────
-    let job_mgr:    Arc<RwLock<JobManager>> = Arc::new(RwLock::new(JobManager::new()));
+    let job_mgr:    Arc<RwLock<JobManager>> = Arc::new(RwLock::new(JobManager::new(genome_activation)));
     let accounting: Arc<Mutex<Accounting>>  = Arc::new(Mutex::new(
         Accounting::new(pplns_window, payout_file),
     ));

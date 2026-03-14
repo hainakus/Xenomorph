@@ -595,6 +595,7 @@ async fn send_notify(
     let notif = StratumNotification::notify(
         &job.id, &job.pre_pow_hash_hex, &job.bits_hex,
         &job.epoch_seed_hex, &job.timestamp_hex, clean, l2_val,
+        &job.daa_score_hex,
     );
     write_line(writer, &notif).await
 }

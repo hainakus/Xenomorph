@@ -398,7 +398,7 @@ async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
 async fn mine_stratum(
     threads:           usize,
     frag_size:         u32,
-    _genome_activation: u64,
+    genome_activation: u64,
     file_loader:       Option<Arc<FileGenomeLoader>>,
     l2_cfg:            Option<l2_worker::L2Config>,
     mut job_rx:        mpsc::Receiver<StratumJob>,
@@ -453,7 +453,7 @@ async fn mine_stratum(
             }
         }
 
-        let genome_active = current_job.epoch_seed != kaspa_hashes::Hash::default();
+        let genome_active = current_job.daa_score >= genome_activation;
         let pre_pow_hash  = current_job.pre_pow_hash;
         let epoch_seed    = current_job.epoch_seed;
         let timestamp     = current_job.timestamp;

@@ -33,14 +33,16 @@ pub struct Job {
     /// Decoded `pre_pow_hash` used for KHeavyHash share validation.
     #[allow(dead_code)]
     pub pre_pow_hash: kaspa_hashes::Hash,
-    /// `true` once Genome PoW is active (epoch_seed != zero hash).
+    /// `true` once Genome PoW is active (daa_score >= genome_pow_activation_daa_score).
     pub genome_active: bool,
+    /// Template DAA score as 16-char hex, sent in `mining.notify` so miners can determine PoW mode.
+    pub daa_score_hex: String,
 
     pub created: Instant,
 }
 
 impl Job {
-    pub fn new(counter: u64, template: RpcRawBlock) -> Self {
+    pub fn new(counter: u64, template: RpcRawBlock, genome_pow_activation_daa_score: u64) -> Self {
         let id = format!("{counter:016x}");
 
         let header: Header = (&template.header).into();
@@ -51,7 +53,8 @@ impl Job {
         let epoch_seed_hex = bytes_to_hex(&template.header.epoch_seed.as_bytes());
         let timestamp_hex = format!("{:016x}", template.header.timestamp);
 
-        let genome_active = template.header.epoch_seed != kaspa_hashes::Hash::default();
+        let genome_active = template.header.daa_score >= genome_pow_activation_daa_score;
+        let daa_score_hex = format!("{:016x}", template.header.daa_score);
 
         Self {
             id,
@@ -62,6 +65,7 @@ impl Job {
             timestamp_hex,
             pre_pow_hash,
             genome_active,
+            daa_score_hex,
             created: Instant::now(),
         }
     }
@@ -102,11 +106,12 @@ pub struct JobManager {
     pub current: Option<Arc<Job>>,
     counter: u64,
     last_template_id: Option<kaspa_hashes::Hash>,
+    genome_pow_activation_daa_score: u64,
 }
 
 impl JobManager {
-    pub fn new() -> Self {
-        Self { jobs: HashMap::new(), current: None, counter: 0, last_template_id: None }
+    pub fn new(genome_pow_activation_daa_score: u64) -> Self {
+        Self { jobs: HashMap::new(), current: None, counter: 0, last_template_id: None, genome_pow_activation_daa_score }
     }
 
     /// Register a new template if it differs from the last one.
@@ -120,7 +125,7 @@ impl JobManager {
         self.last_template_id = Some(template_id);
         self.counter += 1;
 
-        let job = Arc::new(Job::new(self.counter, template));
+        let job = Arc::new(Job::new(self.counter, template, self.genome_pow_activation_daa_score));
         self.jobs.insert(job.id.clone(), job.clone());
         self.current = Some(job.clone());
 
