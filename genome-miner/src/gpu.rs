@@ -650,6 +650,21 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
         if default.exists() { Some(default.to_string_lossy().into_owned()) } else { None }
     });
 
+    let l2_cfg: Option<crate::l2_worker::L2Config> = match (
+        m.get_one::<String>("l2-coordinator").cloned(),
+        m.get_one::<String>("l2-private-key").cloned(),
+    ) {
+        (Some(url), Some(key)) => {
+            let use_gpu     = m.get_flag("l2-gpu");
+            let perch_script = m.get_one::<String>("l2-perch-script").map(std::path::PathBuf::from);
+            match crate::l2_worker::L2Config::new(url, key, use_gpu, perch_script) {
+                Ok(c)  => { info!("L2 inline worker enabled — coordinator={}", c.coordinator_url); Some(c) }
+                Err(e) => { warn!("L2 config error: {e} — L2 disabled"); None }
+            }
+        }
+        _ => None,
+    };
+
     // Enumerate eligible adapters
     let all_adapters = enumerate_mining_adapters().await;
 
@@ -801,8 +816,20 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
         // Job-to-template conversion task
         let ttx = template_tx.clone();
         let dash3 = dash.clone();
+        let l2_cfg2 = l2_cfg.clone();
         tokio::spawn(async move {
             while let Some(job) = job_rx.recv().await {
+                // Dispatch L2 task if coordinator is configured
+                if let (Some(ref cfg), Some(ref l2_val)) = (&l2_cfg2, &job.l2_job) {
+                    let l2_job_id = l2_val["job_id"].as_str().unwrap_or("").to_owned();
+                    if !l2_job_id.is_empty() {
+                        let cfg2 = cfg.clone();
+                        let val2 = l2_val.clone();
+                        tokio::spawn(async move {
+                            crate::l2_worker::run_l2_job(cfg2, val2).await;
+                        });
+                    }
+                }
                 let target      = kaspa_math::Uint256::from_compact_target_bits(job.bits);
                 let genome_active = job.daa_score >= genome_activation;
                 let id          = job.pre_pow_hash;
