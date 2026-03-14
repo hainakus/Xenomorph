@@ -109,6 +109,7 @@ else
     --l2-coordinator "$COORDINATOR_URL" \
     --l2-theme genetics \
     --pool-name "Xenom Genetics Pool" \
+    --devnet \
     &
   PIDS+=($!)
   sleep 1

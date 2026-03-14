@@ -804,7 +804,7 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
         tokio::spawn(async move {
             while let Some(job) = job_rx.recv().await {
                 let target      = kaspa_math::Uint256::from_compact_target_bits(job.bits);
-                let genome_active = job.epoch_seed != kaspa_hashes::Hash::default();
+                let genome_active = job.daa_score >= genome_activation;
                 let id          = job.pre_pow_hash;
                 let extranonce1 = job.extranonce1;
                 let job_id      = job.job_id.clone();
@@ -814,7 +814,7 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
                     pre_pow_hash:   job.pre_pow_hash,
                     epoch_seed:     job.epoch_seed,
                     timestamp:      job.timestamp,
-                    daa_score:      0,
+                    daa_score:      job.daa_score,
                     bits:           job.bits,
                     target,
                     genome_active,
