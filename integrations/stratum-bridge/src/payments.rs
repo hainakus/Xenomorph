@@ -213,6 +213,36 @@ pub async fn execute_payout(
     // Sort outputs DESC so the largest (lowest storage-mass) outputs go first.
     outputs_plan.sort_unstable_by(|a, b| b.1.cmp(&a.1));
 
+    // ── 4a. Pre-filter outputs that can never satisfy the storage-mass limit ───
+    // Storage mass for a single output v (best-case, with up to MAX_INPUTS inputs
+    // each at the pool's current mean value):
+    //   storage = C/v − C·N/mean_in
+    // Viable when: C/v ≤ MAX_SELECTABLE_MASS + best_arithmetic_ins
+    // => min_viable = C / (MAX_SELECTABLE_MASS + best_arithmetic_ins)
+    {
+        let n_best = sorted_utxos.len().min(MAX_INPUTS) as u64;
+        if n_best > 0 {
+            let sum_best: u64 = sorted_utxos.iter().take(n_best as usize)
+                .map(|e| e.utxo_entry.amount).sum();
+            let mean_best    = (sum_best / n_best).max(1);
+            let best_arith   = n_best.saturating_mul(STORAGE_MASS_PARAMETER / mean_best);
+            let max_harmonic = MAX_SELECTABLE_MASS.saturating_add(best_arith);
+            let min_viable   = if max_harmonic == 0 { u64::MAX }
+                               else { STORAGE_MASS_PARAMETER / max_harmonic };
+            if min_viable > 1 {
+                let before = outputs_plan.len();
+                outputs_plan.retain(|(_, v)| *v >= min_viable);
+                let dropped = before - outputs_plan.len();
+                if dropped > 0 {
+                    warn!(
+                        "Dropped {dropped} payout output(s) below storage-mass minimum \
+                         ({min_viable} sompi). Raise --min-payout-sompi to >= {min_viable}."
+                    );
+                }
+            }
+        }
+    }
+
     // ── 4. Batch loop: build/sign/submit one tx per mass-safe batch ───────────
     //
     // Storage mass formula (KIP-9 Alpha):
@@ -264,8 +294,7 @@ pub async fn execute_payout(
             }
             let mass = estimate_tx_mass(&input_amts, &out_amts);
 
-            if mass <= MAX_SELECTABLE_MASS || batch_outputs.is_empty() {
-                // Fits (or force-include the very first output even if it alone is heavy).
+            if mass <= MAX_SELECTABLE_MASS {
                 batch_outputs.push((addr.clone(), *amount));
                 batch_inputs_end  = temp_end;
                 batch_input_total = temp_total;
