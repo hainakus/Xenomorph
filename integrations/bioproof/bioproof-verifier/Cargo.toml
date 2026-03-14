@@ -1,0 +1,27 @@
+[package]
+name = "bioproof-verifier"
+description = "BioProof verifier — validates manifest integrity, signature and on-chain anchor"
+rust-version.workspace = true
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bioproof-verifier"
+path = "src/main.rs"
+
+[dependencies]
+bioproof-core        = { path = "../bioproof-core" }
+kaspa-core.workspace         = true
+
+anyhow    = "1"
+clap.workspace        = true
+hex.workspace         = true
+log.workspace         = true
+serde.workspace       = true
+serde_json.workspace  = true
+tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread", "fs"] }
+
+[lints]
+workspace = true

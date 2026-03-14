@@ -1,0 +1,31 @@
+[package]
+name = "genetics-l2-validator"
+description = "Genetics L2 — result validator (partial recomputation, hash verification)"
+rust-version.workspace = true
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "genetics-l2-validator"
+path = "src/main.rs"
+
+[dependencies]
+genetics-l2-core     = { path = "../genetics-l2-core" }
+bioproof-core        = { path = "../../../integrations/bioproof/bioproof-core" }
+kaspa-core.workspace = true
+
+anyhow    = "1"
+blake3.workspace      = true
+clap.workspace        = true
+hex.workspace         = true
+log.workspace         = true
+reqwest   = { version = "0.12", features = ["json"] }
+serde.workspace       = true
+serde_json.workspace  = true
+tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread", "time"] }
+uuid = { version = "1", features = ["v4"] }
+
+[lints]
+workspace = true

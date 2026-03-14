@@ -1,0 +1,33 @@
+[package]
+name = "bioproof-daemon"
+description = "BioProof anchor daemon — chunks files, signs manifests, submits OP_RETURN anchors to the Xenom chain"
+rust-version.workspace = true
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bioproof-daemon"
+path = "src/main.rs"
+
+[dependencies]
+bioproof-core           = { path = "../bioproof-core" }
+xenom-anchor-client     = { path = "../../xenom-anchor-client" }
+kaspa-addresses.workspace       = true
+kaspa-consensus-core.workspace  = true
+kaspa-grpc-client.workspace     = true
+kaspa-rpc-core.workspace        = true
+kaspa-txscript.workspace        = true
+
+anyhow    = "1"
+clap.workspace       = true
+hex.workspace        = true
+kaspa-core.workspace = true
+log.workspace        = true
+serde.workspace      = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread", "fs"] }
+
+[lints]
+workspace = true

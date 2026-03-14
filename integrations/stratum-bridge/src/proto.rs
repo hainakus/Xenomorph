@@ -50,18 +50,23 @@ impl StratumNotification {
     /// 4. epoch_seed      — 64-char hex (32 bytes): genome epoch seed
     /// 5. timestamp       — 16-char hex (8 bytes): template timestamp in milliseconds
     /// 6. clean_jobs      — bool: true → abandon previous jobs
+    /// 7. l2_job          — optional JSON object with themed L2 compute task, or null
+    ///                       Miners that do not support L2 safely ignore this field.
     pub fn notify(
-        job_id: &str,
+        job_id:      &str,
         pre_pow_hash: &str,
-        bits: &str,
-        epoch_seed: &str,
-        timestamp: &str,
-        clean_jobs: bool,
+        bits:        &str,
+        epoch_seed:  &str,
+        timestamp:   &str,
+        clean_jobs:  bool,
+        l2_job:      Value,
     ) -> Self {
         Self {
             id: None,
             method: "mining.notify".into(),
-            params: serde_json::json!([job_id, pre_pow_hash, bits, epoch_seed, timestamp, clean_jobs]),
+            params: serde_json::json!([
+                job_id, pre_pow_hash, bits, epoch_seed, timestamp, clean_jobs, l2_job
+            ]),
         }
     }
 }

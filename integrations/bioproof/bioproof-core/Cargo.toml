@@ -1,0 +1,19 @@
+[package]
+name = "bioproof-core"
+description = "BioProof shared types, BLAKE3 chunking and signing primitives"
+rust-version.workspace = true
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+blake3.workspace     = true
+secp256k1.workspace  = true
+hex.workspace        = true
+serde                = { workspace = true }
+serde_json.workspace = true
+thiserror.workspace  = true
+
+[lints]
+workspace = true

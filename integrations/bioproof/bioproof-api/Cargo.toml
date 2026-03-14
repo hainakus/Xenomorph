@@ -1,0 +1,29 @@
+[package]
+name = "bioproof-api"
+description = "BioProof REST API — query anchors, lineage and verify certificates"
+rust-version.workspace = true
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bioproof-api"
+path = "src/main.rs"
+
+[dependencies]
+bioproof-core        = { path = "../bioproof-core" }
+kaspa-core.workspace = true
+
+anyhow    = "1"
+axum      = "0.7"
+clap.workspace        = true
+log.workspace         = true
+serde.workspace       = true
+serde_json.workspace  = true
+sqlx  = { version = "0.7", features = ["runtime-tokio-native-tls", "sqlite"] }
+tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread", "net"] }
+tower-http = { version = "0.5", features = ["cors"] }
+
+[lints]
+workspace = true

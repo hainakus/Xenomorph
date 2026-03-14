@@ -24,6 +24,7 @@ use tower_http::cors::CorsLayer;
 use crate::{
     accounting::{Accounting, PayoutStatus},
     db::Db,
+    l2_jobs::L2JobSlot,
 };
 
 // ── Embedded SPA ────────────────────────────────────────────────────────────
@@ -78,6 +79,10 @@ pub struct ApiState {
     pub db:              Option<Arc<Db>>,
     /// Stratum TCP listen address e.g. "0.0.0.0:1444" — exposed in the API
     pub stratum_endpoint: String,
+    /// Pool theme: "genetics" | "climate" | "ai" | "materials" | "generic"
+    pub theme:           String,
+    /// Current L2 job slot — `None` if L2 dispatch is disabled
+    pub l2_slot:         Option<L2JobSlot>,
 }
 
 impl ApiState {
@@ -87,6 +92,8 @@ impl ApiState {
         pool_name:        String,
         db:               Option<Arc<Db>>,
         stratum_endpoint: String,
+        theme:            String,
+        l2_slot:          Option<L2JobSlot>,
     ) -> Self {
         Self {
             accounting,
@@ -97,6 +104,8 @@ impl ApiState {
             pool_name,
             db,
             stratum_endpoint,
+            theme,
+            l2_slot,
         }
     }
 }
@@ -114,6 +123,20 @@ struct PoolStats {
     total_blocks:      u64,
     pending_payouts:   usize,
     paid_payouts:      usize,
+    theme:             String,
+    l2_enabled:        bool,
+}
+
+#[derive(Serialize)]
+struct L2Info {
+    theme:        String,
+    enabled:      bool,
+    job_id:       Option<String>,
+    task:         Option<String>,
+    dataset:      Option<String>,
+    dataset_url:  Option<String>,
+    fragment:     Option<u64>,
+    reward_sompi: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -259,6 +282,28 @@ async fn get_payments(State(s): State<ApiState>) -> Json<Vec<TxRecord>> {
     Json(vec![])
 }
 
+async fn get_l2(State(s): State<ApiState>) -> Json<L2Info> {
+    let theme   = s.theme.clone();
+    let enabled = s.l2_slot.is_some();
+    if let Some(slot) = &s.l2_slot {
+        if let Ok(guard) = slot.try_read() {
+            if let Some(job) = guard.as_ref() {
+                return Json(L2Info {
+                    theme,
+                    enabled,
+                    job_id:       Some(job.job_id.clone()),
+                    task:         Some(job.task.clone()),
+                    dataset:      Some(job.dataset.clone()),
+                    dataset_url:  job.dataset_url.clone(),
+                    fragment:     Some(job.fragment),
+                    reward_sompi: Some(job.reward_sompi),
+                });
+            }
+        }
+    }
+    Json(L2Info { theme, enabled, job_id: None, task: None, dataset: None, dataset_url: None, fragment: None, reward_sompi: None })
+}
+
 async fn get_network(
     State(s): State<ApiState>,
 ) -> Result<Json<NetworkInfo>, StatusCode> {
@@ -305,6 +350,7 @@ pub async fn run_api_server(
         .route("/api/blocks",         get(get_blocks))
         .route("/api/payments",       get(get_payments))
         .route("/api/network",        get(get_network))
+        .route("/api/l2",             get(get_l2))
         .route("/api/stats",          get(get_stats))
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -339,6 +385,8 @@ async fn build_pool_stats(s: &ApiState) -> PoolStats {
             total_blocks,
             pending_payouts:   pending,
             paid_payouts:      paid,
+            theme:             s.theme.clone(),
+            l2_enabled:        s.l2_slot.is_some(),
         };
     }
 
@@ -361,6 +409,8 @@ async fn build_pool_stats(s: &ApiState) -> PoolStats {
         total_blocks,
         pending_payouts:   pending,
         paid_payouts:      paid,
+        theme:             s.theme.clone(),
+        l2_enabled:        s.l2_slot.is_some(),
     }
 }
 

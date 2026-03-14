@@ -1,0 +1,23 @@
+# genetics-bridge.toml
+# Stratum bridge configured as a Genetics L2 pool.
+#
+# Start:
+#   xenom-stratum-bridge \
+#     --config config/genetics-bridge.toml \
+#     --mining-address xenom:qYOURPOOLADDRESS \
+#     --listen 0.0.0.0:5555 \
+#     --api-listen 0.0.0.0:5556
+
+[bridge]
+theme = "genetics"
+name  = "Xenom Genetics Pool"
+
+[node]
+rpc = "127.0.0.1:36669"
+
+[l2]
+enabled    = true
+coordinator = "http://localhost:8091"   # genetics-l2-coordinator
+dataset    = "hg38-align-v1"
+poll_secs  = 10
+max_workers = 8

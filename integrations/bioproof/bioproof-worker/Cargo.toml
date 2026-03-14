@@ -1,0 +1,30 @@
+[package]
+name = "bioproof-worker"
+description = "BioProof scientific worker daemon — picks compute jobs, executes pipelines, anchors results on Xenom"
+rust-version.workspace = true
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bioproof-worker"
+path = "src/main.rs"
+
+[dependencies]
+bioproof-core        = { path = "../bioproof-core" }
+kaspa-grpc-client.workspace  = true
+kaspa-rpc-core.workspace     = true
+kaspa-core.workspace         = true
+
+anyhow    = "1"
+clap.workspace          = true
+sysinfo.workspace       = true
+hex.workspace         = true
+log.workspace         = true
+serde.workspace       = true
+serde_json.workspace  = true
+tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread", "fs", "process", "time"] }
+
+[lints]
+workspace = true

@@ -28,7 +28,9 @@ use crate::{
     accounting::Accounting,
     api::{ApiState, MinerApiEntry, update_miner_hashrate},
     db::Db,
+    dispatcher,
     job::{Job, JobManager},
+    l2_jobs::L2JobSlot,
     proto::{StratumNotification, StratumRequest, StratumResponse},
     vardiff::{VarDiff, VarDiffConfig},
 };
@@ -98,6 +100,7 @@ pub async fn run_server(
     api_state:     Option<ApiState>,
     db:            Option<Arc<Db>>,
     packed_genome: Option<Arc<Vec<u8>>>,
+    l2_slot:       Option<L2JobSlot>,
 ) -> Result<()> {
     let listener = TcpListener::bind(listen_addr).await.context("bind stratum port")?;
     info!("Stratum server listening on {listen_addr}");
@@ -105,6 +108,9 @@ pub async fn run_server(
         info!("Genome PoW: local share validation ENABLED (genome dataset loaded)");
     } else {
         info!("Genome PoW: local share validation DISABLED (no --genome-file; only block-target shares reach the node)");
+    }
+    if l2_slot.is_some() {
+        info!("L2 dispatch: ENABLED — themed compute jobs will be piggybacked on mining.notify");
     }
 
     loop {
@@ -119,9 +125,10 @@ pub async fn run_server(
         let api    = api_state.clone();
         let db2    = db.clone();
         let genome = packed_genome.clone();
+        let l2     = l2_slot.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = handle_miner(stream, peer, jrx, jmgr, rpc2, vdcfg, acct, api, db2, genome).await {
+            if let Err(e) = handle_miner(stream, peer, jrx, jmgr, rpc2, vdcfg, acct, api, db2, genome, l2).await {
                 warn!("Miner {peer} disconnected: {e}");
             } else {
                 info!("Miner {peer} disconnected");
@@ -143,6 +150,7 @@ async fn handle_miner(
     api_state:     Option<ApiState>,
     db:            Option<Arc<Db>>,
     packed_genome: Option<Arc<Vec<u8>>>,
+    l2_slot:       Option<L2JobSlot>,
 ) -> Result<()> {
     // ── API: register connection ──────────────────────────────────────────────
     if let Some(ref api) = api_state {
@@ -175,7 +183,7 @@ async fn handle_miner(
                 if authorized {
                     let job = job_rx.borrow().clone();
                     if let Some(j) = job {
-                        send_notify(&mut writer, &j, true).await?;
+                        send_notify(&mut writer, &j, true, &l2_slot).await?;
                     }
                 }
             }
@@ -286,7 +294,7 @@ async fn handle_miner(
 
                         let job = job_rx.borrow().clone();
                         if let Some(j) = job {
-                            send_notify(&mut writer, &j, true).await?;
+                            send_notify(&mut writer, &j, true, &l2_slot).await?;
                         }
                     }
 
@@ -580,10 +588,19 @@ async fn write_line<T: serde::Serialize>(writer: &mut OwnedWriteHalf, msg: &T) -
     Ok(())
 }
 
-async fn send_notify(writer: &mut OwnedWriteHalf, job: &Job, clean: bool) -> Result<()> {
+async fn send_notify(
+    writer:  &mut OwnedWriteHalf,
+    job:     &Job,
+    clean:   bool,
+    l2_slot: &Option<L2JobSlot>,
+) -> Result<()> {
+    let l2_val = match l2_slot {
+        Some(slot) => dispatcher::dispatch(job, slot).await.l2_val,
+        None       => serde_json::Value::Null,
+    };
     let notif = StratumNotification::notify(
         &job.id, &job.pre_pow_hash_hex, &job.bits_hex,
-        &job.epoch_seed_hex, &job.timestamp_hex, clean,
+        &job.epoch_seed_hex, &job.timestamp_hex, clean, l2_val,
     );
     write_line(writer, &notif).await
 }

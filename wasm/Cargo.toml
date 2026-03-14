@@ -58,6 +58,9 @@ wasm32-rpc = [
 wasm32-keygen = []
 default = []
 
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
 [package.metadata.docs.rs]
 targets = ["wasm32-unknown-unknown"]
 
