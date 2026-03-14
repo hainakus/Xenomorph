@@ -39,6 +39,8 @@ pub enum Algorithm {
     RnaExpression,
     Metagenomics,
     MolecularDocking,
+    /// Acoustic species identification from audio clips (BirdCLEF, bioacoustics).
+    AcousticClassification,
     Custom(String),
 }
 
@@ -53,8 +55,9 @@ impl std::fmt::Display for Algorithm {
             Self::ProteinFolding     => write!(f, "protein_folding"),
             Self::RnaExpression      => write!(f, "rna_expression"),
             Self::Metagenomics       => write!(f, "metagenomics"),
-            Self::MolecularDocking   => write!(f, "molecular_docking"),
-            Self::Custom(s)          => write!(f, "{s}"),
+            Self::MolecularDocking         => write!(f, "molecular_docking"),
+            Self::AcousticClassification   => write!(f, "acoustic_classification"),
+            Self::Custom(s)                => write!(f, "{s}"),
         }
     }
 }

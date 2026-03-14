@@ -31,13 +31,21 @@ async fn main() -> Result<()> {
         .and_then(|s| s.parse().ok()).unwrap_or(300);
     let kaggle_key      = m.get_one::<String>("kaggle-key").cloned();
     let boinc_url       = m.get_one::<String>("boinc-url").cloned();
+    let competition     = m.get_one::<String>("competition").cloned();
 
     let http = reqwest::Client::new();
 
     let fetchers: Vec<Box<dyn SourceFetcher>> = {
         let mut v: Vec<Box<dyn SourceFetcher>> = Vec::new();
         if let Some(key) = kaggle_key {
-            v.push(Box::new(KaggleFetcher::new(key)));
+            let mut fetcher = KaggleFetcher::new(key);
+            if let Some(ref slug) = competition {
+                fetcher = fetcher.with_competition(slug.clone());
+            }
+            v.push(Box::new(fetcher));
+        } else if let Some(slug) = competition {
+            // No Kaggle key but --competition given: seed stub job without API call
+            v.push(Box::new(KaggleFetcher::new(String::new()).with_competition(slug)));
         }
         if let Some(url) = boinc_url {
             v.push(Box::new(BoincFetcher::new(url)));
@@ -109,4 +117,7 @@ fn cli() -> Command {
         .arg(Arg::new("boinc-url")
             .long("boinc-url").value_name("URL")
             .help("BOINC project XML URL"))
+        .arg(Arg::new("competition")
+            .long("competition").value_name("SLUG")
+            .help("Seed a specific Kaggle competition (e.g. birdclef-2026)"))
 }

@@ -53,7 +53,7 @@ fn cli() -> Command {
             .default_value("0.0.0.0:1444")
             .help("Stratum TCP listen address"))
         .arg(Arg::new("mining-address")
-            .long("mining-address").short('a').value_name("ADDRESS").required(true)
+            .long("mining-address").short('a').value_name("ADDRESS").required_unless_present("keygen")
             .help("Xenom pool reward address for coinbase output"))
         .arg(Arg::new("poll-interval-ms")
             .long("poll-interval-ms").value_name("MS")
@@ -162,18 +162,16 @@ async fn main() -> Result<()> {
     // ── Key generator (--keygen) ───────────────────────────────────────────────
     if m.get_flag("keygen") {
         let (sk, pk) = secp256k1::generate_keypair(&mut secp256k1::rand::thread_rng());
-        let addr = Address::new(
-            Prefix::Mainnet,
-            Version::PubKey,
-            &pk.x_only_public_key().0.serialize(),
-        );
-        let addr_str = String::from(&addr);
+        let pub_bytes = pk.x_only_public_key().0.serialize();
+        let addr_main = String::from(&Address::new(Prefix::Mainnet, Version::PubKey, &pub_bytes));
+        let addr_dev  = String::from(&Address::new(Prefix::Devnet,  Version::PubKey, &pub_bytes));
         println!();
-        println!("  Private key  : {}", sk.display_secret());
-        println!("  Pool address : {addr_str}");
+        println!("  Private key      : {}", sk.display_secret());
+        println!("  Mainnet address  : {addr_main}");
+        println!("  Devnet  address  : {addr_dev}");
         println!();
         println!("Use these flags when starting the bridge:");
-        println!("  --mining-address {addr_str} \\");
+        println!("  --mining-address <address> \\");
         println!("  --pool-private-key {}", sk.display_secret());
         println!();
         println!("Keep the private key SECRET — it controls spending of all pool coinbase rewards.");
@@ -226,6 +224,15 @@ async fn main() -> Result<()> {
             .context("loading --config")?;
         info!("Config loaded from {cfg_path}: theme={}", bridge_cfg.theme());
     }
+
+    // TOML name overrides CLI default (but explicit --pool-name still wins)
+    let pool_name = if !bridge_cfg.bridge.name.is_empty()
+        && m.get_one::<String>("pool-name").map(|s| s.as_str()) == Some("Xenom Pool")
+    {
+        bridge_cfg.bridge.name.clone()
+    } else {
+        pool_name
+    };
 
     // CLI flags override TOML
     if let Some(t) = m.get_one::<String>("l2-theme")      { bridge_cfg.bridge.theme = t.clone(); }
