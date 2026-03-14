@@ -1,0 +1,23 @@
+# climate-bridge.toml
+# Stratum bridge configured as a Climate L2 pool.
+#
+# Start:
+#   xenom-stratum-bridge \
+#     --config config/climate-bridge.toml \
+#     --mining-address xenom:qYOURPOOLADDRESS \
+#     --listen 0.0.0.0:5557 \
+#     --api-listen 0.0.0.0:5558
+
+[bridge]
+theme = "climate"
+name  = "Xenom Climate Pool"
+
+[node]
+rpc = "127.0.0.1:36669"
+
+[l2]
+enabled     = true
+coordinator = "http://localhost:8092"   # climate-l2-coordinator (future)
+dataset     = "era5-lite-v1"
+poll_secs   = 30
+max_workers = 4

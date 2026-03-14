@@ -1,0 +1,29 @@
+[package]
+name = "xenom-anchor-client"
+description = "Shared Xenom anchor-tx client: fetch UTXOs, sign, submit_transaction with tx.payload"
+rust-version.workspace = true
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "xenom_anchor_client"
+path = "src/lib.rs"
+
+[dependencies]
+kaspa-addresses.workspace      = true
+kaspa-consensus-core.workspace = true
+kaspa-core.workspace           = true
+kaspa-grpc-client.workspace    = true
+kaspa-hashes.workspace         = true
+kaspa-rpc-core.workspace       = true
+kaspa-txscript.workspace       = true
+secp256k1.workspace            = true
+
+anyhow  = "1"
+log.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

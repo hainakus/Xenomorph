@@ -4,4 +4,5 @@ analyzer-target
 /web/*
 package-lock.json
 /nodejs/*
+/npm/kaspa/*
 /docs/*

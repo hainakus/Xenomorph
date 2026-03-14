@@ -643,6 +643,107 @@ dependencies = [
 ]
 
 [[package]]
+name = "bioproof-api"
+version = "0.15.2"
+dependencies = [
+ "anyhow",
+ "axum 0.7.9",
+ "bioproof-core",
+ "clap 4.5.16",
+ "kaspa-core",
+ "log",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tower-http 0.5.2",
+]
+
+[[package]]
+name = "bioproof-core"
+version = "0.15.2"
+dependencies = [
+ "blake3",
+ "hex",
+ "secp256k1",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "bioproof-daemon"
+version = "0.15.2"
+dependencies = [
+ "anyhow",
+ "bioproof-core",
+ "clap 4.5.16",
+ "hex",
+ "kaspa-addresses",
+ "kaspa-consensus-core",
+ "kaspa-core",
+ "kaspa-grpc-client",
+ "kaspa-rpc-core",
+ "kaspa-txscript",
+ "log",
+ "serde",
+ "serde_json",
+ "tokio",
+ "xenom-anchor-client",
+]
+
+[[package]]
+name = "bioproof-indexer"
+version = "0.15.2"
+dependencies = [
+ "anyhow",
+ "bioproof-core",
+ "clap 4.5.16",
+ "kaspa-consensus-core",
+ "kaspa-core",
+ "kaspa-grpc-client",
+ "kaspa-rpc-core",
+ "log",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
+name = "bioproof-verifier"
+version = "0.15.2"
+dependencies = [
+ "anyhow",
+ "bioproof-core",
+ "clap 4.5.16",
+ "hex",
+ "kaspa-core",
+ "log",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "bioproof-worker"
+version = "0.15.2"
+dependencies = [
+ "anyhow",
+ "bioproof-core",
+ "clap 4.5.16",
+ "hex",
+ "kaspa-core",
+ "kaspa-grpc-client",
+ "kaspa-rpc-core",
+ "log",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tokio",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2104,6 +2205,115 @@ dependencies = [
  "typenum",
  "version_check",
  "zeroize",
+]
+
+[[package]]
+name = "genetics-l2-coordinator"
+version = "0.15.2"
+dependencies = [
+ "anyhow",
+ "axum 0.7.9",
+ "bioproof-core",
+ "clap 4.5.16",
+ "genetics-l2-core",
+ "hex",
+ "kaspa-core",
+ "log",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tower-http 0.5.2",
+ "uuid 1.10.0",
+]
+
+[[package]]
+name = "genetics-l2-core"
+version = "0.15.2"
+dependencies = [
+ "anyhow",
+ "bioproof-core",
+ "blake3",
+ "hex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "genetics-l2-fetcher"
+version = "0.15.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "blake3",
+ "clap 4.5.16",
+ "genetics-l2-core",
+ "hex",
+ "kaspa-core",
+ "log",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "genetics-l2-settlement"
+version = "0.15.2"
+dependencies = [
+ "anyhow",
+ "clap 4.5.16",
+ "genetics-l2-core",
+ "hex",
+ "kaspa-core",
+ "kaspa-grpc-client",
+ "kaspa-rpc-core",
+ "log",
+ "reqwest",
+ "secp256k1",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid 1.10.0",
+ "xenom-anchor-client",
+]
+
+[[package]]
+name = "genetics-l2-validator"
+version = "0.15.2"
+dependencies = [
+ "anyhow",
+ "bioproof-core",
+ "blake3",
+ "clap 4.5.16",
+ "genetics-l2-core",
+ "hex",
+ "kaspa-core",
+ "log",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid 1.10.0",
+]
+
+[[package]]
+name = "genetics-l2-worker"
+version = "0.15.2"
+dependencies = [
+ "anyhow",
+ "bioproof-core",
+ "blake3",
+ "clap 4.5.16",
+ "genetics-l2-core",
+ "hex",
+ "kaspa-core",
+ "log",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid 1.10.0",
 ]
 
 [[package]]
@@ -8731,6 +8941,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "xenom-anchor-client"
+version = "0.15.2"
+dependencies = [
+ "anyhow",
+ "kaspa-addresses",
+ "kaspa-consensus-core",
+ "kaspa-core",
+ "kaspa-grpc-client",
+ "kaspa-hashes",
+ "kaspa-rpc-core",
+ "kaspa-txscript",
+ "log",
+ "secp256k1",
+ "tokio",
+]
+
+[[package]]
 name = "xenom-cli"
 version = "0.15.2"
 dependencies = [
@@ -8785,6 +9012,7 @@ dependencies = [
  "axum 0.7.9",
  "clap 4.5.16",
  "faster-hex",
+ "hex",
  "kaspa-addresses",
  "kaspa-consensus-core",
  "kaspa-core",
@@ -8795,11 +9023,13 @@ dependencies = [
  "kaspa-rpc-core",
  "kaspa-txscript",
  "log",
+ "reqwest",
  "secp256k1",
  "serde",
  "serde_json",
  "sqlx",
  "tokio",
+ "toml",
  "tower-http 0.5.2",
 ]
 

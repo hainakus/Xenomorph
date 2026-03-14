@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "description": "Xenom themed L2 pool registry — discovery endpoint for miners",
+  "pools": [
+    {
+      "theme": "genetics",
+      "name": "Xenom Genetics Pool",
+      "stratum": "genetics.pool.xenom.net:5555",
+      "api": "https://genetics.pool.xenom.net:5556",
+      "coordinator": "https://genetics.pool.xenom.net:8091",
+      "dataset": "hg38-align-v1",
+      "description": "Genomics pipeline pool — sequence alignment, variant calling, genome assembly",
+      "algorithms": ["sequence_alignment", "variant_calling", "genome_assembly", "rna_expression"]
+    },
+    {
+      "theme": "climate",
+      "name": "Xenom Climate Pool",
+      "stratum": "climate.pool.xenom.net:5557",
+      "api": "https://climate.pool.xenom.net:5558",
+      "coordinator": "https://climate.pool.xenom.net:8092",
+      "dataset": "era5-lite-v1",
+      "description": "Climate modelling pool — ERA5, CMIP6, ECMWF datasets",
+      "algorithms": ["climate_simulation", "weather_prediction", "ocean_modelling"]
+    },
+    {
+      "theme": "ai",
+      "name": "Xenom AI Pool",
+      "stratum": "ai.pool.xenom.net:5559",
+      "api": "https://ai.pool.xenom.net:5560",
+      "coordinator": "https://ai.pool.xenom.net:8093",
+      "dataset": "imagenet-subset-v1",
+      "description": "AI inference and training pool — PyTorch, TensorFlow, CUDA workloads",
+      "algorithms": ["ai_inference", "ai_training", "protein_folding"]
+    },
+    {
+      "theme": "materials",
+      "name": "Xenom Materials Pool",
+      "stratum": "materials.pool.xenom.net:5561",
+      "api": "https://materials.pool.xenom.net:5562",
+      "coordinator": "https://materials.pool.xenom.net:8094",
+      "dataset": "mp-2024-subset",
+      "description": "Materials science pool — molecular dynamics, DFT, crystal structure prediction",
+      "algorithms": ["molecular_dynamics", "molecular_docking", "crystal_prediction"]
+    }
+  ]
+}

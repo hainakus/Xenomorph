@@ -1,0 +1,32 @@
+[package]
+name = "genetics-l2-coordinator"
+description = "Genetics L2 — coordinator REST API, job registry, scheduler"
+rust-version.workspace = true
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "genetics-l2-coordinator"
+path = "src/main.rs"
+
+[dependencies]
+genetics-l2-core     = { path = "../genetics-l2-core" }
+bioproof-core        = { path = "../../../integrations/bioproof/bioproof-core" }
+kaspa-core.workspace = true
+
+anyhow    = "1"
+axum      = "0.7"
+clap.workspace        = true
+hex.workspace         = true
+log.workspace         = true
+serde.workspace       = true
+serde_json.workspace  = true
+sqlx  = { version = "0.7", features = ["runtime-tokio-native-tls", "sqlite"] }
+tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread", "net"] }
+tower-http = { version = "0.5", features = ["cors"] }
+uuid = { version = "1", features = ["v4"] }
+
+[lints]
+workspace = true

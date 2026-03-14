@@ -1,7 +1,10 @@
 mod accounting;
 mod api;
+mod config;
 mod db;
+mod dispatcher;
 mod job;
+mod l2_jobs;
 mod payments;
 mod proto;
 mod stratum;
@@ -131,6 +134,23 @@ fn cli() -> Command {
             .help("Path to grch38.xenom packed genome dataset. \
                    When supplied, Genome PoW shares are validated locally and \
                    only block candidates are forwarded to the node."))
+        // ── L2 themed pool ────────────────────────────────────────────────────
+        .arg(Arg::new("config")
+            .long("config").value_name("PATH")
+            .help("Path to TOML config file (sets bridge.theme, l2.coordinator, etc.)"))
+        .arg(Arg::new("l2-coordinator")
+            .long("l2-coordinator").value_name("URL")
+            .help("L2 coordinator base URL (overrides config). Enables L2 job dispatch."))
+        .arg(Arg::new("l2-theme")
+            .long("l2-theme").value_name("THEME")
+            .help("Pool theme: genetics | climate | ai | materials (overrides config)"))
+        .arg(Arg::new("l2-dataset")
+            .long("l2-dataset").value_name("ID")
+            .help("Dataset identifier sent to miners (e.g. hg38-align-v1)"))
+        .arg(Arg::new("l2-poll-secs")
+            .long("l2-poll-secs").value_name("N")
+            .default_value("10").value_parser(clap::value_parser!(u64))
+            .help("L2 coordinator poll interval in seconds"))
 }
 
 #[tokio::main]
@@ -198,6 +218,20 @@ async fn main() -> Result<()> {
     let api_listen_str = m.get_one::<String>("api-listen").unwrap();
     let pool_name      = m.get_one::<String>("pool-name").unwrap().clone();
     let db_path        = m.get_one::<String>("db-path").unwrap().clone();
+
+    // ── TOML config (optional) ────────────────────────────────────────────────
+    let mut bridge_cfg = config::BridgeConfig::default();
+    if let Some(cfg_path) = m.get_one::<String>("config") {
+        bridge_cfg = config::BridgeConfig::load(std::path::Path::new(cfg_path))
+            .context("loading --config")?;
+        info!("Config loaded from {cfg_path}: theme={}", bridge_cfg.theme());
+    }
+
+    // CLI flags override TOML
+    if let Some(t) = m.get_one::<String>("l2-theme")      { bridge_cfg.bridge.theme = t.clone(); }
+    if let Some(c) = m.get_one::<String>("l2-coordinator") { bridge_cfg.l2.coordinator = c.clone(); bridge_cfg.l2.enabled = true; }
+    if let Some(d) = m.get_one::<String>("l2-dataset")    { bridge_cfg.l2.dataset = d.clone(); }
+    bridge_cfg.l2.poll_secs = *m.get_one::<u64>("l2-poll-secs").unwrap();
 
     // ── Genome dataset (optional) ─────────────────────────────────────────────
     let packed_genome: Option<Arc<Vec<u8>>> = match m.get_one::<String>("genome-file") {
@@ -416,7 +450,28 @@ async fn main() -> Result<()> {
         info!("Auto-payout disabled (no --pool-private-key provided)");
     }
 
-    // ── REST API server ──────────────────────────────────────────────────────
+    // ── L2 job poller (optional) ─────────────────────────────────────────────
+    let l2_slot: Option<l2_jobs::L2JobSlot> = if bridge_cfg.l2.enabled
+        && !bridge_cfg.l2.coordinator.is_empty()
+    {
+        let slot = l2_jobs::new_slot();
+        let slot2        = slot.clone();
+        let theme        = if bridge_cfg.bridge.theme.is_empty() { "generic".to_owned() } else { bridge_cfg.bridge.theme.clone() };
+        let coordinator  = bridge_cfg.l2.coordinator.clone();
+        let dataset      = bridge_cfg.l2.dataset.clone();
+        let poll_secs    = bridge_cfg.l2.poll_secs;
+        tokio::spawn(async move {
+            l2_jobs::run_poller(theme, coordinator, dataset, poll_secs, slot2).await;
+        });
+        info!("L2 pool: theme={} coordinator={} dataset={}",
+            bridge_cfg.bridge.theme, bridge_cfg.l2.coordinator, bridge_cfg.l2.dataset);
+        Some(slot)
+    } else {
+        info!("L2 dispatch disabled (no --l2-coordinator or config l2.enabled=false)");
+        None
+    };
+
+    // ── REST API server ────────────────────────────────────────────────
     let api_state: Option<ApiState> = if !api_listen_str.is_empty() {
         let api_addr: SocketAddr = api_listen_str.parse().context("Invalid --api-listen")?;
         let state = ApiState::new(
@@ -425,6 +480,8 @@ async fn main() -> Result<()> {
             pool_name,
             database.clone(),
             listen_str.clone(),
+            bridge_cfg.bridge.theme.clone(),
+            l2_slot.clone(),
         );
         let state2 = state.clone();
         tokio::spawn(async move {
@@ -476,7 +533,7 @@ async fn main() -> Result<()> {
     }
 
     // ── Stratum TCP server (blocks forever) ─────────────────────────────────────
-    stratum::run_server(listen_addr, job_rx, job_mgr, rpc, vardiff_cfg, accounting, api_state, database.clone(), packed_genome).await?;
+    stratum::run_server(listen_addr, job_rx, job_mgr, rpc, vardiff_cfg, accounting, api_state, database.clone(), packed_genome, l2_slot).await?;
 
     Ok(())
 }

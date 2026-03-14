@@ -1,0 +1,23 @@
+# ai-bridge.toml
+# Stratum bridge configured as an AI L2 pool.
+#
+# Start:
+#   xenom-stratum-bridge \
+#     --config config/ai-bridge.toml \
+#     --mining-address xenom:qYOURPOOLADDRESS \
+#     --listen 0.0.0.0:5559 \
+#     --api-listen 0.0.0.0:5560
+
+[bridge]
+theme = "ai"
+name  = "Xenom AI Pool"
+
+[node]
+rpc = "127.0.0.1:36669"
+
+[l2]
+enabled     = true
+coordinator = "http://localhost:8093"   # ai-l2-coordinator (future)
+dataset     = "imagenet-subset-v1"
+poll_secs   = 15
+max_workers = 2

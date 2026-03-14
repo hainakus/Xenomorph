@@ -1,0 +1,30 @@
+[package]
+name = "bioproof-indexer"
+description = "BioProof indexer — watches the Xenom chain and indexes bioproof anchor transactions"
+rust-version.workspace = true
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bioproof-indexer"
+path = "src/main.rs"
+
+[dependencies]
+bioproof-core        = { path = "../bioproof-core" }
+kaspa-grpc-client.workspace  = true
+kaspa-rpc-core.workspace     = true
+kaspa-core.workspace         = true
+kaspa-consensus-core.workspace = true
+
+anyhow    = "1"
+clap.workspace        = true
+log.workspace         = true
+serde.workspace       = true
+serde_json.workspace  = true
+sqlx  = { version = "0.7", features = ["runtime-tokio-native-tls", "sqlite"] }
+tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true
