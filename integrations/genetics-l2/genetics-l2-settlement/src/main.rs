@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Arg, Command};
 use genetics_l2_core::{merkle_root_hex, now_secs, Payout, SettlementPayload};
+use kaspa_addresses::Prefix;
 use serde_json::Value;
 use tokio::time::{sleep, Duration};
 use uuid::Uuid;
@@ -17,10 +18,18 @@ async fn main() -> Result<()> {
     let poll_ms: u64 = m.get_one::<String>("poll-ms")
         .and_then(|s| s.parse().ok()).unwrap_or(15_000);
     let dry_run     = !m.get_flag("submit");
+    let network_prefix = if m.get_flag("devnet") {
+        Prefix::Devnet
+    } else if m.get_flag("testnet") {
+        Prefix::Testnet
+    } else {
+        Prefix::Mainnet
+    };
 
     log::info!("Genetics-L2 Settlement started");
     log::info!("  coordinator: {coordinator}");
     log::info!("  node:        {node_addr}");
+    log::info!("  network:     {network_prefix:?}");
     log::info!("  dry_run:     {dry_run}");
 
     let privkey_hex: Option<String> = m.get_one::<String>("private-key").cloned();
@@ -39,7 +48,8 @@ async fn main() -> Result<()> {
         .context("--private-key")?;
 
     if let Some(ref kp) = keypair {
-        log::info!("  funding: {}", xenom_anchor_client::address_from_keypair(kp));
+        log::info!("  funding: {}",
+            xenom_anchor_client::address_from_keypair(kp, network_prefix));
     }
 
     // Set up shared RPC client for settlement daemon
@@ -61,7 +71,7 @@ async fn main() -> Result<()> {
     let http = reqwest::Client::new();
 
     loop {
-        match settle_validated_jobs(&http, &coordinator, rpc.as_ref(), keypair.as_ref(), fee_sompi, dry_run).await {
+        match settle_validated_jobs(&http, &coordinator, rpc.as_ref(), keypair.as_ref(), fee_sompi, dry_run, network_prefix).await {
             Ok(n) if n > 0 => log::info!("Settled {n} job(s)"),
             Ok(_)          => {}
             Err(e)         => log::warn!("Settlement cycle error: {e:#}"),
@@ -79,6 +89,7 @@ async fn settle_validated_jobs(
     keypair:     Option<&secp256k1::Keypair>,
     fee_sompi:   u64,
     dry_run:     bool,
+    prefix:      Prefix,
 ) -> Result<usize> {
     // Fetch validated (not yet settled) jobs
     let resp = http
@@ -171,7 +182,7 @@ async fn settle_validated_jobs(
             log::info!("  dry-run: skipping chain submission");
             None
         } else if let (Some(rpc_client), Some(kp)) = (rpc, keypair) {
-            match xenom_anchor_client::submit_anchor(rpc_client, kp, &payload_bytes, fee_sompi).await {
+            match xenom_anchor_client::submit_anchor(rpc_client, kp, &payload_bytes, fee_sompi, prefix).await {
                 Ok(id)  => { log::info!("  anchored txid={id}"); Some(id) }
                 Err(e)  => { log::warn!("  anchor failed: {e:#}"); None }
             }
@@ -240,4 +251,12 @@ fn cli() -> Command {
             .long("fee-sompi").value_name("N")
             .default_value("2000")
             .help("Relay fee per input in sompi (default: 2000)"))
+        .arg(Arg::new("devnet")
+            .long("devnet")
+            .action(clap::ArgAction::SetTrue)
+            .help("Use devnet address prefix (xenomdev:)"))
+        .arg(Arg::new("testnet")
+            .long("testnet")
+            .action(clap::ArgAction::SetTrue)
+            .help("Use testnet address prefix (xenomtest:)"))
 }
