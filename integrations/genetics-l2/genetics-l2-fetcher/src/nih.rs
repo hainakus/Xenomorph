@@ -133,15 +133,16 @@ impl SourceFetcher for NihChallengeFetcher {
     fn name(&self) -> &str { "nih_challenge" }
 
     async fn fetch_jobs(&self) -> Result<Vec<ScientificJob>> {
-        let url = "https://www.challenge.gov/api/challenges\
-            ?status=open&agency=HHS,NIH&limit=25";
+        // challenge.gov uses the CKAN action API
+        let url = "https://api.challenge.gov/api/3/action/package_search\
+            ?q=NIH&rows=50&sort=metadata_modified+desc";
 
         let resp = self.http
             .get(url)
             .header("Accept", "application/json")
             .send()
             .await
-            .context("challenge.gov API request")?;
+            .context("challenge.gov CKAN request")?;
 
         if !resp.status().is_success() {
             anyhow::bail!("challenge.gov API {}", resp.status());
@@ -149,37 +150,44 @@ impl SourceFetcher for NihChallengeFetcher {
 
         let json: serde_json::Value = resp.json().await.context("challenge.gov JSON")?;
 
-        // API returns { "challenges": [...] } or just an array
-        let challenges = json["challenges"]
+        // CKAN response: { "success": true, "result": { "count": N, "results": [...] } }
+        if json["success"].as_bool() != Some(true) {
+            log::debug!("[nih_challenge] CKAN returned success=false");
+            return Ok(vec![]);
+        }
+
+        let challenges = json["result"]["results"]
             .as_array()
-            .or_else(|| json.as_array())
             .cloned()
             .unwrap_or_default();
 
         let mut jobs = Vec::new();
         for ch in &challenges {
-            let id    = ch["id"].as_str()
-                .or_else(|| ch["challenge_id"].as_str())
-                .unwrap_or_default();
+            let id    = ch["id"].as_str().unwrap_or_default();
+            let name  = ch["name"].as_str().unwrap_or(id);
             let title = ch["title"].as_str().unwrap_or("NIH Challenge");
-            let topic = ch["tagline"].as_str()
-                .or_else(|| ch["brief_description"].as_str())
-                .unwrap_or(title);
+            // CKAN uses `notes` for description and `tags` for keywords
+            let topic = ch["notes"].as_str().unwrap_or(title);
 
             if id.is_empty() { continue; }
 
-            let prize_usd: u64 = ch["prize_total"]
-                .as_str()
-                .and_then(|s| s.replace(['$', ',', ' '], "").parse().ok())
-                .or_else(|| ch["prize_total"].as_u64())
+            // Extract prize from CKAN extras: [{"key":"prize_total","value":"..."}]
+            let prize_usd: u64 = ch["extras"]
+                .as_array()
+                .and_then(|extras| {
+                    extras.iter()
+                        .find(|e| e["key"].as_str() == Some("prize_total"))
+                        .and_then(|e| e["value"].as_str())
+                        .and_then(|s| s.replace(['$', ',', ' '], "").parse().ok())
+                })
                 .unwrap_or(10_000);
 
             let dataset_root = hex::encode(
                 blake3::hash(format!("nih_challenge:{id}").as_bytes()).as_bytes()
             );
-            let dataset_url  = ch["external_url"].as_str()
-                .map(str::to_owned)
-                .or_else(|| Some(format!("https://www.challenge.gov/challenge/{id}/")));
+            let dataset_url = Some(format!(
+                "https://www.challenge.gov/challenge/{name}/"
+            ));
 
             let algorithm   = algorithm_from_topic(topic);
             let reward      = reward_from_prize_usd(prize_usd);
