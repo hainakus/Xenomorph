@@ -13,16 +13,33 @@ pub struct L2Config {
     pub pubkey_hex:      String,
     pub work_root:       PathBuf,
     pub use_gpu:         bool,
+    pub perch_script:    Option<PathBuf>,
 }
 
 impl L2Config {
-    pub fn new(coordinator_url: String, privkey_hex: String, use_gpu: bool) -> Result<Self> {
+    pub fn new(coordinator_url: String, privkey_hex: String, use_gpu: bool,
+               perch_script: Option<PathBuf>) -> Result<Self> {
         let keypair = BioProofKeypair::from_hex(&privkey_hex)
             .context("invalid --l2-private-key")?;
         let pubkey_hex = keypair.pubkey_hex();
         let work_root  = std::env::temp_dir().join("genome-miner-l2");
-        Ok(Self { coordinator_url, privkey_hex, pubkey_hex, work_root, use_gpu })
+        let perch_script = perch_script.or_else(find_perch_script);
+        Ok(Self { coordinator_url, privkey_hex, pubkey_hex, work_root, use_gpu, perch_script })
     }
+}
+
+/// Search for perch_infer.py in common locations.
+fn find_perch_script() -> Option<PathBuf> {
+    let candidates = [
+        "scripts/perch_infer.py",
+        "/opt/xenom/scripts/perch_infer.py",
+    ];
+    // also check next to the running executable
+    let exe_dir = std::env::current_exe().ok()
+        .and_then(|p| p.parent().map(|d| d.join("perch_infer.py")));
+    candidates.iter().map(PathBuf::from)
+        .chain(exe_dir)
+        .find(|p| p.exists())
 }
 
 // ── Entry point — called per L2 job received from stratum ─────────────────────
@@ -82,7 +99,7 @@ async fn execute(
     }
 
     // ── 4. Execute ────────────────────────────────────────────────────────────
-    let (score, trace) = dispatch_task(task, &input_dir, &output_dir, cfg.use_gpu).await;
+    let (score, trace) = dispatch_task(task, &input_dir, &output_dir, &cfg).await;
     let trace_hash = blake3_hex(trace.as_bytes());
     tokio::fs::write(work_dir.join("trace.log"), &trace).await.ok();
     info!("L2: {job_id} score={score:.4} trace_hash={trace_hash}");
@@ -128,32 +145,48 @@ async fn execute(
 
 // ── Task dispatcher ───────────────────────────────────────────────────────────
 
-async fn dispatch_task(task: &str, input_dir: &Path, output_dir: &Path, use_gpu: bool) -> (f64, String) {
+async fn dispatch_task(task: &str, input_dir: &Path, output_dir: &Path, cfg: &L2Config) -> (f64, String) {
     match task {
-        "acoustic_classification" => acoustic_classification(input_dir, output_dir, use_gpu).await,
+        "acoustic_classification" => acoustic_classification(input_dir, output_dir, cfg).await,
         _ => generic_stub(task, output_dir).await,
     }
 }
 
-/// Acoustic species classification — BirdNET-Analyzer (GPU or CPU) or stub.
-async fn acoustic_classification(input_dir: &Path, output_dir: &Path, use_gpu: bool) -> (f64, String) {
+/// Acoustic species classification — Perch v2 (primary) or stub.
+async fn acoustic_classification(input_dir: &Path, output_dir: &Path, cfg: &L2Config) -> (f64, String) {
     let files = collect_audio(input_dir).await;
     let mut trace = format!("acoustic_classification on {} file(s)\n", files.len());
     let mut predictions = Vec::new();
     let mut score_sum   = 0.0f64;
 
+    let python = detect_python().await;
     for audio in &files {
-        let mut cmd = tokio::process::Command::new("python3");
-        cmd.args([
-            "-m", "birdnet_analyzer.analyze",
-            "--input",   &audio.to_string_lossy(),
-            "--output",  &output_dir.to_string_lossy(),
-            "--format",  "json",
-            "--min_conf","0.05",
-        ]);
-        if !use_gpu {
-            cmd.arg("--cpu");
-        }
+        // Use Perch script if available, otherwise fall back to birdnet_analyzer
+        let mut cmd = if let Some(ref script) = cfg.perch_script {
+            let mut c = tokio::process::Command::new(&python);
+            c.args([
+                script.to_string_lossy().as_ref(),
+                "--input",   &audio.to_string_lossy(),
+                "--output",  &output_dir.to_string_lossy(),
+                "--min_conf","0.05",
+            ]);
+            if !cfg.use_gpu { c.arg("--cpu"); }
+            trace.push_str(&format!("  [perch] {script:?}\n"));
+            c
+        } else {
+            let mut c = tokio::process::Command::new(&python);
+            c.args([
+                "-m", "birdnet_analyzer.analyze",
+                "--input",   &audio.to_string_lossy(),
+                "--output",  &output_dir.to_string_lossy(),
+                "--format",  "json",
+                "--min_conf","0.05",
+            ]);
+            if !cfg.use_gpu { c.arg("--cpu"); }
+            trace.push_str("  [birdnet]\n");
+            c
+        };
+        let cmd = &mut cmd;
         let result = cmd.output().await;
 
         let conf = match result {
@@ -218,6 +251,31 @@ fn stub_conf(path: &Path) -> f64 {
     let bytes = std::fs::read(path).unwrap_or_default();
     let src   = if bytes.is_empty() { path.to_string_lossy().as_bytes().to_vec() } else { bytes };
     (blake3::hash(&src).as_bytes()[0] as f64) / 255.0
+}
+
+/// Returns the first Python executable that has birdnet_analyzer importable.
+/// birdnet-analyzer requires Python >=3.11 — older versions are skipped.
+async fn detect_python() -> String {
+    let candidates = [
+        "/opt/birdnet-venv/bin/python",
+        "python3.11",
+        "python3.12",
+        "python3.13",
+        "python3",
+    ];
+    for candidate in &candidates {
+        let ok = tokio::process::Command::new(candidate)
+            .args(["-c", "import birdnet_analyzer"])
+            .output()
+            .await
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if ok {
+            return candidate.to_string();
+        }
+    }
+    warn!("L2: birdnet_analyzer not found in any Python>=3.11 — will use stub");
+    "python3.11".to_string()
 }
 
 async fn collect_audio(dir: &Path) -> Vec<PathBuf> {
