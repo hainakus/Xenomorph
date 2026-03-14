@@ -7,8 +7,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[serde(rename_all = "snake_case")]
 pub enum ExternalSource {
     Kaggle,
+    /// NCBI SRA / public genomics datasets.
     Nih,
+    /// NIH Prize Challenges (challenges.nih.gov).
+    NihChallenge,
     Boinc,
+    /// DREAM Challenges (synapse.org / dreamchallenges.org).
+    Dream,
     BioContest,
     Custom(String),
 }
@@ -16,11 +21,13 @@ pub enum ExternalSource {
 impl std::fmt::Display for ExternalSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Kaggle     => write!(f, "kaggle"),
-            Self::Nih        => write!(f, "nih"),
-            Self::Boinc      => write!(f, "boinc"),
-            Self::BioContest => write!(f, "bio_contest"),
-            Self::Custom(s)  => write!(f, "{s}"),
+            Self::Kaggle       => write!(f, "kaggle"),
+            Self::Nih          => write!(f, "nih"),
+            Self::NihChallenge => write!(f, "nih_challenge"),
+            Self::Boinc        => write!(f, "boinc"),
+            Self::Dream        => write!(f, "dream"),
+            Self::BioContest   => write!(f, "bio_contest"),
+            Self::Custom(s)    => write!(f, "{s}"),
         }
     }
 }
@@ -41,23 +48,38 @@ pub enum Algorithm {
     MolecularDocking,
     /// Acoustic species identification from audio clips (BirdCLEF, bioacoustics).
     AcousticClassification,
+    /// Computational drug discovery / virtual screening (NIH, DrivenData).
+    DrugDiscovery,
+    /// Cancer genomics — somatic mutation / CNV / fusion analysis.
+    CancerGenomics,
+    /// Biomarker discovery from omics data.
+    BiomarkerDiscovery,
+    /// Gene regulatory network inference (DREAM Challenges).
+    NetworkBiology,
+    /// Bulk / single-cell gene expression prediction (DREAM, GTEx).
+    GeneExpression,
     Custom(String),
 }
 
 impl std::fmt::Display for Algorithm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::SequenceAlignment  => write!(f, "sequence_alignment"),
-            Self::SmithWaterman      => write!(f, "smith_waterman"),
-            Self::NeedlemanWunsch    => write!(f, "needleman_wunsch"),
-            Self::VariantCalling     => write!(f, "variant_calling"),
-            Self::GenomeAssembly     => write!(f, "genome_assembly"),
-            Self::ProteinFolding     => write!(f, "protein_folding"),
-            Self::RnaExpression      => write!(f, "rna_expression"),
-            Self::Metagenomics       => write!(f, "metagenomics"),
-            Self::MolecularDocking         => write!(f, "molecular_docking"),
-            Self::AcousticClassification   => write!(f, "acoustic_classification"),
-            Self::Custom(s)                => write!(f, "{s}"),
+            Self::SequenceAlignment      => write!(f, "sequence_alignment"),
+            Self::SmithWaterman          => write!(f, "smith_waterman"),
+            Self::NeedlemanWunsch        => write!(f, "needleman_wunsch"),
+            Self::VariantCalling         => write!(f, "variant_calling"),
+            Self::GenomeAssembly         => write!(f, "genome_assembly"),
+            Self::ProteinFolding         => write!(f, "protein_folding"),
+            Self::RnaExpression          => write!(f, "rna_expression"),
+            Self::Metagenomics           => write!(f, "metagenomics"),
+            Self::MolecularDocking       => write!(f, "molecular_docking"),
+            Self::AcousticClassification => write!(f, "acoustic_classification"),
+            Self::DrugDiscovery          => write!(f, "drug_discovery"),
+            Self::CancerGenomics         => write!(f, "cancer_genomics"),
+            Self::BiomarkerDiscovery     => write!(f, "biomarker_discovery"),
+            Self::NetworkBiology         => write!(f, "network_biology"),
+            Self::GeneExpression         => write!(f, "gene_expression"),
+            Self::Custom(s)              => write!(f, "{s}"),
         }
     }
 }
