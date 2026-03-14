@@ -100,6 +100,10 @@ fn cli() -> Command {
                 .arg(Arg::new("stratum").long("stratum").value_name("URL").help("Stratum pool URL, e.g. stratum+tcp://pool.example.com:1444 (mutually exclusive with --rpcserver)"))
                 .arg(Arg::new("stratum-worker").long("stratum-worker").value_name("NAME").help("Stratum worker name (default: --mining-address)"))
                 .arg(Arg::new("stratum-password").long("stratum-password").value_name("PASS").default_value("x").help("Stratum password (default: x)"))
+                .arg(Arg::new("l2-coordinator").long("l2-coordinator").value_name("URL").help("L2 coordinator URL for inline job execution (e.g. http://localhost:8091)"))
+                .arg(Arg::new("l2-private-key").long("l2-private-key").value_name("HEX").help("secp256k1 private key (64 hex) for signing L2 results"))
+                .arg(Arg::new("l2-gpu").long("l2-gpu").action(clap::ArgAction::SetTrue).help("Use GPU for BirdNET inference (requires CUDA + PyTorch GPU)"))
+                .arg(Arg::new("l2-perch-script").long("l2-perch-script").value_name("PATH").help("Path to perch_infer.py (auto-detected if omitted)"))
         )
 }
 
