@@ -12,15 +12,16 @@ pub struct L2Config {
     pub privkey_hex:     String,
     pub pubkey_hex:      String,
     pub work_root:       PathBuf,
+    pub use_gpu:         bool,
 }
 
 impl L2Config {
-    pub fn new(coordinator_url: String, privkey_hex: String) -> Result<Self> {
+    pub fn new(coordinator_url: String, privkey_hex: String, use_gpu: bool) -> Result<Self> {
         let keypair = BioProofKeypair::from_hex(&privkey_hex)
             .context("invalid --l2-private-key")?;
         let pubkey_hex = keypair.pubkey_hex();
         let work_root  = std::env::temp_dir().join("genome-miner-l2");
-        Ok(Self { coordinator_url, privkey_hex, pubkey_hex, work_root })
+        Ok(Self { coordinator_url, privkey_hex, pubkey_hex, work_root, use_gpu })
     }
 }
 
@@ -81,7 +82,7 @@ async fn execute(
     }
 
     // ── 4. Execute ────────────────────────────────────────────────────────────
-    let (score, trace) = dispatch_task(task, &input_dir, &output_dir).await;
+    let (score, trace) = dispatch_task(task, &input_dir, &output_dir, cfg.use_gpu).await;
     let trace_hash = blake3_hex(trace.as_bytes());
     tokio::fs::write(work_dir.join("trace.log"), &trace).await.ok();
     info!("L2: {job_id} score={score:.4} trace_hash={trace_hash}");
@@ -127,32 +128,33 @@ async fn execute(
 
 // ── Task dispatcher ───────────────────────────────────────────────────────────
 
-async fn dispatch_task(task: &str, input_dir: &Path, output_dir: &Path) -> (f64, String) {
+async fn dispatch_task(task: &str, input_dir: &Path, output_dir: &Path, use_gpu: bool) -> (f64, String) {
     match task {
-        "acoustic_classification" => acoustic_classification(input_dir, output_dir).await,
+        "acoustic_classification" => acoustic_classification(input_dir, output_dir, use_gpu).await,
         _ => generic_stub(task, output_dir).await,
     }
 }
 
-/// Acoustic species classification — BirdNET-Analyzer (CPU) or stub.
-async fn acoustic_classification(input_dir: &Path, output_dir: &Path) -> (f64, String) {
+/// Acoustic species classification — BirdNET-Analyzer (GPU or CPU) or stub.
+async fn acoustic_classification(input_dir: &Path, output_dir: &Path, use_gpu: bool) -> (f64, String) {
     let files = collect_audio(input_dir).await;
     let mut trace = format!("acoustic_classification on {} file(s)\n", files.len());
     let mut predictions = Vec::new();
     let mut score_sum   = 0.0f64;
 
     for audio in &files {
-        // Try BirdNET on CPU (no CUDA needed — PyTorch CPU mode)
-        let result = tokio::process::Command::new("python3")
-            .args([
-                "-m", "birdnet_analyzer.analyze",
-                "--input",   &audio.to_string_lossy(),
-                "--output",  &output_dir.to_string_lossy(),
-                "--format",  "json",
-                "--min_conf","0.05",
-                "--cpu",                          // force CPU even if CUDA present
-            ])
-            .output().await;
+        let mut cmd = tokio::process::Command::new("python3");
+        cmd.args([
+            "-m", "birdnet_analyzer.analyze",
+            "--input",   &audio.to_string_lossy(),
+            "--output",  &output_dir.to_string_lossy(),
+            "--format",  "json",
+            "--min_conf","0.05",
+        ]);
+        if !use_gpu {
+            cmd.arg("--cpu");
+        }
+        let result = cmd.output().await;
 
         let conf = match result {
             Ok(out) if out.status.success() => {
