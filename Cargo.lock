@@ -2247,6 +2247,7 @@ dependencies = [
  "async-trait",
  "blake3",
  "clap 4.5.16",
+ "dirs",
  "genetics-l2-core",
  "hex",
  "kaspa-core",
