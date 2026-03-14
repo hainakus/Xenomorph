@@ -34,15 +34,19 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE TABLE IF NOT EXISTS results (
-    result_id       TEXT    PRIMARY KEY,
-    job_id          TEXT    NOT NULL REFERENCES jobs(job_id),
-    worker_pubkey   TEXT    NOT NULL,
-    result_root     TEXT    NOT NULL,
-    score           REAL    NOT NULL,
-    trace_hash      TEXT,
-    worker_sig      TEXT    NOT NULL,
-    submitted_at    INTEGER NOT NULL,
-    verdict         TEXT
+    result_id              TEXT    PRIMARY KEY,
+    job_id                 TEXT    NOT NULL REFERENCES jobs(job_id),
+    worker_pubkey          TEXT    NOT NULL,
+    result_root            TEXT    NOT NULL,
+    score                  REAL    NOT NULL,
+    trace_hash             TEXT,
+    notebook_or_repo_hash  TEXT,
+    container_hash         TEXT,
+    weights_hash           TEXT,
+    submission_bundle_hash TEXT,
+    worker_sig             TEXT    NOT NULL,
+    submitted_at           INTEGER NOT NULL,
+    verdict                TEXT
 );
 
 CREATE TABLE IF NOT EXISTS validation_reports (
@@ -209,8 +213,9 @@ async fn submit_result(
     let res = sqlx::query(
         "INSERT OR IGNORE INTO results
          (result_id, job_id, worker_pubkey, result_root, score,
-          trace_hash, worker_sig, submitted_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+          trace_hash, notebook_or_repo_hash, container_hash, weights_hash,
+          submission_bundle_hash, worker_sig, submitted_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
     )
     .bind(&result.result_id)
     .bind(&result.job_id)
@@ -218,6 +223,10 @@ async fn submit_result(
     .bind(&result.result_root)
     .bind(result.score)
     .bind(&result.trace_hash)
+    .bind(&result.notebook_or_repo_hash)
+    .bind(&result.container_hash)
+    .bind(&result.weights_hash)
+    .bind(&result.submission_bundle_hash)
     .bind(&result.worker_sig)
     .bind(now)
     .execute(&s.pool)
@@ -246,7 +255,8 @@ async fn get_results(
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
     let rows = sqlx::query(
-        "SELECT result_id, worker_pubkey, result_root, score, submitted_at, verdict
+        "SELECT result_id, worker_pubkey, result_root, score, submitted_at, verdict,
+                notebook_or_repo_hash, container_hash, weights_hash, submission_bundle_hash
          FROM results WHERE job_id = ?1 ORDER BY score DESC",
     )
     .bind(&job_id)
@@ -257,12 +267,16 @@ async fn get_results(
         Ok(rows) => {
             use sqlx::Row;
             let results: Vec<serde_json::Value> = rows.iter().map(|r| serde_json::json!({
-                "result_id":     r.get::<String, _>("result_id"),
-                "worker_pubkey": r.get::<String, _>("worker_pubkey"),
-                "result_root":   r.get::<String, _>("result_root"),
-                "score":         r.get::<f64, _>("score"),
-                "submitted_at":  r.get::<i64, _>("submitted_at"),
-                "verdict":       r.get::<Option<String>, _>("verdict"),
+                "result_id":              r.get::<String, _>("result_id"),
+                "worker_pubkey":          r.get::<String, _>("worker_pubkey"),
+                "result_root":            r.get::<String, _>("result_root"),
+                "score":                  r.get::<f64, _>("score"),
+                "submitted_at":           r.get::<i64, _>("submitted_at"),
+                "verdict":                r.get::<Option<String>, _>("verdict"),
+                "notebook_or_repo_hash":  r.get::<Option<String>, _>("notebook_or_repo_hash"),
+                "container_hash":         r.get::<Option<String>, _>("container_hash"),
+                "weights_hash":           r.get::<Option<String>, _>("weights_hash"),
+                "submission_bundle_hash": r.get::<Option<String>, _>("submission_bundle_hash"),
             })).collect();
             (StatusCode::OK, Json(serde_json::json!({ "job_id": job_id, "results": results }))).into_response()
         }

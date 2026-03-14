@@ -134,8 +134,12 @@ async fn settle_validated_jobs(
             .cloned();
 
         let Some(winner) = winner else { continue };
-        let winner_pubkey = winner["worker_pubkey"].as_str().unwrap_or("").to_owned();
-        let best_score    = winner["score"].as_f64().unwrap_or(0.0);
+        let winner_pubkey          = winner["worker_pubkey"].as_str().unwrap_or("").to_owned();
+        let best_score             = winner["score"].as_f64().unwrap_or(0.0);
+        let notebook_or_repo_hash  = winner["notebook_or_repo_hash"].as_str().map(str::to_owned);
+        let container_hash         = winner["container_hash"].as_str().map(str::to_owned);
+        let weights_hash           = winner["weights_hash"].as_str().map(str::to_owned);
+        let submission_bundle_hash = winner["submission_bundle_hash"].as_str().map(str::to_owned);
 
         log::info!(
             "Settling job {job_id}: winner={} score={best_score:.2} results_root={results_root}",
@@ -144,16 +148,20 @@ async fn settle_validated_jobs(
 
         // ── Build SettlementPayload ───────────────────────────────────────────
         let payload = SettlementPayload {
-            app:           SettlementPayload::APP_ID.to_owned(),
-            v:             1,
-            job_id:        job_id.clone(),
-            source:        source.clone(),
-            algorithm:     algorithm.clone(),
-            dataset_root:  dataset_root.clone(),
-            results_root:  results_root.clone(),
+            app:                    SettlementPayload::APP_ID.to_owned(),
+            v:                      1,
+            job_id:                 job_id.clone(),
+            source:                 source.clone(),
+            algorithm:              algorithm.clone(),
+            dataset_root:           dataset_root.clone(),
+            results_root:           results_root.clone(),
             best_score,
-            winner_pubkey: winner_pubkey.clone(),
-            settled_at:    now_secs(),
+            winner_pubkey:          winner_pubkey.clone(),
+            notebook_or_repo_hash,
+            container_hash,
+            weights_hash,
+            submission_bundle_hash,
+            settled_at:             now_secs(),
         };
         let payload_bytes = payload.to_payload_bytes();
         log::info!("  settlement payload: {} bytes", payload_bytes.len());

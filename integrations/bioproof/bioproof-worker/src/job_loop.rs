@@ -164,16 +164,18 @@ async fn process_job(
     // ── 4. Build ComputeJobManifest ───────────────────────────────────────────
     let completed_at = now_secs();
     let manifest = ComputeJobManifest {
-        job_id:               job.job_id.clone(),
-        job_type:             job.job_type.clone(),
-        input_root:           actual_input_root,
-        pipeline_hash:        job.pipeline_hash.clone(),
-        container_hash:       job.container_hash.clone(),
-        model_hash:           job.model_hash.clone(),
-        output_root:          output_root.clone(),
+        job_id:                  job.job_id.clone(),
+        job_type:                job.job_type.clone(),
+        input_root:              actual_input_root,
+        pipeline_hash:           job.pipeline_hash.clone(),
+        notebook_or_repo_hash:   job.notebook_or_repo_hash.clone(),
+        container_hash:          job.container_hash.clone(),
+        weights_hash:            job.weights_hash.clone(),
+        submission_bundle_hash:  job.submission_bundle_hash.clone(),
+        output_root:             output_root.clone(),
         outputs,
-        execution_trace_hash: Some(trace_hash),
-        worker_pubkey:        caps.worker_pubkey.clone(),
+        execution_trace_hash:    Some(trace_hash),
+        worker_pubkey:           caps.worker_pubkey.clone(),
         completed_at,
     };
 
@@ -197,6 +199,11 @@ async fn process_job(
         &output_root,
         &caps.worker_pubkey,
         &worker_sig,
+    ).with_hashes(
+        job.notebook_or_repo_hash.clone(),
+        job.container_hash.clone(),
+        job.weights_hash.clone(),
+        job.submission_bundle_hash.clone(),
     );
 
     // ── 8. Anchor on chain ────────────────────────────────────────────────────
