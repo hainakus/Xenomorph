@@ -505,14 +505,13 @@ async fn process_submit(
 
     // ── 4. Local PoW validation + share difficulty check ──────────────────
     //
-    // Every share is validated here in the stratum bridge.
-    // Shares that do NOT meet the block difficulty target are accepted as
-    // valid pool shares (PPLNS accounting) but NEVER forwarded to the node.
-    // Only block candidates (hash ≤ block target) are submitted via RPC.
+    // ALL share validation happens here in the stratum bridge — the node
+    // is NEVER used as a validator.  Invalid shares are rejected here and
+    // the node only receives confirmed block candidates.
     //
-    // KHeavyHash: fully deterministic — always validated locally.
-    // Genome PoW + genome file present: validated with memory-hard mix hash.
-    // Genome PoW + no genome file: pool-diff check skipped; forward to node.
+    // KHeavyHash: always validated locally.
+    // Genome PoW + genome file: validated with memory-hard mix hash.
+    // Genome PoW + no genome file: rejected at pool level (no way to validate).
     let is_block_candidate: bool = if !job.genome_active {
         // ── KHeavyHash path ─────────────────────────────────────────────────
         let kh_state = KHeavyState::new(&header);
@@ -534,8 +533,11 @@ async fn process_submit(
         }
         meets_block
     } else {
-        // ── Genome PoW — no local dataset, forward to node for validation ───
-        true
+        // ── Genome PoW — no local dataset → reject at pool, never touch node ─
+        return Err(ShareError::BadFormat(
+            "genome pow share rejected: pool has no genome dataset (--genome-file required)"
+                .to_owned(),
+        ));
     };
 
     // ── 5. Only submit to node when the share meets the BLOCK target ───────
@@ -552,11 +554,6 @@ async fn process_submit(
     if matches!(resp.report, SubmitBlockReport::Success) {
         let daa_score = job.template.header.daa_score.saturating_add(1);
         Ok((SubmitOutcome::Block { daa_score }, bits))
-    } else if job.genome_active && packed_genome.is_none() {
-        // No local Genome PoW validation was possible; the node is the only
-        // arbiter.  A non-Success response means the PoW itself is invalid
-        // (not just "not a block") — discard, no PPLNS credit.
-        Err(ShareError::BadFormat("node rejected genome pow share".to_owned()))
     } else {
         // Local validation already confirmed the PoW is correct.
         // Node rejection here is a timing / orphan race — the work is still
