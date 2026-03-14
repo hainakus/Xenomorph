@@ -1,4 +1,4 @@
-use std::{fmt, sync::Arc};
+use std::{collections::HashSet, fmt, sync::Arc};
 
 use anyhow::{Context, Result};
 use kaspa_addresses::Address;
@@ -105,12 +105,19 @@ fn estimate_tx_mass(input_amounts: &[u64], output_amounts: &[u64]) -> u64 {
 /// Build, sign and broadcast a payout transaction for one confirmed block.
 ///
 /// Requires the Xenom node to be started with `--utxoindex`.
+///
+/// `spent` is a per-cycle set of `(tx_id, index)` outpoints already submitted
+/// in earlier payouts this cycle.  The node UTXO index does not reflect
+/// unconfirmed (mempool) spends, so without this filter back-to-back payouts
+/// within one batch would reuse the same UTXOs and be rejected as double-spends.
+/// On success, newly consumed outpoints are inserted into `spent`.
 pub async fn execute_payout(
     rpc:          &Arc<GrpcClient>,
     pool_address: &RpcAddress,
     keypair:      &Keypair,
     payout:       &PendingPayout,
     cfg:          &PaymentConfig,
+    spent:        &mut HashSet<(RpcTransactionId, u32)>,
 ) -> Result<RpcTransactionId> {
     // ── 1. Fetch all pool UTXOs (mature only) ───────────────────────────────
     let current_daa = rpc
@@ -141,7 +148,12 @@ pub async fn execute_payout(
     }
 
     // ── 2. UTXO pool: sort by value DESC (largest inputs → lowest storage mass) ─
-    let mut sorted_utxos: Vec<_> = utxo_entries.iter().collect();
+    // Filter out outpoints already submitted in earlier payouts this cycle —
+    // the node UTXO index does not see unconfirmed mempool spends.
+    let mut sorted_utxos: Vec<_> = utxo_entries
+        .iter()
+        .filter(|e| !spent.contains(&(e.outpoint.transaction_id, e.outpoint.index)))
+        .collect();
     sorted_utxos.sort_unstable_by(|a, b| b.utxo_entry.amount.cmp(&a.utxo_entry.amount));
     let total_pool: u64 = sorted_utxos.iter().map(|e| e.utxo_entry.amount).sum();
 
@@ -342,6 +354,11 @@ pub async fn execute_payout(
             .map_err(|e| anyhow::Error::new(RetryablePayoutError(
                 format!("submit_transaction batch {batch_num} RPC failed: {e} — will retry")
             )))?;
+
+        // Record consumed outpoints so subsequent payouts in this cycle skip them.
+        for e in batch_utxos {
+            spent.insert((e.outpoint.transaction_id, e.outpoint.index));
+        }
 
         info!(
             "Payout batch {batch_num}/{} submitted: {tx_id}  outputs={}  total_out={} sompi",

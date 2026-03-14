@@ -7,14 +7,14 @@ mod proto;
 mod stratum;
 mod vardiff;
 
-use std::{net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{collections::HashSet, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc, time::{Duration, SystemTime, UNIX_EPOCH}};
 
 use anyhow::{Context, Result};
 use clap::{Arg, Command};
 use kaspa_addresses::{Address, Prefix, Version};
 use kaspa_core::{info, warn};
 use kaspa_grpc_client::GrpcClient;
-use kaspa_rpc_core::{api::rpc::RpcApi, model::message::GetBlockTemplateRequest};
+use kaspa_rpc_core::{api::rpc::RpcApi, model::message::GetBlockTemplateRequest, RpcTransactionId};
 use tokio::{
     sync::{watch, Mutex, RwLock},
     time::sleep,
@@ -368,13 +368,12 @@ async fn main() -> Result<()> {
                     .take_confirmed_payouts(current_daa, pcfg.confirm_depth);
 
                 // Process up to payout_batch_size blocks per cycle sequentially.
-                // A 500 ms pause between payouts lets the node UTXO index reflect
-                // each spent output before the next fetch, avoiding double-spend failures.
+                // spent_outpoints tracks UTXOs already consumed this cycle so that
+                // execute_payout can filter them from its UTXO fetch — the node UTXO
+                // index does not reflect unconfirmed mempool spends.
+                let mut spent_outpoints: HashSet<(RpcTransactionId, u32)> = HashSet::new();
                 let mut batch_n = 0usize;
                 for payout in confirmed.into_iter().take(payout_batch_size) {
-                    if batch_n > 0 {
-                        sleep(Duration::from_millis(500)).await;
-                    }
 
                     info!(
                         "Block {} confirmed (daa_score={} current={}) [batch {}/{}], executing payout …",
@@ -392,7 +391,7 @@ async fn main() -> Result<()> {
                     let now_secs = SystemTime::now()
                         .duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
 
-                    match execute_payout(&rpc3, &pay_addr, &keypair, &payout, &pcfg).await {
+                    match execute_payout(&rpc3, &pay_addr, &keypair, &payout, &pcfg, &mut spent_outpoints).await {
                         Ok(tx_id) => {
                             let tx_str = tx_id.to_string();
                             info!("Payout OK: job={} tx={tx_str}", payout.job_id);
