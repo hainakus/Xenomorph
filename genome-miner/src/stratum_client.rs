@@ -16,13 +16,15 @@ use crate::tui::DashStats;
 
 /// Work unit received from the stratum bridge via `mining.notify`.
 pub struct StratumJob {
-    pub job_id:      String,
+    pub job_id:       String,
     pub pre_pow_hash: Hash,
-    pub bits:        u32,
-    pub epoch_seed:  Hash,
-    pub timestamp:   u64,
-    pub clean_jobs:  bool,
-    pub extranonce1: u32,
+    pub bits:         u32,
+    pub epoch_seed:   Hash,
+    pub timestamp:    u64,
+    pub clean_jobs:   bool,
+    pub extranonce1:  u32,
+    /// Optional L2 compute task piggybacked on this PoW job (param[6]).
+    pub l2_job:       Option<serde_json::Value>,
 }
 
 /// Solution to be submitted to the stratum bridge via `mining.submit`.
@@ -235,13 +237,16 @@ fn parse_notify(msg: &serde_json::Value, extranonce1: u32) -> Option<StratumJob>
     let eseed_hex = params[3].as_str()?;
     let ts_hex    = params[4].as_str()?;
     let clean     = params.get(5).and_then(|v| v.as_bool()).unwrap_or(false);
+    let l2_job    = params.get(6).and_then(|v| {
+        if v.is_null() { None } else { Some(v.clone()) }
+    });
 
     let pre_pow_hash = hex_to_hash32(pph_hex)?;
     let bits         = u32::from_str_radix(bits_hex, 16).ok()?;
     let epoch_seed   = hex_to_hash32(eseed_hex)?;
     let timestamp    = u64::from_str_radix(ts_hex, 16).ok()?;
 
-    Some(StratumJob { job_id, pre_pow_hash, bits, epoch_seed, timestamp, clean_jobs: clean, extranonce1 })
+    Some(StratumJob { job_id, pre_pow_hash, bits, epoch_seed, timestamp, clean_jobs: clean, extranonce1, l2_job })
 }
 
 fn hex_to_hash32(hex: &str) -> Option<Hash> {

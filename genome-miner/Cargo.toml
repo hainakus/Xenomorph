@@ -35,7 +35,12 @@ serde_json.workspace = true
 rayon.workspace = true
 ratatui = "0.26"
 serde = { workspace = true }
-tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread", "net", "io-util"] }
+tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread", "net", "io-util", "process", "fs"] }
+reqwest = { version = "0.12", features = ["json"] }
+bioproof-core     = { path = "../integrations/bioproof/bioproof-core" }
+genetics-l2-core  = { path = "../integrations/genetics-l2/genetics-l2-core" }
+blake3.workspace  = true
+hex               = "0.4"
 wgpu = { version = "22", features = ["metal", "vulkan-portability"] }
 
 [lints]

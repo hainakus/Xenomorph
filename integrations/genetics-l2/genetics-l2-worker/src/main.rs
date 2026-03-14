@@ -188,6 +188,9 @@ async fn execute_algorithm(
         Algorithm::RnaExpression => {
             rna_expression_stub(&input_dir, &output_dir).await
         }
+        Algorithm::AcousticClassification => {
+            acoustic_classification(&input_dir, &output_dir).await
+        }
         _ => {
             // Generic: run pipeline script if present, else return stub score
             generic_pipeline_stub(job, &input_dir, &output_dir).await
@@ -251,6 +254,99 @@ async fn rna_expression_stub(
     let tsv    = "gene_id\tcount\nGENE1\t1234\nGENE2\t567\n";
     tokio::fs::write(output_dir.join("counts.tsv"), tsv).await?;
     Ok((files.len() as f64 * 50.0, trace))
+}
+
+/// Acoustic species classification for BirdCLEF-style tasks.
+///
+/// Production path: calls `birdnet-analyzer` (Python) on each OGG/WAV clip.
+/// Stub path (no model present): returns a deterministic hash-based score.
+async fn acoustic_classification(
+    input_dir:  &Path,
+    output_dir: &Path,
+) -> Result<(f64, String)> {
+    let files = collect_files(input_dir).await.unwrap_or_default();
+    let mut trace = format!("acoustic-classification on {} audio file(s)\n", files.len());
+    let mut all_predictions: Vec<serde_json::Value> = Vec::new();
+    let mut score_acc = 0.0f64;
+
+    for audio_path in &files {
+        let ext = audio_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !matches!(ext.to_lowercase().as_str(), "ogg" | "wav" | "mp3" | "flac") {
+            continue;
+        }
+
+        // ── Try BirdNET-Analyzer (requires: pip install birdnet-analyzer) ──────
+        let birdnet = tokio::process::Command::new("python3")
+            .args([
+                "-m", "birdnet_analyzer.analyze",
+                "--input",  &audio_path.to_string_lossy(),
+                "--output", &output_dir.to_string_lossy(),
+                "--format", "json",
+                "--min_conf", "0.1",
+            ])
+            .output()
+            .await;
+
+        match birdnet {
+            Ok(out) if out.status.success() => {
+                let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+                trace.push_str(&format!("  birdnet OK: {}\n", audio_path.display()));
+                // Parse JSON predictions
+                if let Ok(preds) = serde_json::from_str::<serde_json::Value>(&stdout) {
+                    let conf = preds["detections"]
+                        .as_array()
+                        .and_then(|a| a.first())
+                        .and_then(|d| d["confidence"].as_f64())
+                        .unwrap_or(0.0);
+                    score_acc += conf;
+                    all_predictions.push(preds);
+                }
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                trace.push_str(&format!("  birdnet WARN {}: {}\n", audio_path.display(), stderr.trim()));
+                // Stub score: BLAKE3 of audio bytes → deterministic float in [0,1]
+                let bytes = tokio::fs::read(audio_path).await.unwrap_or_default();
+                let hash  = blake3::hash(&bytes);
+                let stub_conf = (hash.as_bytes()[0] as f64) / 255.0;
+                score_acc += stub_conf;
+                all_predictions.push(serde_json::json!({
+                    "file": audio_path.to_string_lossy(),
+                    "stub": true,
+                    "confidence": stub_conf
+                }));
+            }
+            Err(_) => {
+                // birdnet-analyzer not installed — deterministic stub
+                trace.push_str(&format!("  birdnet not found (stub): {}\n", audio_path.display()));
+                let bytes = tokio::fs::read(audio_path).await.unwrap_or_default();
+                let hash  = blake3::hash(if bytes.is_empty() { audio_path.to_str().unwrap_or("").as_bytes() } else { &bytes });
+                let stub_conf = (hash.as_bytes()[0] as f64) / 255.0;
+                score_acc += stub_conf;
+                all_predictions.push(serde_json::json!({
+                    "file": audio_path.to_string_lossy(),
+                    "stub": true,
+                    "confidence": stub_conf
+                }));
+            }
+        }
+    }
+
+    // Write consolidated predictions JSON
+    let out_json = serde_json::json!({
+        "algorithm": "acoustic_classification",
+        "files_processed": files.len(),
+        "predictions": all_predictions
+    });
+    tokio::fs::write(
+        output_dir.join("predictions.json"),
+        serde_json::to_vec_pretty(&out_json)?,
+    ).await?;
+
+    let n = files.len().max(1);
+    let score = score_acc / n as f64;
+    trace.push_str(&format!("  mean_confidence={score:.4}\n"));
+    Ok((score, trace))
 }
 
 async fn generic_pipeline_stub(

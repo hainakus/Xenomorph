@@ -2330,10 +2330,14 @@ name = "genome-miner"
 version = "0.15.2"
 dependencies = [
  "anyhow",
+ "bioproof-core",
+ "blake3",
  "clap 4.5.16",
  "crossterm",
  "dirs",
  "faster-hex",
+ "genetics-l2-core",
+ "hex",
  "kaspa-addresses",
  "kaspa-consensus-core",
  "kaspa-core",
@@ -2347,7 +2351,7 @@ dependencies = [
  "log",
  "ratatui",
  "rayon",
- "serde",
+ "reqwest",
  "serde_json",
  "tokio",
  "wgpu",

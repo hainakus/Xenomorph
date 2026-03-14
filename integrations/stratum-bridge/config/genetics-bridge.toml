@@ -13,7 +13,7 @@ theme = "genetics"
 name  = "Xenom Genetics Pool"
 
 [node]
-rpc = "127.0.0.1:36669"
+rpc = "127.0.0.1:18610"
 
 [l2]
 enabled    = true
