@@ -306,8 +306,6 @@ async fn main() -> Result<()> {
         s
     } else if m.get_flag("testnet") || m.get_flag("devnet") {
         0
-    } else if m.get_flag("mainnet") {
-        kaspa_consensus_core::hashing::header::EPOCH_SEED_HASH_ACTIVATION_MAINNET
     } else {
         kaspa_consensus_core::hashing::header::EPOCH_SEED_HASH_ACTIVATION_MAINNET
     };
