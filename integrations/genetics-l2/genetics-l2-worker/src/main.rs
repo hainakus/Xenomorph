@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use bioproof_core::{blake3_hex, compute_proof, merkle_root, sign_manifest, BioProofKeypair};
-use clap::{Arg, Command};
+use clap::{Arg, ArgAction, Command};
 use genetics_l2_core::{now_secs, Algorithm, JobResult, JobStatus, ScientificJob};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -21,6 +21,20 @@ async fn main() -> Result<()> {
     kaspa_core::log::init_logger(None, "info");
 
     let m           = cli().get_matches();
+
+    // ── keygen shortcut ───────────────────────────────────────────────────────
+    if m.get_flag("gen-key") {
+        use secp256k1::{Secp256k1, SecretKey};
+        let secp = Secp256k1::new();
+        let mut rng = secp256k1::rand::thread_rng();
+        let (secret_key, public_key) = secp.generate_keypair(&mut rng);
+        let privkey_hex = hex::encode(secret_key.secret_bytes());
+        let pubkey_hex  = hex::encode(public_key.serialize()); // 33-byte compressed
+        println!("Private key (--private-key): {privkey_hex}");
+        println!("Public  key (worker pubkey): {pubkey_hex}");
+        return Ok(());
+    }
+
     let privkey     = m.get_one::<String>("private-key").unwrap().clone();
     let coordinator = m.get_one::<String>("coordinator").unwrap().clone();
     let work_root   = PathBuf::from(m.get_one::<String>("work-root").unwrap());
@@ -422,8 +436,12 @@ async fn collect_files(dir: &Path) -> Result<Vec<PathBuf>> {
 fn cli() -> Command {
     Command::new("genetics-l2-worker")
         .about("Genetics L2 worker daemon — polls coordinator for jobs, executes algorithms, submits results")
+        .arg(Arg::new("gen-key")
+            .long("gen-key")
+            .action(ArgAction::SetTrue)
+            .help("Generate a fresh secp256k1 keypair and exit"))
         .arg(Arg::new("private-key")
-            .short('k').long("private-key").value_name("HEX").required(true)
+            .short('k').long("private-key").value_name("HEX").required(false)
             .help("Worker secp256k1 private key (64 hex chars)"))
         .arg(Arg::new("coordinator")
             .short('c').long("coordinator").value_name("URL")

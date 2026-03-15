@@ -2881,6 +2881,7 @@ dependencies = [
  "kaspa-core",
  "log",
  "reqwest",
+ "secp256k1",
  "serde",
  "serde_json",
  "tokio",
