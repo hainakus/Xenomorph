@@ -15,6 +15,7 @@ async fn main() -> Result<()> {
     let m           = cli().get_matches();
     let coordinator = m.get_one::<String>("coordinator").unwrap().clone();
     let node_addr   = m.get_one::<String>("node").unwrap().clone();
+    let evm_node: Option<String> = m.get_one::<String>("evm-node").cloned();
     let poll_ms: u64 = m.get_one::<String>("poll-ms")
         .and_then(|s| s.parse().ok()).unwrap_or(15_000);
     let dry_run     = !m.get_flag("submit");
@@ -31,6 +32,9 @@ async fn main() -> Result<()> {
     log::info!("  node:        {node_addr}");
     log::info!("  network:     {network_prefix:?}");
     log::info!("  dry_run:     {dry_run}");
+    if let Some(ref e) = evm_node {
+        log::info!("  evm-node:    {e} (devnet/testnet anchor target)");
+    }
 
     let privkey_hex: Option<String> = m.get_one::<String>("private-key").cloned();
     let fee_sompi: u64 = m.get_one::<String>("fee-sompi")
@@ -71,7 +75,7 @@ async fn main() -> Result<()> {
     let http = reqwest::Client::new();
 
     loop {
-        match settle_validated_jobs(&http, &coordinator, rpc.as_ref(), keypair.as_ref(), fee_sompi, dry_run, network_prefix).await {
+        match settle_validated_jobs(&http, &coordinator, rpc.as_ref(), keypair.as_ref(), fee_sompi, dry_run, network_prefix, evm_node.as_deref()).await {
             Ok(n) if n > 0 => log::info!("Settled {n} job(s)"),
             Ok(_)          => {}
             Err(e)         => log::warn!("Settlement cycle error: {e:#}"),
@@ -90,6 +94,7 @@ async fn settle_validated_jobs(
     fee_sompi:   u64,
     dry_run:     bool,
     prefix:      Prefix,
+    evm_node:    Option<&str>,
 ) -> Result<usize> {
     // Fetch validated (not yet settled) jobs
     let resp = http
@@ -178,8 +183,18 @@ async fn settle_validated_jobs(
         log::info!("  settlement payload: {} bytes", payload_bytes.len());
 
         // ── Anchor on Xenom chain ─────────────────────────────────────────────
+        // On devnet/testnet: anchor via xenom_anchor RPC on the EVM L2 node.
+        // On mainnet: the bridge includes the settlement hash in coinbase extra_data.
         let txid = if dry_run {
             log::info!("  dry-run: skipping chain submission");
+            None
+        } else if (prefix == Prefix::Devnet || prefix == Prefix::Testnet) && evm_node.is_some() {
+            match evm_anchor(http, evm_node.unwrap(), &payload_bytes).await {
+                Ok(id) => { log::info!("  EVM anchor id={id}"); Some(id) }
+                Err(e) => { log::warn!("  EVM anchor failed: {e:#}"); None }
+            }
+        } else if prefix == Prefix::Devnet || prefix == Prefix::Testnet {
+            log::info!("  devnet/testnet: no --evm-node set, skipping anchor");
             None
         } else if let (Some(rpc_client), Some(kp)) = (rpc, keypair) {
             match xenom_anchor_client::submit_anchor(rpc_client, kp, &payload_bytes, fee_sompi, prefix).await {
@@ -223,6 +238,39 @@ async fn settle_validated_jobs(
     Ok(count)
 }
 
+// ── EVM anchor helper ────────────────────────────────────────────────────────
+
+async fn evm_anchor(http: &reqwest::Client, evm_node: &str, data: &[u8]) -> Result<String> {
+    let url = if evm_node.starts_with("http") {
+        evm_node.to_owned()
+    } else {
+        format!("http://{evm_node}")
+    };
+    let payload_hex = format!("0x{}", hex::encode(data));
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "xenom_anchor",
+        "params": [payload_hex],
+        "id": 1
+    });
+    let resp: serde_json::Value = http
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .context("xenom_anchor HTTP POST")?
+        .json()
+        .await
+        .context("xenom_anchor parse response")?;
+    if let Some(err) = resp.get("error") {
+        anyhow::bail!("xenom_anchor RPC error: {err}");
+    }
+    resp["result"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("xenom_anchor: missing result field"))
+}
+
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
 fn cli() -> Command {
@@ -259,4 +307,7 @@ fn cli() -> Command {
             .long("testnet")
             .action(clap::ArgAction::SetTrue)
             .help("Use testnet address prefix (xenomtest:)"))
+        .arg(Arg::new("evm-node")
+            .long("evm-node").value_name("URL")
+            .help("Xenom EVM L2 JSON-RPC URL (e.g. http://127.0.0.1:8545). When set, devnet/testnet settlements are anchored via xenom_anchor on the EVM chain."))
 }

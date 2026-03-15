@@ -1,0 +1,27 @@
+[package]
+name        = "xenom-evm-node"
+description = "Xenom EVM L2 — embedded revm node binary"
+rust-version.workspace = true
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+license.workspace      = true
+
+[[bin]]
+name = "xenom-evm-node"
+path = "src/main.rs"
+
+[dependencies]
+xenom-evm-core = { version = "0.15.2", path = "../xenom-evm-core" }
+xenom-evm-rpc  = { version = "0.15.2", path = "../xenom-evm-rpc" }
+tokio          = { workspace = true, features = ["rt-multi-thread", "signal", "macros"] }
+clap           = { workspace = true }
+hex            = { workspace = true }
+log            = { workspace = true }
+kaspa-core        = { workspace = true }
+kaspa-grpc-client = { workspace = true }
+kaspa-rpc-core    = { workspace = true }
+anyhow            = "1"
+
+[lints]
+workspace = true

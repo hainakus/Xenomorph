@@ -3,28 +3,28 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title id="page-title">Xenom BirdCLEF+ Pool</title>
+<title id="page-title">Xenom Genetics Pool</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet"/>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>
 :root{
-  --g:#38bdf8;--gd:#0ea5e9;--gg:#38bdf81f;
+  --g:#00ff41;--gd:#00cc33;--gg:#00ff411f;
   --c:#f59e0b;--r:#f43f5e;--y:#fcd34d;
-  --bg:#020c18;--dark:#041220;--gray:#071c2e;--bd:#0f3a5a;
-  --tx:#7fb3d0;--txd:#2d5a7e;
+  --bg:#050a05;--dark:#080f08;--gray:#0d150d;--bd:#1a3a1a;
+  --tx:#7fbf7f;--txd:#2d5a2d;
   --fm:"Share Tech Mono",monospace;
   --fd:"Orbitron",sans-serif;
   --fb:"Rajdhani",sans-serif;
-  /* birdclef theme */
-  --bird1:#38bdf8;--bird2:#f59e0b;--bird3:#34d399;
-  --bird-bg:#38bdf81a;--bird-bd:#38bdf833;
+  /* genetics theme */
+  --bird1:#00ff41;--bird2:#f59e0b;--bird3:#34d399;
+  --bird-bg:#00ff411a;--bird-bd:#00ff4133;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body,#root{width:100%;min-width:100%;min-height:100vh}
 body{background:var(--bg);color:var(--tx);font-family:var(--fb);min-height:100vh;overflow-x:hidden}
 body::after{content:"";pointer-events:none;z-index:9999;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.04) 2px,rgba(0,0,0,.04) 4px);position:fixed;inset:0}
-.bg-grid{pointer-events:none;z-index:0;background-image:linear-gradient(#38bdf806 1px,transparent 1px),linear-gradient(90deg,#38bdf806 1px,transparent 1px);background-size:40px 40px;position:fixed;inset:0}
+.bg-grid{pointer-events:none;z-index:0;background-image:linear-gradient(#00ff4106 1px,transparent 1px),linear-gradient(90deg,#00ff4106 1px,transparent 1px);background-size:40px 40px;position:fixed;inset:0}
 .wrap{z-index:1;flex-direction:column;min-height:100vh;display:flex;position:relative}
 
 nav{z-index:100;border-bottom:1px solid var(--bd);backdrop-filter:blur(12px);background:rgba(2,4,8,.96);align-items:center;gap:1.5rem;height:58px;padding:0 2rem;display:flex;position:sticky;top:0}
@@ -125,14 +125,14 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
 
 <!-- NAV -->
 <nav>
-  <div class="logo" id="pool-logo"><span class="logo-icon" id="logo-icon">🦜</span> <span id="logo-text">BIRDCLEF+</span></div>
+  <div class="logo" id="pool-logo"><span class="logo-icon" id="logo-icon">�</span> <span id="logo-text">GENETICS</span></div>
   <ul class="nav-links">
     <li><button class="active" onclick="showPage('overview',this)" id="nav-overview">Overview</button></li>
     <li><button onclick="showPage('miners',this)" id="nav-miners">Miners</button></li>
     <li><button onclick="showPage('blocks',this)" id="nav-blocks">Blocks</button></li>
     <li><button onclick="showPage('payments',this)" id="nav-payments">Payments</button></li>
     <li><button onclick="showPage('network',this)" id="nav-network">Network</button></li>
-    <li id="nav-genomics-li" style="display:none"><button onclick="showPage('genomics',this)" id="nav-genomics">� Acoustic</button></li>
+    <li id="nav-genomics-li"><button onclick="showPage('genomics',this)" id="nav-genomics">🧬 Genomics</button></li>
   </ul>
   <div class="nav-right">
     <span class="last-upd" id="last-updated"></span>
@@ -144,12 +144,12 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
 <!-- MAIN -->
 <main>
 
-  <!-- L2 BIRDCLEF JOB BANNER -->
-  <div id="genetics-banner" class="bird-hero" style="display:none">
-    <div class="bird-silhouette">�</div>
+  <!-- L2 GENETICS JOB BANNER -->
+  <div id="genetics-banner" class="bird-hero">
+    <div class="bird-silhouette">🧬</div>
     <div class="bird-hero-inner">
       <div>
-        <div class="bird-job-label">BirdCLEF+ 2026 — Acoustic Job</div>
+        <div class="bird-job-label">Current Genomics Job</div>
         <div class="bird-job-val" id="g-task">–</div>
         <div class="bird-job-sub" id="g-jobid">–</div>
       </div>
@@ -158,14 +158,14 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
         <div style="font-family:var(--fm);color:var(--bird2);font-size:.7rem" id="g-dataset">–</div>
       </div>
       <div class="bird-divider">
-        <div class="bird-job-label">Fragment</div>
+        <div class="bird-job-label">Alignment</div>
         <div style="font-family:var(--fd);color:var(--bird3);font-size:.85rem;font-weight:700" id="g-fragment">–</div>
       </div>
       <div class="bird-divider">
         <div class="bird-job-label">Reward</div>
         <div style="font-family:var(--fd);color:var(--g);font-size:.85rem;font-weight:700" id="g-reward">–</div>
       </div>
-      <div class="bird-live-badge"><span class="bird-pulse"></span>CLASSIFYING</div>
+      <div class="bird-live-badge"><span class="bird-pulse"></span>DISPATCHING</div>
     </div>
   </div>
 
@@ -240,19 +240,19 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
     </div>
   </div>
 
-  <!-- BIRDCLEF ACOUSTIC LAB -->
+  <!-- GENOMICS LAB -->
   <div id="page-genomics" style="display:none">
-    <div style="margin-bottom:1.2rem;padding:1rem 1.4rem;border:1px solid var(--bird-bd);background:linear-gradient(135deg,#020c18,#061c2e);position:relative;overflow:hidden">
-      <div style="position:absolute;right:2rem;top:50%;transform:translateY(-50%);font-size:5rem;opacity:.07;pointer-events:none">🦜</div>
-      <div style="font-family:var(--fd);color:var(--bird1);font-size:1.1rem;font-weight:900;letter-spacing:.15em;margin-bottom:.2rem">BIRDCLEF+ 2026</div>
-      <div style="font-family:var(--fm);color:var(--txd);font-size:.62rem">Acoustic Species Identification in the Pantanal, South America — Cornell Lab of Ornithology</div>
+    <div style="margin-bottom:1.2rem;padding:1rem 1.4rem;border:1px solid var(--bird-bd);background:linear-gradient(135deg,#050a05,#0a1a0a);position:relative;overflow:hidden">
+      <div style="position:absolute;right:2rem;top:50%;transform:translateY(-50%);font-size:5rem;opacity:.07;pointer-events:none">�</div>
+      <div style="font-family:var(--fd);color:var(--bird1);font-size:1.1rem;font-weight:900;letter-spacing:.15em;margin-bottom:.2rem">XENOM GENETICS</div>
+      <div style="font-family:var(--fm);color:var(--txd);font-size:.62rem">Distributed Genomic Variant Calling — GRCh38 Reference Genome &nbsp;|&nbsp; BWA-MEM2 + DeepVariant</div>
     </div>
 
     <div class="stats" style="margin-bottom:1.5rem">
       <div class="stat" style="--g:var(--bird1)"><div class="stat-lbl">Current Task</div><div class="stat-val" id="gp-task" style="color:var(--bird1);font-size:.85rem">–</div><div class="stat-sub" id="gp-jobid">–</div></div>
-      <div class="stat" style="--g:var(--bird3)"><div class="stat-lbl">Audio Fragment</div><div class="stat-val" id="gp-fragment" style="color:var(--bird3)">–</div><div class="stat-sub">clip window</div></div>
+      <div class="stat" style="--g:var(--bird3)"><div class="stat-lbl">Read Fragment</div><div class="stat-val" id="gp-fragment" style="color:var(--bird3)">–</div><div class="stat-sub">read window</div></div>
       <div class="stat"><div class="stat-lbl">Reward</div><div class="stat-val" id="gp-reward">–</div><div class="stat-sub">SOMPI per result</div></div>
-      <div class="stat" style="--g:var(--bird2)"><div class="stat-lbl">Model</div><div class="stat-val" style="color:var(--bird2);font-size:.75rem">Perch v2 GPU</div><div class="stat-sub">Google TF2</div></div>
+      <div class="stat" style="--g:var(--bird2)"><div class="stat-lbl">Pipeline</div><div class="stat-val" style="color:var(--bird2);font-size:.75rem">DeepVariant</div><div class="stat-sub">BWA-MEM2 + GPU</div></div>
     </div>
 
     <div class="grid2">
@@ -260,7 +260,7 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
         <div class="panel-hdr"><span class="sec-title" style="color:var(--bird1)">Job Details</span><span class="live-badge"><span class="dot" style="background:var(--bird1);box-shadow:0 0 8px var(--bird1)"></span>Live</span></div>
         <div style="padding:1.2rem;font-family:var(--fm);font-size:.68rem">
           <table style="width:100%;border-collapse:collapse">
-            <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Theme</td><td style="color:var(--bird1);text-align:right">genetics / acoustic</td></tr>
+            <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Theme</td><td style="color:var(--bird1);text-align:right">genetics / variant-calling</td></tr>
             <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Job ID</td><td id="gp-jobid2" style="color:var(--bird2);text-align:right;word-break:break-all">–</td></tr>
             <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Task</td><td id="gp-task2" style="color:var(--g);text-align:right">–</td></tr>
             <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Dataset</td><td id="gp-dataset2" style="color:var(--bird2);text-align:right">–</td></tr>
@@ -272,19 +272,19 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
       </div>
 
       <div class="panel">
-        <div class="panel-hdr"><span class="sec-title" style="color:var(--bird2)">Inference Pipeline</span></div>
+        <div class="panel-hdr"><span class="sec-title" style="color:var(--bird2)">Variant Calling Pipeline</span></div>
         <div style="padding:1.2rem;font-family:var(--fm);font-size:.68rem;display:flex;flex-direction:column;gap:.6rem">
           <div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem .8rem;border:1px solid var(--bird-bd);background:var(--bird-bg)">
-            <span style="color:var(--bird1)">acoustic_classification</span><span class="badge bg" style="border-color:var(--bird1);color:var(--bird1);background:var(--bird-bg)">Active</span>
+            <span style="color:var(--bird1)">variant_calling</span><span class="badge bg" style="border-color:var(--bird1);color:var(--bird1);background:var(--bird-bg)">Active</span>
           </div>
           <div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem .8rem;border:1px solid var(--bd)">
-            <span style="color:var(--txd)">Model</span><span style="color:var(--bird2)">Perch v2 (Google)</span>
+            <span style="color:var(--txd)">Aligner</span><span style="color:var(--bird2)">BWA-MEM2</span>
           </div>
           <div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem .8rem;border:1px solid var(--bd)">
-            <span style="color:var(--txd)">Sample Rate</span><span style="color:var(--txd)">32 kHz</span>
+            <span style="color:var(--txd)">Caller</span><span style="color:var(--txd)">DeepVariant GPU</span>
           </div>
           <div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem .8rem;border:1px solid var(--bd)">
-            <span style="color:var(--txd)">Clip Length</span><span style="color:var(--txd)">5 s</span>
+            <span style="color:var(--txd)">Reference</span><span style="color:var(--txd)">GRCh38</span>
           </div>
           <div style="margin-top:.3rem;padding:.5rem .8rem;border:1px solid var(--bd);font-size:.58rem;color:var(--txd)">
             Results signed with secp256k1 and anchored on Xenom L1 via <span style="color:var(--g)">tx.payload</span>.
@@ -296,7 +296,7 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
     <div class="panel" style="margin-top:0">
       <div class="panel-hdr"><span class="sec-title" style="color:var(--bird3)">mining.notify — L2 param[6] preview</span></div>
       <div style="padding:.9rem 1rem;font-family:var(--fm);font-size:.65rem;color:var(--txd);overflow-x:auto">
-        <pre id="gp-notify-preview" style="margin:0;white-space:pre-wrap;word-break:break-all">Waiting for acoustic job…</pre>
+        <pre id="gp-notify-preview" style="margin:0;white-space:pre-wrap;word-break:break-all">Waiting for genomics job…</pre>
       </div>
     </div>
   </div>
@@ -318,13 +318,13 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
 </main>
 
 <footer>
-  <span id="pool-name-footer">Xenom BirdCLEF+ Pool</span>
-  <span>🦜 BirdCLEF+ 2026 &mdash; Acoustic Species Identification &nbsp;|&nbsp; Stratum :5555 &nbsp;|&nbsp; API :1445</span>
+  <span id="pool-name-footer">Xenom Genetics Pool — Pool</span>
+  <span>� Genetics &mdash; Variant Calling &nbsp;|&nbsp; Stratum :1444 &nbsp;|&nbsp; API :1445</span>
 </footer>
 </div>
 
 <script>
-let hrChart=null,hrHistory=[],allMiners=[],statsCache=null,l2Cache=null,poolTheme='generic';
+let hrChart=null,hrHistory=[],allMiners=[],statsCache=null,l2Cache=null,poolTheme='genetics';
 
 function fmtHash(h){
   if(!h)return'0 H/s';
@@ -356,13 +356,13 @@ function initChart(){
   const ctx=document.getElementById('hr-chart');if(!ctx)return;
   hrChart=new Chart(ctx,{
     type:'line',
-    data:{labels:[],datasets:[{label:'H/s',data:[],borderColor:'#38bdf8',backgroundColor:'#38bdf810',borderWidth:1.5,pointRadius:0,tension:.4,fill:true}]},
+    data:{labels:[],datasets:[{label:'H/s',data:[],borderColor:'#00ff41',backgroundColor:'#00ff4110',borderWidth:1.5,pointRadius:0,tension:.4,fill:true}]},
     options:{
       responsive:true,maintainAspectRatio:false,animation:false,
       plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmtHash(c.raw)}}},
       scales:{
-        x:{grid:{color:'#0f3a5a'},ticks:{color:'#2d5a7e',maxTicksLimit:6,font:{family:'Share Tech Mono',size:10}}},
-        y:{grid:{color:'#0f3a5a'},ticks:{color:'#2d5a7e',callback:v=>fmtHash(v),font:{family:'Share Tech Mono',size:10}},beginAtZero:true}
+        x:{grid:{color:'#1a3a1a'},ticks:{color:'#2d5a2d',maxTicksLimit:6,font:{family:'Share Tech Mono',size:10}}},
+        y:{grid:{color:'#1a3a1a'},ticks:{color:'#2d5a2d',callback:v=>fmtHash(v),font:{family:'Share Tech Mono',size:10}},beginAtZero:true}
       }
     }
   });
@@ -434,9 +434,9 @@ async function loadL2(){
 function applyTheme(theme){
   poolTheme=theme;
   if(theme==='genetics'){
-    document.getElementById('page-title').textContent='Xenom BirdCLEF+ Pool';
-    document.getElementById('logo-icon').textContent='�';
-    document.getElementById('logo-text').textContent='BIRDCLEF+';
+    document.getElementById('page-title').textContent='Xenom Genetics Pool';
+    document.getElementById('logo-icon').textContent='🧬';
+    document.getElementById('logo-text').textContent='GENETICS';
     document.getElementById('nav-genomics-li').style.display='';
     document.getElementById('genetics-banner').style.display='';
   }
@@ -623,7 +623,7 @@ window.onload=async()=>{
   initChart();
   await refresh();
   try{renderRecentBlocks(await fetchJSON('/api/blocks'));}catch(e){}
-  // Auto-apply birdclef theme on load
+  // Apply genetics theme on load
   applyTheme('genetics');
   setInterval(refresh,15000);
   setInterval(loadL2,10000);

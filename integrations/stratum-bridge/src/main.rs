@@ -168,6 +168,11 @@ fn cli() -> Command {
             .long("l2-poll-secs").value_name("N")
             .default_value("10").value_parser(clap::value_parser!(u64))
             .help("L2 coordinator poll interval in seconds"))
+        // ── EVM L2 anchor ─────────────────────────────────────────────────────
+        .arg(Arg::new("evm-node")
+            .long("evm-node").value_name("URL")
+            .help("Xenom EVM node JSON-RPC URL (e.g. http://127.0.0.1:8545). \
+                   When set, the latest EVM state root is embedded in each coinbase extra_data."))
 }
 
 #[tokio::main]
@@ -315,6 +320,44 @@ async fn main() -> Result<()> {
     ));
     let (job_tx, job_rx) = watch::channel::<Option<Arc<job::Job>>>(None);
 
+    // ── EVM L2 anchor: latest state root in coinbase extra_data ───────────────
+    // Format: b"XEVM" (4 bytes) + state_root (32 bytes) = 36 bytes total
+    let evm_extra_data: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(vec![]));
+    if let Some(evm_url) = m.get_one::<String>("evm-node").cloned() {
+        info!("EVM anchor enabled: {evm_url}");
+        let extra = evm_extra_data.clone();
+        tokio::spawn(async move {
+            let client = reqwest::Client::new();
+            loop {
+                let body = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "xenom_latestStateRoot",
+                    "params": [],
+                    "id": 1
+                });
+                match client.post(&evm_url).json(&body).send().await {
+                    Ok(r) => match r.json::<serde_json::Value>().await {
+                        Ok(v) => {
+                            if let Some(root_hex) = v["result"].as_str() {
+                                let hex = root_hex.trim_start_matches("0x");
+                                if let Ok(root_bytes) = hex::decode(hex) {
+                                    if root_bytes.len() == 32 {
+                                        let mut prefix = b"XEVM".to_vec();
+                                        prefix.extend_from_slice(&root_bytes);
+                                        *extra.lock().await = prefix;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => warn!("EVM state root parse: {e}"),
+                    },
+                    Err(e) => warn!("EVM node unreachable: {e}"),
+                }
+                sleep(Duration::from_secs(2)).await;
+            }
+        });
+    }
+
     // ── Node polling task ─────────────────────────────────────────────────────
     {
         let rpc2     = rpc.clone();
@@ -322,12 +365,14 @@ async fn main() -> Result<()> {
         let jtx2     = job_tx.clone();
         let pay      = pay_address.clone();
         let poll_dur = Duration::from_millis(poll_ms);
+        let evm_data = evm_extra_data.clone();
 
         tokio::spawn(async move {
             info!("Block-template poller started (interval={poll_ms}ms)");
             loop {
+                let extra_data = evm_data.lock().await.clone();
                 match rpc2
-                    .get_block_template_call(None, GetBlockTemplateRequest::new(pay.clone(), vec![]))
+                    .get_block_template_call(None, GetBlockTemplateRequest::new(pay.clone(), extra_data))
                     .await
                 {
                     Ok(resp) => {

@@ -3,6 +3,24 @@ use genetics_l2_core::{Algorithm, ExternalSource, ScientificJob};
 
 use crate::SourceFetcher;
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Strip HTML tags and decode common entities for clean plain-text slugs.
+fn strip_html(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<'            => in_tag = true,
+            '>' if in_tag  => { in_tag = false; out.push(' '); }
+            _ if !in_tag   => out.push(c),
+            _              => {}
+        }
+    }
+    // collapse multiple spaces
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 // ── Algorithm mapping ─────────────────────────────────────────────────────────
 
 fn algorithm_from_horizon_topic(text: &str) -> Algorithm {
@@ -26,7 +44,14 @@ fn algorithm_from_horizon_topic(text: &str) -> Algorithm {
     } else if t.contains("variant") || t.contains("mutation") {
         Algorithm::VariantCalling
     } else {
-        Algorithm::Custom(t.split_whitespace().take(3).collect::<Vec<_>>().join("_"))
+        // Build a safe slug: only alphanumeric words, max 3, joined by "_"
+        let slug = t
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() > 2)
+            .take(3)
+            .collect::<Vec<_>>()
+            .join("_");
+        Algorithm::Custom(if slug.is_empty() { "research".to_owned() } else { slug })
     }
 }
 
@@ -68,70 +93,71 @@ impl SourceFetcher for HorizonFetcher {
     fn name(&self) -> &str { "horizon_prize" }
 
     async fn fetch_jobs(&self) -> Result<Vec<ScientificJob>> {
-        // Search CORDIS for Horizon prize projects in biomedical / genetics areas
-        let url = "https://cordis.europa.eu/api/search/projects\
-            ?q=horizon+prize+health+genetics+biotechnology\
-            &p=1&n=25&srt=ecMaxContribution:desc&format=json";
+        // Europe PubMed Central (EuropePMC) REST API — EBI-hosted, always public.
+        // Returns EC-funded biomedical research publications and datasets.
+        // Docs: https://europepmc.org/RestfulWebService
+        let url = "https://www.ebi.ac.uk/europepmc/webservices/rest/search\
+            ?query=GRANT_AGENCY:%22European+Commission%22+%28genomics+OR+health+OR+biotechnology%29\
+            &format=json&pageSize=25&resultType=core\
+            &sort=CITED+desc";
 
         let resp = self.http
             .get(url)
             .header("Accept", "application/json")
             .send()
             .await
-            .context("CORDIS API request")?;
+            .context("EuropePMC API request")?;
 
         if !resp.status().is_success() {
-            anyhow::bail!("CORDIS API {}", resp.status());
+            anyhow::bail!("EuropePMC API {}", resp.status());
         }
 
-        let json: serde_json::Value = resp.json().await.context("CORDIS JSON")?;
+        let json: serde_json::Value = resp.json().await.context("EuropePMC JSON")?;
 
-        // CORDIS JSON: { "results": { "project": [...] } }  or  { "results": [...] }
-        let projects = json["results"]["project"]
+        // EuropePMC: { "hitCount": N, "resultList": { "result": [...] } }
+        let results = json["resultList"]["result"]
             .as_array()
-            .or_else(|| json["results"].as_array())
             .cloned()
             .unwrap_or_default();
 
         let mut jobs = Vec::new();
 
-        for proj in &projects {
-            let id    = proj["id"].as_str().unwrap_or_default();
-            let title = proj["title"].as_str().unwrap_or("Horizon Prize");
-            let topic = proj["teaser"].as_str()
-                .or_else(|| proj["objective"].as_str())
-                .unwrap_or(title);
+        for rec in &results {
+            let id    = rec["id"].as_str().unwrap_or_default();
+            let title = &strip_html(rec["title"].as_str().unwrap_or("Horizon Research"));
+            let desc  = &strip_html(rec["abstractText"].as_str().unwrap_or(title));
 
             if id.is_empty() { continue; }
 
-            // Parse EC contribution — CORDIS returns it as a string or number
-            let ec_eur: u64 = proj["ecMaxContribution"]
-                .as_str()
-                .and_then(|s| s.replace([',', '.', ' ', '€'], "").parse().ok())
-                .or_else(|| proj["ecMaxContribution"].as_f64().map(|f| f as u64))
-                .or_else(|| proj["totalCost"].as_f64().map(|f| f as u64))
-                .unwrap_or(1_000_000); // assume €1M if not specified
+            // Grant ID for reward scaling — use grantsList if present
+            let grant_id = rec["grantsList"]["grant"]
+                .as_array()
+                .and_then(|g| g.first())
+                .and_then(|g| g["grantId"].as_str())
+                .unwrap_or("unknown");
 
             let dataset_root = hex::encode(
-                blake3::hash(format!("horizon:{id}").as_bytes()).as_bytes()
+                blake3::hash(format!("horizon:epmc:{id}").as_bytes()).as_bytes()
             );
             let dataset_url = Some(format!(
-                "https://cordis.europa.eu/project/id/{id}"
+                "https://europepmc.org/article/{source}/{id}",
+                source = rec["source"].as_str().unwrap_or("MED"),
+                id     = id
             ));
 
-            let algorithm = algorithm_from_horizon_topic(topic);
-            let reward    = reward_from_ec_contribution_eur(ec_eur);
-            let max_time  = 172_800u64; // 48h — Horizon prizes are complex
+            let algorithm = algorithm_from_horizon_topic(desc);
+            // Horizon prizes €1M–€5M → use max bracket as reward signal
+            let reward = reward_from_ec_contribution_eur(1_000_000);
 
             let job = ScientificJob::new(
                 ExternalSource::HorizonPrize,
-                Some(id.to_owned()),
+                Some(format!("{id}:{grant_id}")),
                 dataset_root,
                 dataset_url,
                 algorithm,
-                format!("Horizon Prize: {title} (€{ec_eur})"),
+                format!("Horizon (EuropePMC): {title}"),
                 reward,
-                max_time,
+                172_800,
             );
             jobs.push(job);
         }

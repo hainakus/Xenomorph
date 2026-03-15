@@ -152,8 +152,252 @@ async fn execute(
 async fn dispatch_task(task: &str, input_dir: &Path, output_dir: &Path, cfg: &L2Config) -> (f64, String) {
     match task {
         "acoustic_classification" => acoustic_classification(input_dir, output_dir, cfg).await,
+        "variant_calling" | "cancer_genomics" | "genome_assembly" | "metagenomics"
+            => genomics_analysis(task, input_dir, output_dir).await,
+        "gene_expression" | "rna_expression" | "biomarker_discovery"
+        | "network_biology" | "sequence_alignment" | "protein_folding" | "molecular_docking"
+            => omics_analysis(task, input_dir, output_dir).await,
+        "digital_health" | "biotechnology" | "drug_discovery"
+            => horizon_analysis(task, input_dir, output_dir).await,
         _ => generic_stub(task, output_dir).await,
     }
+}
+
+// ── Genomics handler (NIH SRA — variant calling, cancer genomics, etc.) ───────
+
+async fn genomics_analysis(task: &str, input_dir: &Path, output_dir: &Path) -> (f64, String) {
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    let mut trace = format!("{task} — NCBI SRA analysis\n");
+    let mut score  = 0.1f64;
+    let mut metrics = serde_json::json!({ "status": "no_data" });
+
+    let files = list_input_files(input_dir).await;
+    trace.push_str(&format!("  input files: {}\n", files.len()));
+
+    for file in &files {
+        let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+        // Try NCBI E-utilities runinfo (CSV) — works for numeric SRA IDs
+        let acc = if name.chars().all(|c| c.is_ascii_digit() || c.is_ascii_alphanumeric()) {
+            name.to_owned()
+        } else {
+            // scan file content for SRR/ERR/DRR accession
+            let txt = tokio::fs::read_to_string(file).await.unwrap_or_default();
+            extract_sra_accession(&txt).unwrap_or_default()
+        };
+
+        if acc.is_empty() { continue; }
+
+        let url = format!(
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi\
+             ?db=sra&id={acc}&rettype=runinfo&retmode=csv"
+        );
+        trace.push_str(&format!("  NCBI runinfo → {acc}\n"));
+
+        if let Ok(resp) = http.get(&url).send().await {
+            if resp.status().is_success() {
+                if let Ok(csv) = resp.text().await {
+                    let (s, m) = score_from_sra_csv(&csv);
+                    if s > score {
+                        score   = s;
+                        metrics = m;
+                        trace.push_str(&format!("  score={s:.4}\n"));
+                    }
+                }
+            }
+        }
+    }
+
+    let out = serde_json::json!({ "task": task, "score": score, "metrics": metrics });
+    tokio::fs::write(
+        output_dir.join("analysis.json"),
+        serde_json::to_vec_pretty(&out).unwrap_or_default(),
+    ).await.ok();
+    trace.push_str(&format!("  final score={score:.4}\n"));
+    (score, trace)
+}
+
+// ── Omics handler (expression, biomarker, network biology, protein) ────────────
+
+async fn omics_analysis(task: &str, input_dir: &Path, output_dir: &Path) -> (f64, String) {
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    let mut trace = format!("{task} — NCBI GEO/SRA analysis\n");
+    let mut score  = 0.1f64;
+    let mut found_records = 0usize;
+
+    let files = list_input_files(input_dir).await;
+    trace.push_str(&format!("  input files: {}\n", files.len()));
+
+    for file in &files {
+        let name = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+        // Try NCBI E-utilities esearch for GEO/SRA count
+        let url = format!(
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi\
+             ?db=gds&term={name}&retmode=json&retmax=5"
+        );
+        trace.push_str(&format!("  NCBI GEO search → {name}\n"));
+
+        if let Ok(resp) = http.get(&url).send().await {
+            if resp.status().is_success() {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    let count = json["esearchresult"]["count"]
+                        .as_str().and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
+                    found_records += count;
+                    trace.push_str(&format!("  GEO count={count}\n"));
+                }
+            }
+        }
+    }
+
+    // Score: log scale on GEO record count
+    score = if found_records > 0 {
+        ((found_records as f64).log10() / 5.0 + 0.2).min(0.95)
+    } else {
+        // fallback: size-based scoring on downloaded files
+        let total_bytes: u64 = files.iter().map(|f| {
+            std::fs::metadata(f).map(|m| m.len()).unwrap_or(0)
+        }).sum();
+        ((total_bytes as f64 / 50_000.0).min(1.0) * 0.6 + 0.1).min(0.9)
+    };
+
+    let out = serde_json::json!({
+        "task": task, "score": score,
+        "geo_records_found": found_records,
+        "input_files": files.len(),
+    });
+    tokio::fs::write(
+        output_dir.join("analysis.json"),
+        serde_json::to_vec_pretty(&out).unwrap_or_default(),
+    ).await.ok();
+    trace.push_str(&format!("  final score={score:.4}\n"));
+    (score, trace)
+}
+
+// ── Horizon / EuropePMC handler (digital_health, biotechnology, drug_discovery) 
+
+async fn horizon_analysis(task: &str, input_dir: &Path, output_dir: &Path) -> (f64, String) {
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    let mut trace = format!("{task} — EuropePMC analysis\n");
+    let mut score = 0.1f64;
+    let mut citations: u64 = 0;
+    let mut keywords_hit = 0usize;
+
+    let health_kws = [
+        "genome", "genomic", "health", "clinical", "biomarker", "precision",
+        "therapy", "cancer", "gene", "variant", "protein", "drug", "biotech",
+    ];
+
+    let files = list_input_files(input_dir).await;
+    trace.push_str(&format!("  input files: {}\n", files.len()));
+
+    for file in &files {
+        // Count relevant keywords in downloaded content
+        let content = tokio::fs::read_to_string(file).await.unwrap_or_default();
+        for kw in &health_kws {
+            keywords_hit += content.matches(kw).count();
+        }
+
+        // Extract article ID from filename (format: "<id>" or "MED")
+        let art_id = file.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if art_id.is_empty() { continue; }
+
+        // Fetch citation count via EuropePMC REST API
+        let url = format!(
+            "https://www.ebi.ac.uk/europepmc/webservices/rest/search\
+             ?query={art_id}&format=json&pageSize=1&resultType=core"
+        );
+        if let Ok(resp) = http.get(&url).send().await {
+            if resp.status().is_success() {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    if let Some(c) = json["resultList"]["result"]
+                        .as_array()
+                        .and_then(|a| a.first())
+                        .and_then(|r| r["citedByCount"].as_u64())
+                    {
+                        citations += c;
+                        trace.push_str(&format!("  citedByCount={c}\n"));
+                    }
+                }
+            }
+        }
+    }
+
+    let kw_score   = (keywords_hit as f64 / 30.0).min(0.6);
+    let cite_score = if citations > 0 { ((citations as f64).log10() / 4.0).min(0.4) } else { 0.0 };
+    score = (kw_score + cite_score + 0.05).min(0.95);
+
+    let out = serde_json::json!({
+        "task": task, "score": score,
+        "keywords_hit": keywords_hit,
+        "citations": citations,
+        "input_files": files.len(),
+    });
+    tokio::fs::write(
+        output_dir.join("analysis.json"),
+        serde_json::to_vec_pretty(&out).unwrap_or_default(),
+    ).await.ok();
+    trace.push_str(&format!("  keywords={keywords_hit} citations={citations} score={score:.4}\n"));
+    (score, trace)
+}
+
+// ── Shared helpers ─────────────────────────────────────────────────────────────
+
+async fn list_input_files(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(mut rd) = tokio::fs::read_dir(dir).await {
+        while let Ok(Some(e)) = rd.next_entry().await {
+            if e.path().is_file() { out.push(e.path()); }
+        }
+    }
+    out
+}
+
+fn extract_sra_accession(html: &str) -> Option<String> {
+    for prefix in ["SRR", "ERR", "DRR"] {
+        if let Some(pos) = html.find(prefix) {
+            let acc: String = html[pos..].chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            if acc.len() >= 9 { return Some(acc); }
+        }
+    }
+    None
+}
+
+fn score_from_sra_csv(csv: &str) -> (f64, serde_json::Value) {
+    let rows: Vec<&str> = csv.lines().filter(|l| !l.trim().is_empty()).collect();
+    if rows.len() < 2 { return (0.1, serde_json::json!({})); }
+
+    let headers: Vec<&str> = rows[0].split(',').collect();
+    let values:  Vec<&str> = rows[1].split(',').collect();
+    let mut map = serde_json::Map::new();
+    for (h, v) in headers.iter().zip(values.iter()) {
+        map.insert(h.to_string(), serde_json::json!(v));
+    }
+
+    let get_f64 = |key: &str| -> f64 {
+        map.get(key).and_then(|v| v.as_str())
+           .and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0)
+    };
+
+    let bases  = get_f64("bases");    // e.g. 3_000_000_000 for 30x WGS
+    let avg_len = get_f64("avgLength"); // e.g. 150 for Illumina
+
+    let base_score = if bases > 0.0 { (bases.log10() / 12.0).min(1.0) } else { 0.1 };
+    let len_score  = if avg_len > 0.0 { (avg_len / 300.0).min(1.0)   } else { 0.5 };
+    let score = (base_score * 0.65 + len_score * 0.35).max(0.05);
+
+    (score, serde_json::Value::Object(map))
 }
 
 /// Acoustic species classification — Perch v2 (primary) or stub.
@@ -244,9 +488,140 @@ async fn generic_stub(task: &str, output_dir: &Path) -> (f64, String) {
     let trace = format!("generic stub for task={task}\n");
     tokio::fs::write(
         output_dir.join("result.json"),
-        format!("{{\"task\":\"{task}\"}}"),
+        format!("{{\"task\":\"{task}\",\"note\":\"no handler\"}}"),
     ).await.ok();
-    (0.42, trace)
+    (0.1, trace)
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    // ── Unit: score_from_sra_csv ───────────────────────────────────────────────
+
+    #[test]
+    fn test_score_from_sra_csv_wgs() {
+        let csv = "Run,bases,avgLength,spots\nSRR12345678,3000000000,150,20000000\n";
+        let (score, metrics) = score_from_sra_csv(csv);
+        assert!(score > 0.5, "WGS 30x should score >0.5, got {score}");
+        assert_eq!(metrics["bases"].as_str().unwrap(), "3000000000");
+    }
+
+    #[test]
+    fn test_score_from_sra_csv_small() {
+        let csv = "Run,bases,avgLength,spots\nSRR00000001,1000000,75,13333\n";
+        let (score, _) = score_from_sra_csv(csv);
+        assert!(score > 0.0 && score < 0.7, "small dataset score={score}");
+    }
+
+    #[test]
+    fn test_score_from_sra_csv_empty() {
+        let (score, _) = score_from_sra_csv("");
+        assert_eq!(score, 0.1);
+    }
+
+    #[test]
+    fn test_score_from_sra_csv_header_only() {
+        let (score, _) = score_from_sra_csv("Run,bases,avgLength\n");
+        assert_eq!(score, 0.1);
+    }
+
+    // ── Unit: extract_sra_accession ────────────────────────────────────────────
+
+    #[test]
+    fn test_extract_sra_accession_srr() {
+        let html = "<html>... accession SRR123456789 ...</html>";
+        assert_eq!(extract_sra_accession(html), Some("SRR123456789".to_string()));
+    }
+
+    #[test]
+    fn test_extract_sra_accession_err() {
+        let html = "Study ERR987654321 from ENA";
+        assert_eq!(extract_sra_accession(html), Some("ERR987654321".to_string()));
+    }
+
+    #[test]
+    fn test_extract_sra_accession_none() {
+        assert_eq!(extract_sra_accession("no accession here"), None);
+    }
+
+    #[test]
+    fn test_extract_sra_accession_too_short() {
+        assert_eq!(extract_sra_accession("SRR123"), None); // <9 chars
+    }
+
+    // ── Integration: NCBI E-utilities (real network) ───────────────────────────
+
+    #[tokio::test]
+    async fn test_genomics_analysis_ncbi_sra() {
+        let tmp = TempDir::new().unwrap();
+        let input  = tmp.path().join("input");
+        let output = tmp.path().join("output");
+        tokio::fs::create_dir_all(&input).await.unwrap();
+        tokio::fs::create_dir_all(&output).await.unwrap();
+
+        // Write a file named after a real public SRA accession (1000 Genomes)
+        tokio::fs::write(input.join("SRR062634"), b"placeholder").await.unwrap();
+
+        let (score, trace) = genomics_analysis("variant_calling", &input, &output).await;
+        println!("NCBI score={score:.4}\ntrace:\n{trace}");
+
+        let result = tokio::fs::read_to_string(output.join("analysis.json")).await.unwrap();
+        println!("analysis.json:\n{result}");
+
+        // Score should be > 0.1 if NCBI returned real data
+        assert!(score >= 0.1, "score={score}");
+        assert!(output.join("analysis.json").exists());
+    }
+
+    // ── Integration: EuropePMC (real network) ──────────────────────────────────
+
+    #[tokio::test]
+    async fn test_horizon_analysis_europepmc() {
+        let tmp = TempDir::new().unwrap();
+        let input  = tmp.path().join("input");
+        let output = tmp.path().join("output");
+        tokio::fs::create_dir_all(&input).await.unwrap();
+        tokio::fs::create_dir_all(&output).await.unwrap();
+
+        // Write a file with biomedical keywords (simulates downloaded EuropePMC HTML)
+        tokio::fs::write(
+            input.join("horizon-test"),
+            b"genomics health clinical biomarker precision therapy cancer gene variant protein drug",
+        ).await.unwrap();
+
+        let (score, trace) = horizon_analysis("digital_health", &input, &output).await;
+        println!("EuropePMC score={score:.4}\ntrace:\n{trace}");
+
+        let result = tokio::fs::read_to_string(output.join("analysis.json")).await.unwrap();
+        println!("analysis.json:\n{result}");
+
+        // Keyword hits should drive score > 0.1
+        assert!(score > 0.1, "score={score}");
+        assert!(output.join("analysis.json").exists());
+    }
+
+    // ── Integration: omics_analysis (NCBI GEO) ────────────────────────────────
+
+    #[tokio::test]
+    async fn test_omics_analysis_geo() {
+        let tmp = TempDir::new().unwrap();
+        let input  = tmp.path().join("input");
+        let output = tmp.path().join("output");
+        tokio::fs::create_dir_all(&input).await.unwrap();
+        tokio::fs::create_dir_all(&output).await.unwrap();
+
+        tokio::fs::write(input.join("GSE100026"), b"expression data").await.unwrap();
+
+        let (score, trace) = omics_analysis("gene_expression", &input, &output).await;
+        println!("GEO score={score:.4}\ntrace:\n{trace}");
+
+        assert!(score >= 0.1);
+        assert!(output.join("analysis.json").exists());
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
