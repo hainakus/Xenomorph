@@ -110,8 +110,8 @@ done
 success "Permissions set."
 
 # ── 6. Manifest ───────────────────────────────────────────────────────────────
-if [[ -f "${SCRIPT_DIR}/hive-manifest.conf" ]]; then
-    cp -f "${SCRIPT_DIR}/hive-manifest.conf" "${MINER_DIR}/hive-manifest.conf"
+if [[ -f "${SCRIPT_DIR}/h-manifest.conf" ]]; then
+    cp -f "${SCRIPT_DIR}/h-manifest.conf" "${MINER_DIR}/h-manifest.conf"
     success "Manifest installed."
 fi
 

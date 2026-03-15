@@ -14,9 +14,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 MINER_NAME="genome-miner"
-MINER_DIR="/hive/miners/${MINER_NAME}"
+MINER_DIR="${MINER_DIR:-/hive/miners/${MINER_NAME}}"
 MINER_BIN="${MINER_DIR}/${MINER_NAME}"
-CONFIG_FILE="${MINER_DIR}/${MINER_NAME}.conf"
+CONFIG_FILE="${CUSTOM_CONFIG_FILENAME:-${MINER_DIR}/${MINER_NAME}.conf}"
 LOG_DIR="/var/log/miner/${MINER_NAME}"
 LOG_FILE="${LOG_DIR}/${MINER_NAME}.log"
 

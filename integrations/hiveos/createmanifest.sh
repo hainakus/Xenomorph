@@ -16,7 +16,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 MINER_VER=$(grep -m1 '^version' "${REPO_ROOT}/Cargo.toml" | sed 's/.*= *"\(.*\)"/\1/')
 MINER_NAME="genome-miner"
 
-cat > "${SCRIPT_DIR}/hive-manifest.conf" << EOF
+cat > "${SCRIPT_DIR}/h-manifest.conf" << EOF
 MINER_NAME="${MINER_NAME}"
 MINER_VER="${MINER_VER}"
 MINER_ALGO="genome-pow kheavyhash"
@@ -26,4 +26,4 @@ MINER_API_PORT="4000"
 MINER_BIN="${MINER_NAME}"
 EOF
 
-echo "Created: ${SCRIPT_DIR}/hive-manifest.conf  (v${MINER_VER})"
+echo "Created: ${SCRIPT_DIR}/h-manifest.conf  (v${MINER_VER})"

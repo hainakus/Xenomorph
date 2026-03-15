@@ -72,13 +72,17 @@ bash "${OUT_DIR}/createmanifest.sh"
 if [ "${PACKAGE}" = true ]; then
     ARCHIVE="${REPO_ROOT}/${MINER_NAME}-${MINER_VER}-linux.tar.gz"
     echo "Creating package: ${ARCHIVE}"
-    tar -czf "${ARCHIVE}" \
-        -C "${OUT_DIR}" \
-        "${MINER_NAME}" \
-        h-config.sh \
-        h-run.sh \
-        h-stats.sh \
-        hive-manifest.conf
+    STAGE=$(mktemp -d)
+    STAGE_DIR="${STAGE}/${MINER_NAME}-${MINER_VER}"
+    mkdir -p "${STAGE_DIR}"
+    cp "${OUT_DIR}/${MINER_NAME}" \
+       "${OUT_DIR}/h-config.sh" \
+       "${OUT_DIR}/h-run.sh" \
+       "${OUT_DIR}/h-stats.sh" \
+       "${OUT_DIR}/h-manifest.conf" \
+       "${STAGE_DIR}/"
+    tar -czf "${ARCHIVE}" -C "${STAGE}" "${MINER_NAME}-${MINER_VER}"
+    rm -rf "${STAGE}"
     echo "Package ready: ${ARCHIVE}  ($(du -sh "${ARCHIVE}" | cut -f1))"
     echo ""
     echo "Install on HiveOS rig:"
