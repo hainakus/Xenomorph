@@ -1,77 +1,65 @@
 #!/usr/bin/env bash
-# ── h-config.sh ───────────────────────────────────────────────────────────────
-# Called by HiveOS to generate the miner configuration file from flight-sheet
-# parameters before h-run.sh starts the miner.
-#
-# HiveOS injects these environment variables from the flight-sheet:
-#
-#   CUSTOM_TEMPLATE     — Mining reward address (wallet)
-#   CUSTOM_URL          — Xenom node gRPC endpoint  e.g. "192.168.1.10:36669"
-#   CUSTOM_PASS         — (unused by genome-miner)
-#   CUSTOM_USER_CONFIG  — Extra CLI flags, e.g. "--gpu all --mainnet"
-#   CUSTOM_CONFIG_FILENAME — Full path where config file must be written
-#   WORKER_NAME         — HiveOS rig worker name (informational)
-#
-# Output: a shell-sourceable config file at $CUSTOM_CONFIG_FILENAME containing
-# the complete argument string that h-run.sh will pass to genome-miner.
-# ─────────────────────────────────────────────────────────────────────────────
-# HiveOS sources this file — do NOT use set -euo pipefail at top level.
-# All wallet/rig variables (CUSTOM_TEMPLATE, CUSTOM_URL, etc.) are already
-# in scope when HiveOS sources this script.
+# HiveOS configuration script for genome-miner
 
-MINER_NAME="genome-miner"
+set -euo pipefail
 
-miner_config_gen() {
-    local MINER_DIR="/hive/miners/custom/${MINER_NAME}"
-    local CONFIG_FILE="${CUSTOM_CONFIG_FILENAME:-${MINER_DIR}/${MINER_NAME}.conf}"
+MINER_NAME="${MINER_NAME:-genome-miner}"
 
-    # ── Validate required fields ──────────────────────────────────────────────
-    if [[ -z "${CUSTOM_TEMPLATE:-}" ]]; then
-        echo "[h-config] ERROR: Mining address (Wallet) not set in flight-sheet."
-        return 1
-    fi
+# Set default config filename if not provided by HiveOS
+CUSTOM_CONFIG_FILENAME="${CUSTOM_CONFIG_FILENAME:-/hive/miners/custom/${MINER_NAME}/${MINER_NAME}.conf}"
 
-    local MINING_ADDRESS="${CUSTOM_TEMPLATE}"
-    # Normalize newlines/tabs in user config to spaces (HiveOS JSON may embed \n)
-    local USER_CONFIG
-    USER_CONFIG="$(printf '%s' "${CUSTOM_USER_CONFIG:-}" | tr '\n\t' '  ' | tr -s ' ')"
+# HiveOS provides these variables:
+# CUSTOM_URL        Pool/node URL (host:port or stratum://host:port)
+# CUSTOM_TEMPLATE   Mining address (wallet)
+# CUSTOM_PASS       Password field from flight sheet (unused)
+# CUSTOM_USER_CONFIG Extra CLI flags (e.g. "--gpu 0,1 --devnet")
 
-    # ── Parse pool/node endpoint ──────────────────────────────────────────────
-    local RPCSERVER="${CUSTOM_URL:-localhost:36669}"
-    RPCSERVER="${RPCSERVER#*://}"
-    RPCSERVER="${RPCSERVER%%/*}"
-    RPCSERVER="${RPCSERVER:-localhost:36669}"
+if [[ -z "${CUSTOM_TEMPLATE:-}" ]]; then
+    echo "CUSTOM_TEMPLATE (mining address) is empty"
+    exit 1
+fi
 
-    # ── GPU selection ─────────────────────────────────────────────────────────
-    local GPU_ARG="--gpu all"
-    if echo "${USER_CONFIG}" | grep -qE '\-\-gpu[[:space:]]'; then
-        GPU_ARG=""
-    fi
+MINING_ADDRESS="$CUSTOM_TEMPLATE"
+RPCSERVER="${CUSTOM_URL:-localhost:36669}"
+# Strip protocol prefix if present
+RPCSERVER="${RPCSERVER#*://}"
+RPCSERVER="${RPCSERVER%%/*}"
+RPCSERVER="${RPCSERVER:-localhost:36669}"
 
-    # ── Network flag ──────────────────────────────────────────────────────────
-    local NETWORK_ARG="--mainnet"
-    if echo "${USER_CONFIG}" | grep -qE '\-\-(testnet|devnet)'; then
-        NETWORK_ARG=""
-    fi
+API_PORT=4000
+LOG_DIR="/var/log/miner/${MINER_NAME}"
 
-    # ── Assemble argument string ──────────────────────────────────────────────
-    local MINER_ARGS="--mining-address ${MINING_ADDRESS} --rpcserver ${RPCSERVER}"
-    [[ -n "${NETWORK_ARG}" ]] && MINER_ARGS="${MINER_ARGS} ${NETWORK_ARG}"
-    [[ -n "${GPU_ARG}" ]]     && MINER_ARGS="${MINER_ARGS} ${GPU_ARG}"
-    MINER_ARGS="${MINER_ARGS} --no-tui --api-port 4000"
-    [[ -n "${USER_CONFIG}" ]] && MINER_ARGS="${MINER_ARGS} ${USER_CONFIG}"
-    MINER_ARGS="$(echo "${MINER_ARGS}" | tr -s ' ' | sed 's/^ //;s/ $//')"
+# Normalize newlines/tabs in user config to spaces (HiveOS JSON may embed \n)
+USER_CONFIG="$(printf '%s' "${CUSTOM_USER_CONFIG:-}" | tr '\n\t' '  ' | tr -s ' ')"
 
-    # ── Write config file ─────────────────────────────────────────────────────
-    mkdir -p "$(dirname "${CONFIG_FILE}")"
-    cat > "${CONFIG_FILE}" << CONF
+# ── GPU selection ─────────────────────────────────────────────────────────
+GPU_ARG="--gpu all"
+if echo "${USER_CONFIG}" | grep -qE '\-\-gpu[[:space:]]'; then
+    GPU_ARG=""
+fi
+
+# ── Network flag ──────────────────────────────────────────────────────────
+NETWORK_ARG="--mainnet"
+if echo "${USER_CONFIG}" | grep -qE '\-\-(testnet|devnet)'; then
+    NETWORK_ARG=""
+fi
+
+# ── Assemble argument string ──────────────────────────────────────────────
+MINER_ARGS="--mining-address ${MINING_ADDRESS} --rpcserver ${RPCSERVER}"
+[[ -n "${NETWORK_ARG}" ]] && MINER_ARGS="${MINER_ARGS} ${NETWORK_ARG}"
+[[ -n "${GPU_ARG}" ]]     && MINER_ARGS="${MINER_ARGS} ${GPU_ARG}"
+MINER_ARGS="${MINER_ARGS} --no-tui --api-port ${API_PORT}"
+[[ -n "${USER_CONFIG}" ]] && MINER_ARGS="${MINER_ARGS} ${USER_CONFIG}"
+MINER_ARGS="$(echo "${MINER_ARGS}" | tr -s ' ' | sed 's/^ //;s/ $//')"
+
+mkdir -p "$(dirname "$CUSTOM_CONFIG_FILENAME")" "$LOG_DIR"
+
+cat > "$CUSTOM_CONFIG_FILENAME" <<EOF
 # genome-miner HiveOS config — generated by h-config.sh
-MINER_ARGS="${MINER_ARGS}"
-CONF
+MINER_ARGS=${MINER_ARGS}
+API_PORT=${API_PORT}
+LOG_DIR=${LOG_DIR}
+EOF
 
-    echo "[h-config] Config written to: ${CONFIG_FILE}"
-    echo "[h-config] Args: ${MINER_ARGS}"
-}
-
-# HiveOS (both miner-run and /hive/bin/custom) sources this file and then calls
-# miner_config_gen explicitly. Do NOT call it inline here.
+echo "genome-miner config generated:"
+cat "$CUSTOM_CONFIG_FILENAME"
