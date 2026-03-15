@@ -30,6 +30,9 @@ pub struct GpuStats {
     pub hashrate: f64,   // MH/s
     pub accepted: u64,
     pub rejected: u64,
+    pub temp:     u32,   // °C  (0 = unknown)
+    pub fan:      u32,   // %   (0 = unknown)
+    pub power:    f64,   // W   (0 = unknown)
 }
 
 pub struct DashStats {
@@ -268,6 +271,9 @@ fn render_workers(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
         Cell::from("#").style(hdr_style),
         Cell::from("Name").style(hdr_style),
         Cell::from("Hashrate").style(hdr_style),
+        Cell::from("Temp").style(hdr_style),
+        Cell::from("Fan").style(hdr_style),
+        Cell::from("Power").style(hdr_style),
         Cell::from("Accepted").style(hdr_style),
         Cell::from("Rejected").style(hdr_style),
     ]);
@@ -277,6 +283,9 @@ fn render_workers(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
             Cell::from("CPU"),
             Cell::from(format!("{} threads", s.num_cpus)),
             Cell::from(fmt_mhs(s.total_mhs)).style(Style::default().fg(Color::Green)),
+            Cell::from("—"),
+            Cell::from("—"),
+            Cell::from("—"),
             Cell::from(s.accepted.to_string()).style(Style::default().fg(Color::Green)),
             Cell::from(s.rejected.to_string()),
         ])]
@@ -284,6 +293,9 @@ fn render_workers(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
         vec![Row::new(vec![
             Cell::from("—"),
             Cell::from("Initialising..."),
+            Cell::from(""),
+            Cell::from(""),
+            Cell::from(""),
             Cell::from(""),
             Cell::from(""),
             Cell::from(""),
@@ -297,13 +309,23 @@ fn render_workers(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
                 } else {
                     Style::default().fg(Color::DarkGray)
                 };
+                let temp_str  = if g.temp  > 0 { format!("{} °C", g.temp)  } else { "—".into() };
+                let fan_str   = if g.fan   > 0 { format!("{}%",   g.fan)   } else { "—".into() };
+                let power_str = if g.power > 0.0 { format!("{:.0}W", g.power) } else { "—".into() };
+                let temp_color = match g.temp {
+                    0        => Color::DarkGray,
+                    1..=69   => Color::Green,
+                    70..=84  => Color::Yellow,
+                    _        => Color::Red,
+                };
                 Row::new(vec![
                     Cell::from(g.id.to_string()),
                     Cell::from(g.name.clone()),
-                    Cell::from(fmt_mhs(g.hashrate))
-                        .style(Style::default().fg(Color::Green)),
-                    Cell::from(g.accepted.to_string())
-                        .style(Style::default().fg(Color::Green)),
+                    Cell::from(fmt_mhs(g.hashrate)).style(Style::default().fg(Color::Green)),
+                    Cell::from(temp_str).style(Style::default().fg(temp_color)),
+                    Cell::from(fan_str).style(Style::default().fg(Color::Cyan)),
+                    Cell::from(power_str).style(Style::default().fg(Color::Magenta)),
+                    Cell::from(g.accepted.to_string()).style(Style::default().fg(Color::Green)),
                     Cell::from(g.rejected.to_string()).style(rej_sty),
                 ])
             })
@@ -314,6 +336,9 @@ fn render_workers(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
         Constraint::Length(4),
         Constraint::Min(22),
         Constraint::Length(12),
+        Constraint::Length(8),
+        Constraint::Length(6),
+        Constraint::Length(7),
         Constraint::Length(10),
         Constraint::Length(10),
     ];

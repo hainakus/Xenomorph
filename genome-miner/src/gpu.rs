@@ -732,6 +732,9 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
             hashrate: 0.0,
             accepted: 0,
             rejected: 0,
+            temp:     0,
+            fan:      0,
+            power:    0.0,
         }).collect();
         s.connected = true;
         s.push_log(format!("{num_gpus} GPU(s) ready — batch={batch_size}"));
