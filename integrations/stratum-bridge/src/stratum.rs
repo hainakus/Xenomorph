@@ -139,6 +139,7 @@ pub async fn run_server(
 
 // ── Per-miner connection ──────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_miner(
     stream:        TcpStream,
     peer:          SocketAddr,
