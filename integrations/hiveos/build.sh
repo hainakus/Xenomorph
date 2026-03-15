@@ -70,7 +70,7 @@ bash "${OUT_DIR}/createmanifest.sh"
 
 # ── Package for HiveOS upload (optional) ─────────────────────────────────────
 if [ "${PACKAGE}" = true ]; then
-    ARCHIVE="${REPO_ROOT}/${MINER_NAME}-${MINER_VER}-linux.tar.gz"
+    ARCHIVE="${REPO_ROOT}/${MINER_NAME}-${MINER_VER}.tar.gz"
     echo "Creating package: ${ARCHIVE}"
     STAGE=$(mktemp -d)
     STAGE_DIR="${STAGE}/${MINER_NAME}"
