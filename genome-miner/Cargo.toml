@@ -42,5 +42,8 @@ blake3.workspace  = true
 hex               = "0.4"
 wgpu = { version = "22", features = ["metal", "vulkan-portability"] }
 
+[dev-dependencies]
+tempfile = "3"
+
 [lints]
 workspace = true

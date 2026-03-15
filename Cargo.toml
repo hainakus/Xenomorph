@@ -35,6 +35,9 @@ members = [
     "integrations/genetics-l2/genetics-l2-worker",
     "integrations/genetics-l2/genetics-l2-validator",
     "integrations/genetics-l2/genetics-l2-settlement",
+    "integrations/xenom-evm/xenom-evm-core",
+    "integrations/xenom-evm/xenom-evm-rpc",
+    "integrations/xenom-evm/xenom-evm-node",
     "wasm",
     "wasm/core",
     "math",
@@ -151,6 +154,9 @@ kaspa-wrpc-wasm = { version = "0.15.2", path = "rpc/wrpc/wasm" }
 kaspa-wrpc-example-subscriber = { version = "0.15.2", path = "rpc/wrpc/examples/subscriber" }
 xenom = { version = "0.15.2", path = "xenom" }
 kaspa-alloc = { version = "0.15.2", path = "utils/alloc" }
+revm          = { version = "14", default-features = false, features = ["std"] }
+rlp           = "0.5"
+jsonrpsee     = { version = "0.22", features = ["server", "macros"] }
 blake3 = "1.5.4"
 memmap2 = "0.9"
 pqcrypto-dilithium = "0.5"
@@ -285,6 +291,7 @@ pin-project-lite = "0.2.13"
 tower-http = { version = "0.4.4", features = [
     "map-response-body",
     "map-request-body",
+    "cors",
 ] }
 tower = "0.4.7"
 hyper = "0.14.27"
