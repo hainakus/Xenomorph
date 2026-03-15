@@ -141,7 +141,11 @@ async fn try_claim_and_execute(
         worker_pubkey: cfg.worker_pubkey.clone(),
         result_root:  result_root.clone(),
         score,
-        trace_hash:   Some(trace_hash),
+        trace_hash:              Some(trace_hash),
+        notebook_or_repo_hash:   None,
+        container_hash:          None,
+        weights_hash:            None,
+        submission_bundle_hash:  None,
         worker_sig,
         submitted_at: now_secs(),
     };
