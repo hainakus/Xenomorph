@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use genetics_l2_core::{Algorithm, ExternalSource, ScientificJob, now_secs};
+use genetics_l2_core::{Algorithm, ExternalSource, ScientificJob};
 
 use crate::SourceFetcher;
 
@@ -213,6 +213,6 @@ impl KaggleFetcher {
         if !resp.status().is_success() {
             anyhow::bail!("Kaggle API {} → {}", slug, resp.status());
         }
-        Ok(resp.json().await.context("Kaggle meta JSON")?)
+        resp.json().await.context("Kaggle meta JSON")
     }
 }

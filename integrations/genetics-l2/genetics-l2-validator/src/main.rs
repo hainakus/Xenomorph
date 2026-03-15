@@ -90,7 +90,7 @@ async fn validate_pending(
 
         // Partial recomputation validation
         let (verdict, recomputed_score, score_delta, notes) =
-            validate_result(&job_val, &result_root, claimed_score, tolerance).await;
+            validate_result(job_val, &result_root, claimed_score, tolerance).await;
 
         // Sign the validation report
         let sign_data = format!("{result_id}:{verdict:?}");

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Arg, Command};
-use genetics_l2_core::{Algorithm, ExternalSource, ScientificJob, now_secs};
+use genetics_l2_core::ScientificJob;
 use tokio::time::{sleep, Duration};
 
 // ── Source connectors ─────────────────────────────────────────────────────────

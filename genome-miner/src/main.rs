@@ -316,14 +316,13 @@ async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
         if !resp.is_synced { warn!("Node not synced"); }
 
         let current_id = rpc_block.header.accepted_id_merkle_root;
-        {
+        let already_seen = {
             let mut guard = state.template_id.lock().unwrap();
-            if *guard == Some(current_id) {
-                drop(guard); // must drop before .await
-                sleep(Duration::from_millis(200)).await;
-                continue;
-            }
-            *guard = Some(current_id);
+            if *guard == Some(current_id) { true } else { *guard = Some(current_id); false }
+        };
+        if already_seen {
+            sleep(Duration::from_millis(200)).await;
+            continue;
         }
 
         let header: Header = (&rpc_block.header).into();

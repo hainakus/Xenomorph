@@ -158,6 +158,7 @@ impl GpuWorker {
 
 /// Source of a mining template — determines how solutions are submitted.
 #[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum MiningSource {
     /// Direct node connection: solution submitted via gRPC submit_block.
     Node { rpc_block: Arc<RpcRawBlock>, header: Header },

@@ -36,6 +36,7 @@ impl JobExecutor for NextflowExecutor {
 
 // ── Snakemake executor ────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub struct SnakemakeExecutor;
 
 impl JobExecutor for SnakemakeExecutor {
@@ -101,6 +102,7 @@ async fn run_nextflow(
 ///
 /// Passes `input_dir` and `output_dir` as config values so the Snakefile
 /// can reference them via `config["input_dir"]` / `config["output_dir"]`.
+#[allow(dead_code)]
 async fn run_snakemake(
     _job:       &ComputeJob,
     pipeline:   &Path,

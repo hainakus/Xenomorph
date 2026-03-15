@@ -99,7 +99,7 @@ async fn execute(
     }
 
     // ── 4. Execute ────────────────────────────────────────────────────────────
-    let (score, trace) = dispatch_task(task, &input_dir, &output_dir, &cfg).await;
+    let (score, trace) = dispatch_task(task, &input_dir, &output_dir, cfg).await;
     let trace_hash = blake3_hex(trace.as_bytes());
     tokio::fs::write(work_dir.join("trace.log"), &trace).await.ok();
     info!("L2: {job_id} score={score:.4} trace_hash={trace_hash}");
@@ -222,6 +222,7 @@ async fn genomics_analysis(task: &str, input_dir: &Path, output_dir: &Path) -> (
 
 // ── Omics handler (expression, biomarker, network biology, protein) ────────────
 
+#[allow(unused_assignments)]
 async fn omics_analysis(task: &str, input_dir: &Path, output_dir: &Path) -> (f64, String) {
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -282,6 +283,7 @@ async fn omics_analysis(task: &str, input_dir: &Path, output_dir: &Path) -> (f64
 
 // ── Horizon / EuropePMC handler (digital_health, biotechnology, drug_discovery) 
 
+#[allow(unused_assignments)]
 async fn horizon_analysis(task: &str, input_dir: &Path, output_dir: &Path) -> (f64, String) {
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))

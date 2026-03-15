@@ -88,6 +88,10 @@ impl HorizonFetcher {
     }
 }
 
+impl Default for HorizonFetcher {
+    fn default() -> Self { Self::new() }
+}
+
 #[async_trait::async_trait]
 impl SourceFetcher for HorizonFetcher {
     fn name(&self) -> &str { "horizon_prize" }
