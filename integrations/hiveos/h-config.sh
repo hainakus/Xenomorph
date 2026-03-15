@@ -70,6 +70,5 @@ CONF
     echo "[h-config] Args: ${MINER_ARGS}"
 }
 
-# Run immediately when sourced by /hive/bin/custom (which doesn't call the function).
-# miner-run also calls miner_config_gen explicitly after sourcing — idempotent, that's fine.
-miner_config_gen
+# HiveOS (both miner-run and /hive/bin/custom) sources this file and then calls
+# miner_config_gen explicitly. Do NOT call it inline here.
