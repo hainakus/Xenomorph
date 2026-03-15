@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use kaspa_addresses::Prefix;
 use bioproof_core::{
     compute_proof, sign_manifest, AnchorPayload, ArtifactType, BioProofKeypair, Certificate,
