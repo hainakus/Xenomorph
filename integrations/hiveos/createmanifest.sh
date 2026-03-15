@@ -17,13 +17,10 @@ MINER_VER=$(grep -m1 '^version' "${REPO_ROOT}/Cargo.toml" | sed 's/.*= *"\(.*\)"
 MINER_NAME="genome-miner"
 
 cat > "${SCRIPT_DIR}/h-manifest.conf" << EOF
-MINER_NAME="${MINER_NAME}"
-MINER_VER="${MINER_VER}"
-MINER_ALGO="genome-pow kheavyhash"
-MINER_FORK="xenom"
-MINER_LOG_BASENAME="${MINER_NAME}"
-MINER_API_PORT="4000"
-MINER_BIN="${MINER_NAME}"
+CUSTOM_NAME="${MINER_NAME}"
+CUSTOM_VERSION="${MINER_VER}"
+CUSTOM_CONFIG_FILENAME="/hive/miners/custom/${MINER_NAME}/${MINER_NAME}.conf"
+CUSTOM_LOG_BASENAME="/var/log/miner/${MINER_NAME}/${MINER_NAME}"
 EOF
 
 echo "Created: ${SCRIPT_DIR}/h-manifest.conf  (v${MINER_VER})"

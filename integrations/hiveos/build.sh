@@ -73,7 +73,7 @@ if [ "${PACKAGE}" = true ]; then
     ARCHIVE="${REPO_ROOT}/${MINER_NAME}-${MINER_VER}-linux.tar.gz"
     echo "Creating package: ${ARCHIVE}"
     STAGE=$(mktemp -d)
-    STAGE_DIR="${STAGE}/${MINER_NAME}-${MINER_VER}"
+    STAGE_DIR="${STAGE}/${MINER_NAME}"
     mkdir -p "${STAGE_DIR}"
     cp "${OUT_DIR}/${MINER_NAME}" \
        "${OUT_DIR}/h-config.sh" \
@@ -81,7 +81,11 @@ if [ "${PACKAGE}" = true ]; then
        "${OUT_DIR}/h-stats.sh" \
        "${OUT_DIR}/h-manifest.conf" \
        "${STAGE_DIR}/"
-    tar -czf "${ARCHIVE}" -C "${STAGE}" "${MINER_NAME}-${MINER_VER}"
+    chmod +x "${STAGE_DIR}/${MINER_NAME}" \
+             "${STAGE_DIR}/h-config.sh" \
+             "${STAGE_DIR}/h-run.sh" \
+             "${STAGE_DIR}/h-stats.sh"
+    tar -czf "${ARCHIVE}" -C "${STAGE}" "${MINER_NAME}"
     rm -rf "${STAGE}"
     echo "Package ready: ${ARCHIVE}  ($(du -sh "${ARCHIVE}" | cut -f1))"
     echo ""
