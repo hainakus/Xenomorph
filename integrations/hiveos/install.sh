@@ -115,6 +115,14 @@ if [[ -f "${SCRIPT_DIR}/h-manifest.conf" ]]; then
     success "Manifest installed."
 fi
 
+# ── 7. Symlink for miner-run ──────────────────────────────────────────────────
+# miner-run resolves MINER_DIR=/hive/miners/<name>; symlink it to the custom dir
+SYMLINK="/hive/miners/${MINER_NAME}"
+if [[ ! -L "${SYMLINK}" ]] || [[ "$(readlink "${SYMLINK}")" != "${MINER_DIR}" ]]; then
+    ln -sfn "${MINER_DIR}" "${SYMLINK}"
+    success "Symlink created: ${SYMLINK} -> ${MINER_DIR}"
+fi
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 echo "════════════════════════════════════════════════════════"

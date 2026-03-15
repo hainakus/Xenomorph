@@ -14,7 +14,8 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 MINER_NAME="genome-miner"
-MINER_DIR="/hive/miners/custom/${MINER_NAME}"
+# Resolve the directory that contains this script (works via symlinks and when sourced)
+MINER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MINER_BIN="${MINER_DIR}/${MINER_NAME}"
 CONFIG_FILE="${CUSTOM_CONFIG_FILENAME:-${MINER_DIR}/${MINER_NAME}.conf}"
 LOG_DIR="/var/log/miner/${MINER_NAME}"
