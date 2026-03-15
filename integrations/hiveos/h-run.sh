@@ -26,8 +26,8 @@ GENOME_URL="https://github.com/hainakus/Xenomorph/releases/download/genome-grch3
 # Primary local storage path (also the genome-miner auto-detect default)
 GENOME_DEFAULT_DIR="${HOME}/.rusty-xenom"
 GENOME_DEFAULT_PATH="${GENOME_DEFAULT_DIR}/grch38.xenom"
-# Minimum expected file size in bytes (~780 MB)
-GENOME_MIN_BYTES=780000000
+# Minimum expected file size in bytes (actual ~775 MB, threshold at 750 MB)
+GENOME_MIN_BYTES=750000000
 
 # ── Sanity checks ─────────────────────────────────────────────────────────────
 if [[ ! -x "${MINER_BIN}" ]]; then
