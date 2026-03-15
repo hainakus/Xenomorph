@@ -36,9 +36,20 @@ if [[ ! -x "${MINER_BIN}" ]]; then
 fi
 
 if [[ ! -f "${CONFIG_FILE}" ]]; then
-    echo "[h-run] ERROR: Config file not found: ${CONFIG_FILE}"
-    echo "        Run h-config.sh first (HiveOS does this automatically)."
-    exit 1
+    echo "[h-run] Config not found — generating now..."
+    # Try miner_config_gen if already defined, else source h-config.sh first
+    if ! declare -f miner_config_gen > /dev/null 2>&1; then
+        # shellcheck source=/dev/null
+        source "${MINER_DIR}/h-config.sh" 2>/dev/null || true
+    fi
+    if declare -f miner_config_gen > /dev/null 2>&1; then
+        miner_config_gen || true
+    fi
+    if [[ ! -f "${CONFIG_FILE}" ]]; then
+        echo "[h-run] ERROR: Config file still missing after generation attempt: ${CONFIG_FILE}"
+        echo "        Check that CUSTOM_TEMPLATE (wallet address) is set in the flight-sheet."
+        exit 1
+    fi
 fi
 
 # ── Load config ───────────────────────────────────────────────────────────────
