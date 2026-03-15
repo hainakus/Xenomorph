@@ -177,15 +177,17 @@ impl EvmChain {
         // Use a snapshot so eth_call doesn't modify state
         let db_snapshot = db.clone();
 
-        let mut tx = TxEnv::default();
-        tx.caller = caller;
-        tx.transact_to = TransactTo::Call(to);
-        tx.data = data;
-        tx.value = value;
-        tx.gas_limit = gas_limit;
-        tx.gas_price = U256::from(1_000_000_000u64);
+        let tx = TxEnv {
+            caller,
+            transact_to: TransactTo::Call(to),
+            data,
+            value,
+            gas_limit,
+            gas_price: U256::from(1_000_000_000u64),
+            ..Default::default()
+        };
 
-        let result = build_and_run(&mut *db, block_num, self.chain_id, tx)?;
+        let result = build_and_run(&mut db, block_num, self.chain_id, tx)?;
 
         // Restore snapshot (call must not mutate state)
         *db = db_snapshot;
@@ -385,18 +387,20 @@ impl EvmChain {
             return Err(ChainError::Nonce { expected: expected_nonce, got: tx.nonce });
         }
 
-        let mut revm_tx = TxEnv::default();
-        revm_tx.caller = tx.from;
-        revm_tx.transact_to = match tx.to {
-            Some(addr) => TransactTo::Call(addr),
-            None => TransactTo::Create,
+        let revm_tx = TxEnv {
+            caller:       tx.from,
+            transact_to:  match tx.to {
+                Some(addr) => TransactTo::Call(addr),
+                None => TransactTo::Create,
+            },
+            data:         tx.data.clone(),
+            value:        tx.value,
+            gas_limit:    tx.gas_limit,
+            gas_price:    tx.gas_price,
+            nonce:        Some(tx.nonce),
+            chain_id:     None, // already validated during sig recovery; skip EVM recheck
+            ..Default::default()
         };
-        revm_tx.data = tx.data.clone();
-        revm_tx.value = tx.value;
-        revm_tx.gas_limit = tx.gas_limit;
-        revm_tx.gas_price = tx.gas_price;
-        revm_tx.nonce = Some(tx.nonce);
-        revm_tx.chain_id = None; // already validated during sig recovery; skip EVM recheck
 
         let res = build_and_run(&mut db, block_num, self.chain_id, revm_tx)?;
 
