@@ -21,6 +21,8 @@ CUSTOM_NAME="${MINER_NAME}"
 CUSTOM_VERSION="${MINER_VER}"
 CUSTOM_CONFIG_FILENAME="/hive/miners/custom/${MINER_NAME}/${MINER_NAME}.conf"
 CUSTOM_LOG_BASENAME="/var/log/miner/${MINER_NAME}/${MINER_NAME}"
+
+miner_ver() { echo "\${CUSTOM_VERSION}"; }
 EOF
 
 echo "Created: ${SCRIPT_DIR}/h-manifest.conf  (v${MINER_VER})"
