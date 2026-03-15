@@ -187,7 +187,7 @@ impl EthRpcServer for EthServer {
     async fn send_raw_transaction(&self, raw: String) -> RpcResult<String> {
         let raw_hex = raw.strip_prefix("0x").unwrap_or(&raw);
         let raw_bytes = hex::decode(raw_hex).map_err(|e| rpc_err(format!("hex decode: {e}")))?;
-        let hash = self.chain.send_raw_transaction(&raw_bytes).map_err(|e| rpc_err(e))?;
+        let hash = self.chain.send_raw_transaction(&raw_bytes).map_err(rpc_err)?;
         Ok(format!("0x{}", hex::encode(hash)))
     }
 
@@ -199,7 +199,7 @@ impl EthRpcServer for EthServer {
         let gas = req.gas.as_deref()
             .and_then(|s| u64::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16).ok())
             .unwrap_or(30_000_000);
-        let out = self.chain.call(from, to, data, value, gas).map_err(|e| rpc_err(e))?;
+        let out = self.chain.call(from, to, data, value, gas).map_err(rpc_err)?;
         Ok(format!("0x{}", hex::encode(out)))
     }
 
@@ -218,7 +218,7 @@ impl EthRpcServer for EthServer {
         if req.to.is_none() {
             return Ok(format!("0x{:x}", 500_000u64));
         }
-        let to = parse_addr(req.to.as_deref().unwrap_or("")).map_err(|e| rpc_err(e))?;
+        let to = parse_addr(req.to.as_deref().unwrap_or("")).map_err(rpc_err)?;
         match self.chain.call(from, to, data, value, gas_limit) {
             Ok(_) => {
                 // Simulate succeeded — return a reasonable estimate with 20% buffer
@@ -235,7 +235,7 @@ impl EthRpcServer for EthServer {
 
     async fn get_transaction_receipt(&self, hash: String) -> RpcResult<Option<serde_json::Value>> {
         let h = hash.strip_prefix("0x").unwrap_or(&hash);
-        let bytes = hex::decode(h).map_err(|e| rpc_err(e))?;
+        let bytes = hex::decode(h).map_err(rpc_err)?;
         if bytes.len() != 32 {
             return Ok(None);
         }
@@ -326,10 +326,10 @@ impl EthRpcServer for EthServer {
     }
 
     async fn get_storage_at(&self, addr: String, slot: String, _tag: Option<String>) -> RpcResult<String> {
-        let a = parse_addr(&addr).map_err(|e| rpc_err(e))?;
+        let a = parse_addr(&addr).map_err(rpc_err)?;
         let raw = slot.trim_start_matches("0x");
         let padded = if raw.len() % 2 == 1 { format!("0{raw}") } else { raw.to_string() };
-        let slot_bytes = hex::decode(&padded).map_err(|e| rpc_err(e))?;
+        let slot_bytes = hex::decode(&padded).map_err(rpc_err)?;
         let mut slot_arr = [0u8; 32];
         let start = 32usize.saturating_sub(slot_bytes.len());
         slot_arr[start..].copy_from_slice(&slot_bytes[..slot_bytes.len().min(32)]);
