@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # HiveOS configuration script for genome-miner
-
-set -euo pipefail
+# This script is sourced by /hive/bin/custom, not executed directly
 
 MINER_NAME="${MINER_NAME:-genome-miner}"
 
