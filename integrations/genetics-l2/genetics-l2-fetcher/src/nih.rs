@@ -19,6 +19,10 @@ impl NihFetcher {
     }
 }
 
+impl Default for NihFetcher {
+    fn default() -> Self { Self::new() }
+}
+
 #[async_trait::async_trait]
 impl SourceFetcher for NihFetcher {
     fn name(&self) -> &str { "nih" }
@@ -126,6 +130,10 @@ impl NihChallengeFetcher {
     pub fn new() -> Self {
         Self { http: reqwest::Client::new() }
     }
+}
+
+impl Default for NihChallengeFetcher {
+    fn default() -> Self { Self::new() }
 }
 
 #[async_trait::async_trait]

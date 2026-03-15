@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use bioproof_core::{blake3_hex, compute_proof, merkle_root, sign_manifest, BioProofKeypair};
 use clap::{Arg, ArgAction, Command};
-use genetics_l2_core::{now_secs, Algorithm, JobResult, JobStatus, ScientificJob};
+use genetics_l2_core::{now_secs, Algorithm, JobResult, ScientificJob};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use tokio::time::{sleep, Duration};
@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
 
     // ── keygen shortcut ───────────────────────────────────────────────────────
     if m.get_flag("gen-key") {
-        use secp256k1::{Secp256k1, SecretKey};
+        use secp256k1::Secp256k1;
         let secp = Secp256k1::new();
         let mut rng = secp256k1::rand::thread_rng();
         let (secret_key, public_key) = secp.generate_keypair(&mut rng);

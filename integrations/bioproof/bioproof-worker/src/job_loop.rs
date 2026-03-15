@@ -3,7 +3,7 @@ use bioproof_core::{
     blake3_hex, sign_manifest, ComputeJob, ComputeJobManifest, JobAnchorPayload,
     WorkerCapabilities,
 };
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, Duration};
@@ -21,6 +21,7 @@ pub struct WorkerConfig {
     /// Worker private key (hex) for signing manifests.
     pub privkey_hex:   String,
     /// bioproof-api base URL for result submission (optional).
+    #[allow(dead_code)]
     pub api_url:       Option<String>,
     /// Xenom node gRPC address for on-chain anchoring.
     pub node_addr:     String,

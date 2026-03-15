@@ -90,11 +90,10 @@ impl StratumClient {
         let mut lines = BufReader::new(reader).lines();
 
         let mut extranonce1: u32 = 0;
-        let mut msg_id: u64 = 0;
+        let mut msg_id: u64 = 2; // subscribe=1, authorize=2 use hardcoded ids; loop starts at 3
 
         macro_rules! send_json {
             ($v:expr) => {{
-                msg_id += 1;
                 let mut s = serde_json::to_string(&$v)?;
                 s.push('\n');
                 writer.write_all(s.as_bytes()).await?;
@@ -107,8 +106,6 @@ impl StratumClient {
         send_json!(serde_json::json!({
             "id": 2, "method": "mining.authorize", "params": [&self.worker, &self.password]
         }));
-        msg_id = 2;
-
         info!("Stratum: subscribe + authorize sent");
 
         loop {
