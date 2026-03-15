@@ -7,7 +7,7 @@ use axum::{
     Json, Router,
 };
 use clap::{Arg, Command};
-use genetics_l2_core::{now_secs, JobResult, JobStatus, Payout, ScientificJob, ValidationReport};
+use genetics_l2_core::{now_secs, JobResult, Payout, ScientificJob, ValidationReport};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::sync::Arc;
