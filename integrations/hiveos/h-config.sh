@@ -32,6 +32,9 @@ miner_config_gen() {
     fi
 
     local MINING_ADDRESS="${CUSTOM_TEMPLATE}"
+    # Normalize newlines/tabs in user config to spaces (HiveOS JSON may embed \n)
+    local USER_CONFIG
+    USER_CONFIG="$(printf '%s' "${CUSTOM_USER_CONFIG:-}" | tr '\n\t' '  ' | tr -s ' ')"
 
     # ── Parse pool/node endpoint ──────────────────────────────────────────────
     local RPCSERVER="${CUSTOM_URL:-localhost:36669}"
@@ -41,13 +44,13 @@ miner_config_gen() {
 
     # ── GPU selection ─────────────────────────────────────────────────────────
     local GPU_ARG="--gpu all"
-    if echo "${CUSTOM_USER_CONFIG:-}" | grep -qE '\-\-gpu[[:space:]]'; then
+    if echo "${USER_CONFIG}" | grep -qE '\-\-gpu[[:space:]]'; then
         GPU_ARG=""
     fi
 
     # ── Network flag ──────────────────────────────────────────────────────────
     local NETWORK_ARG="--mainnet"
-    if echo "${CUSTOM_USER_CONFIG:-}" | grep -qE '\-\-(testnet|devnet)'; then
+    if echo "${USER_CONFIG}" | grep -qE '\-\-(testnet|devnet)'; then
         NETWORK_ARG=""
     fi
 
@@ -56,7 +59,7 @@ miner_config_gen() {
     [[ -n "${NETWORK_ARG}" ]] && MINER_ARGS="${MINER_ARGS} ${NETWORK_ARG}"
     [[ -n "${GPU_ARG}" ]]     && MINER_ARGS="${MINER_ARGS} ${GPU_ARG}"
     MINER_ARGS="${MINER_ARGS} --no-tui --api-port 4000"
-    [[ -n "${CUSTOM_USER_CONFIG:-}" ]] && MINER_ARGS="${MINER_ARGS} ${CUSTOM_USER_CONFIG}"
+    [[ -n "${USER_CONFIG}" ]] && MINER_ARGS="${MINER_ARGS} ${USER_CONFIG}"
     MINER_ARGS="$(echo "${MINER_ARGS}" | tr -s ' ' | sed 's/^ //;s/ $//')"
 
     # ── Write config file ─────────────────────────────────────────────────────
