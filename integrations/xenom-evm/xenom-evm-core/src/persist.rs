@@ -85,7 +85,7 @@ pub fn save_snapshot(
     };
 
     let json = serde_json::to_string_pretty(&snap)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
 
     // Atomic write: write to .tmp then rename
     let tmp = path.with_extension("json.tmp");

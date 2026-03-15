@@ -398,7 +398,7 @@ impl EvmChain {
         revm_tx.nonce = Some(tx.nonce);
         revm_tx.chain_id = None; // already validated during sig recovery; skip EVM recheck
 
-        let res = build_and_run(&mut *db, block_num, self.chain_id, revm_tx)?;
+        let res = build_and_run(&mut db, block_num, self.chain_id, revm_tx)?;
 
         let tx_idx = self.tx_index.fetch_add(1, Ordering::Relaxed);
 
