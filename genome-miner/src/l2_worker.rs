@@ -871,7 +871,7 @@ async fn download(http: &reqwest::Client, url: &str, dest: &Path) -> Result<()> 
     Ok(())
 }
 
-/// Download Kaggle dataset using kagglehub Python library.
+/// Download Kaggle dataset using kaggle CLI command.
 /// URL format: kaggle://competitions/{slug}
 async fn download_kaggle_dataset(url: &str, dest: &Path) -> Result<()> {
     let slug = url.strip_prefix("kaggle://competitions/")
@@ -879,53 +879,49 @@ async fn download_kaggle_dataset(url: &str, dest: &Path) -> Result<()> {
     
     log::info!("Downloading Kaggle competition dataset: {slug}");
     
-    // Use Python kagglehub to download the dataset
-    let python_script = format!(
-        r#"
-import kagglehub
-import os
-import shutil
-import glob
-
-# Download competition files
-path = kagglehub.competition_download("{slug}")
-print(f"Downloaded to: {{path}}")
-
-# Copy audio files to destination
-dest = r"{}"
-os.makedirs(dest, exist_ok=True)
-
-# Find audio files (common formats)
-audio_files = []
-for ext in ['*.wav', '*.ogg', '*.mp3', '*.flac']:
-    audio_files.extend(glob.glob(os.path.join(path, '**', ext), recursive=True))
-
-# Copy first 10 audio files for processing
-for i, audio_file in enumerate(audio_files[:10]):
-    dest_file = os.path.join(dest, os.path.basename(audio_file))
-    shutil.copy2(audio_file, dest_file)
-    print(f"Copied: {{os.path.basename(audio_file)}}")
-
-print(f"Total audio files copied: {{min(len(audio_files), 10)}}")
-"#,
-        dest.display()
-    );
+    // Create temporary download directory
+    let temp_dir = std::env::temp_dir().join(format!("kaggle-{slug}"));
+    tokio::fs::create_dir_all(&temp_dir).await?;
     
-    // Execute Python script
-    let output = tokio::process::Command::new("python3")
-        .arg("-c")
-        .arg(&python_script)
+    // Use kaggle CLI to download competition files
+    // Reads credentials from ~/.kaggle/kaggle.json automatically
+    let output = tokio::process::Command::new("kaggle")
+        .args(&["competitions", "download", "-c", slug, "-p", temp_dir.to_str().unwrap()])
         .output()
         .await
-        .context("Failed to execute kagglehub download")?;
+        .context("Failed to execute kaggle CLI")?;
     
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("kagglehub download failed: {stderr}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!("kaggle download failed: {stderr}\n{stdout}");
     }
     
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    log::info!("Kaggle download output: {stdout}");
+    log::info!("Kaggle download completed, extracting audio files...");
+    
+    // Find and copy audio files to destination
+    let mut audio_count = 0;
+    let mut entries = tokio::fs::read_dir(&temp_dir).await?;
+    
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if let Some(ext) = path.extension() {
+            let ext_str = ext.to_string_lossy().to_lowercase();
+            if matches!(ext_str.as_str(), "wav" | "ogg" | "mp3" | "flac") {
+                if audio_count < 10 {
+                    let dest_file = dest.join(path.file_name().unwrap());
+                    tokio::fs::copy(&path, &dest_file).await?;
+                    log::info!("Copied audio file: {}", path.file_name().unwrap().to_string_lossy());
+                    audio_count += 1;
+                }
+            }
+        }
+    }
+    
+    log::info!("Copied {audio_count} audio files to {}", dest.display());
+    
+    // Cleanup temp directory
+    tokio::fs::remove_dir_all(&temp_dir).await.ok();
     
     Ok(())
 }
