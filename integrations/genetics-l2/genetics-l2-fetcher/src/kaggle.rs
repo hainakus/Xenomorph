@@ -183,6 +183,17 @@ impl KaggleFetcher {
         let tags: Vec<String> = vec!["birds".into(), "audio".into(), "ecology".into()];
         let algorithm = infer_algorithm(&title, &tags);
 
+        // For BirdCLEF competitions, create jobs with sample audio clips
+        // The dataset_url should point to the Kaggle dataset download
+        // Miners will use kagglehub to download the actual audio files
+        let is_birdclef = slug.contains("birdclef");
+        let dataset_url_final = if is_birdclef {
+            // Point to the Kaggle dataset that can be downloaded via kagglehub
+            Some(format!("kaggle://competitions/{slug}"))
+        } else {
+            dataset_url
+        };
+
         let dataset_root = hex::encode(
             blake3::hash(format!("kaggle:{slug}").as_bytes()).as_bytes()
         );
@@ -193,7 +204,7 @@ impl KaggleFetcher {
             ExternalSource::Kaggle,
             Some(slug.to_owned()),
             dataset_root,
-            dataset_url,
+            dataset_url_final,
             algorithm,
             task_desc,
             reward_sompi,

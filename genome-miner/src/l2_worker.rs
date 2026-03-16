@@ -851,6 +851,13 @@ async fn collect_audio(dir: &Path) -> Vec<PathBuf> {
 
 async fn download(http: &reqwest::Client, url: &str, dest: &Path) -> Result<()> {
     tokio::fs::create_dir_all(dest).await?;
+    
+    // Handle kaggle:// protocol for Kaggle datasets (e.g., BirdCLEF)
+    if url.starts_with("kaggle://") {
+        return download_kaggle_dataset(url, dest).await;
+    }
+    
+    // Standard HTTP(S) download
     let resp = http.get(url).send().await.context("download")?;
     if !resp.status().is_success() {
         anyhow::bail!("download {} → {}", url, resp.status());
@@ -858,6 +865,65 @@ async fn download(http: &reqwest::Client, url: &str, dest: &Path) -> Result<()> 
     let bytes = resp.bytes().await?;
     let name  = url.rsplit('/').next().unwrap_or("data.bin");
     tokio::fs::write(dest.join(name), &bytes).await?;
+    Ok(())
+}
+
+/// Download Kaggle dataset using kagglehub Python library.
+/// URL format: kaggle://competitions/{slug}
+async fn download_kaggle_dataset(url: &str, dest: &Path) -> Result<()> {
+    let slug = url.strip_prefix("kaggle://competitions/")
+        .ok_or_else(|| anyhow::anyhow!("Invalid kaggle:// URL: {url}"))?;
+    
+    log::info!("Downloading Kaggle competition dataset: {slug}");
+    
+    // Use Python kagglehub to download the dataset
+    let python_script = format!(
+        r#"
+import kagglehub
+import os
+import shutil
+import glob
+
+# Download competition files
+path = kagglehub.competition_download("{slug}")
+print(f"Downloaded to: {{path}}")
+
+# Copy audio files to destination
+dest = r"{}"
+os.makedirs(dest, exist_ok=True)
+
+# Find audio files (common formats)
+audio_files = []
+for ext in ['*.wav', '*.ogg', '*.mp3', '*.flac']:
+    audio_files.extend(glob.glob(os.path.join(path, '**', ext), recursive=True))
+
+# Copy first 10 audio files for processing
+for i, audio_file in enumerate(audio_files[:10]):
+    dest_file = os.path.join(dest, os.path.basename(audio_file))
+    shutil.copy2(audio_file, dest_file)
+    print(f"Copied: {{os.path.basename(audio_file)}}")
+
+print(f"Total audio files copied: {{min(len(audio_files), 10)}}")
+"#,
+        dest.display()
+    );
+    
+    // Execute Python script
+    let output = tokio::process::Command::new("python3")
+        .arg("-c")
+        .arg(&python_script)
+        .output()
+        .await
+        .context("Failed to execute kagglehub download")?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("kagglehub download failed: {stderr}");
+    }
+    
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    log::info!("Kaggle download output: {stdout}");
+    
     Ok(())
 }
 
