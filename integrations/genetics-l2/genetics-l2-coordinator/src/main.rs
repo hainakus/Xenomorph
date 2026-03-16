@@ -299,6 +299,88 @@ async fn get_results(
     }
 }
 
+// GET /datasets/:job_id/files - List available dataset files for a job
+async fn list_dataset_files(
+    Path(job_id): Path<String>,
+) -> impl IntoResponse {
+    use std::path::Path;
+    
+    let dataset_dir = Path::new("/tmp/kaggle-datasets").join(&job_id);
+    
+    if !dataset_dir.exists() {
+        return (StatusCode::NOT_FOUND, Json(serde_json::json!({
+            "error": "Dataset not found for job",
+            "job_id": job_id
+        }))).into_response();
+    }
+    
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dataset_dir) {
+        for entry in entries.flatten() {
+            if let Ok(metadata) = entry.metadata() {
+                if metadata.is_file() {
+                    if let Some(filename) = entry.file_name().to_str() {
+                        files.push(serde_json::json!({
+                            "filename": filename,
+                            "size": metadata.len(),
+                        }));
+                    }
+                }
+            }
+        }
+    }
+    
+    (StatusCode::OK, Json(serde_json::json!({
+        "job_id": job_id,
+        "files": files,
+        "count": files.len()
+    }))).into_response()
+}
+
+// GET /datasets/:job_id/download/:filename - Download a specific dataset file
+async fn download_dataset_file(
+    Path((job_id, filename)): Path<(String, String)>,
+) -> impl IntoResponse {
+    use std::path::Path;
+    use axum::body::Body;
+    use axum::http::header;
+    
+    let dataset_dir = Path::new("/tmp/kaggle-datasets").join(&job_id);
+    let file_path = dataset_dir.join(&filename);
+    
+    // Security: prevent path traversal
+    if !file_path.starts_with(&dataset_dir) {
+        return (StatusCode::FORBIDDEN, Json(serde_json::json!({
+            "error": "Invalid filename"
+        }))).into_response();
+    }
+    
+    if !file_path.exists() {
+        return (StatusCode::NOT_FOUND, Json(serde_json::json!({
+            "error": "File not found",
+            "filename": filename
+        }))).into_response();
+    }
+    
+    match tokio::fs::File::open(&file_path).await {
+        Ok(file) => {
+            let stream = tokio_util::io::ReaderStream::new(file);
+            let body = Body::from_stream(stream);
+            
+            (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/octet-stream")],
+                body
+            ).into_response()
+        }
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "error": format!("Failed to read file: {e}")
+            }))).into_response()
+        }
+    }
+}
+
 // POST /validations  (validator posts a validation report)
 async fn submit_validation(
     State(s): State<Arc<AppState>>,
@@ -468,6 +550,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/results/:job_id",         get(get_results))
         .route("/validations",             post(submit_validation))
         .route("/payouts",                 get(list_payouts).post(create_payout))
+        .route("/datasets/:job_id/files",  get(list_dataset_files))
+        .route("/datasets/:job_id/download/:filename", get(download_dataset_file))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }

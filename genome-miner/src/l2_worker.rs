@@ -871,57 +871,79 @@ async fn download(http: &reqwest::Client, url: &str, dest: &Path) -> Result<()> 
     Ok(())
 }
 
-/// Download Kaggle dataset using kaggle CLI command.
-/// URL format: kaggle://competitions/{slug}
+/// Download dataset from coordinator API.
+/// URL format: kaggle://competitions/{slug} or http://coordinator/datasets/{job_id}/files
 async fn download_kaggle_dataset(url: &str, dest: &Path) -> Result<()> {
-    let slug = url.strip_prefix("kaggle://competitions/")
-        .ok_or_else(|| anyhow::anyhow!("Invalid kaggle:// URL: {url}"))?;
+    // Extract job_id from current working directory or use slug
+    let job_id = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().and_then(|n| n.to_str()).map(String::from))
+        .unwrap_or_else(|| "unknown".to_string());
     
-    log::info!("Downloading Kaggle competition dataset: {slug}");
+    log::info!("Downloading dataset from coordinator for job: {job_id}");
     
-    // Create temporary download directory
-    let temp_dir = std::env::temp_dir().join(format!("kaggle-{slug}"));
-    tokio::fs::create_dir_all(&temp_dir).await?;
+    // Get coordinator URL from environment or default
+    let coordinator_url = std::env::var("L2_COORDINATOR_URL")
+        .unwrap_or_else(|_| "http://localhost:8091".to_string());
     
-    // Use kaggle CLI to download competition files
-    // Reads credentials from ~/.kaggle/kaggle.json automatically
-    let output = tokio::process::Command::new("kaggle")
-        .args(&["competitions", "download", "-c", slug, "-p", temp_dir.to_str().unwrap()])
-        .output()
-        .await
-        .context("Failed to execute kaggle CLI")?;
+    let http = reqwest::Client::new();
     
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        anyhow::bail!("kaggle download failed: {stderr}\n{stdout}");
+    // List available files from coordinator
+    let files_url = format!("{}/datasets/{}/files", coordinator_url, job_id);
+    let resp = http.get(&files_url).send().await
+        .context("Failed to list dataset files from coordinator")?;
+    
+    if !resp.status().is_success() {
+        anyhow::bail!("Coordinator returned error: {}", resp.status());
     }
     
-    log::info!("Kaggle download completed, extracting audio files...");
+    let files_data: serde_json::Value = resp.json().await
+        .context("Failed to parse files list")?;
     
-    // Find and copy audio files to destination
+    let files = files_data["files"].as_array()
+        .ok_or_else(|| anyhow::anyhow!("Invalid files response"))?;
+    
+    if files.is_empty() {
+        anyhow::bail!("No dataset files available from coordinator");
+    }
+    
+    log::info!("Found {} files from coordinator, downloading...", files.len());
+    
+    // Download up to 10 audio files
     let mut audio_count = 0;
-    let mut entries = tokio::fs::read_dir(&temp_dir).await?;
-    
-    while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-        if let Some(ext) = path.extension() {
+    for file in files.iter().take(10) {
+        let filename = file["filename"].as_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid filename in response"))?;
+        
+        // Check if it's an audio file
+        if let Some(ext) = std::path::Path::new(filename).extension() {
             let ext_str = ext.to_string_lossy().to_lowercase();
             if matches!(ext_str.as_str(), "wav" | "ogg" | "mp3" | "flac") {
-                if audio_count < 10 {
-                    let dest_file = dest.join(path.file_name().unwrap());
-                    tokio::fs::copy(&path, &dest_file).await?;
-                    log::info!("Copied audio file: {}", path.file_name().unwrap().to_string_lossy());
+                // Download file from coordinator
+                let download_url = format!("{}/datasets/{}/download/{}", 
+                    coordinator_url, job_id, filename);
+                
+                let file_resp = http.get(&download_url).send().await
+                    .context(format!("Failed to download {}", filename))?;
+                
+                if file_resp.status().is_success() {
+                    let bytes = file_resp.bytes().await?;
+                    let dest_file = dest.join(filename);
+                    tokio::fs::write(&dest_file, &bytes).await?;
+                    log::info!("Downloaded audio file: {}", filename);
                     audio_count += 1;
+                } else {
+                    log::warn!("Failed to download {}: {}", filename, file_resp.status());
                 }
             }
         }
     }
     
-    log::info!("Copied {audio_count} audio files to {}", dest.display());
+    log::info!("Downloaded {audio_count} audio files from coordinator to {}", dest.display());
     
-    // Cleanup temp directory
-    tokio::fs::remove_dir_all(&temp_dir).await.ok();
+    if audio_count == 0 {
+        anyhow::bail!("No audio files downloaded from coordinator");
+    }
     
     Ok(())
 }

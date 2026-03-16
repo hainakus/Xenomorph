@@ -48,6 +48,39 @@ echo "  - Layer 1: Local output files (ChaCha20-Poly1305)"
 echo "  - Layer 2: Submitted payload (ECIES)"
 echo ""
 
+# Kaggle API key setup (for coordinator only - miners will download from coordinator API)
+KAGGLE_DIR="$HOME/.kaggle"
+KAGGLE_JSON="$KAGGLE_DIR/kaggle.json"
+
+if [ ! -f "$KAGGLE_JSON" ]; then
+  echo "=== Kaggle API Setup ==="
+  echo "Coordinator needs Kaggle credentials to download BirdCLEF datasets."
+  echo "Miners will download datasets from coordinator API (no Kaggle key needed on miners)."
+  echo ""
+  read -p "Do you have a Kaggle API key? (y/n): " has_key
+  
+  if [ "$has_key" = "y" ] || [ "$has_key" = "Y" ]; then
+    echo ""
+    echo "Please enter your Kaggle credentials:"
+    read -p "Kaggle username: " kaggle_user
+    read -p "Kaggle API key: " kaggle_key
+    
+    mkdir -p "$KAGGLE_DIR"
+    cat > "$KAGGLE_JSON" <<EOF
+{"username":"$kaggle_user","key":"$kaggle_key"}
+EOF
+    chmod 600 "$KAGGLE_JSON"
+    echo "✓ Kaggle credentials saved to $KAGGLE_JSON"
+  else
+    echo "Skipping Kaggle setup. Coordinator will use stub data."
+    echo "To add credentials later, create: $KAGGLE_JSON"
+  fi
+  echo ""
+else
+  echo "✓ Kaggle credentials found at $KAGGLE_JSON"
+fi
+echo ""
+
 if [ ! -d "$BIN" ]; then
   echo "Error: BIN directory not found: $BIN"
   exit 1
@@ -70,26 +103,8 @@ if [ -d "venv" ]; then
   pip install --quiet --upgrade pip
   
   # Install TensorFlow with CUDA support for Perch v2 GPU inference
-  echo "Installing: tensorflow (CUDA), kaggle, kagglehub, librosa, numpy..."
-  pip install --quiet tensorflow kaggle kagglehub librosa numpy soundfile || echo "Warning: Some packages failed to install"
-  
-  # Setup Kaggle credentials
-  KAGGLE_CONFIG_DIR="$HOME/.kaggle"
-  KAGGLE_JSON="$KAGGLE_CONFIG_DIR/kaggle.json"
-  
-  if [ ! -f "$KAGGLE_JSON" ]; then
-    echo "Warning: Kaggle credentials not found at $KAGGLE_JSON"
-    echo "To download BirdCLEF datasets, you need to:"
-    echo "  1. Go to https://www.kaggle.com/settings/account"
-    echo "  2. Click 'Create New Token' to download kaggle.json"
-    echo "  3. Place it at: $KAGGLE_JSON"
-    echo "  4. Run: chmod 600 $KAGGLE_JSON"
-    echo ""
-    echo "For now, miner will use stub data (simulated results)"
-  else
-    echo "✓ Kaggle credentials found at $KAGGLE_JSON"
-    chmod 600 "$KAGGLE_JSON" 2>/dev/null || true
-  fi
+  echo "Installing: tensorflow (CUDA), librosa, numpy..."
+  pip install --quiet tensorflow librosa numpy soundfile || echo "Warning: Some packages failed to install"
   
   echo "Note: Perch v2 will use GPU if CUDA is available, otherwise CPU"
 else
