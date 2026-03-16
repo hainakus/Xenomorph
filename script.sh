@@ -160,9 +160,17 @@ PIDS+=($!)
 sleep 2
 
 echo "=== Starting genetics-l2-validator ==="
+# Validator needs coordinator privkey to decrypt encrypted results
+COORDINATOR_PRIVKEY_FILE="/tmp/genetics-l2-nih2.db.key"
+COORDINATOR_PRIVKEY=""
+if [ -f "$COORDINATOR_PRIVKEY_FILE" ]; then
+  COORDINATOR_PRIVKEY=$(cat "$COORDINATOR_PRIVKEY_FILE")
+fi
+
 "$BIN/genetics-l2-validator" \
   --private-key "$PRIVKEY" \
   --coordinator "$COORDINATOR" \
+  --coordinator-privkey "$COORDINATOR_PRIVKEY" \
   --poll-ms 10000 \
   --score-tolerance 0.05 \
   > /tmp/xenom-logs/validator.log 2>&1 &

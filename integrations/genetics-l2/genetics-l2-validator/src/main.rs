@@ -14,6 +14,7 @@ async fn main() -> Result<()> {
     let m           = cli().get_matches();
     let privkey     = m.get_one::<String>("private-key").unwrap().clone();
     let coordinator = m.get_one::<String>("coordinator").unwrap().clone();
+    let coordinator_privkey = m.get_one::<String>("coordinator-privkey").map(|s| s.clone());
     let poll_ms: u64 = m.get_one::<String>("poll-ms")
         .and_then(|s| s.parse().ok()).unwrap_or(10_000);
     let tolerance: f64 = m.get_one::<String>("score-tolerance")
@@ -27,11 +28,12 @@ async fn main() -> Result<()> {
     log::info!("  pubkey:      {validator_pubkey}");
     log::info!("  coordinator: {coordinator}");
     log::info!("  tolerance:   {tolerance:.1}%");
+    log::info!("  decryption:  {}", if coordinator_privkey.is_some() { "ENABLED" } else { "DISABLED" });
 
     let http = reqwest::Client::new();
 
     loop {
-        match validate_pending(&http, &coordinator, &validator_pubkey, &privkey, tolerance).await {
+        match validate_pending(&http, &coordinator, &validator_pubkey, &privkey, coordinator_privkey.as_deref(), tolerance).await {
             Ok(n) if n > 0 => log::info!("Validated {n} result(s)"),
             Ok(_)          => {}
             Err(e)         => log::warn!("Validation cycle error: {e:#}"),
@@ -46,6 +48,7 @@ async fn validate_pending(
     coordinator:      &str,
     validator_pubkey: &str,
     privkey:          &str,
+    coordinator_privkey: Option<&str>,
     tolerance:        f64,
 ) -> Result<usize> {
     // Fetch completed jobs
@@ -83,8 +86,30 @@ async fn validate_pending(
 
         let Some(best) = best else { continue };
         let result_id  = best["result_id"].as_str().unwrap_or("").to_owned();
-        let result_root = best["result_root"].as_str().unwrap_or("").to_owned();
-        let claimed_score = best["score"].as_f64().unwrap_or(0.0);
+        
+        // Try to decrypt if result is encrypted
+        let (result_root, claimed_score) = if let (Some(encrypted), Some(ephemeral), Some(coord_key)) = (
+            best["encrypted_payload"].as_str(),
+            best["ephemeral_pubkey"].as_str(),
+            coordinator_privkey
+        ) {
+            // Decrypt the result
+            match genetics_l2_core::JobResult::decrypt_payload(encrypted, ephemeral, coord_key) {
+                Ok(decrypted) => {
+                    log::debug!("Decrypted result {result_id}: score={}", decrypted.score);
+                    (decrypted.result_root, decrypted.score)
+                }
+                Err(e) => {
+                    log::warn!("Failed to decrypt result {result_id}: {e}");
+                    continue;
+                }
+            }
+        } else {
+            // Use plaintext fields (old format or decryption disabled)
+            let result_root = best["result_root"].as_str().unwrap_or("").to_owned();
+            let claimed_score = best["score"].as_f64().unwrap_or(0.0);
+            (result_root, claimed_score)
+        };
 
         if result_id.is_empty() { continue; }
 
@@ -218,6 +243,9 @@ fn cli() -> Command {
             .short('c').long("coordinator").value_name("URL")
             .default_value("http://localhost:8091")
             .help("genetics-l2-coordinator base URL"))
+        .arg(Arg::new("coordinator-privkey")
+            .long("coordinator-privkey").value_name("HEX")
+            .help("Coordinator secp256k1 private key for decrypting encrypted results (64 hex chars)"))
         .arg(Arg::new("poll-ms")
             .long("poll-ms").value_name("MS")
             .default_value("10000")
