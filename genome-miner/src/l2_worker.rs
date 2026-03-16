@@ -96,7 +96,7 @@ async fn execute(
 
     // ── 3. Download dataset ───────────────────────────────────────────────────
     if let Some(url) = dataset_url {
-        if let Err(e) = download(&http, url, &input_dir).await {
+        if let Err(e) = download(&http, url, &input_dir, job_id).await {
             warn!("L2: dataset download failed (will use stub): {e:#}");
         }
     }
@@ -852,12 +852,12 @@ async fn collect_audio(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-async fn download(http: &reqwest::Client, url: &str, dest: &Path) -> Result<()> {
+async fn download(http: &reqwest::Client, url: &str, dest: &Path, job_id: &str) -> Result<()> {
     tokio::fs::create_dir_all(dest).await?;
     
     // Handle kaggle:// protocol for Kaggle datasets (e.g., BirdCLEF)
     if url.starts_with("kaggle://") {
-        return download_kaggle_dataset(url, dest).await;
+        return download_kaggle_dataset(url, dest, job_id).await;
     }
     
     // Standard HTTP(S) download
@@ -873,13 +873,7 @@ async fn download(http: &reqwest::Client, url: &str, dest: &Path) -> Result<()> 
 
 /// Download dataset from coordinator API.
 /// URL format: kaggle://competitions/{slug} or http://coordinator/datasets/{job_id}/files
-async fn download_kaggle_dataset(url: &str, dest: &Path) -> Result<()> {
-    // Extract job_id from current working directory or use slug
-    let job_id = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.file_name().and_then(|n| n.to_str()).map(String::from))
-        .unwrap_or_else(|| "unknown".to_string());
-    
+async fn download_kaggle_dataset(url: &str, dest: &Path, job_id: &str) -> Result<()> {
     log::info!("Downloading dataset from coordinator for job: {job_id}");
     
     // Get coordinator URL from environment or default
