@@ -622,13 +622,33 @@ async fn download_kaggle_dataset(job_id: &str, dataset_url: &str) -> Result<()> 
         return Ok(());
     }
 
-    // If cache already populated, just symlink and return immediately
-    if cache_dir.exists() && has_audio_files(&cache_dir).await {
-        tokio::fs::create_dir_all(job_link.parent().unwrap()).await?;
+    // If cache already marked ready, just symlink and return immediately
+    let ready_marker = cache_dir.join(".ready");
+    if ready_marker.exists() {
         std::os::unix::fs::symlink(&cache_dir, &job_link).ok();
         log::info!("Dataset cache hit for {job_id} → {}", cache_dir.display());
         return Ok(());
     }
+
+    // Lock file to prevent concurrent downloads of the same slug
+    let lock_file = Path::new("/tmp/kaggle-datasets").join(format!("_{slug}.lock"));
+    if lock_file.exists() {
+        // Another task is already downloading — wait for it to finish (up to 30 min)
+        log::info!("Another download in progress for {slug}, waiting...");
+        for _ in 0..360 {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            if ready_marker.exists() {
+                std::os::unix::fs::symlink(&cache_dir, &job_link).ok();
+                log::info!("Dataset cache ready for {job_id} after wait");
+                return Ok(());
+            }
+        }
+        anyhow::bail!("Timed out waiting for dataset download for {slug}");
+    }
+
+    // Acquire lock
+    tokio::fs::create_dir_all(Path::new("/tmp/kaggle-datasets")).await?;
+    tokio::fs::write(&lock_file, job_id.as_bytes()).await?;
 
     // First time: download to cache
     log::info!("Downloading Kaggle dataset for job {job_id}: {slug} (will cache)");
@@ -666,6 +686,10 @@ async fn download_kaggle_dataset(job_id: &str, dataset_url: &str) -> Result<()> 
 
     let audio_count = count_audio_files(&cache_dir).await;
     log::info!("Cache ready: {audio_count} audio files in {}", cache_dir.display());
+
+    // Write .ready marker and release lock
+    tokio::fs::write(&ready_marker, b"ready").await.ok();
+    tokio::fs::remove_file(&lock_file).await.ok();
 
     // Symlink job_id → cache
     std::os::unix::fs::symlink(&cache_dir, &job_link).ok();

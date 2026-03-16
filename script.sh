@@ -157,6 +157,26 @@ echo "=== Starting genetics-l2-coordinator ==="
 PIDS+=($!)
 sleep 2
 
+# Pre-download BirdCLEF-2026 dataset to cache before starting pool/miner
+BIRDCLEF_CACHE="/tmp/kaggle-datasets/_cache/birdclef-2026"
+if [ ! -f "$BIRDCLEF_CACHE/.ready" ]; then
+  echo "=== Pre-downloading BirdCLEF-2026 dataset (required before mining) ==="
+  mkdir -p "$BIRDCLEF_CACHE"
+  if kaggle competitions download -c birdclef-2026 -p "$BIRDCLEF_CACHE/" 2>&1 | tee -a /tmp/xenom-logs/coordinator.log; then
+    echo "Extracting BirdCLEF-2026..."
+    for z in "$BIRDCLEF_CACHE"/*.zip; do
+      [ -f "$z" ] && unzip -o -q "$z" -d "$BIRDCLEF_CACHE/" && rm -f "$z"
+    done
+    touch "$BIRDCLEF_CACHE/.ready"
+    echo "BirdCLEF-2026 dataset ready: $(find $BIRDCLEF_CACHE -name '*.ogg' -o -name '*.wav' | wc -l) audio files"
+  else
+    echo "Warning: BirdCLEF-2026 download failed, miners will use stub"
+  fi
+else
+  echo "=== BirdCLEF-2026 dataset already cached ==="
+  echo "Audio files: $(find $BIRDCLEF_CACHE -name '*.ogg' -o -name '*.wav' 2>/dev/null | wc -l)"
+fi
+
 echo "=== Starting xenom-evm-node ==="
 "$BIN/xenom-evm-node" \
   --devnet \
