@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-20.04
             target: x86_64-unknown-linux-gnu
             artifact: genome-miner-linux-x86_64
             binary: genome-miner
@@ -41,6 +41,8 @@ jobs:
             archive_ext: zip
 
     runs-on: ${{ matrix.os }}
+    env:
+      MINER_VER: "0.15.2"
 
     steps:
       - name: Checkout code
@@ -109,6 +111,49 @@ jobs:
           tar -czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}/
           echo "Created dist/${{ matrix.artifact }}.tar.gz"
 
+      # ── HiveOS package (Linux only) ──────────────────────────────────────────
+      - name: Build HiveOS package
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          BIN=target/${{ matrix.target }}/release/genome-miner
+          HIVEOS_DIR=dist/hiveos-pkg
+          mkdir -p "$HIVEOS_DIR"
+
+          # Binary
+          cp "$BIN" "$HIVEOS_DIR/genome-miner"
+          chmod 755 "$HIVEOS_DIR/genome-miner"
+
+          # HiveOS integration scripts
+          cp integrations/hiveos/h-config.sh   "$HIVEOS_DIR/"
+          cp integrations/hiveos/h-run.sh      "$HIVEOS_DIR/"
+          cp integrations/hiveos/h-stats.sh    "$HIVEOS_DIR/"
+          cp integrations/hiveos/install.sh    "$HIVEOS_DIR/"
+          chmod 755 "$HIVEOS_DIR"/*.sh
+
+          # Generate manifest
+          cat > "$HIVEOS_DIR/hive-manifest.conf" << EOF
+          MINER_NAME="genome-miner"
+          MINER_VER="${MINER_VER}"
+          MINER_ALGO="genome-pow kheavyhash"
+          MINER_FORK="xenom"
+          MINER_LOG_BASENAME="genome-miner"
+          MINER_API_PORT="4000"
+          MINER_BIN="genome-miner"
+          EOF
+          sed -i 's/^[[:space:]]*//' "$HIVEOS_DIR/hive-manifest.conf"
+
+          # Create archive: genome-miner-<ver>-hiveos.tar.gz
+          cd dist
+          tar -czf genome-miner-${MINER_VER}-hiveos.tar.gz -C hiveos-pkg .
+          echo "Created dist/genome-miner-${MINER_VER}-hiveos.tar.gz"
+
+      - name: Upload HiveOS artifact
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        uses: actions/upload-artifact@v4
+        with:
+          name: genome-miner-hiveos
+          path: dist/genome-miner-${{ env.MINER_VER }}-hiveos.tar.gz
+
       # ── Package (Windows) ───────────────────────────────────────────────────
       - name: Package binary (Windows)
         if: runner.os == 'Windows'
@@ -152,44 +197,89 @@ jobs:
             echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Determine version
+        id: ver
+        run: |
+          VER=$(grep -m1 '^version' Cargo.toml | sed 's/.*= *"\(.*\)"/\1/')
+          echo "ver=${VER}" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: "genome-miner ${{ steps.tag.outputs.tag }}"
           body: |
-            ## genome-miner GPU miner release
+            ## genome-miner ${{ steps.tag.outputs.tag }}
 
-            Supports: **Apple M** (Metal), **Nvidia** (Vulkan/DX12), **AMD** (Vulkan/DX12).
-            Requires: `grch38.xenom` dataset at `~/.rusty-xenom/grch38.xenom`
-            (auto-discovered — no `--genome-file` flag needed).
+            Xenomorph GPU miner — Genome PoW + KHeavyHash.
+            Supports **NVIDIA** (Vulkan), **AMD** (Vulkan), **Apple M** (Metal).
+
+            ---
 
             ### Downloads
-            | Platform | File |
-            |----------|------|
-            | Linux x86_64 | `genome-miner-linux-x86_64.tar.gz` |
-            | macOS x86_64 (Intel) | `genome-miner-macos-x86_64.tar.gz` |
-            | macOS aarch64 (Apple M) | `genome-miner-macos-aarch64.tar.gz` |
-            | Windows x86_64 | `genome-miner-windows-x86_64.zip` |
+            | Platform | File | Notes |
+            |----------|------|-------|
+            | **HiveOS / Ubuntu 20** | `genome-miner-*-hiveos.tar.gz` | includes h-run/h-stats/h-config/install.sh |
+            | Linux x86_64 | `genome-miner-linux-x86_64.tar.gz` | generic binary only |
+            | macOS x86_64 (Intel) | `genome-miner-macos-x86_64.tar.gz` | |
+            | macOS aarch64 (Apple M) | `genome-miner-macos-aarch64.tar.gz` | |
+            | Windows x86_64 | `genome-miner-windows-x86_64.zip` | |
 
-            ### Quick start (Linux / macOS)
+            ---
+
+            ### HiveOS — Install (one command)
+            ```bash
+            # On your HiveOS rig (as root):
+            mkdir -p /hive/miners/genome-miner
+            cd /tmp && wget -q https://github.com/hainakus/Xenomorph/releases/download/${{ steps.tag.outputs.tag }}/genome-miner-${{ steps.ver.outputs.ver }}-hiveos.tar.gz
+            tar -xzf genome-miner-${{ steps.ver.outputs.ver }}-hiveos.tar.gz -C /hive/miners/genome-miner/
+            bash /hive/miners/genome-miner/install.sh
+            ```
+            > `install.sh` automatically downloads the **GRCh38 genome dataset (~780 MB)**
+            > from `https://github.com/hainakus/Xenomorph/releases/download/genome-grch38-v0/grch38.xenom`
+            > with resume support. Re-run safely if interrupted.
+
+            ### HiveOS — Flight Sheet
+            | Field | Value |
+            |-------|-------|
+            | Miner | Custom |
+            | Miner name | `genome-miner` |
+            | Installation URL | *(leave blank — use manual install above)* |
+            | Wallet | `xenom:<your-reward-address>` |
+            | Pool URL | `<your-node-ip>:36669` |
+            | Extra config | `--mainnet` *(add `--gpu all` for multi-GPU)* |
+
+            ### Linux / macOS quick start
             ```bash
             tar -xzf genome-miner-<platform>.tar.gz
+            # genome file is auto-downloaded on first start, or pre-place it:
+            mkdir -p ~/.rusty-xenom
+            wget -c https://github.com/hainakus/Xenomorph/releases/download/genome-grch38-v0/grch38.xenom \
+              -O ~/.rusty-xenom/grch38.xenom
             ./genome-miner gpu \
               --mining-address xenom:<your-address> \
-              --rpcserver 127.0.0.1:36669 \
+              --rpcserver <node-ip>:36669 \
               --mainnet
             ```
 
-            ### Quick start (Windows)
+            ### Windows quick start
             ```powershell
             Expand-Archive genome-miner-windows-x86_64.zip
             .\genome-miner.exe gpu `
               --mining-address xenom:<your-address> `
-              --rpcserver 127.0.0.1:36669 `
+              --rpcserver <node-ip>:36669 `
               --mainnet
             ```
+
+            ### Stats API (HiveOS compatible)
+            The miner exposes a stats API on port `4000` (disable with `--api-port 0`):
+            ```bash
+            curl http://<rig-ip>:4000/
+            ```
+
+            > Full HiveOS setup guide: [docs/hiveos-install.md](https://github.com/hainakus/Xenomorph/blob/master/docs/hiveos-install.md)
           files: |
+            dist/genome-miner-hiveos/genome-miner-${{ steps.ver.outputs.ver }}-hiveos.tar.gz
             dist/genome-miner-linux-x86_64/genome-miner-linux-x86_64.tar.gz
             dist/genome-miner-macos-x86_64/genome-miner-macos-x86_64.tar.gz
             dist/genome-miner-macos-aarch64/genome-miner-macos-aarch64.tar.gz

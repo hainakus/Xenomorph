@@ -66,7 +66,7 @@ members = [
 
 [workspace.package]
 rust-version = "1.81.0"
-version = "0.15.2"
+version = "0.15.4"
 authors = ["Kaspa developers"]
 license = "ISC"
 repository = "https://github.com/kaspanet/rusty-kaspa"
