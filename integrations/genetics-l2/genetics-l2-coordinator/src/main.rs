@@ -177,7 +177,21 @@ async fn create_job(
     .await;
 
     match res {
-        Ok(_)  => (StatusCode::CREATED, Json(serde_json::json!({ "job_id": job.job_id }))).into_response(),
+        Ok(_) => {
+            // Spawn background task to download dataset from Kaggle
+            if let Some(ref dataset_url) = job.dataset_url {
+                if dataset_url.starts_with("kaggle://competitions/") {
+                    let job_id = job.job_id.clone();
+                    let dataset_url = dataset_url.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = download_kaggle_dataset(&job_id, &dataset_url).await {
+                            log::warn!("Failed to download dataset for {job_id}: {e}");
+                        }
+                    });
+                }
+            }
+            (StatusCode::CREATED, Json(serde_json::json!({ "job_id": job.job_id }))).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
     }
 }
@@ -554,6 +568,74 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/datasets/:job_id/download/:filename", get(download_dataset_file))
         .layer(CorsLayer::permissive())
         .with_state(state)
+}
+
+// ── Dataset download ──────────────────────────────────────────────────────────
+
+/// Download Kaggle dataset using kaggle CLI and store in /tmp/kaggle-datasets/{job_id}/
+async fn download_kaggle_dataset(job_id: &str, dataset_url: &str) -> Result<()> {
+    use std::path::Path;
+    
+    let slug = dataset_url.strip_prefix("kaggle://competitions/")
+        .ok_or_else(|| anyhow::anyhow!("Invalid kaggle:// URL: {dataset_url}"))?;
+    
+    log::info!("Downloading Kaggle dataset for job {job_id}: {slug}");
+    
+    // Create dataset directory
+    let dataset_dir = Path::new("/tmp/kaggle-datasets").join(job_id);
+    tokio::fs::create_dir_all(&dataset_dir).await?;
+    
+    // Use kaggle CLI to download competition files
+    let output = tokio::process::Command::new("kaggle")
+        .args(&["competitions", "download", "-c", slug, "-p", dataset_dir.to_str().unwrap()])
+        .output()
+        .await
+        .context("Failed to execute kaggle CLI")?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!("kaggle download failed: {stderr}\n{stdout}");
+    }
+    
+    log::info!("Kaggle dataset downloaded for job {job_id}, extracting files...");
+    
+    // Extract zip files if any
+    let mut entries = tokio::fs::read_dir(&dataset_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if let Some(ext) = path.extension() {
+            if ext == "zip" {
+                log::info!("Extracting {}", path.display());
+                let output = tokio::process::Command::new("unzip")
+                    .args(&["-o", "-q", path.to_str().unwrap(), "-d", dataset_dir.to_str().unwrap()])
+                    .output()
+                    .await;
+                
+                if output.is_ok() {
+                    // Remove zip file after extraction
+                    tokio::fs::remove_file(&path).await.ok();
+                }
+            }
+        }
+    }
+    
+    // Count audio files
+    let mut audio_count = 0;
+    let mut entries = tokio::fs::read_dir(&dataset_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if let Some(ext) = path.extension() {
+            let ext_str = ext.to_string_lossy().to_lowercase();
+            if matches!(ext_str.as_str(), "wav" | "ogg" | "mp3" | "flac") {
+                audio_count += 1;
+            }
+        }
+    }
+    
+    log::info!("Dataset ready for job {job_id}: {audio_count} audio files in {}", dataset_dir.display());
+    
+    Ok(())
 }
 
 // ── Keypair management ────────────────────────────────────────────────────────
