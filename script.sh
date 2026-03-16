@@ -146,11 +146,15 @@ echo "=== Starting xenom-stratum-bridge ==="
 PIDS+=($!)
 sleep 2
 
-echo "=== Starting genetics-l2-fetcher (BirdCLEF) ==="
-# Fetches BirdCLEF-2025 competition from Kaggle
+echo "=== Starting genetics-l2-fetcher (BirdCLEF only) ==="
+# Fetches ONLY BirdCLEF-2025 competition from Kaggle
 # Uses ~/.kaggle/kaggle.json for authentication
-FETCHER_CMD="$BIN/genetics-l2-fetcher --coordinator $COORDINATOR --horizon --poll-secs 300 --competition birdclef-2025"
-eval "$FETCHER_CMD" > /tmp/xenom-logs/fetcher.log 2>&1 &
+# No NIH or Horizon sources
+"$BIN/genetics-l2-fetcher" \
+  --coordinator "$COORDINATOR" \
+  --competition birdclef-2025 \
+  --poll-secs 300 \
+  > /tmp/xenom-logs/fetcher.log 2>&1 &
 PIDS+=($!)
 sleep 2
 
