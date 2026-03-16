@@ -515,7 +515,16 @@ fn load_or_generate_keypair(db_path: &str) -> Result<(String, String)> {
 async fn main() -> Result<()> {
     kaspa_core::log::init_logger(None, "info");
 
-    let m       = cli().get_matches();
+    let m = cli().get_matches();
+
+    // Handle decrypt subcommand
+    if let Some(decrypt_matches) = m.subcommand_matches("decrypt") {
+        let db_path = decrypt_matches.get_one::<String>("db-path").unwrap();
+        let result_id = decrypt_matches.get_one::<String>("result-id").unwrap();
+        return decrypt_result(db_path, result_id).await;
+    }
+
+    // Normal server mode
     let db_path = m.get_one::<String>("db-path").unwrap();
     let listen  = m.get_one::<String>("listen").unwrap();
 
@@ -544,11 +553,104 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+// ── Decrypt subcommand ────────────────────────────────────────────────────────
+
+async fn decrypt_result(db_path: &str, result_id: &str) -> Result<()> {
+    use genetics_l2_core::JobResult;
+    
+    // Load coordinator private key
+    let (coordinator_privkey, _) = load_or_generate_keypair(db_path)?;
+    
+    // Connect to database
+    let pool = SqlitePool::connect(&format!("sqlite:{db_path}?mode=rwc"))
+        .await
+        .context("open SQLite")?;
+    
+    // Fetch result from database
+    let row = sqlx::query(
+        "SELECT result_id, job_id, worker_pubkey, result_root, score,
+                trace_hash, notebook_or_repo_hash, container_hash, weights_hash,
+                submission_bundle_hash, worker_sig, encrypted_payload, ephemeral_pubkey,
+                submitted_at, verdict
+         FROM results WHERE result_id = ?1"
+    )
+    .bind(result_id)
+    .fetch_optional(&pool)
+    .await?;
+    
+    let row = row.ok_or_else(|| anyhow::anyhow!("Result not found: {result_id}"))?;
+    
+    use sqlx::Row;
+    let encrypted_payload = row.get::<Option<String>, _>("encrypted_payload");
+    let ephemeral_pubkey = row.get::<Option<String>, _>("ephemeral_pubkey");
+    
+    if encrypted_payload.is_none() || ephemeral_pubkey.is_none() {
+        println!("Result {} is not encrypted (old format)", result_id);
+        println!("result_root: {}", row.get::<String, _>("result_root"));
+        println!("score: {}", row.get::<f64, _>("score"));
+        println!("trace_hash: {:?}", row.get::<Option<String>, _>("trace_hash"));
+        return Ok(());
+    }
+    
+    // Build JobResult with encrypted data
+    let mut result = JobResult {
+        result_id: row.get("result_id"),
+        job_id: row.get("job_id"),
+        worker_pubkey: row.get("worker_pubkey"),
+        result_root: String::new(),
+        score: 0.0,
+        trace_hash: None,
+        notebook_or_repo_hash: row.get("notebook_or_repo_hash"),
+        container_hash: row.get("container_hash"),
+        weights_hash: row.get("weights_hash"),
+        submission_bundle_hash: row.get("submission_bundle_hash"),
+        worker_sig: row.get("worker_sig"),
+        encrypted_payload,
+        ephemeral_pubkey,
+        submitted_at: row.get::<i64, _>("submitted_at") as u64,
+    };
+    
+    // Decrypt
+    println!("Decrypting result {} with coordinator private key...", result_id);
+    let decrypted = result.decrypt_payload(&coordinator_privkey)
+        .context("Failed to decrypt result")?;
+    
+    // Display decrypted data
+    println!("\n=== Decrypted Result ===");
+    println!("result_id: {}", decrypted.result_id);
+    println!("job_id: {}", decrypted.job_id);
+    println!("worker_pubkey: {}", decrypted.worker_pubkey);
+    println!("result_root: {}", decrypted.result_root);
+    println!("score: {}", decrypted.score);
+    println!("trace_hash: {:?}", decrypted.trace_hash);
+    println!("notebook_or_repo_hash: {:?}", decrypted.notebook_or_repo_hash);
+    println!("container_hash: {:?}", decrypted.container_hash);
+    println!("weights_hash: {:?}", decrypted.weights_hash);
+    println!("submission_bundle_hash: {:?}", decrypted.submission_bundle_hash);
+    println!("submitted_at: {}", decrypted.submitted_at);
+    println!("verdict: {:?}", row.get::<Option<String>, _>("verdict"));
+    
+    Ok(())
+}
+
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
 fn cli() -> Command {
     Command::new("genetics-l2-coordinator")
         .about("Genetics L2 coordinator — job registry, scheduler, result aggregator")
+        .subcommand_required(false)
+        .subcommand(
+            Command::new("decrypt")
+                .about("Decrypt and view a submitted result (coordinator owner only)")
+                .arg(Arg::new("db-path")
+                    .short('d').long("db-path").value_name("PATH")
+                    .default_value("genetics-l2.db")
+                    .help("SQLite database path"))
+                .arg(Arg::new("result-id")
+                    .short('r').long("result-id").value_name("ID")
+                    .required(true)
+                    .help("Result ID to decrypt"))
+        )
         .arg(Arg::new("db-path")
             .short('d').long("db-path").value_name("PATH")
             .default_value("genetics-l2.db")
