@@ -268,7 +268,8 @@ async fn get_results(
 ) -> impl IntoResponse {
     let rows = sqlx::query(
         "SELECT result_id, worker_pubkey, result_root, score, submitted_at, verdict,
-                notebook_or_repo_hash, container_hash, weights_hash, submission_bundle_hash
+                notebook_or_repo_hash, container_hash, weights_hash, submission_bundle_hash,
+                encrypted_payload, ephemeral_pubkey
          FROM results WHERE job_id = ?1 ORDER BY score DESC",
     )
     .bind(&job_id)
@@ -289,6 +290,8 @@ async fn get_results(
                 "container_hash":         r.get::<Option<String>, _>("container_hash"),
                 "weights_hash":           r.get::<Option<String>, _>("weights_hash"),
                 "submission_bundle_hash": r.get::<Option<String>, _>("submission_bundle_hash"),
+                "encrypted_payload":      r.get::<Option<String>, _>("encrypted_payload"),
+                "ephemeral_pubkey":       r.get::<Option<String>, _>("ephemeral_pubkey"),
             })).collect();
             (StatusCode::OK, Json(serde_json::json!({ "job_id": job_id, "results": results }))).into_response()
         }
