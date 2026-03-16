@@ -28,15 +28,15 @@ impl L2Config {
     }
 }
 
-/// Search for perch_infer.py in common locations.
+/// Search for yamnet_infer.py in common locations.
 fn find_perch_script() -> Option<PathBuf> {
     let candidates = [
-        "scripts/perch_infer.py",
-        "/opt/xenom/scripts/perch_infer.py",
+        "scripts/yamnet_infer.py",
+        "/opt/xenom/scripts/yamnet_infer.py",
     ];
     // also check next to the running executable
     let exe_dir = std::env::current_exe().ok()
-        .and_then(|p| p.parent().map(|d| d.join("perch_infer.py")));
+        .and_then(|p| p.parent().map(|d| d.join("yamnet_infer.py")));
     candidates.iter().map(PathBuf::from)
         .chain(exe_dir)
         .find(|p| p.exists())
@@ -468,19 +468,16 @@ async fn acoustic_classification(input_dir: &Path, output_dir: &Path, cfg: &L2Co
     let mut predictions = Vec::new();
     let mut score_sum   = 0.0f64;
 
-    // Find YAMNet script
-    let yamnet_script = cfg.perch_script.as_ref()
-        .and_then(|p| p.parent())
-        .map(|d| d.join("yamnet_infer.py"))
-        .or_else(|| {
-            let candidates = [
-                "scripts/yamnet_infer.py",
-                "/opt/xenom/scripts/yamnet_infer.py",
-            ];
-            candidates.iter()
-                .map(std::path::PathBuf::from)
-                .find(|p| p.exists())
-        });
+    // Find YAMNet script - use perch_script if it points to yamnet_infer.py
+    let yamnet_script = if let Some(ref script) = cfg.perch_script {
+        if script.file_name().and_then(|n| n.to_str()) == Some("yamnet_infer.py") {
+            Some(script.clone())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     let python = detect_python().await;
     for audio in &files {
