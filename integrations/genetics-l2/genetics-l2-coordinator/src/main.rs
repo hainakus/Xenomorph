@@ -625,18 +625,20 @@ async fn decrypt_result(db_path: &str, result_id: &str) -> Result<()> {
     
     // Display decrypted data
     println!("\n=== Decrypted Result ===");
-    println!("result_id: {}", decrypted.result_id);
-    println!("job_id: {}", decrypted.job_id);
-    println!("worker_pubkey: {}", decrypted.worker_pubkey);
-    println!("result_root: {}", decrypted.result_root);
-    println!("score: {}", decrypted.score);
-    println!("trace_hash: {:?}", decrypted.trace_hash);
-    println!("notebook_or_repo_hash: {:?}", decrypted.notebook_or_repo_hash);
-    println!("container_hash: {:?}", decrypted.container_hash);
-    println!("weights_hash: {:?}", decrypted.weights_hash);
-    println!("submission_bundle_hash: {:?}", decrypted.submission_bundle_hash);
-    println!("submitted_at: {}", decrypted.submitted_at);
-    println!("verdict: {:?}", row.get::<Option<String>, _>("verdict"));
+    println!("Metadata (from database):");
+    println!("  result_id: {}", row.get::<String, _>("result_id"));
+    println!("  job_id: {}", row.get::<String, _>("job_id"));
+    println!("  worker_pubkey: {}", row.get::<String, _>("worker_pubkey"));
+    println!("  submitted_at: {}", row.get::<i64, _>("submitted_at"));
+    println!("  verdict: {:?}", row.get::<Option<String>, _>("verdict"));
+    println!("\nDecrypted Payload:");
+    println!("  result_root: {}", decrypted.result_root);
+    println!("  score: {}", decrypted.score);
+    println!("  trace_hash: {:?}", decrypted.trace_hash);
+    println!("  notebook_or_repo_hash: {:?}", decrypted.notebook_or_repo_hash);
+    println!("  container_hash: {:?}", decrypted.container_hash);
+    println!("  weights_hash: {:?}", decrypted.weights_hash);
+    println!("  submission_bundle_hash: {:?}", decrypted.submission_bundle_hash);
     
     Ok(())
 }
