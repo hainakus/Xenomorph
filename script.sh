@@ -159,22 +159,32 @@ sleep 2
 
 # Pre-download BirdCLEF-2026 dataset to cache before starting pool/miner
 BIRDCLEF_CACHE="/tmp/kaggle-datasets/_cache/birdclef-2026"
-if [ ! -f "$BIRDCLEF_CACHE/.ready" ]; then
-  echo "=== Pre-downloading BirdCLEF-2026 dataset (required before mining) ==="
-  mkdir -p "$BIRDCLEF_CACHE"
-  if kaggle competitions download -c birdclef-2026 -p "$BIRDCLEF_CACHE/" 2>&1 | tee -a /tmp/xenom-logs/coordinator.log; then
-    echo "Extracting BirdCLEF-2026..."
-    for z in "$BIRDCLEF_CACHE"/*.zip; do
-      [ -f "$z" ] && unzip -o -q "$z" -d "$BIRDCLEF_CACHE/" && rm -f "$z"
-    done
-    touch "$BIRDCLEF_CACHE/.ready"
-    echo "BirdCLEF-2026 dataset ready: $(find $BIRDCLEF_CACHE -name '*.ogg' -o -name '*.wav' | wc -l) audio files"
-  else
-    echo "Warning: BirdCLEF-2026 download failed, miners will use stub"
-  fi
+mkdir -p "$BIRDCLEF_CACHE"
+AUDIO_COUNT=$(find "$BIRDCLEF_CACHE" \( -name '*.ogg' -o -name '*.wav' -o -name '*.mp3' \) 2>/dev/null | wc -l | tr -d ' ')
+if [ "$AUDIO_COUNT" -gt "0" ]; then
+  echo "=== BirdCLEF-2026 already cached: $AUDIO_COUNT audio files — skipping download ==="
+elif [ -f "$BIRDCLEF_CACHE/.ready" ]; then
+  echo "=== BirdCLEF-2026 cache marked ready ==="
 else
-  echo "=== BirdCLEF-2026 dataset already cached ==="
-  echo "Audio files: $(find $BIRDCLEF_CACHE -name '*.ogg' -o -name '*.wav' 2>/dev/null | wc -l)"
+  echo "=== Downloading BirdCLEF-2026 dataset (pool starts after download) ==="
+  LOCK_FILE="/tmp/kaggle-datasets/_birdclef-2026.lock"
+  if [ ! -f "$LOCK_FILE" ]; then
+    touch "$LOCK_FILE"
+    if kaggle competitions download -c birdclef-2026 --path "$BIRDCLEF_CACHE/" 2>&1 | tee -a /tmp/xenom-logs/coordinator.log; then
+      echo "Extracting BirdCLEF-2026..."
+      for z in "$BIRDCLEF_CACHE"/*.zip; do
+        [ -f "$z" ] && unzip -n -q "$z" -d "$BIRDCLEF_CACHE/" && rm -f "$z"
+      done
+      touch "$BIRDCLEF_CACHE/.ready"
+      AUDIO_COUNT=$(find "$BIRDCLEF_CACHE" \( -name '*.ogg' -o -name '*.wav' \) | wc -l | tr -d ' ')
+      echo "BirdCLEF-2026 ready: $AUDIO_COUNT audio files"
+    else
+      echo "Warning: BirdCLEF-2026 download failed — mining with stub until data available"
+    fi
+    rm -f "$LOCK_FILE"
+  else
+    echo "Warning: download lock exists, skipping"
+  fi
 fi
 
 echo "=== Starting xenom-evm-node ==="

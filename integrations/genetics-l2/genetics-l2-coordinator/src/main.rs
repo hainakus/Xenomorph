@@ -316,13 +316,11 @@ async fn get_results(
     }
 }
 
-// GET /datasets/:job_id/files - List available dataset files for a job
+// GET /datasets/:job_id/files - List available dataset files for a job (recursive)
 async fn list_dataset_files(
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
-    use std::path::Path;
-    
-    let dataset_dir = Path::new("/tmp/kaggle-datasets").join(&job_id);
+    let dataset_dir = std::path::PathBuf::from("/tmp/kaggle-datasets").join(&job_id);
     
     if !dataset_dir.exists() {
         return (StatusCode::NOT_FOUND, Json(serde_json::json!({
@@ -331,16 +329,26 @@ async fn list_dataset_files(
         }))).into_response();
     }
     
+    // Walk recursively — BirdCLEF stores audio in train_audio/{species}/*.ogg
     let mut files = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dataset_dir) {
-        for entry in entries.flatten() {
-            if let Ok(metadata) = entry.metadata() {
-                if metadata.is_file() {
-                    if let Some(filename) = entry.file_name().to_str() {
-                        files.push(serde_json::json!({
-                            "filename": filename,
-                            "size": metadata.len(),
-                        }));
+    let mut stack = vec![dataset_dir.clone()];
+    'outer: while let Some(dir) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if let Some(ext) = path.extension() {
+                    let e = ext.to_string_lossy().to_lowercase();
+                    if matches!(e.as_str(), "ogg" | "wav" | "mp3" | "flac") {
+                        if let Ok(rel) = path.strip_prefix(&dataset_dir) {
+                            let size = path.metadata().map(|m| m.len()).unwrap_or(0);
+                            files.push(serde_json::json!({
+                                "filename": rel.to_string_lossy(),
+                                "size": size,
+                            }));
+                            if files.len() >= 100 { break 'outer; }
+                        }
                     }
                 }
             }
@@ -354,19 +362,21 @@ async fn list_dataset_files(
     }))).into_response()
 }
 
-// GET /datasets/:job_id/download/:filename - Download a specific dataset file
+// GET /datasets/:job_id/download/*filename - Download a specific dataset file (supports nested paths)
 async fn download_dataset_file(
     Path((job_id, filename)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    use std::path::Path;
     use axum::body::Body;
     use axum::http::header;
     
-    let dataset_dir = Path::new("/tmp/kaggle-datasets").join(&job_id);
+    let dataset_dir = std::path::PathBuf::from("/tmp/kaggle-datasets").join(&job_id);
+    // filename may contain slashes for nested paths (e.g. train_audio/Abrupto/file.ogg)
     let file_path = dataset_dir.join(&filename);
     
     // Security: prevent path traversal
-    if !file_path.starts_with(&dataset_dir) {
+    let canonical_dir  = dataset_dir.canonicalize().unwrap_or(dataset_dir.clone());
+    let canonical_file = file_path.canonicalize().unwrap_or(file_path.clone());
+    if !canonical_file.starts_with(&canonical_dir) {
         return (StatusCode::FORBIDDEN, Json(serde_json::json!({
             "error": "Invalid filename"
         }))).into_response();
@@ -568,7 +578,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/validations",             post(submit_validation))
         .route("/payouts",                 get(list_payouts).post(create_payout))
         .route("/datasets/:job_id/files",  get(list_dataset_files))
-        .route("/datasets/:job_id/download/:filename", get(download_dataset_file))
+        .route("/datasets/:job_id/download/*filename", get(download_dataset_file))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
@@ -593,98 +603,100 @@ async fn download_kaggle_dataset(job_id: &str, dataset_url: &str) -> Result<()> 
         return Ok(());
     }
 
-    // If cache already marked ready, just symlink and return immediately
-    let ready_marker = cache_dir.join(".ready");
-    if ready_marker.exists() {
-        std::os::unix::fs::symlink(&cache_dir, &job_link).ok();
-        log::info!("Dataset cache hit for {job_id} → {}", cache_dir.display());
+    // Always symlink first — serve whatever is in cache (partial is fine)
+    tokio::fs::create_dir_all(&cache_dir).await?;
+    std::os::unix::fs::symlink(&cache_dir, &job_link).ok();
+
+    // If cache already has audio files, job can start working immediately
+    let audio_now = count_audio_files_recursive(&cache_dir).await;
+    if audio_now > 0 {
+        log::info!("Partial cache hit for {job_id}: {audio_now} audio files already in cache");
+    }
+
+    // Lock file to prevent concurrent full downloads of the same slug
+    let lock_file = Path::new("/tmp/kaggle-datasets").join(format!("_{slug}.lock"));
+    if lock_file.exists() {
+        log::info!("Download already in progress for {slug}, job {job_id} will use partial cache");
         return Ok(());
     }
 
-    // Lock file to prevent concurrent downloads of the same slug
-    let lock_file = Path::new("/tmp/kaggle-datasets").join(format!("_{slug}.lock"));
-    if lock_file.exists() {
-        // Another task is already downloading — wait for it to finish (up to 30 min)
-        log::info!("Another download in progress for {slug}, waiting...");
-        for _ in 0..360 {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            if ready_marker.exists() {
-                std::os::unix::fs::symlink(&cache_dir, &job_link).ok();
-                log::info!("Dataset cache ready for {job_id} after wait");
-                return Ok(());
-            }
-        }
-        anyhow::bail!("Timed out waiting for dataset download for {slug}");
+    let ready_marker = cache_dir.join(".ready");
+    if ready_marker.exists() {
+        log::info!("Dataset fully cached for {job_id}");
+        return Ok(());
     }
 
-    // Acquire lock
+    // Acquire lock and download missing files
     tokio::fs::create_dir_all(Path::new("/tmp/kaggle-datasets")).await?;
     tokio::fs::write(&lock_file, job_id.as_bytes()).await?;
 
-    // First time: download to cache
-    log::info!("Downloading Kaggle dataset for job {job_id}: {slug} (will cache)");
-    tokio::fs::create_dir_all(&cache_dir).await?;
+    log::info!("Downloading Kaggle dataset for job {job_id}: {slug} (--skip-existing)");
 
     let output = tokio::process::Command::new("kaggle")
-        .args(&["competitions", "download", "-c", slug, "-p", cache_dir.to_str().unwrap()])
+        .args(&["competitions", "download", "-c", slug,
+                "--path", cache_dir.to_str().unwrap()])
         .output()
         .await
         .context("Failed to execute kaggle CLI")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        anyhow::bail!("kaggle download failed: {stderr}\n{stdout}");
+        tokio::fs::remove_file(&lock_file).await.ok();
+        anyhow::bail!("kaggle download failed: {stderr}");
     }
 
-    log::info!("Kaggle dataset downloaded, extracting zip files...");
+    log::info!("Extracting zip files...");
 
-    // Extract zip files in cache
     let mut entries = tokio::fs::read_dir(&cache_dir).await?;
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("zip") {
             log::info!("Extracting {}", path.display());
             let out = tokio::process::Command::new("unzip")
-                .args(&["-o", "-q", path.to_str().unwrap(), "-d", cache_dir.to_str().unwrap()])
-                .output()
-                .await;
+                .args(&["-n", "-q", path.to_str().unwrap(), "-d", cache_dir.to_str().unwrap()])
+                .output().await;
             if out.is_ok() {
                 tokio::fs::remove_file(&path).await.ok();
             }
         }
     }
 
-    let audio_count = count_audio_files(&cache_dir).await;
-    log::info!("Cache ready: {audio_count} audio files in {}", cache_dir.display());
-
-    // Write .ready marker and release lock
+    let audio_count = count_audio_files_recursive(&cache_dir).await;
+    log::info!("Cache complete: {audio_count} audio files in {}", cache_dir.display());
     tokio::fs::write(&ready_marker, b"ready").await.ok();
     tokio::fs::remove_file(&lock_file).await.ok();
-
-    // Symlink job_id → cache
-    std::os::unix::fs::symlink(&cache_dir, &job_link).ok();
-    log::info!("Dataset ready for job {job_id}");
-
+    log::info!("Dataset fully ready for {job_id}");
     Ok(())
 }
 
-async fn has_audio_files(dir: &std::path::Path) -> bool {
-    count_audio_files(dir).await > 0
-}
-
-async fn count_audio_files(dir: &std::path::Path) -> usize {
-    let Ok(mut entries) = tokio::fs::read_dir(dir).await else { return 0 };
+/// Count audio files recursively (BirdCLEF stores in subdirectories)
+fn count_audio_files_recursive_sync(dir: &std::path::Path) -> usize {
     let mut count = 0;
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        if let Some(ext) = entry.path().extension() {
-            let e = ext.to_string_lossy().to_lowercase();
-            if matches!(e.as_str(), "wav" | "ogg" | "mp3" | "flac") {
-                count += 1;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(cur) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&cur) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() { stack.push(p); }
+                else if let Some(ext) = p.extension() {
+                    let e = ext.to_string_lossy().to_lowercase();
+                    if matches!(e.as_str(), "wav" | "ogg" | "mp3" | "flac") { count += 1; }
+                }
             }
         }
     }
     count
+}
+
+async fn count_audio_files_recursive(dir: &std::path::Path) -> usize {
+    let dir = dir.to_path_buf();
+    tokio::task::spawn_blocking(move || count_audio_files_recursive_sync(&dir))
+        .await
+        .unwrap_or(0)
+}
+
+async fn count_audio_files(dir: &std::path::Path) -> usize {
+    count_audio_files_recursive(dir).await
 }
 
 // ── Keypair management ────────────────────────────────────────────────────────
