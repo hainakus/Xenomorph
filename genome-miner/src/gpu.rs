@@ -819,11 +819,13 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
         let dash3 = dash.clone();
         let l2_cfg2 = l2_cfg.clone();
         tokio::spawn(async move {
+            let mut processed_l2_jobs = std::collections::HashSet::new();
             while let Some(job) = job_rx.recv().await {
                 // Dispatch L2 task if coordinator is configured
                 if let (Some(ref cfg), Some(ref l2_val)) = (&l2_cfg2, &job.l2_job) {
                     let l2_job_id = l2_val["job_id"].as_str().unwrap_or("").to_owned();
-                    if !l2_job_id.is_empty() {
+                    if !l2_job_id.is_empty() && !processed_l2_jobs.contains(&l2_job_id) {
+                        processed_l2_jobs.insert(l2_job_id.clone());
                         let cfg2 = cfg.clone();
                         let val2 = l2_val.clone();
                         tokio::spawn(async move {

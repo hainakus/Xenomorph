@@ -443,6 +443,7 @@ async fn mine_stratum(
     // — only resets when a genuinely new job arrives.
     let mut nonce_base: u64 = (current_job.extranonce1 as u64) << 32;
     let mut active_job_id = current_job.job_id.clone();
+    let mut processed_l2_jobs = std::collections::HashSet::new();
 
     loop {
         // Apply any pending new job; dispatch L2 task if present
@@ -456,7 +457,8 @@ async fn mine_stratum(
                     // Spawn inline L2 worker if coordinator is configured
                     if let (Some(ref cfg), Some(ref l2_val)) = (&l2_cfg, &new_job.l2_job) {
                         let l2_job_id = l2_val["job_id"].as_str().unwrap_or("").to_owned();
-                        if !l2_job_id.is_empty() {
+                        if !l2_job_id.is_empty() && !processed_l2_jobs.contains(&l2_job_id) {
+                            processed_l2_jobs.insert(l2_job_id.clone());
                             let cfg2  = cfg.clone();
                             let val2  = l2_val.clone();
                             tokio::spawn(async move {
