@@ -37,17 +37,17 @@ fi
 
 if [[ ! -f "${CONFIG_FILE}" ]]; then
     echo "[h-run] Config not found — generating now..."
-    # Try miner_config_gen if already defined, else source h-config.sh first
-    if ! declare -f miner_config_gen > /dev/null 2>&1; then
-        # shellcheck source=/dev/null
-        source "${MINER_DIR}/h-config.sh" 2>/dev/null || true
-    fi
-    if declare -f miner_config_gen > /dev/null 2>&1; then
-        miner_config_gen || true
+    # Source h-config.sh which will generate the config file
+    # shellcheck source=/dev/null
+    if source "${MINER_DIR}/h-config.sh" 2>/dev/null; then
+        echo "[h-run] Config generated successfully"
+    else
+        echo "[h-run] ERROR: Failed to generate config"
+        echo "        Check that CUSTOM_TEMPLATE (wallet address) is set in the flight-sheet."
+        exit 1
     fi
     if [[ ! -f "${CONFIG_FILE}" ]]; then
-        echo "[h-run] ERROR: Config file still missing after generation attempt: ${CONFIG_FILE}"
-        echo "        Check that CUSTOM_TEMPLATE (wallet address) is set in the flight-sheet."
+        echo "[h-run] ERROR: Config file still missing after generation: ${CONFIG_FILE}"
         exit 1
     fi
 fi
