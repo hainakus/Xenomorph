@@ -192,6 +192,7 @@ echo "=== Starting genome-miner gpu (BirdCLEF + Encryption) ==="
   --mining-address "$MINING_ADDR" \
   --stratum stratum+tcp://127.0.0.1:5555 \
   --gpu 0 \
+  --no-tui \
   --l2-coordinator "$COORDINATOR" \
   --l2-private-key "$PRIVKEY" \
   --l2-gpu \

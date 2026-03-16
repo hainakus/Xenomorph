@@ -49,14 +49,17 @@ fn find_perch_script() -> Option<PathBuf> {
 pub async fn run_l2_job(cfg: L2Config, l2_val: serde_json::Value) {
     let job_id      = l2_val["job_id"].as_str().unwrap_or("").to_owned();
     let task        = l2_val["task"].as_str().unwrap_or("").to_owned();
-    let dataset_url = l2_val["dataset_url"].as_str().map(str::to_owned);
+    // Read from 'dataset' field (sent by stratum-bridge in mining.notify param[6])
+    let dataset_url = l2_val["dataset"].as_str()
+        .or_else(|| l2_val["dataset_url"].as_str())
+        .map(str::to_owned);
 
     if job_id.is_empty() {
         warn!("L2: job_id is empty — skipping");
         return;
     }
 
-    info!("L2: starting job={job_id} task={task}");
+    info!("L2: starting job={job_id} task={task} dataset={}", dataset_url.as_deref().unwrap_or("none"));
 
     if let Err(e) = execute(&cfg, &job_id, &task, dataset_url.as_deref()).await {
         warn!("L2: job {job_id} failed: {e:#}");
