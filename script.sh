@@ -73,6 +73,24 @@ if [ -d "venv" ]; then
   echo "Installing: tensorflow (CUDA), kaggle, kagglehub, librosa, numpy..."
   pip install --quiet tensorflow kaggle kagglehub librosa numpy soundfile || echo "Warning: Some packages failed to install"
   
+  # Setup Kaggle credentials
+  KAGGLE_CONFIG_DIR="$HOME/.kaggle"
+  KAGGLE_JSON="$KAGGLE_CONFIG_DIR/kaggle.json"
+  
+  if [ ! -f "$KAGGLE_JSON" ]; then
+    echo "Warning: Kaggle credentials not found at $KAGGLE_JSON"
+    echo "To download BirdCLEF datasets, you need to:"
+    echo "  1. Go to https://www.kaggle.com/settings/account"
+    echo "  2. Click 'Create New Token' to download kaggle.json"
+    echo "  3. Place it at: $KAGGLE_JSON"
+    echo "  4. Run: chmod 600 $KAGGLE_JSON"
+    echo ""
+    echo "For now, miner will use stub data (simulated results)"
+  else
+    echo "✓ Kaggle credentials found at $KAGGLE_JSON"
+    chmod 600 "$KAGGLE_JSON" 2>/dev/null || true
+  fi
+  
   echo "Note: Perch v2 will use GPU if CUDA is available, otherwise CPU"
 else
   echo "Warning: venv not available, using system Python"
