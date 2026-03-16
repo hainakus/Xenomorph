@@ -133,7 +133,7 @@ async fn fetch_next_job(
         theme:        theme.to_owned(),
         job_id,
         task,
-        dataset:      dataset.to_owned(),
+        dataset:      dataset_url.clone().unwrap_or_else(|| dataset.to_owned()),
         dataset_url,
         fragment,
         reward_sompi,
