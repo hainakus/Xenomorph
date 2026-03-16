@@ -604,70 +604,92 @@ fn build_router(state: Arc<AppState>) -> Router {
 
 // ── Dataset download ──────────────────────────────────────────────────────────
 
-/// Download Kaggle dataset using kaggle CLI and store in /tmp/kaggle-datasets/{job_id}/
+/// Download Kaggle dataset once per slug (cached), then symlink to job_id dir.
+/// Cache: /tmp/kaggle-datasets/_cache/{slug}/
+/// Job dir: /tmp/kaggle-datasets/{job_id} -> symlink to cache
 async fn download_kaggle_dataset(job_id: &str, dataset_url: &str) -> Result<()> {
     use std::path::Path;
-    
+
     let slug = dataset_url.strip_prefix("kaggle://competitions/")
         .ok_or_else(|| anyhow::anyhow!("Invalid kaggle:// URL: {dataset_url}"))?;
-    
-    log::info!("Downloading Kaggle dataset for job {job_id}: {slug}");
-    
-    // Create dataset directory
-    let dataset_dir = Path::new("/tmp/kaggle-datasets").join(job_id);
-    tokio::fs::create_dir_all(&dataset_dir).await?;
-    
-    // Use kaggle CLI to download competition files
+
+    let cache_dir = Path::new("/tmp/kaggle-datasets/_cache").join(slug);
+    let job_link  = Path::new("/tmp/kaggle-datasets").join(job_id);
+
+    // If job symlink already exists, nothing to do
+    if job_link.exists() {
+        log::info!("Dataset already linked for job {job_id}");
+        return Ok(());
+    }
+
+    // If cache already populated, just symlink and return immediately
+    if cache_dir.exists() && has_audio_files(&cache_dir).await {
+        tokio::fs::create_dir_all(job_link.parent().unwrap()).await?;
+        std::os::unix::fs::symlink(&cache_dir, &job_link).ok();
+        log::info!("Dataset cache hit for {job_id} → {}", cache_dir.display());
+        return Ok(());
+    }
+
+    // First time: download to cache
+    log::info!("Downloading Kaggle dataset for job {job_id}: {slug} (will cache)");
+    tokio::fs::create_dir_all(&cache_dir).await?;
+
     let output = tokio::process::Command::new("kaggle")
-        .args(&["competitions", "download", "-c", slug, "-p", dataset_dir.to_str().unwrap()])
+        .args(&["competitions", "download", "-c", slug, "-p", cache_dir.to_str().unwrap()])
         .output()
         .await
         .context("Failed to execute kaggle CLI")?;
-    
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         anyhow::bail!("kaggle download failed: {stderr}\n{stdout}");
     }
-    
-    log::info!("Kaggle dataset downloaded for job {job_id}, extracting files...");
-    
-    // Extract zip files if any
-    let mut entries = tokio::fs::read_dir(&dataset_dir).await?;
+
+    log::info!("Kaggle dataset downloaded, extracting zip files...");
+
+    // Extract zip files in cache
+    let mut entries = tokio::fs::read_dir(&cache_dir).await?;
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
-        if let Some(ext) = path.extension() {
-            if ext == "zip" {
-                log::info!("Extracting {}", path.display());
-                let output = tokio::process::Command::new("unzip")
-                    .args(&["-o", "-q", path.to_str().unwrap(), "-d", dataset_dir.to_str().unwrap()])
-                    .output()
-                    .await;
-                
-                if output.is_ok() {
-                    // Remove zip file after extraction
-                    tokio::fs::remove_file(&path).await.ok();
-                }
+        if path.extension().and_then(|e| e.to_str()) == Some("zip") {
+            log::info!("Extracting {}", path.display());
+            let out = tokio::process::Command::new("unzip")
+                .args(&["-o", "-q", path.to_str().unwrap(), "-d", cache_dir.to_str().unwrap()])
+                .output()
+                .await;
+            if out.is_ok() {
+                tokio::fs::remove_file(&path).await.ok();
             }
         }
     }
-    
-    // Count audio files
-    let mut audio_count = 0;
-    let mut entries = tokio::fs::read_dir(&dataset_dir).await?;
-    while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-        if let Some(ext) = path.extension() {
-            let ext_str = ext.to_string_lossy().to_lowercase();
-            if matches!(ext_str.as_str(), "wav" | "ogg" | "mp3" | "flac") {
-                audio_count += 1;
-            }
-        }
-    }
-    
-    log::info!("Dataset ready for job {job_id}: {audio_count} audio files in {}", dataset_dir.display());
-    
+
+    let audio_count = count_audio_files(&cache_dir).await;
+    log::info!("Cache ready: {audio_count} audio files in {}", cache_dir.display());
+
+    // Symlink job_id → cache
+    std::os::unix::fs::symlink(&cache_dir, &job_link).ok();
+    log::info!("Dataset ready for job {job_id}");
+
     Ok(())
+}
+
+async fn has_audio_files(dir: &std::path::Path) -> bool {
+    count_audio_files(dir).await > 0
+}
+
+async fn count_audio_files(dir: &std::path::Path) -> usize {
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else { return 0 };
+    let mut count = 0;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if let Some(ext) = entry.path().extension() {
+            let e = ext.to_string_lossy().to_lowercase();
+            if matches!(e.as_str(), "wav" | "ogg" | "mp3" | "flac") {
+                count += 1;
+            }
+        }
+    }
+    count
 }
 
 // ── Keypair management ────────────────────────────────────────────────────────
