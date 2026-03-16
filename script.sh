@@ -40,7 +40,7 @@ echo "COORDINATOR=$COORDINATOR"
 echo ""
 echo "=== BirdCLEF Configuration ==="
 echo "Theme: BirdWatch (Blue UI)"
-echo "Competition: birdclef-2025"
+echo "Competition: birdclef-2026"
 echo "Model: Perch v2 (GPU/CUDA) / Stub fallback"
 echo "Inference: GPU accelerated with TensorFlow CUDA"
 echo "Encryption: ENABLED (2-layer)"
@@ -147,12 +147,12 @@ PIDS+=($!)
 sleep 2
 
 echo "=== Starting genetics-l2-fetcher (BirdCLEF only) ==="
-# Fetches ONLY BirdCLEF-2025 competition from Kaggle
+# Fetches ONLY BirdCLEF-2026 competition from Kaggle
 # Uses ~/.kaggle/kaggle.json for authentication
 # --kaggle-only disables NIH and other default sources
 "$BIN/genetics-l2-fetcher" \
   --coordinator "$COORDINATOR" \
-  --competition birdclef-2025 \
+  --competition birdclef-2026 \
   --kaggle-only \
   --poll-secs 300 \
   > /tmp/xenom-logs/fetcher.log 2>&1 &
@@ -215,7 +215,7 @@ echo ""
 echo "=== BirdCLEF L2 System ==="
 echo "Pool UI: http://localhost:5555 (Blue BirdWatch theme)"
 echo "Coordinator: $COORDINATOR"
-echo "Competition: BirdCLEF-2025 (Kaggle)"
+echo "Competition: BirdCLEF-2026 (Kaggle)"
 echo ""
 echo "Encryption Status: ACTIVE"
 echo "  ✓ Output files encrypted on disk: /tmp/genome-miner-l2/{job_id}/output/*.enc"
