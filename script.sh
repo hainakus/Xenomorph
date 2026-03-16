@@ -41,7 +41,8 @@ echo ""
 echo "=== BirdCLEF Configuration ==="
 echo "Theme: BirdWatch (Blue UI)"
 echo "Competition: birdclef-2025"
-echo "Model: Perch v2 / BirdNET-Analyzer / Stub"
+echo "Model: Perch v2 (GPU/CUDA) / Stub fallback"
+echo "Inference: GPU accelerated with TensorFlow CUDA"
 echo "Encryption: ENABLED (2-layer)"
 echo "  - Layer 1: Local output files (ChaCha20-Poly1305)"
 echo "  - Layer 2: Submitted payload (ECIES)"
@@ -65,16 +66,14 @@ fi
 if [ -d "venv" ]; then
   echo "Activating virtual environment..."
   source venv/bin/activate
-  echo "Installing Python dependencies for BirdCLEF..."
+  echo "Installing Python dependencies for Perch v2 (CUDA)..."
   pip install --quiet --upgrade pip
   
-  # Install essential dependencies (Perch/TensorFlow optional, will use BirdNET fallback)
-  echo "Installing: kagglehub, librosa, numpy..."
-  pip install --quiet kagglehub librosa numpy soundfile || echo "Warning: Some packages failed to install"
+  # Install TensorFlow with CUDA support for Perch v2 GPU inference
+  echo "Installing: tensorflow (CUDA), kagglehub, librosa, numpy..."
+  pip install --quiet tensorflow kagglehub librosa numpy soundfile || echo "Warning: Some packages failed to install"
   
-  # Try to install birdnet-analyzer as fallback
-  echo "Installing birdnet-analyzer (fallback classifier)..."
-  pip install --quiet birdnet-analyzer 2>/dev/null || echo "Note: birdnet-analyzer not installed, will use stub mode"
+  echo "Note: Perch v2 will use GPU if CUDA is available, otherwise CPU"
 else
   echo "Warning: venv not available, using system Python"
   if command -v pip3 &> /dev/null; then
@@ -182,7 +181,7 @@ echo "=== Starting genome-miner gpu (BirdCLEF + Encryption) ==="
 # Encryption enabled:
 #   - Encrypts output files locally with worker privkey
 #   - Encrypts submitted payload with coordinator pubkey
-#   - Uses Perch v2 script for bird audio analysis (CPU mode)
+#   - Uses Perch v2 script for bird audio analysis (GPU mode with CUDA)
 "$BIN/genome-miner" gpu \
   --devnet \
   --mining-address "$MINING_ADDR" \
@@ -190,6 +189,7 @@ echo "=== Starting genome-miner gpu (BirdCLEF + Encryption) ==="
   --gpu 0 \
   --l2-coordinator "$COORDINATOR" \
   --l2-private-key "$PRIVKEY" \
+  --l2-gpu \
   --l2-perch-script scripts/perch_infer.py \
   > /tmp/xenom-logs/miner.log 2>&1 &
 PIDS+=($!)
