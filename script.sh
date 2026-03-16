@@ -70,15 +70,15 @@ if [ -d "venv" ]; then
   pip install --quiet --upgrade pip
   
   # Install TensorFlow with CUDA support for Perch v2 GPU inference
-  echo "Installing: tensorflow (CUDA), kagglehub, librosa, numpy..."
-  pip install --quiet tensorflow kagglehub librosa numpy soundfile || echo "Warning: Some packages failed to install"
+  echo "Installing: tensorflow (CUDA), kaggle, kagglehub, librosa, numpy..."
+  pip install --quiet tensorflow kaggle kagglehub librosa numpy soundfile || echo "Warning: Some packages failed to install"
   
   echo "Note: Perch v2 will use GPU if CUDA is available, otherwise CPU"
 else
   echo "Warning: venv not available, using system Python"
   if command -v pip3 &> /dev/null; then
-    pip3 install --quiet --break-system-packages kagglehub tensorflow librosa numpy 2>/dev/null || \
-    pip3 install --quiet --user kagglehub tensorflow librosa numpy 2>/dev/null || \
+    pip3 install --quiet --break-system-packages kaggle kagglehub tensorflow librosa numpy 2>/dev/null || \
+    pip3 install --quiet --user kaggle kagglehub tensorflow librosa numpy 2>/dev/null || \
     echo "Warning: pip3 install failed, continuing anyway..."
   fi
 fi
