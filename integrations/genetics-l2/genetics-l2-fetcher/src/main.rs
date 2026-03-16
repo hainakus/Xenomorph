@@ -45,6 +45,7 @@ async fn main() -> Result<()> {
         });
     let boinc_url        = m.get_one::<String>("boinc-url").cloned();
     let competition      = m.get_one::<String>("competition").cloned();
+    let kaggle_only      = m.get_flag("kaggle-only");
     let nih_challenges   = m.get_flag("nih-challenges");
     let dream_enabled    = m.get_flag("dream");
     let horizon_enabled  = m.get_flag("horizon");
@@ -67,7 +68,9 @@ async fn main() -> Result<()> {
         if let Some(url) = boinc_url {
             v.push(Box::new(BoincFetcher::new(url)));
         }
-        v.push(Box::new(NihFetcher::new()));
+        if !kaggle_only {
+            v.push(Box::new(NihFetcher::new()));
+        }
         if nih_challenges {
             v.push(Box::new(NihChallengeFetcher::new()));
         }
@@ -146,6 +149,10 @@ fn cli() -> Command {
         .arg(Arg::new("competition")
             .long("competition").value_name("SLUG")
             .help("Seed a specific Kaggle competition (e.g. birdclef-2026)"))
+        .arg(Arg::new("kaggle-only")
+            .long("kaggle-only")
+            .action(clap::ArgAction::SetTrue)
+            .help("Fetch ONLY from Kaggle, disable NIH and other default sources"))
         .arg(Arg::new("nih-challenges")
             .long("nih-challenges")
             .action(clap::ArgAction::SetTrue)

@@ -149,10 +149,11 @@ sleep 2
 echo "=== Starting genetics-l2-fetcher (BirdCLEF only) ==="
 # Fetches ONLY BirdCLEF-2025 competition from Kaggle
 # Uses ~/.kaggle/kaggle.json for authentication
-# No NIH or Horizon sources
+# --kaggle-only disables NIH and other default sources
 "$BIN/genetics-l2-fetcher" \
   --coordinator "$COORDINATOR" \
   --competition birdclef-2025 \
+  --kaggle-only \
   --poll-secs 300 \
   > /tmp/xenom-logs/fetcher.log 2>&1 &
 PIDS+=($!)
