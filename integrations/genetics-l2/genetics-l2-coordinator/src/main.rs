@@ -592,24 +592,6 @@ async fn decrypt_result(db_path: &str, result_id: &str) -> Result<()> {
         return Ok(());
     }
     
-    // Build JobResult with encrypted data
-    let mut result = JobResult {
-        result_id: row.get("result_id"),
-        job_id: row.get("job_id"),
-        worker_pubkey: row.get("worker_pubkey"),
-        result_root: String::new(),
-        score: 0.0,
-        trace_hash: None,
-        notebook_or_repo_hash: row.get("notebook_or_repo_hash"),
-        container_hash: row.get("container_hash"),
-        weights_hash: row.get("weights_hash"),
-        submission_bundle_hash: row.get("submission_bundle_hash"),
-        worker_sig: row.get("worker_sig"),
-        encrypted_payload,
-        ephemeral_pubkey,
-        submitted_at: row.get::<i64, _>("submitted_at") as u64,
-    };
-    
     // Decrypt
     println!("Decrypting result {} with coordinator private key...", result_id);
     
