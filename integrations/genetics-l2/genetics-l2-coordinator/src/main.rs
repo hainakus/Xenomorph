@@ -612,8 +612,16 @@ async fn decrypt_result(db_path: &str, result_id: &str) -> Result<()> {
     
     // Decrypt
     println!("Decrypting result {} with coordinator private key...", result_id);
-    let decrypted = result.decrypt_payload(&coordinator_privkey)
-        .context("Failed to decrypt result")?;
+    
+    let encrypted_payload_hex = encrypted_payload.unwrap();
+    let ephemeral_pubkey_hex = ephemeral_pubkey.unwrap();
+    
+    let decrypted = JobResult::decrypt_payload(
+        &encrypted_payload_hex,
+        &ephemeral_pubkey_hex,
+        &coordinator_privkey
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to decrypt result: {e}"))?;
     
     // Display decrypted data
     println!("\n=== Decrypted Result ===");
