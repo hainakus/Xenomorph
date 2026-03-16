@@ -157,14 +157,7 @@ async fn create_job(
     State(s): State<Arc<AppState>>,
     Json(job): Json<ScientificJob>,
 ) -> impl IntoResponse {
-    let initial_status = if job.dataset_url.as_deref()
-        .map(|u| u.starts_with("kaggle://"))
-        .unwrap_or(false)
-    {
-        "pending"   // will flip to 'open' once dataset is downloaded
-    } else {
-        "open"
-    };
+    let initial_status = "open"; // always open immediately — dataset downloads in background
 
     let res = sqlx::query(
         "INSERT OR IGNORE INTO jobs
@@ -188,38 +181,16 @@ async fn create_job(
 
     match res {
         Ok(_) => {
-            // If job needs a Kaggle dataset, start downloading and flip status open when ready
+            // Spawn background download — job is already 'open', miners get it immediately
             if let Some(ref dataset_url) = job.dataset_url {
                 if dataset_url.starts_with("kaggle://competitions/") {
                     let job_id = job.job_id.clone();
                     let dataset_url = dataset_url.clone();
-                    let pool = s.pool.clone();
                     tokio::spawn(async move {
-                        match download_kaggle_dataset(&job_id, &dataset_url).await {
-                            Ok(()) => {
-                                // Dataset ready — open the job for miners
-                                let _ = sqlx::query(
-                                    "UPDATE jobs SET status='open' WHERE job_id=?1 AND status='pending'"
-                                )
-                                .bind(&job_id)
-                                .execute(&pool)
-                                .await;
-                                log::info!("Dataset ready, job {job_id} is now open");
-                            }
-                            Err(e) => {
-                                // Download failed — open anyway so miners can still try with stub
-                                log::warn!("Dataset download failed for {job_id}: {e} — opening job anyway");
-                                let _ = sqlx::query(
-                                    "UPDATE jobs SET status='open' WHERE job_id=?1 AND status='pending'"
-                                )
-                                .bind(&job_id)
-                                .execute(&pool)
-                                .await;
-                            }
+                        if let Err(e) = download_kaggle_dataset(&job_id, &dataset_url).await {
+                            log::warn!("Background dataset download failed for {job_id}: {e}");
                         }
                     });
-                    // Return immediately — job is pending until dataset is ready
-                    return (StatusCode::CREATED, Json(serde_json::json!({ "job_id": job.job_id, "status": "pending" }))).into_response();
                 }
             }
             (StatusCode::CREATED, Json(serde_json::json!({ "job_id": job.job_id, "status": "open" }))).into_response()

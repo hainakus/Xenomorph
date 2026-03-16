@@ -891,9 +891,9 @@ async fn download_kaggle_dataset(_url: &str, dest: &Path, job_id: &str) -> Resul
     let http = reqwest::Client::new();
     let files_url = format!("{}/datasets/{}/files", coordinator_url, job_id);
     
-    // Retry up to 12 times with 5s delay — coordinator may still be downloading from Kaggle
+    // Retry up to 6 times with 5s delay (30s max) — dataset may still be downloading
     let mut files = Vec::new();
-    for attempt in 1..=12u32 {
+    for attempt in 1..=6u32 {
         let resp = http.get(&files_url).send().await
             .context("Failed to list dataset files from coordinator")?;
         
