@@ -157,11 +157,20 @@ async fn create_job(
     State(s): State<Arc<AppState>>,
     Json(job): Json<ScientificJob>,
 ) -> impl IntoResponse {
+    let initial_status = if job.dataset_url.as_deref()
+        .map(|u| u.starts_with("kaggle://"))
+        .unwrap_or(false)
+    {
+        "pending"   // will flip to 'open' once dataset is downloaded
+    } else {
+        "open"
+    };
+
     let res = sqlx::query(
         "INSERT OR IGNORE INTO jobs
          (job_id, source, external_ref, dataset_root, dataset_url, algorithm,
           task_description, reward_sompi, max_time_secs, status, created_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'open',?10)",
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
     )
     .bind(&job.job_id)
     .bind(job.source.to_string())
@@ -172,25 +181,48 @@ async fn create_job(
     .bind(&job.task_description)
     .bind(job.reward_sompi as i64)
     .bind(job.max_time_secs as i64)
+    .bind(initial_status)
     .bind(job.created_at as i64)
     .execute(&s.pool)
     .await;
 
     match res {
         Ok(_) => {
-            // Spawn background task to download dataset from Kaggle
+            // If job needs a Kaggle dataset, start downloading and flip status open when ready
             if let Some(ref dataset_url) = job.dataset_url {
                 if dataset_url.starts_with("kaggle://competitions/") {
                     let job_id = job.job_id.clone();
                     let dataset_url = dataset_url.clone();
+                    let pool = s.pool.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = download_kaggle_dataset(&job_id, &dataset_url).await {
-                            log::warn!("Failed to download dataset for {job_id}: {e}");
+                        match download_kaggle_dataset(&job_id, &dataset_url).await {
+                            Ok(()) => {
+                                // Dataset ready — open the job for miners
+                                let _ = sqlx::query(
+                                    "UPDATE jobs SET status='open' WHERE job_id=?1 AND status='pending'"
+                                )
+                                .bind(&job_id)
+                                .execute(&pool)
+                                .await;
+                                log::info!("Dataset ready, job {job_id} is now open");
+                            }
+                            Err(e) => {
+                                // Download failed — open anyway so miners can still try with stub
+                                log::warn!("Dataset download failed for {job_id}: {e} — opening job anyway");
+                                let _ = sqlx::query(
+                                    "UPDATE jobs SET status='open' WHERE job_id=?1 AND status='pending'"
+                                )
+                                .bind(&job_id)
+                                .execute(&pool)
+                                .await;
+                            }
                         }
                     });
+                    // Return immediately — job is pending until dataset is ready
+                    return (StatusCode::CREATED, Json(serde_json::json!({ "job_id": job.job_id, "status": "pending" }))).into_response();
                 }
             }
-            (StatusCode::CREATED, Json(serde_json::json!({ "job_id": job.job_id }))).into_response()
+            (StatusCode::CREATED, Json(serde_json::json!({ "job_id": job.job_id, "status": "open" }))).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
     }

@@ -813,19 +813,19 @@ fn stub_conf(path: &Path) -> f64 {
     (blake3::hash(&src).as_bytes()[0] as f64) / 255.0
 }
 
-/// Returns the first Python executable that has birdnet_analyzer importable.
-/// birdnet-analyzer requires Python >=3.11 — older versions are skipped.
+/// Returns the first Python executable that has tensorflow_hub importable (for YAMNet).
 async fn detect_python() -> String {
     let candidates = [
-        "/opt/birdnet-venv/bin/python",
+        "python3",
         "python3.11",
         "python3.12",
         "python3.13",
-        "python3",
+        "/opt/xenom/venv/bin/python",
+        "/opt/birdnet-venv/bin/python",
     ];
     for candidate in &candidates {
         let ok = tokio::process::Command::new(candidate)
-            .args(["-c", "import birdnet_analyzer"])
+            .args(["-c", "import tensorflow_hub"])
             .output()
             .await
             .map(|o| o.status.success())
@@ -834,8 +834,8 @@ async fn detect_python() -> String {
             return candidate.to_string();
         }
     }
-    warn!("L2: birdnet_analyzer not found in any Python>=3.11 — will use stub");
-    "python3.11".to_string()
+    warn!("L2: tensorflow_hub not found — YAMNet will use stub");
+    "python3".to_string()
 }
 
 async fn collect_audio(dir: &Path) -> Vec<PathBuf> {
@@ -881,7 +881,7 @@ async fn download(http: &reqwest::Client, url: &str, dest: &Path, job_id: &str) 
 
 /// Download dataset from coordinator API.
 /// URL format: kaggle://competitions/{slug} or http://coordinator/datasets/{job_id}/files
-async fn download_kaggle_dataset(url: &str, dest: &Path, job_id: &str) -> Result<()> {
+async fn download_kaggle_dataset(_url: &str, dest: &Path, job_id: &str) -> Result<()> {
     log::info!("Downloading dataset from coordinator for job: {job_id}");
     
     // Get coordinator URL from environment or default
@@ -889,24 +889,36 @@ async fn download_kaggle_dataset(url: &str, dest: &Path, job_id: &str) -> Result
         .unwrap_or_else(|_| "http://localhost:8091".to_string());
     
     let http = reqwest::Client::new();
-    
-    // List available files from coordinator
     let files_url = format!("{}/datasets/{}/files", coordinator_url, job_id);
-    let resp = http.get(&files_url).send().await
-        .context("Failed to list dataset files from coordinator")?;
     
-    if !resp.status().is_success() {
-        anyhow::bail!("Coordinator returned error: {}", resp.status());
+    // Retry up to 12 times with 5s delay — coordinator may still be downloading from Kaggle
+    let mut files = Vec::new();
+    for attempt in 1..=12u32 {
+        let resp = http.get(&files_url).send().await
+            .context("Failed to list dataset files from coordinator")?;
+        
+        if !resp.status().is_success() {
+            anyhow::bail!("Coordinator returned error: {}", resp.status());
+        }
+        
+        let files_data: serde_json::Value = resp.json().await
+            .context("Failed to parse files list")?;
+        
+        let f = files_data["files"].as_array()
+            .cloned()
+            .unwrap_or_default();
+        
+        if !f.is_empty() {
+            files = f;
+            break;
+        }
+        
+        log::info!("L2: coordinator dataset not ready yet (attempt {attempt}/12), waiting 5s...");
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
     
-    let files_data: serde_json::Value = resp.json().await
-        .context("Failed to parse files list")?;
-    
-    let files = files_data["files"].as_array()
-        .ok_or_else(|| anyhow::anyhow!("Invalid files response"))?;
-    
     if files.is_empty() {
-        anyhow::bail!("No dataset files available from coordinator");
+        anyhow::bail!("No dataset files available from coordinator after retries");
     }
     
     log::info!("Found {} files from coordinator, downloading...", files.len());
