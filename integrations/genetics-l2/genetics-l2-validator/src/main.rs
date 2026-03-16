@@ -88,7 +88,7 @@ async fn validate_pending(
         let result_id  = best["result_id"].as_str().unwrap_or("").to_owned();
         
         // Try to decrypt if result is encrypted
-        let (result_root, claimed_score) = if let (Some(encrypted), Some(ephemeral), Some(coord_key)) = (
+        let (result_root, claimed_score, decrypted_payload) = if let (Some(encrypted), Some(ephemeral), Some(coord_key)) = (
             best["encrypted_payload"].as_str(),
             best["ephemeral_pubkey"].as_str(),
             coordinator_privkey
@@ -97,7 +97,7 @@ async fn validate_pending(
             match genetics_l2_core::JobResult::decrypt_payload(encrypted, ephemeral, coord_key) {
                 Ok(decrypted) => {
                     log::debug!("Decrypted result {result_id}: score={}", decrypted.score);
-                    (decrypted.result_root, decrypted.score)
+                    (decrypted.result_root.clone(), decrypted.score, Some(decrypted))
                 }
                 Err(e) => {
                     log::warn!("Failed to decrypt result {result_id}: {e}");
@@ -108,7 +108,7 @@ async fn validate_pending(
             // Use plaintext fields (old format or decryption disabled)
             let result_root = best["result_root"].as_str().unwrap_or("").to_owned();
             let claimed_score = best["score"].as_f64().unwrap_or(0.0);
-            (result_root, claimed_score)
+            (result_root, claimed_score, None)
         };
 
         if result_id.is_empty() { continue; }
@@ -116,6 +116,15 @@ async fn validate_pending(
         // Partial recomputation validation
         let (verdict, recomputed_score, score_delta, notes) =
             validate_result(job_val, &result_root, claimed_score, tolerance).await;
+
+        // Save decrypted result to JSON file for Kaggle submission if validation passed
+        if verdict == ValidationVerdict::Valid {
+            if let Some(ref payload) = decrypted_payload {
+                if let Err(e) = save_kaggle_submission(&job_id, &result_id, payload, claimed_score).await {
+                    log::warn!("Failed to save Kaggle submission for {job_id}: {e}");
+                }
+            }
+        }
 
         // Sign the validation report
         let sign_data = format!("{result_id}:{verdict:?}");
@@ -229,6 +238,48 @@ async fn partial_recompute(job_val: &Value, claimed_score: f64) -> f64 {
     let first4 = u32::from_be_bytes(hex::decode(&seed[..8]).unwrap()[..4].try_into().unwrap());
     let jitter = (first4 as f64 / u32::MAX as f64) * 0.02 - 0.01; // ±1%
     claimed_score * (1.0 + jitter)
+}
+
+/// Save validated result to JSON file for Kaggle submission.
+async fn save_kaggle_submission(
+    job_id: &str,
+    result_id: &str,
+    payload: &genetics_l2_core::EncryptedResultPayload,
+    score: f64,
+) -> Result<()> {
+    use std::path::Path;
+    
+    // Create submissions directory
+    let submissions_dir = Path::new("/tmp/kaggle-submissions");
+    tokio::fs::create_dir_all(submissions_dir).await
+        .context("Failed to create submissions directory")?;
+    
+    // Create JSON with result data
+    let submission = serde_json::json!({
+        "job_id": job_id,
+        "result_id": result_id,
+        "score": score,
+        "result_root": payload.result_root,
+        "trace_hash": payload.trace_hash,
+        "notebook_or_repo_hash": payload.notebook_or_repo_hash,
+        "container_hash": payload.container_hash,
+        "weights_hash": payload.weights_hash,
+        "submission_bundle_hash": payload.submission_bundle_hash,
+        "timestamp": now_secs(),
+    });
+    
+    // Save to file
+    let filename = format!("{}.json", job_id);
+    let filepath = submissions_dir.join(&filename);
+    let json_str = serde_json::to_string_pretty(&submission)
+        .context("Failed to serialize submission")?;
+    
+    tokio::fs::write(&filepath, json_str).await
+        .context("Failed to write submission file")?;
+    
+    log::info!("Saved Kaggle submission: {}", filepath.display());
+    
+    Ok(())
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
