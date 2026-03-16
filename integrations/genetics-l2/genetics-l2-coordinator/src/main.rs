@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS results (
     weights_hash           TEXT,
     submission_bundle_hash TEXT,
     worker_sig             TEXT    NOT NULL,
+    encrypted_payload      TEXT,
+    ephemeral_pubkey       TEXT,
     submitted_at           INTEGER NOT NULL,
     verdict                TEXT
 );
@@ -77,6 +79,9 @@ CREATE TABLE IF NOT EXISTS payouts (
 #[derive(Clone)]
 struct AppState {
     pool: SqlitePool,
+    /// Coordinator's secp256k1 keypair for encrypting/decrypting L2 results.
+    coordinator_privkey: String,
+    coordinator_pubkey: String,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -84,6 +89,11 @@ struct AppState {
 // GET /health
 async fn health() -> impl IntoResponse {
     Json(serde_json::json!({ "status": "ok", "service": "genetics-l2-coordinator" }))
+}
+
+// GET /pubkey - Returns coordinator's public key for result encryption
+async fn get_pubkey(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(serde_json::json!({ "pubkey": s.coordinator_pubkey }))
 }
 
 // GET /jobs?status=open&limit=20&offset=0
@@ -214,8 +224,8 @@ async fn submit_result(
         "INSERT OR IGNORE INTO results
          (result_id, job_id, worker_pubkey, result_root, score,
           trace_hash, notebook_or_repo_hash, container_hash, weights_hash,
-          submission_bundle_hash, worker_sig, submitted_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+          submission_bundle_hash, worker_sig, encrypted_payload, ephemeral_pubkey, submitted_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
     )
     .bind(&result.result_id)
     .bind(&result.job_id)
@@ -228,6 +238,8 @@ async fn submit_result(
     .bind(&result.weights_hash)
     .bind(&result.submission_bundle_hash)
     .bind(&result.worker_sig)
+    .bind(&result.encrypted_payload)
+    .bind(&result.ephemeral_pubkey)
     .bind(now)
     .execute(&s.pool)
     .await;
@@ -445,6 +457,7 @@ async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
 fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health",                  get(health))
+        .route("/pubkey",                  get(get_pubkey))
         .route("/stats",                   get(stats))
         .route("/jobs",                    get(list_jobs).post(create_job))
         .route("/jobs/:job_id/claim",      post(claim_job))
@@ -454,6 +467,46 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/payouts",                 get(list_payouts).post(create_payout))
         .layer(CorsLayer::permissive())
         .with_state(state)
+}
+
+// ── Keypair management ────────────────────────────────────────────────────────
+
+/// Load or generate coordinator's secp256k1 keypair for result encryption.
+/// Keypair is stored in {db_path}.key file.
+fn load_or_generate_keypair(db_path: &str) -> Result<(String, String)> {
+    use secp256k1::{PublicKey, Secp256k1, SecretKey};
+    
+    let key_file = format!("{db_path}.key");
+    let secp = Secp256k1::new();
+
+    // Try to load existing keypair
+    if let Ok(privkey_hex) = std::fs::read_to_string(&key_file) {
+        let privkey_hex = privkey_hex.trim().to_string();
+        if let Ok(privkey_bytes) = hex::decode(&privkey_hex) {
+            if let Ok(secret_key) = SecretKey::from_slice(&privkey_bytes) {
+                let public_key = PublicKey::from_secret_key(&secp, &secret_key);
+                let pubkey_hex = hex::encode(public_key.serialize());
+                log::info!("Loaded existing coordinator keypair from {key_file}");
+                return Ok((privkey_hex, pubkey_hex));
+            }
+        }
+    }
+
+    // Generate new keypair
+    let secret_key = SecretKey::new(&mut secp256k1::rand::thread_rng());
+    let public_key = PublicKey::from_secret_key(&secp, &secret_key);
+    
+    let privkey_hex = hex::encode(secret_key.secret_bytes());
+    let pubkey_hex = hex::encode(public_key.serialize());
+
+    // Save private key to file
+    std::fs::write(&key_file, &privkey_hex)
+        .context(format!("Failed to write keypair to {key_file}"))?;
+    
+    log::info!("Generated new coordinator keypair, saved to {key_file}");
+    log::warn!("IMPORTANT: Backup {key_file} - it's required to decrypt L2 results!");
+
+    Ok((privkey_hex, pubkey_hex))
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -472,7 +525,15 @@ async fn main() -> Result<()> {
     sqlx::raw_sql(SCHEMA).execute(&pool).await.context("schema init")?;
     log::info!("Database: {db_path}");
 
-    let state  = Arc::new(AppState { pool });
+    // Generate or load coordinator keypair for result encryption
+    let (coordinator_privkey, coordinator_pubkey) = load_or_generate_keypair(&db_path)?;
+    log::info!("Coordinator pubkey: {coordinator_pubkey}");
+
+    let state  = Arc::new(AppState { 
+        pool,
+        coordinator_privkey,
+        coordinator_pubkey,
+    });
     let router = build_router(state);
 
     let addr: std::net::SocketAddr = listen.parse().context("invalid --listen address")?;

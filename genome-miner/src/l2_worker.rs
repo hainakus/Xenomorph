@@ -104,9 +104,16 @@ async fn execute(
     tokio::fs::write(work_dir.join("trace.log"), &trace).await.ok();
     info!("L2: {job_id} score={score:.4} trace_hash={trace_hash}");
 
-    // ── 5. Hash outputs ───────────────────────────────────────────────────────
+    // ── 5. Hash outputs (before encryption) ──────────────────────────────────
     let result_root = hash_dir(&output_dir).await;
     info!("L2: result_root={result_root}");
+
+    // ── 5b. Encrypt output files on disk ──────────────────────────────────────
+    if let Err(e) = encrypt_output_dir(&output_dir, &cfg.privkey_hex).await {
+        warn!("L2: failed to encrypt output files: {e} — continuing with plaintext");
+    } else {
+        info!("L2: encrypted output files in {}", output_dir.display());
+    }
 
     // ── 6. Sign ───────────────────────────────────────────────────────────────
     let sign_data = format!("{job_id}:{result_root}:{score:.6}");
@@ -114,22 +121,51 @@ async fn execute(
     let worker_sig = sign_manifest(&digest, &cfg.privkey_hex)
         .unwrap_or_else(|_| "unsigned".to_owned());
 
-    // ── 7. Submit ─────────────────────────────────────────────────────────────
+    // ── 7. Encrypt result payload ─────────────────────────────────────────────
+    // Fetch coordinator's public key for encryption
+    let coordinator_pubkey = match fetch_coordinator_pubkey(&http, &cfg.coordinator_url).await {
+        Ok(pk) => pk,
+        Err(e) => {
+            warn!("L2: failed to fetch coordinator pubkey: {e} — submitting unencrypted");
+            String::new()
+        }
+    };
+
     let result_id = format!("{job_id}-{}", &trace_hash[..8]);
-    let result = JobResult {
+    let mut result = JobResult {
         result_id:              result_id.clone(),
         job_id:                 job_id.to_owned(),
         worker_pubkey:          cfg.pubkey_hex.clone(),
-        result_root,
+        result_root:            result_root.clone(),
         score,
-        trace_hash:             Some(trace_hash),
+        trace_hash:             Some(trace_hash.clone()),
         notebook_or_repo_hash:  None,
         container_hash:         None,
         weights_hash:           None,
         submission_bundle_hash: None,
         worker_sig,
+        encrypted_payload:      None,
+        ephemeral_pubkey:       None,
         submitted_at:           now_secs(),
     };
+
+    // Encrypt if coordinator pubkey available
+    if !coordinator_pubkey.is_empty() {
+        match result.encrypt_payload(&coordinator_pubkey) {
+            Ok((encrypted, ephemeral)) => {
+                info!("L2: encrypted result payload for {job_id}");
+                result.encrypted_payload = Some(encrypted);
+                result.ephemeral_pubkey = Some(ephemeral);
+                // Clear plaintext fields after encryption
+                result.result_root = String::new();
+                result.score = 0.0;
+                result.trace_hash = None;
+            }
+            Err(e) => {
+                warn!("L2: encryption failed: {e} — submitting unencrypted");
+            }
+        }
+    }
 
     let submit = http
         .post(format!("{}/results", cfg.coordinator_url))
@@ -145,6 +181,26 @@ async fn execute(
     }
 
     Ok(())
+}
+
+// ── Coordinator public key fetching ───────────────────────────────────────────
+
+async fn fetch_coordinator_pubkey(http: &reqwest::Client, coordinator_url: &str) -> Result<String> {
+    let resp = http
+        .get(format!("{coordinator_url}/pubkey"))
+        .send()
+        .await
+        .context("GET /pubkey")?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!("Coordinator /pubkey returned {}", resp.status());
+    }
+
+    let body: serde_json::Value = resp.json().await.context("parse /pubkey")?;
+    body["pubkey"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("Missing pubkey field"))
 }
 
 // ── Task dispatcher ───────────────────────────────────────────────────────────
@@ -624,6 +680,118 @@ mod tests {
         assert!(score >= 0.1);
         assert!(output.join("analysis.json").exists());
     }
+}
+
+// ── Output file encryption ────────────────────────────────────────────────────
+
+/// Encrypt all files in output directory using worker's private key.
+/// Each file is encrypted with ChaCha20-Poly1305 using a key derived from the worker's privkey.
+/// Original files are replaced with .enc versions.
+async fn encrypt_output_dir(output_dir: &Path, worker_privkey_hex: &str) -> Result<()> {
+    use chacha20poly1305::{
+        aead::{Aead, KeyInit},
+        ChaCha20Poly1305, Nonce,
+    };
+    use sha2::{Digest, Sha256};
+
+    // Derive encryption key from worker's private key
+    let key_material = Sha256::digest(format!("L2_OUTPUT_ENC:{worker_privkey_hex}").as_bytes());
+    let cipher = ChaCha20Poly1305::new_from_slice(&key_material[..32])
+        .map_err(|e| anyhow::anyhow!("Cipher init failed: {e}"))?;
+
+    // Encrypt all files in output directory
+    let mut entries = tokio::fs::read_dir(output_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        // Skip already encrypted files
+        if path.extension().and_then(|e| e.to_str()) == Some("enc") {
+            continue;
+        }
+
+        // Read plaintext
+        let plaintext = tokio::fs::read(&path).await?;
+
+        // Generate random nonce
+        let nonce_bytes: [u8; 12] = rand::random();
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        // Encrypt
+        let ciphertext = cipher
+            .encrypt(nonce, plaintext.as_ref())
+            .map_err(|e| anyhow::anyhow!("Encryption failed: {e}"))?;
+
+        // Combine nonce + ciphertext
+        let mut encrypted = nonce_bytes.to_vec();
+        encrypted.extend_from_slice(&ciphertext);
+
+        // Write encrypted file with .enc extension
+        let enc_path = path.with_extension(
+            format!("{}.enc", path.extension().and_then(|e| e.to_str()).unwrap_or("bin"))
+        );
+        tokio::fs::write(&enc_path, encrypted).await?;
+
+        // Remove original plaintext file
+        tokio::fs::remove_file(&path).await?;
+
+        info!("L2: encrypted {} → {}", path.display(), enc_path.display());
+    }
+
+    Ok(())
+}
+
+/// Decrypt all .enc files in output directory using worker's private key.
+/// Used by validator to verify encrypted results.
+#[allow(dead_code)]
+async fn decrypt_output_dir(output_dir: &Path, worker_privkey_hex: &str) -> Result<()> {
+    use chacha20poly1305::{
+        aead::{Aead, KeyInit},
+        ChaCha20Poly1305, Nonce,
+    };
+    use sha2::{Digest, Sha256};
+
+    // Derive decryption key (same as encryption)
+    let key_material = Sha256::digest(format!("L2_OUTPUT_ENC:{worker_privkey_hex}").as_bytes());
+    let cipher = ChaCha20Poly1305::new_from_slice(&key_material[..32])
+        .map_err(|e| anyhow::anyhow!("Cipher init failed: {e}"))?;
+
+    // Decrypt all .enc files
+    let mut entries = tokio::fs::read_dir(output_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("enc") {
+            continue;
+        }
+
+        // Read encrypted data
+        let encrypted = tokio::fs::read(&path).await?;
+        if encrypted.len() < 12 {
+            warn!("L2: encrypted file too short: {}", path.display());
+            continue;
+        }
+
+        let nonce = Nonce::from_slice(&encrypted[..12]);
+        let ciphertext = &encrypted[12..];
+
+        // Decrypt
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|e| anyhow::anyhow!("Decryption failed: {e}"))?;
+
+        // Restore original filename (remove .enc)
+        let original_path = path.with_extension("");
+        tokio::fs::write(&original_path, plaintext).await?;
+
+        // Remove encrypted file
+        tokio::fs::remove_file(&path).await?;
+
+        info!("L2: decrypted {} → {}", path.display(), original_path.display());
+    }
+
+    Ok(())
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

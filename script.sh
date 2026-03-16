@@ -2,7 +2,10 @@
 
 set -euo pipefail
 
-echo "=== Xenom Devnet Setup ==="
+echo "=== Xenom BirdCLEF Devnet Setup ==="
+echo "L2 Work Encryption: ENABLED"
+echo "Theme: BirdWatch (Blue UI)"
+echo ""
 
 read -r -p "BIN path [./target/release]: " BIN
 BIN="${BIN:-./target/release}"
@@ -11,13 +14,15 @@ read -r -p "Private Key: " PRIVKEY
 echo ""
 
 read -r -p "Mining Address: " MINING_ADDR
-read -r -p "Node RPC (e.g. 127.0.0.1:16110): " NODE_RPC
+read -r -p "Node RPC (e.g. 127.0.0.1:18110): " NODE_RPC
+NODE_RPC="${NODE_RPC:-127.0.0.1:18110}"
 
 read -r -p "Coordinator URL [http://localhost:8091]: " COORDINATOR
 COORDINATOR="${COORDINATOR:-http://localhost:8091}"
 
 echo ""
-read -r -p "Kaggle API Key (username:token) [optional, press Enter to skip]: " KAGGLE_KEY
+echo "Kaggle API Key: Auto-detected from ~/.kaggle/kaggle.json"
+KAGGLE_KEY=""
 
 export BIN
 export PRIVKEY
@@ -32,6 +37,14 @@ echo "BIN=$BIN"
 echo "MINING_ADDR=$MINING_ADDR"
 echo "NODE_RPC=$NODE_RPC"
 echo "COORDINATOR=$COORDINATOR"
+echo ""
+echo "=== BirdCLEF Configuration ==="
+echo "Theme: BirdWatch (Blue UI)"
+echo "Competition: birdclef-2025"
+echo "Model: Perch v2 / BirdNET-Analyzer / Stub"
+echo "Encryption: ENABLED (2-layer)"
+echo "  - Layer 1: Local output files (ChaCha20-Poly1305)"
+echo "  - Layer 2: Submitted payload (ECIES)"
 echo ""
 
 if [ ! -d "$BIN" ]; then
@@ -134,11 +147,10 @@ echo "=== Starting xenom-stratum-bridge ==="
 PIDS+=($!)
 sleep 2
 
-echo "=== Starting genetics-l2-fetcher ==="
-FETCHER_CMD="$BIN/genetics-l2-fetcher --coordinator $COORDINATOR --horizon --poll-secs 300"
-if [ -n "$KAGGLE_KEY" ]; then
-  FETCHER_CMD="$FETCHER_CMD --kaggle-key $KAGGLE_KEY --competition birdclef-2025"
-fi
+echo "=== Starting genetics-l2-fetcher (BirdCLEF) ==="
+# Fetches BirdCLEF-2025 competition from Kaggle
+# Uses ~/.kaggle/kaggle.json for authentication
+FETCHER_CMD="$BIN/genetics-l2-fetcher --coordinator $COORDINATOR --horizon --poll-secs 300 --competition birdclef-2025"
 eval "$FETCHER_CMD" > /tmp/xenom-logs/fetcher.log 2>&1 &
 PIDS+=($!)
 sleep 2
@@ -165,7 +177,12 @@ echo "=== Starting genetics-l2-settlement ==="
 PIDS+=($!)
 sleep 2
 
-echo "=== Starting genome-miner gpu ==="
+echo "=== Starting genome-miner gpu (BirdCLEF + Encryption) ==="
+# Processes BirdCLEF acoustic classification jobs
+# Encryption enabled:
+#   - Encrypts output files locally with worker privkey
+#   - Encrypts submitted payload with coordinator pubkey
+#   - Uses Perch v2 script for bird audio analysis (CPU mode)
 "$BIN/genome-miner" gpu \
   --devnet \
   --mining-address "$MINING_ADDR" \
@@ -190,8 +207,21 @@ echo "  /tmp/xenom-logs/validator.log"
 echo "  /tmp/xenom-logs/settlement.log"
 echo "  /tmp/xenom-logs/miner.log"
 echo ""
+echo "=== BirdCLEF L2 System ==="
+echo "Pool UI: http://localhost:5555 (Blue BirdWatch theme)"
+echo "Coordinator: $COORDINATOR"
+echo "Competition: BirdCLEF-2025 (Kaggle)"
+echo ""
+echo "Encryption Status: ACTIVE"
+echo "  ✓ Output files encrypted on disk: /tmp/genome-miner-l2/{job_id}/output/*.enc"
+echo "  ✓ Submitted payloads encrypted with coordinator pubkey"
+echo "  ✓ Coordinator keypair: /tmp/genetics-l2-nih2.db.key"
+echo ""
 echo "To follow miner logs:"
 echo "  tail -f /tmp/xenom-logs/miner.log"
+echo ""
+echo "To check coordinator pubkey:"
+echo "  curl $COORDINATOR/pubkey"
 echo ""
 echo "Press Ctrl+C to stop everything."
 

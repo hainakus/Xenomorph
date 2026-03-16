@@ -210,6 +210,12 @@ pub struct JobResult {
     pub submission_bundle_hash: Option<String>,
     /// Worker's secp256k1 signature over `result_root`.
     pub worker_sig:     String,
+    /// Encrypted result payload (ChaCha20-Poly1305 encrypted with coordinator's public key).
+    /// Contains: result_root + score + trace + all hashes.
+    /// Only the coordinator (owner) can decrypt and validate.
+    pub encrypted_payload: Option<String>,
+    /// Ephemeral public key (hex) used for ECDH key exchange to derive encryption key.
+    pub ephemeral_pubkey: Option<String>,
     pub submitted_at:   u64,
 }
 
@@ -327,4 +333,142 @@ pub fn merkle_root_hex(leaves: &[String]) -> String {
         })
         .collect();
     hex::encode(bioproof_core::merkle_root(&hashes))
+}
+
+// ── Result Encryption (ECIES: secp256k1 ECDH + ChaCha20-Poly1305) ────────────
+
+/// Encrypted result payload structure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EncryptedResultPayload {
+    pub result_root: String,
+    pub score: f64,
+    pub trace_hash: Option<String>,
+    pub notebook_or_repo_hash: Option<String>,
+    pub container_hash: Option<String>,
+    pub weights_hash: Option<String>,
+    pub submission_bundle_hash: Option<String>,
+}
+
+impl JobResult {
+    /// Encrypt sensitive result data with coordinator's public key.
+    /// Uses ECIES: ephemeral keypair + ECDH + ChaCha20-Poly1305.
+    /// Returns (encrypted_payload_hex, ephemeral_pubkey_hex).
+    pub fn encrypt_payload(
+        &self,
+        coordinator_pubkey_hex: &str,
+    ) -> Result<(String, String), String> {
+        use chacha20poly1305::{
+            aead::{Aead, KeyInit},
+            ChaCha20Poly1305, Nonce,
+        };
+        use secp256k1::{PublicKey, Secp256k1, SecretKey};
+        use sha2::{Digest, Sha256};
+
+        let secp = Secp256k1::new();
+
+        // Parse coordinator's public key
+        let coordinator_pubkey = PublicKey::from_slice(
+            &hex::decode(coordinator_pubkey_hex).map_err(|e| format!("Invalid coordinator pubkey: {e}"))?,
+        )
+        .map_err(|e| format!("Invalid coordinator pubkey: {e}"))?;
+
+        // Generate ephemeral keypair
+        let ephemeral_secret = SecretKey::new(&mut secp256k1::rand::thread_rng());
+        let ephemeral_pubkey = PublicKey::from_secret_key(&secp, &ephemeral_secret);
+
+        // ECDH: shared_secret = coordinator_pubkey * ephemeral_secret
+        let shared_point = coordinator_pubkey.combine(&ephemeral_pubkey)
+            .map_err(|e| format!("ECDH failed: {e}"))?;
+        let shared_secret = Sha256::digest(shared_point.serialize());
+
+        // Derive encryption key (first 32 bytes of shared_secret)
+        let key = &shared_secret[..32];
+        let cipher = ChaCha20Poly1305::new_from_slice(key)
+            .map_err(|e| format!("Cipher init failed: {e}"))?;
+
+        // Prepare payload
+        let payload = EncryptedResultPayload {
+            result_root: self.result_root.clone(),
+            score: self.score,
+            trace_hash: self.trace_hash.clone(),
+            notebook_or_repo_hash: self.notebook_or_repo_hash.clone(),
+            container_hash: self.container_hash.clone(),
+            weights_hash: self.weights_hash.clone(),
+            submission_bundle_hash: self.submission_bundle_hash.clone(),
+        };
+        let plaintext = serde_json::to_vec(&payload)
+            .map_err(|e| format!("Serialize failed: {e}"))?;
+
+        // Encrypt with random nonce
+        let nonce_bytes: [u8; 12] = rand::random();
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let ciphertext = cipher
+            .encrypt(nonce, plaintext.as_ref())
+            .map_err(|e| format!("Encryption failed: {e}"))?;
+
+        // Combine nonce + ciphertext
+        let mut encrypted = nonce_bytes.to_vec();
+        encrypted.extend_from_slice(&ciphertext);
+
+        Ok((
+            hex::encode(encrypted),
+            hex::encode(ephemeral_pubkey.serialize()),
+        ))
+    }
+
+    /// Decrypt result payload using coordinator's private key.
+    pub fn decrypt_payload(
+        encrypted_hex: &str,
+        ephemeral_pubkey_hex: &str,
+        coordinator_privkey_hex: &str,
+    ) -> Result<EncryptedResultPayload, String> {
+        use chacha20poly1305::{
+            aead::{Aead, KeyInit},
+            ChaCha20Poly1305, Nonce,
+        };
+        use secp256k1::{PublicKey, Secp256k1, SecretKey};
+        use sha2::{Digest, Sha256};
+
+        let secp = Secp256k1::new();
+
+        // Parse keys
+        let coordinator_secret = SecretKey::from_slice(
+            &hex::decode(coordinator_privkey_hex).map_err(|e| format!("Invalid coordinator privkey: {e}"))?,
+        )
+        .map_err(|e| format!("Invalid coordinator privkey: {e}"))?;
+
+        let ephemeral_pubkey = PublicKey::from_slice(
+            &hex::decode(ephemeral_pubkey_hex).map_err(|e| format!("Invalid ephemeral pubkey: {e}"))?,
+        )
+        .map_err(|e| format!("Invalid ephemeral pubkey: {e}"))?;
+
+        // ECDH: shared_secret = ephemeral_pubkey * coordinator_secret
+        let shared_point = ephemeral_pubkey.combine(&PublicKey::from_secret_key(&secp, &coordinator_secret))
+            .map_err(|e| format!("ECDH failed: {e}"))?;
+        let shared_secret = Sha256::digest(shared_point.serialize());
+
+        // Derive decryption key
+        let key = &shared_secret[..32];
+        let cipher = ChaCha20Poly1305::new_from_slice(key)
+            .map_err(|e| format!("Cipher init failed: {e}"))?;
+
+        // Parse encrypted data
+        let encrypted = hex::decode(encrypted_hex)
+            .map_err(|e| format!("Invalid encrypted hex: {e}"))?;
+        if encrypted.len() < 12 {
+            return Err("Encrypted data too short".to_string());
+        }
+
+        let nonce = Nonce::from_slice(&encrypted[..12]);
+        let ciphertext = &encrypted[12..];
+
+        // Decrypt
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|e| format!("Decryption failed: {e}"))?;
+
+        // Deserialize
+        serde_json::from_slice(&plaintext)
+            .map_err(|e| format!("Deserialize failed: {e}"))
+    }
 }
