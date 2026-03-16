@@ -28,7 +28,11 @@ async fn main() -> Result<()> {
     log::info!("  pubkey:      {validator_pubkey}");
     log::info!("  coordinator: {coordinator}");
     log::info!("  tolerance:   {tolerance:.1}%");
-    log::info!("  decryption:  {}", if coordinator_privkey.is_some() { "ENABLED" } else { "DISABLED" });
+    if let Some(ref key) = coordinator_privkey {
+        log::info!("  decryption:  ENABLED (privkey len={})", key.len());
+    } else {
+        log::warn!("  decryption:  DISABLED - coordinator privkey not provided");
+    }
 
     let http = reqwest::Client::new();
 
@@ -96,11 +100,12 @@ async fn validate_pending(
             // Decrypt the result
             match genetics_l2_core::JobResult::decrypt_payload(encrypted, ephemeral, coord_key) {
                 Ok(decrypted) => {
-                    log::debug!("Decrypted result {result_id}: score={}", decrypted.score);
+                    log::info!("Decrypted result {result_id}: score={}", decrypted.score);
                     (decrypted.result_root.clone(), decrypted.score, Some(decrypted))
                 }
                 Err(e) => {
-                    log::warn!("Failed to decrypt result {result_id}: {e}");
+                    log::warn!("Failed to decrypt result {result_id}: {e} (encrypted_len={}, ephemeral_len={}, key_len={})",
+                        encrypted.len(), ephemeral.len(), coord_key.len());
                     continue;
                 }
             }
