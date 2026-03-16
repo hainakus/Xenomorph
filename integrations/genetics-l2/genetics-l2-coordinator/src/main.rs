@@ -712,6 +712,24 @@ async fn main() -> Result<()> {
         coordinator_privkey,
         coordinator_pubkey,
     });
+    
+    // Pre-download common datasets before starting server
+    log::info!("Pre-downloading common datasets...");
+    tokio::spawn(async {
+        let common_datasets = vec![
+            ("birdclef-2026", "kaggle://competitions/birdclef-2026"),
+        ];
+        
+        for (slug, url) in common_datasets {
+            log::info!("Pre-downloading dataset: {slug}");
+            if let Err(e) = download_kaggle_dataset(slug, url).await {
+                log::warn!("Failed to pre-download {slug}: {e}");
+            } else {
+                log::info!("Pre-downloaded dataset: {slug}");
+            }
+        }
+    });
+    
     let router = build_router(state);
 
     let addr: std::net::SocketAddr = listen.parse().context("invalid --listen address")?;
