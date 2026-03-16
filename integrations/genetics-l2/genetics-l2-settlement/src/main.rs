@@ -15,7 +15,6 @@ async fn main() -> Result<()> {
     let m           = cli().get_matches();
     let coordinator = m.get_one::<String>("coordinator").unwrap().clone();
     let node_addr   = m.get_one::<String>("node").unwrap().clone();
-    let evm_node: Option<String> = m.get_one::<String>("evm-node").cloned();
     let poll_ms: u64 = m.get_one::<String>("poll-ms")
         .and_then(|s| s.parse().ok()).unwrap_or(15_000);
     let dry_run     = !m.get_flag("submit");
@@ -27,13 +26,24 @@ async fn main() -> Result<()> {
         Prefix::Mainnet
     };
 
+    // Auto-default to EVM anchoring for devnet/testnet/simnet (can be overridden with --evm-node)
+    let evm_node: Option<String> = m.get_one::<String>("evm-node").cloned()
+        .or_else(|| {
+            match network_prefix {
+                Prefix::Devnet | Prefix::Testnet | Prefix::Simnet => Some("http://127.0.0.1:8545".to_string()),
+                Prefix::Mainnet => None,
+            }
+        });
+
     log::info!("Genetics-L2 Settlement started");
     log::info!("  coordinator: {coordinator}");
     log::info!("  node:        {node_addr}");
     log::info!("  network:     {network_prefix:?}");
     log::info!("  dry_run:     {dry_run}");
     if let Some(ref e) = evm_node {
-        log::info!("  evm-node:    {e} (devnet/testnet anchor target)");
+        log::info!("  evm-node:    {e} (anchor target)");
+    } else {
+        log::info!("  evm-node:    none (mainnet: will use coinbase extra_data)");
     }
 
     let privkey_hex: Option<String> = m.get_one::<String>("private-key").cloned();
@@ -302,12 +312,12 @@ fn cli() -> Command {
         .arg(Arg::new("devnet")
             .long("devnet")
             .action(clap::ArgAction::SetTrue)
-            .help("Use devnet address prefix (xenomdev:)"))
+            .help("Use devnet address prefix (xenomdev:). Auto-enables EVM anchoring at http://127.0.0.1:8545"))
         .arg(Arg::new("testnet")
             .long("testnet")
             .action(clap::ArgAction::SetTrue)
-            .help("Use testnet address prefix (xenomtest:)"))
+            .help("Use testnet address prefix (xenomtest:). Auto-enables EVM anchoring at http://127.0.0.1:8545"))
         .arg(Arg::new("evm-node")
             .long("evm-node").value_name("URL")
-            .help("Xenom EVM L2 JSON-RPC URL (e.g. http://127.0.0.1:8545). When set, devnet/testnet settlements are anchored via xenom_anchor on the EVM chain."))
+            .help("Override default EVM L2 JSON-RPC URL. Defaults to http://127.0.0.1:8545 for devnet/testnet, none for mainnet (uses coinbase extra_data)"))
 }

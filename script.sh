@@ -60,19 +60,29 @@ cargo build --release \
   -p genetics-l2-fetcher \
   -p genetics-l2-validator \
   -p genetics-l2-settlement \
-  -p genome-miner
+  -p genome-miner \
+  -p xenom-evm-node
 
 echo "=== Starting xenom node ==="
-"$BIN/xenom" --devnet --utxoindex \
+"$BIN/xenom" --devnet --utxoindex --rpclisten="$NODE_RPC"\
   > /tmp/xenom-logs/xenom.log 2>&1 &
 PIDS+=($!)
 sleep 3
 
 echo "=== Starting genetics-l2-coordinator ==="
 "$BIN/genetics-l2-coordinator" \
-  --db-path /tmp/genetics-l2-nih.db \
+  --db-path /tmp/genetics-l2-nih2.db \
   --listen 0.0.0.0:8091 \
   > /tmp/xenom-logs/coordinator.log 2>&1 &
+PIDS+=($!)
+sleep 2
+
+echo "=== Starting xenom-evm-node ==="
+"$BIN/xenom-evm-node" \
+  --devnet \
+  --rpc-addr 127.0.0.1:8545 \
+  --block-time 2000 \
+  > /tmp/xenom-logs/evm-node.log 2>&1 &
 PIDS+=($!)
 sleep 2
 
@@ -82,6 +92,7 @@ echo "=== Starting xenom-stratum-bridge ==="
   --rpcserver "$NODE_RPC" \
   --listen 0.0.0.0:5555 \
   --l2-coordinator "$COORDINATOR" \
+  --db-path /tmp/genetics-l2-nih2-pool.db \
   --l2-theme genetics \
   --devnet \
   > /tmp/xenom-logs/stratum-bridge.log 2>&1 &
@@ -91,7 +102,7 @@ sleep 2
 echo "=== Starting genetics-l2-fetcher ==="
 "$BIN/genetics-l2-fetcher" \
   --coordinator "$COORDINATOR" \
-  --nih-challenges \
+  --horizon \
   --poll-secs 300 \
   > /tmp/xenom-logs/fetcher.log 2>&1 &
 PIDS+=($!)
@@ -113,6 +124,7 @@ echo "=== Starting genetics-l2-settlement ==="
   --node "grpc://$NODE_RPC" \
   --private-key "$PRIVKEY" \
   --submit \
+  --devnet \
   --poll-ms 15000 \
   > /tmp/xenom-logs/settlement.log 2>&1 &
 PIDS+=($!)
@@ -136,6 +148,7 @@ echo "=== Services started ==="
 echo "Logs:"
 echo "  /tmp/xenom-logs/xenom.log"
 echo "  /tmp/xenom-logs/coordinator.log"
+echo "  /tmp/xenom-logs/evm-node.log"
 echo "  /tmp/xenom-logs/stratum-bridge.log"
 echo "  /tmp/xenom-logs/fetcher.log"
 echo "  /tmp/xenom-logs/validator.log"
