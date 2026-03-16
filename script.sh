@@ -41,7 +41,7 @@ echo ""
 echo "=== BirdCLEF Configuration ==="
 echo "Theme: BirdWatch (Blue UI)"
 echo "Competition: birdclef-2026"
-echo "Model: Perch v2 (GPU/CUDA) / Stub fallback"
+echo "Model: Google YAMNet (GPU/CUDA) / Stub fallback"
 echo "Inference: GPU accelerated with TensorFlow CUDA"
 echo "Encryption: ENABLED (2-layer)"
 echo "  - Layer 1: Local output files (ChaCha20-Poly1305)"
@@ -102,11 +102,11 @@ if [ -d "venv" ]; then
   echo "Installing Python dependencies for Perch v2 (CUDA)..."
   pip install --quiet --upgrade pip
   
-  # Install TensorFlow with CUDA support for Perch v2 GPU inference
-  echo "Installing: tensorflow (CUDA), librosa, numpy..."
-  pip install --quiet tensorflow librosa numpy soundfile || echo "Warning: Some packages failed to install"
+  # Install TensorFlow with CUDA support for YAMNet GPU inference
+  echo "Installing: tensorflow (CUDA), tensorflow-hub, librosa, numpy..."
+  pip install --quiet tensorflow tensorflow-hub librosa numpy soundfile || echo "Warning: Some packages failed to install"
   
-  echo "Note: Perch v2 will use GPU if CUDA is available, otherwise CPU"
+  echo "Note: YAMNet will use GPU if CUDA is available, otherwise CPU"
 else
   echo "Warning: venv not available, using system Python"
   if command -v pip3 &> /dev/null; then

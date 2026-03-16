@@ -461,17 +461,31 @@ fn score_from_sra_csv(csv: &str) -> (f64, serde_json::Value) {
     (score, serde_json::Value::Object(map))
 }
 
-/// Acoustic species classification — Perch v2 (primary) or stub.
+/// Acoustic species classification — YAMNet (primary) or stub.
 async fn acoustic_classification(input_dir: &Path, output_dir: &Path, cfg: &L2Config) -> (f64, String) {
     let files = collect_audio(input_dir).await;
     let mut trace = format!("acoustic_classification on {} file(s)\n", files.len());
     let mut predictions = Vec::new();
     let mut score_sum   = 0.0f64;
 
+    // Find YAMNet script
+    let yamnet_script = cfg.perch_script.as_ref()
+        .and_then(|p| p.parent())
+        .map(|d| d.join("yamnet_infer.py"))
+        .or_else(|| {
+            let candidates = [
+                "scripts/yamnet_infer.py",
+                "/opt/xenom/scripts/yamnet_infer.py",
+            ];
+            candidates.iter()
+                .map(std::path::PathBuf::from)
+                .find(|p| p.exists())
+        });
+
     let python = detect_python().await;
     for audio in &files {
-        // Use Perch script if available, otherwise fall back to birdnet_analyzer
-        let mut cmd = if let Some(ref script) = cfg.perch_script {
+        // Use YAMNet script if available, otherwise stub
+        let mut cmd = if let Some(ref script) = yamnet_script {
             let mut c = tokio::process::Command::new(&python);
             c.args([
                 script.to_string_lossy().as_ref(),
@@ -480,28 +494,25 @@ async fn acoustic_classification(input_dir: &Path, output_dir: &Path, cfg: &L2Co
                 "--min_conf","0.05",
             ]);
             if !cfg.use_gpu { c.arg("--cpu"); }
-            trace.push_str(&format!("  [perch] {script:?}\n"));
+            trace.push_str(&format!("  [yamnet] {script:?}\n"));
             c
         } else {
-            let mut c = tokio::process::Command::new(&python);
-            c.args([
-                "-m", "birdnet_analyzer.analyze",
-                "--input",   &audio.to_string_lossy(),
-                "--output",  &output_dir.to_string_lossy(),
-                "--format",  "json",
-                "--min_conf","0.05",
-            ]);
-            if !cfg.use_gpu { c.arg("--cpu"); }
-            trace.push_str("  [birdnet]\n");
-            c
+            trace.push_str("  [yamnet not found, using stub]\n");
+            let conf = stub_conf(audio);
+            score_sum += conf;
+            predictions.push(serde_json::json!({
+                "file":       audio.file_name().map(|n| n.to_string_lossy().to_string()),
+                "confidence": conf
+            }));
+            continue;
         };
-        let cmd = &mut cmd;
+
         let result = cmd.output().await;
 
         let conf = match result {
             Ok(out) if out.status.success() => {
                 let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-                trace.push_str(&format!("  birdnet OK: {}\n", audio.display()));
+                trace.push_str(&format!("  yamnet OK: {}\n", audio.display()));
                 // extract first detection confidence
                 serde_json::from_str::<serde_json::Value>(&stdout)
                     .ok()
@@ -512,11 +523,11 @@ async fn acoustic_classification(input_dir: &Path, output_dir: &Path, cfg: &L2Co
             }
             Ok(out) => {
                 let err = String::from_utf8_lossy(&out.stderr);
-                trace.push_str(&format!("  birdnet exit≠0 (stub): {}\n", err.trim()));
+                trace.push_str(&format!("  yamnet exit≠0 (stub): {}\n", err.trim()));
                 stub_conf(audio)
             }
             Err(_) => {
-                trace.push_str(&format!("  birdnet not installed (stub): {}\n", audio.display()));
+                trace.push_str(&format!("  yamnet failed (stub): {}\n", audio.display()));
                 stub_conf(audio)
             }
         };
