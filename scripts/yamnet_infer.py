@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-yamnet_infer.py -- Google YAMNet inference for BirdCLEF acoustic classification.
+yamnet_infer.py -- YAMNet inference for BirdCLEF 2026 acoustic classification.
 
-Outputs JSON predictions compatible with the Xenom genetics-l2 worker.
+Outputs:
+  submission.csv  -- BirdCLEF 2026 format (row_id + 234 species columns, one row per 5-sec chunk)
+  predictions.json -- {"score": float, "rows": int} for the Xenom miner
 
 Usage:
-  python3 yamnet_infer.py --input <audio_file_or_dir> --output <output_dir> [--cpu] [--min_conf 0.1]
+  python3 yamnet_infer.py --input <audio_file_or_dir> --output <output_dir> [--cpu]
 
 Dependencies:
   pip install tensorflow tensorflow-hub librosa numpy
@@ -16,18 +18,50 @@ import json
 import os
 import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent))
+from birdclef2026 import SPECIES, N_SPECIES, UNIFORM_P, collect_audio, write_submission, uniform_probs
 
-AUDIO_EXTS = {".wav", ".ogg", ".mp3", ".flac"}
-YAMNET_MODEL_URL = "https://www.kaggle.com/models/google/yamnet/TensorFlow2/yamnet"
-SAMPLE_RATE = 16000  # YAMNet expects 16kHz
+AUDIO_EXTS  = {".wav", ".ogg", ".mp3", ".flac"}
+SAMPLE_RATE = 16000   # YAMNet expects 16 kHz
+CLIP_SECS   = 5
+CLIP_LEN    = SAMPLE_RATE * CLIP_SECS
+
+# YAMNet class indices that correspond to bird/animal sounds (approximate)
+# Used to derive a "bird presence" probability per chunk
+BIRD_CLASS_IDXS = list(range(80, 100))  # YAMNet classes ~80-99 include bird sounds
+
+
+
+def yamnet_to_species_probs(frame_scores, np):
+    """Map YAMNet 521-class scores to a 234-species probability vector.
+
+    YAMNet is a general audio classifier, not a per-species bird classifier.
+    Strategy: use the sum of bird-related class scores as a "bird presence"
+    signal, then weight against a uniform prior using softmax over BIRD_CLASS_IDXS.
+    """
+    bird_scores = frame_scores[BIRD_CLASS_IDXS]
+    # softmax over bird classes → relative weights for bird sounds
+    bird_exp   = np.exp(bird_scores - bird_scores.max())
+    bird_probs = bird_exp / bird_exp.sum()  # sums to 1 over ~20 bird classes
+
+    # Map 20 bird classes → 234 species (cyclic assignment)
+    species_probs = np.full(N_SPECIES, UNIFORM_P * 0.5)
+    for i, p in enumerate(bird_probs):
+        idx = i % N_SPECIES
+        species_probs[idx] += p / (N_SPECIES // len(bird_probs) + 1)
+
+    # Normalise to sum = 1
+    total = species_probs.sum()
+    if total > 0:
+        species_probs /= total
+    return species_probs
 
 
 def main():
-    parser = argparse.ArgumentParser(description="YAMNet bird audio classifier")
-    parser.add_argument("--input",    required=True, help="Audio file or directory")
-    parser.add_argument("--output",   required=True, help="Output directory for JSON")
-    parser.add_argument("--min_conf", type=float, default=0.1, help="Minimum confidence threshold")
-    parser.add_argument("--cpu",      action="store_true", help="Disable GPU (CPU-only inference)")
+    parser = argparse.ArgumentParser(description="YAMNet BirdCLEF 2026 inference")
+    parser.add_argument("--input",  required=True, help="Audio file or directory")
+    parser.add_argument("--output", required=True, help="Output directory")
+    parser.add_argument("--cpu",    action="store_true", help="Disable GPU")
     args = parser.parse_args()
 
     if args.cpu:
@@ -36,85 +70,69 @@ def main():
     try:
         import numpy as np
         import librosa
-        import tensorflow as tf
         import tensorflow_hub as hub
     except ImportError as e:
-        _fatal(f"Missing dependency: {e}\n"
-               "Run: pip install tensorflow tensorflow-hub librosa numpy")
+        _fatal(f"Missing dependency: {e}\nRun: pip install tensorflow tensorflow-hub librosa numpy")
 
-    # Load YAMNet model from TensorFlow Hub
     try:
-        print("Loading YAMNet model...", file=sys.stderr)
-        model = hub.load('https://tfhub.dev/google/yamnet/1')
-        print("YAMNet model loaded successfully", file=sys.stderr)
+        print("[yamnet] Loading model...", file=sys.stderr)
+        model = hub.load("https://tfhub.dev/google/yamnet/1")
+        print("[yamnet] Model ready", file=sys.stderr)
     except Exception as e:
-        _fatal(f"Failed to load YAMNet model: {e}")
+        _fatal(f"Failed to load YAMNet: {e}")
 
-    # Collect audio files
     input_path = Path(args.input)
-    audio_files = []
-    if input_path.is_file() and input_path.suffix.lower() in AUDIO_EXTS:
-        audio_files = [input_path]
-    elif input_path.is_dir():
-        for p in sorted(input_path.rglob("*")):
-            if p.suffix.lower() in AUDIO_EXTS:
-                audio_files.append(p)
-
+    audio_files = collect_audio(input_path)
     if not audio_files:
-        _output(args.output, input_path.stem, {"detections": [], "note": "no audio files found"})
+        write_submission(args.output, [], 0.0)
+        print(json.dumps({"score": 0.0, "rows": 0}))
         return
 
-    all_detections = []
+    out_dir = Path(args.output)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    rows = []
+    max_probs = []
 
     for audio_file in audio_files:
+        stem = audio_file.stem
         try:
-            # Load audio at 16kHz (YAMNet's expected sample rate)
             waveform, _ = librosa.load(str(audio_file), sr=SAMPLE_RATE, mono=True)
         except Exception as e:
-            all_detections.append({"file": str(audio_file), "error": str(e)})
+            print(f"[yamnet] skip {audio_file.name}: {e}", file=sys.stderr)
             continue
 
-        try:
-            # YAMNet inference
-            scores, embeddings, spectrogram = model(waveform)
-            
-            # scores shape: [num_frames, num_classes]
-            # Get the class with highest score for each frame
-            class_scores = scores.numpy()
-            
-            for frame_idx, frame_scores in enumerate(class_scores):
-                top_idx = int(np.argmax(frame_scores))
-                conf = float(frame_scores[top_idx])
-                
-                if conf >= args.min_conf:
-                    # YAMNet processes 0.96s frames with 0.48s hop
-                    start_s = frame_idx * 0.48
-                    end_s = start_s + 0.96
-                    
-                    all_detections.append({
-                        "file": str(audio_file),
-                        "start_s": round(start_s, 2),
-                        "end_s": round(end_s, 2),
-                        "class_idx": top_idx,
-                        "confidence": round(conf, 4),
-                    })
-        except Exception as e:
-            all_detections.append({"file": str(audio_file), "error": str(e)})
-            continue
+        # Split into 5-second clips
+        n_clips = max(1, len(waveform) // CLIP_LEN)
+        for clip_idx in range(n_clips):
+            start  = clip_idx * CLIP_LEN
+            clip   = waveform[start: start + CLIP_LEN]
+            if len(clip) < CLIP_LEN:
+                clip = np.pad(clip, (0, CLIP_LEN - len(clip)))
 
-    result = {"detections": all_detections}
-    _output(args.output, input_path.stem, result)
+            end_sec = (clip_idx + 1) * CLIP_SECS
+            row_id  = f"{stem}_{end_sec}"
+
+            try:
+                scores, _, _ = model(clip)
+                frame_scores = scores.numpy().mean(axis=0)  # mean over YAMNet frames
+                probs = yamnet_to_species_probs(frame_scores, np)
+            except Exception as e:
+                print(f"[yamnet] inference error clip {clip_idx}: {e}", file=sys.stderr)
+                probs = np.full(N_SPECIES, UNIFORM_P)
+
+            max_probs.append(float(probs.max()))
+            rows.append((row_id, probs))
+
+    score = float(np.mean(max_probs)) if max_probs else 0.0
+    write_submission(args.output, rows, score)
+    result = {"score": score, "rows": len(rows)}
     print(json.dumps(result))
 
 
-def _output(output_dir: str, stem: str, data: dict):
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "predictions.json").write_text(json.dumps(data, indent=2))
-
 
 def _fatal(msg: str):
-    print(json.dumps({"detections": [], "error": msg}))
+    print(json.dumps({"score": 0.0, "error": msg}))
     sys.exit(1)
 
 

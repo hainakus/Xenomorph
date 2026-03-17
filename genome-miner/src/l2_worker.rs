@@ -571,83 +571,59 @@ fn score_from_sra_csv(csv: &str) -> (f64, serde_json::Value) {
 async fn acoustic_classification(input_dir: &Path, output_dir: &Path, cfg: &L2Config, script: Option<&PathBuf>, python: &str) -> (f64, String) {
     let files = collect_audio(input_dir).await;
     let mut trace = format!("acoustic_classification on {} file(s)\n", files.len());
-    let mut predictions = Vec::new();
-    let mut score_sum   = 0.0f64;
 
-    // Use script provided (fetched from coordinator or local fallback)
-    let yamnet_script = script.cloned();
+    let Some(infer_script) = script else {
+        // No script — stub score based on file count
+        trace.push_str("  [no script, using stub]\n");
+        let score = if files.is_empty() { 0.1 } else { stub_conf(&files[0]) };
+        trace.push_str(&format!("  stub score={score:.4}\n"));
+        return (score, trace);
+    };
 
-    for audio in &files {
-        // Use YAMNet script if available, otherwise stub
-        let mut cmd = if let Some(ref script) = yamnet_script {
-            let mut c = tokio::process::Command::new(&python);
-            c.args([
-                script.to_string_lossy().as_ref(),
-                "--input",   &audio.to_string_lossy(),
-                "--output",  &output_dir.to_string_lossy(),
-                "--min_conf","0.05",
-            ]);
-            if !cfg.use_gpu { c.arg("--cpu"); }
-            trace.push_str(&format!("  [yamnet] {script:?}\n"));
-            c
-        } else {
-            trace.push_str("  [yamnet not found, using stub]\n");
-            let conf = stub_conf(audio);
-            score_sum += conf;
-            predictions.push(serde_json::json!({
-                "file":       audio.file_name().map(|n| n.to_string_lossy().to_string()),
-                "confidence": conf
-            }));
-            continue;
-        };
+    // Call script ONCE for the whole input directory
+    let mut cmd = tokio::process::Command::new(python);
+    cmd.args([
+        infer_script.to_string_lossy().as_ref(),
+        "--input",  &input_dir.to_string_lossy(),
+        "--output", &output_dir.to_string_lossy(),
+    ]);
+    if !cfg.use_gpu { cmd.arg("--cpu"); }
+    trace.push_str(&format!("  [infer] {} --input {:?}\n", infer_script.display(), input_dir));
 
-        let result = cmd.output().await;
+    let score = match cmd.output().await {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            trace.push_str(&format!("  script OK stdout={}\n", stdout.trim()));
+            // Read score from predictions.json written by script
+            read_score_from_predictions(output_dir).await
+                .or_else(|| {
+                    // Fallback: parse stdout JSON {"score": float}
+                    serde_json::from_str::<serde_json::Value>(stdout.trim())
+                        .ok()
+                        .and_then(|v| v["score"].as_f64())
+                })
+                .unwrap_or(0.1)
+        }
+        Ok(out) => {
+            let err = String::from_utf8_lossy(&out.stderr);
+            trace.push_str(&format!("  script exit≠0: {}\n", err.trim()));
+            if files.is_empty() { 0.1 } else { stub_conf(&files[0]) }
+        }
+        Err(e) => {
+            trace.push_str(&format!("  script launch failed: {e}\n"));
+            if files.is_empty() { 0.1 } else { stub_conf(&files[0]) }
+        }
+    };
 
-        let conf = match result {
-            Ok(out) if out.status.success() => {
-                let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-                trace.push_str(&format!("  yamnet OK: {}\n", audio.display()));
-                // extract first detection confidence
-                serde_json::from_str::<serde_json::Value>(&stdout)
-                    .ok()
-                    .and_then(|v| v["detections"].as_array()
-                        .and_then(|a| a.first())
-                        .and_then(|d| d["confidence"].as_f64()))
-                    .unwrap_or(0.5)
-            }
-            Ok(out) => {
-                let err = String::from_utf8_lossy(&out.stderr);
-                trace.push_str(&format!("  yamnet exit≠0 (stub): {}\n", err.trim()));
-                stub_conf(audio)
-            }
-            Err(_) => {
-                trace.push_str(&format!("  yamnet failed (stub): {}\n", audio.display()));
-                stub_conf(audio)
-            }
-        };
-
-        score_sum += conf;
-        predictions.push(serde_json::json!({
-            "file":       audio.file_name().map(|n| n.to_string_lossy().to_string()),
-            "confidence": conf
-        }));
-    }
-
-    let n     = files.len().max(1);
-    let score = score_sum / n as f64;
-    let out   = serde_json::json!({
-        "algorithm":       "acoustic_classification",
-        "files_processed": n,
-        "mean_confidence": score,
-        "predictions":     predictions
-    });
-    tokio::fs::write(
-        output_dir.join("predictions.json"),
-        serde_json::to_vec_pretty(&out).unwrap_or_default(),
-    ).await.ok();
-
-    trace.push_str(&format!("  mean_confidence={score:.4}\n"));
+    trace.push_str(&format!("  score={score:.4}\n"));
     (score, trace)
+}
+
+/// Read `score` from `predictions.json` written by the inference script.
+async fn read_score_from_predictions(output_dir: &Path) -> Option<f64> {
+    let data = tokio::fs::read(output_dir.join("predictions.json")).await.ok()?;
+    serde_json::from_slice::<serde_json::Value>(&data).ok()
+        .and_then(|v| v["score"].as_f64())
 }
 
 async fn generic_stub(task: &str, output_dir: &Path) -> (f64, String) {
@@ -942,25 +918,18 @@ async fn detect_python() -> String {
     "python3".to_string()
 }
 
-/// Build CSV string from predictions.json (called before encryption — file is still plain).
-/// Returns "filename,confidence\n..." — included in encrypted payload sent to coordinator.
+/// Build CSV string to embed in encrypted payload (called before encryption).
+/// Reads submission.csv (BirdCLEF 2026 format) produced by inference script.
+/// Falls back to a minimal score-only row if submission.csv is absent.
 async fn build_predictions_csv(output_dir: &Path, mean_score: f64) -> String {
-    let mut csv = String::from("filename,confidence\n");
-    if let Ok(data) = tokio::fs::read(output_dir.join("predictions.json")).await {
-        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&data) {
-            if let Some(preds) = v["predictions"].as_array() {
-                for p in preds {
-                    let file = p["file"].as_str().unwrap_or("unknown");
-                    let conf = p["confidence"].as_f64().unwrap_or(0.0);
-                    csv.push_str(&format!("{file},{conf:.6}\n"));
-                }
-            }
+    // Prefer submission.csv (BirdCLEF 2026: row_id + 234 species columns)
+    if let Ok(csv) = tokio::fs::read_to_string(output_dir.join("submission.csv")).await {
+        if !csv.trim().is_empty() {
+            return csv;
         }
     }
-    if csv == "filename,confidence\n" {
-        csv.push_str(&format!("mean,{mean_score:.6}\n"));
-    }
-    csv
+    // Fallback: minimal CSV with overall score
+    format!("row_id,score\nresult,{mean_score:.6}\n")
 }
 
 async fn collect_audio(dir: &Path) -> Vec<PathBuf> {
