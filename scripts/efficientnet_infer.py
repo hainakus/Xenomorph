@@ -1,140 +1,138 @@
 #!/usr/bin/env python3
-# ruff: noqa
 """
-efficientnet_infer.py -- PyTorch EfficientNet bird classifier for BirdCLEF.
-Uses: https://www.kaggle.com/models/haradibots/bird-efficientnet-model/PyTorch/default
+efficientnet_infer.py -- EfficientNet-B0 BirdCLEF 2026 inference.
+Based on: https://www.kaggle.com/models/haradibots/bird-efficientnet-model/PyTorch/default
 
-Compatible with macOS (CPU / Apple Silicon MPS).
+Outputs:
+  submission.csv  -- BirdCLEF 2026 format (row_id + 234 species, one row per 5-sec chunk)
+  predictions.json -- {"score": float, "rows": int}
 
 Usage:
-  python3 efficientnet_infer.py --input <audio_file_or_dir> --output <output_dir> [--cpu] [--min_conf 0.1]
+  python3 efficientnet_infer.py --input <audio_dir> --output <output_dir> [--cpu]
 
 Dependencies:
-  pip install torch torchvision torchaudio librosa numpy kaggle
+  pip install torch torchaudio timm numpy kaggle
 """
 
 import argparse
 import json
 import os
-import sys
 import subprocess
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torchaudio
+
 sys.path.insert(0, str(Path(__file__).parent))
 from birdclef2026 import SPECIES, N_SPECIES, collect_audio, write_submission, uniform_probs
 
-AUDIO_EXTS = {".wav", ".ogg", ".mp3", ".flac"}
-MODEL_CACHE = Path.home() / ".cache" / "xenom" / "bird-efficientnet"
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+MODEL_CACHE  = Path.home() / ".cache" / "xenom" / "bird-efficientnet"
 KAGGLE_MODEL = "haradibots/bird-efficientnet-model/PyTorch/default/1"
-SAMPLE_RATE  = 32000   # BirdCLEF standard
-N_MELS       = 128
-IMAGE_SIZE   = 224
+SR           = 32000
+DURATION     = 5
+SAMPLES      = SR * DURATION
+
+# The model was trained with labels = sorted(train.csv primary_label.unique()).
+# We approximate this with sorted(SPECIES) — same set, alphabetical order.
+MODEL_LABELS = sorted(SPECIES)
+# Map model output index → submission column index
+MODEL_TO_SUBMISSION = [SPECIES.index(lbl) for lbl in MODEL_LABELS]
+
+# Mel spectrogram transform (matches Kaggle notebook exactly)
+mel_transform = torchaudio.transforms.MelSpectrogram(
+    sample_rate=SR,
+    n_fft=2048,
+    hop_length=512,
+    n_mels=128,
+)
+
+
+# ── Audio → mel tensor ────────────────────────────────────────────────────────
+
+def audio_to_mel(clip: torch.Tensor) -> torch.Tensor:
+    """clip: [samples]  →  [1, 224, 224]"""
+    mel = mel_transform(clip)                    # [128, T]
+    mel = torch.log(mel + 1e-6)                  # log-mel
+    mel = mel.unsqueeze(0)                        # [1, 128, T]
+    mel = torch.nn.functional.interpolate(
+        mel.unsqueeze(0),
+        size=(224, 224),
+        mode="bilinear",
+        align_corners=False,
+    ).squeeze(0)                                  # [1, 224, 224]
+    return mel
+
+
+# ── Model ─────────────────────────────────────────────────────────────────────
+
+class BirdModel(nn.Module):
+    def __init__(self, num_classes: int):
+        super().__init__()
+        import timm
+        self.model = timm.create_model(
+            "efficientnet_b0",
+            pretrained=False,
+            in_chans=1,
+        )
+        in_features = self.model.classifier.in_features
+        self.model.classifier = nn.Linear(in_features, num_classes)
+
+    def forward(self, x):
+        return self.model(x)
 
 
 # ── Model download / cache ────────────────────────────────────────────────────
 
 def ensure_model() -> Path:
-    """Download model from Kaggle if not cached. Returns path to weights file."""
     MODEL_CACHE.mkdir(parents=True, exist_ok=True)
-    ready_marker = MODEL_CACHE / ".ready"
+    ready = MODEL_CACHE / ".ready"
+    if ready.exists():
+        w = _find_weights(MODEL_CACHE)
+        if w:
+            return w
 
-    if ready_marker.exists():
-        weights = _find_weights(MODEL_CACHE)
-        if weights:
-            return weights
-
-    print("[efficientnet] Downloading model from Kaggle...", file=sys.stderr)
+    print("[efficientnet] Downloading from Kaggle...", file=sys.stderr)
     try:
-        result = subprocess.run(
+        subprocess.run(
             ["kaggle", "models", "instances", "versions", "download",
              KAGGLE_MODEL, "--path", str(MODEL_CACHE)],
-            capture_output=True, text=True, check=True
+            capture_output=True, text=True, check=True,
         )
-        print(result.stdout, file=sys.stderr)
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"kaggle download failed: {e.stderr}")
     except FileNotFoundError:
-        raise RuntimeError("kaggle CLI not found. Install: pip install kaggle")
+        raise RuntimeError("kaggle CLI not found — pip install kaggle")
 
-    # Extract archives
     for arc in list(MODEL_CACHE.glob("*.tar.gz")) + list(MODEL_CACHE.glob("*.tgz")):
-        print(f"[efficientnet] Extracting {arc.name}...", file=sys.stderr)
         with tarfile.open(arc) as t:
             t.extractall(MODEL_CACHE)
         arc.unlink()
-
     for arc in MODEL_CACHE.glob("*.zip"):
-        print(f"[efficientnet] Extracting {arc.name}...", file=sys.stderr)
         with zipfile.ZipFile(arc) as z:
             z.extractall(MODEL_CACHE)
         arc.unlink()
 
-    weights = _find_weights(MODEL_CACHE)
-    if not weights:
-        raise RuntimeError(f"No model weights (.pth/.pt) found in {MODEL_CACHE}")
+    w = _find_weights(MODEL_CACHE)
+    if not w:
+        raise RuntimeError(f"No .pth/.pt found in {MODEL_CACHE}")
+    ready.touch()
+    print(f"[efficientnet] Model ready: {w}", file=sys.stderr)
+    return w
 
-    ready_marker.touch()
-    print(f"[efficientnet] Model ready: {weights}", file=sys.stderr)
-    return weights
 
-
-def _find_weights(base: Path) -> Path | None:
-    for ext in ("*.pth", "*.pt"):
-        hits = sorted(base.rglob(ext))
+def _find_weights(base: Path) -> "Path | None":
+    for pat in ("*.pth", "*.pt"):
+        hits = sorted(base.rglob(pat))
         if hits:
             return hits[0]
     return None
-
-
-def _find_labels(base: Path) -> list[str] | None:
-    for name in ("labels.txt", "class_names.txt", "classes.txt",
-                 "labels.json", "class_names.json"):
-        hits = list(base.rglob(name))
-        if hits:
-            f = hits[0]
-            text = f.read_text().strip()
-            if f.suffix == ".json":
-                data = json.loads(text)
-                if isinstance(data, list):
-                    return data
-                if isinstance(data, dict):
-                    return [v for _, v in sorted(data.items(), key=lambda x: int(x[0]))]
-            else:
-                return [l.strip() for l in text.splitlines() if l.strip()]
-    return None
-
-
-# ── Audio → mel spectrogram ───────────────────────────────────────────────────
-
-def audio_to_tensor(audio_path: Path, device):
-    """Load audio and return [1, 3, H, W] tensor scaled to IMAGE_SIZE."""
-    import torch
-    import numpy as np
-    import librosa
-    from torchvision import transforms
-
-    waveform, sr = librosa.load(str(audio_path), sr=SAMPLE_RATE, mono=True, duration=5.0)
-
-    mel = librosa.feature.melspectrogram(
-        y=waveform, sr=sr, n_mels=N_MELS, fmax=16000,
-        n_fft=1024, hop_length=512
-    )
-    mel_db = librosa.power_to_db(mel, ref=np.max)
-
-    # Normalize to [0, 255] uint8
-    mel_db = (mel_db - mel_db.min()) / (mel_db.max() - mel_db.min() + 1e-9)
-    img = (mel_db * 255).astype(np.uint8)
-
-    # [H, W] → [1, H, W] → repeat to [3, H, W]
-    t = torch.from_numpy(img).float().unsqueeze(0).repeat(3, 1, 1)
-
-    preprocess = transforms.Compose([
-        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std =[0.229, 0.224, 0.225]),
-    ])
-    return preprocess(t / 255.0).unsqueeze(0).to(device)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -143,62 +141,43 @@ def main():
     parser = argparse.ArgumentParser(description="EfficientNet BirdCLEF 2026 inference")
     parser.add_argument("--input",  required=True, help="Audio file or directory")
     parser.add_argument("--output", required=True, help="Output directory")
-    parser.add_argument("--cpu",    action="store_true", help="Force CPU inference")
+    parser.add_argument("--cpu",    action="store_true", help="Force CPU")
     args = parser.parse_args()
 
-    try:
-        import torch
-        import torch.nn as nn
-        from torchvision import models
-    except ImportError as e:
-        _fatal(f"Missing dependency: {e}\n"
-               "Run: pip install torch torchvision torchaudio librosa")
-
-    # Device: CUDA > MPS (Apple Silicon) > CPU
-    if args.cpu or not torch.cuda.is_available():
-        if not args.cpu and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            device = torch.device("mps")
-            print("[efficientnet] Using Apple Silicon MPS", file=sys.stderr)
-        else:
-            device = torch.device("cpu")
-            print("[efficientnet] Using CPU", file=sys.stderr)
+    # Device selection
+    if args.cpu:
+        device = "cpu"
+    elif torch.cuda.is_available():
+        device = "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = "mps"
     else:
-        device = torch.device("cuda")
-        print("[efficientnet] Using CUDA", file=sys.stderr)
+        device = "cpu"
+    print(f"[efficientnet] device={device}", file=sys.stderr)
 
-    # Load model weights
+    # Load model
     try:
         weights_path = ensure_model()
     except Exception as e:
         _fatal(f"Model download failed: {e}")
 
-    print(f"[efficientnet] Loading weights: {weights_path}", file=sys.stderr)
+    print(f"[efficientnet] Loading {weights_path}", file=sys.stderr)
     checkpoint = torch.load(weights_path, map_location=device)
-
-    # Determine number of classes from checkpoint
-    state_dict = checkpoint if isinstance(checkpoint, dict) and "model_state_dict" not in checkpoint \
-        else checkpoint.get("model_state_dict", checkpoint.get("state_dict", checkpoint))
-
-    # Find classifier output size
+    state_dict = (
+        checkpoint.get("model_state_dict")
+        or checkpoint.get("state_dict")
+        or checkpoint
+    )
     num_classes = _infer_num_classes(state_dict)
-    print(f"[efficientnet] Classes: {num_classes}", file=sys.stderr)
+    print(f"[efficientnet] num_classes={num_classes}", file=sys.stderr)
 
-    model = models.efficientnet_b0(weights=None)
-    model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
+    model = BirdModel(num_classes).to(device)
     model.load_state_dict(state_dict, strict=False)
-    model.to(device)
     model.eval()
 
-    import torch.nn.functional as F
-    import numpy as np
+    mel_transform.to(device)
 
-    labels = _find_labels(MODEL_CACHE) or [str(i) for i in range(num_classes)]
-    # Build label→SPECIES index map
-    label_to_species_idx = {}
-    for i, lbl in enumerate(labels):
-        if lbl in SPECIES:
-            label_to_species_idx[i] = SPECIES.index(lbl)
-
+    # Collect audio files
     input_path = Path(args.input)
     audio_files = collect_audio(input_path)
     if not audio_files:
@@ -206,58 +185,51 @@ def main():
         print(json.dumps({"score": 0.0, "rows": 0}))
         return
 
-    rows = []
+    # Audio cache (avoid reloading same file for multiple clips)
+    audio_cache: dict = {}
+
+    rows      = []
     max_probs = []
-    CLIP_SECS = 5
 
     for audio_file in audio_files:
         stem = audio_file.stem
-        try:
-            import librosa
-            waveform, sr = librosa.load(str(audio_file), sr=SAMPLE_RATE, mono=True)
-        except Exception as e:
-            print(f"[efficientnet] skip {audio_file.name}: {e}", file=sys.stderr)
-            continue
 
-        clip_samples = SAMPLE_RATE * CLIP_SECS
-        n_clips = max(1, len(waveform) // clip_samples)
+        if str(audio_file) not in audio_cache:
+            try:
+                waveform, sr = torchaudio.load(str(audio_file))
+                if sr != SR:
+                    waveform = torchaudio.functional.resample(waveform, sr, SR)
+                audio_cache[str(audio_file)] = waveform[0]  # mono
+            except Exception as e:
+                print(f"[efficientnet] skip {audio_file.name}: {e}", file=sys.stderr)
+                continue
+
+        audio = audio_cache[str(audio_file)]
+        total_samples = audio.shape[0]
+        n_clips = max(1, total_samples // SAMPLES)
+
         for clip_idx in range(n_clips):
-            start = clip_idx * clip_samples
-            clip_wav = waveform[start: start + clip_samples]
-            if len(clip_wav) < clip_samples:
-                clip_wav = np.pad(clip_wav, (0, clip_samples - len(clip_wav)))
+            end_sec = (clip_idx + 1) * DURATION
+            start   = max(0, (end_sec - DURATION) * SR)
+            clip    = audio[start: start + SAMPLES]
+            if clip.shape[0] < SAMPLES:
+                clip = torch.nn.functional.pad(clip, (0, SAMPLES - clip.shape[0]))
 
-            end_sec = (clip_idx + 1) * CLIP_SECS
-            row_id  = f"{stem}_{end_sec}"
+            row_id = f"{stem}_{end_sec}"
 
             try:
-                # Build mel spectrogram for this clip
-                mel = librosa.feature.melspectrogram(
-                    y=clip_wav, sr=SAMPLE_RATE, n_mels=N_MELS, fmax=16000,
-                    n_fft=1024, hop_length=512)
-                mel_db = librosa.power_to_db(mel, ref=np.max)
-                mel_db = (mel_db - mel_db.min()) / (mel_db.max() - mel_db.min() + 1e-9)
-                img = (mel_db * 255).astype(np.uint8)
-                from torchvision import transforms
-                t = torch.from_numpy(img).float().unsqueeze(0).repeat(3, 1, 1)
-                preprocess = transforms.Compose([
-                    transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-                    transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225]),
-                ])
-                tensor = preprocess(t / 255.0).unsqueeze(0).to(device)
-
+                mel    = audio_to_mel(clip.to(device))          # [1, 224, 224]
+                tensor = mel.unsqueeze(0)                        # [1, 1, 224, 224]
                 with torch.no_grad():
-                    logits    = model(tensor)
-                    raw_probs = F.softmax(logits, dim=1).squeeze().cpu().numpy()
+                    out  = model(tensor)
+                    prob = torch.sigmoid(out).cpu().numpy()[0]   # [num_classes]
 
-                # Map model classes → 234 BirdCLEF species
-                species_probs = uniform_probs(np) * 0.01
-                for model_idx, sp_idx in label_to_species_idx.items():
-                    if model_idx < len(raw_probs):
-                        species_probs[sp_idx] = float(raw_probs[model_idx])
-                total = species_probs.sum()
-                if total > 0:
-                    species_probs /= total
+                # Reorder from model label order → submission SPECIES order
+                species_probs = uniform_probs(np) * 1e-6
+                for model_idx, sub_idx in enumerate(MODEL_TO_SUBMISSION):
+                    if model_idx < len(prob):
+                        species_probs[sub_idx] = float(prob[model_idx])
+
             except Exception as e:
                 print(f"[efficientnet] clip {clip_idx} error: {e}", file=sys.stderr)
                 species_probs = uniform_probs(np)
@@ -271,11 +243,10 @@ def main():
 
 
 def _infer_num_classes(state_dict: dict) -> int:
-    """Try to infer output class count from the last classifier layer."""
     for key in reversed(list(state_dict.keys())):
         if "classifier" in key and "weight" in key:
             return state_dict[key].shape[0]
-    return 182  # BirdCLEF-2026 default
+    return N_SPECIES
 
 
 def _fatal(msg: str):
