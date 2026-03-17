@@ -286,10 +286,14 @@ async fn get_results(
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
     let rows = sqlx::query(
-        "SELECT result_id, worker_pubkey, result_root, score, submitted_at, verdict,
-                notebook_or_repo_hash, container_hash, weights_hash, submission_bundle_hash,
-                encrypted_payload, ephemeral_pubkey
-         FROM results WHERE job_id = ?1 ORDER BY score DESC",
+        "SELECT r.result_id, r.worker_pubkey, r.result_root, r.score, r.submitted_at, r.verdict,
+                r.notebook_or_repo_hash, r.container_hash, r.weights_hash,
+                r.submission_bundle_hash, r.encrypted_payload, r.ephemeral_pubkey,
+                vr.recomputed_score
+         FROM results r
+         LEFT JOIN validation_reports vr ON vr.result_id = r.result_id AND vr.verdict = 'valid'
+         WHERE r.job_id = ?1
+         ORDER BY COALESCE(vr.recomputed_score, r.score) DESC",
     )
     .bind(&job_id)
     .fetch_all(&s.pool)
@@ -298,20 +302,26 @@ async fn get_results(
     match rows {
         Ok(rows) => {
             use sqlx::Row;
-            let results: Vec<serde_json::Value> = rows.iter().map(|r| serde_json::json!({
-                "result_id":              r.get::<String, _>("result_id"),
-                "worker_pubkey":          r.get::<String, _>("worker_pubkey"),
-                "result_root":            r.get::<String, _>("result_root"),
-                "score":                  r.get::<f64, _>("score"),
-                "submitted_at":           r.get::<i64, _>("submitted_at"),
-                "verdict":                r.get::<Option<String>, _>("verdict"),
-                "notebook_or_repo_hash":  r.get::<Option<String>, _>("notebook_or_repo_hash"),
-                "container_hash":         r.get::<Option<String>, _>("container_hash"),
-                "weights_hash":           r.get::<Option<String>, _>("weights_hash"),
-                "submission_bundle_hash": r.get::<Option<String>, _>("submission_bundle_hash"),
-                "encrypted_payload":      r.get::<Option<String>, _>("encrypted_payload"),
-                "ephemeral_pubkey":       r.get::<Option<String>, _>("ephemeral_pubkey"),
-            })).collect();
+            let results: Vec<serde_json::Value> = rows.iter().map(|r| {
+                let submitted_score: f64 = r.get::<f64, _>("score");
+                let recomputed_score: Option<f64> = r.get::<Option<f64>, _>("recomputed_score");
+                serde_json::json!({
+                    "result_id":              r.get::<String, _>("result_id"),
+                    "worker_pubkey":          r.get::<String, _>("worker_pubkey"),
+                    "result_root":            r.get::<String, _>("result_root"),
+                    "score":                  recomputed_score.unwrap_or(submitted_score),
+                    "submitted_score":        submitted_score,
+                    "recomputed_score":       recomputed_score,
+                    "submitted_at":           r.get::<i64, _>("submitted_at"),
+                    "verdict":                r.get::<Option<String>, _>("verdict"),
+                    "notebook_or_repo_hash":  r.get::<Option<String>, _>("notebook_or_repo_hash"),
+                    "container_hash":         r.get::<Option<String>, _>("container_hash"),
+                    "weights_hash":           r.get::<Option<String>, _>("weights_hash"),
+                    "submission_bundle_hash": r.get::<Option<String>, _>("submission_bundle_hash"),
+                    "encrypted_payload":      r.get::<Option<String>, _>("encrypted_payload"),
+                    "ephemeral_pubkey":       r.get::<Option<String>, _>("ephemeral_pubkey"),
+                })
+            }).collect();
             (StatusCode::OK, Json(serde_json::json!({ "job_id": job_id, "results": results }))).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),

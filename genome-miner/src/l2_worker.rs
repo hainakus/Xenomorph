@@ -1022,9 +1022,9 @@ async fn download_kaggle_dataset(_url: &str, dest: &Path, job_id: &str) -> Resul
     
     log::info!("Found {} files from coordinator, downloading...", files.len());
     
-    // Download up to 10 audio files
+    // Download up to 5 audio files (enough for scoring, keeps transfer time short)
     let mut audio_count = 0;
-    for file in files.iter().take(10) {
+    for file in files.iter().take(5) {
         let filename = file["filename"].as_str()
             .ok_or_else(|| anyhow::anyhow!("Invalid filename in response"))?;
         
@@ -1041,9 +1041,13 @@ async fn download_kaggle_dataset(_url: &str, dest: &Path, job_id: &str) -> Resul
                 
                 if file_resp.status().is_success() {
                     let bytes = file_resp.bytes().await?;
-                    let dest_file = dest.join(filename);
-                    tokio::fs::write(&dest_file, &bytes).await?;
-                    log::info!("Downloaded audio file: {}", filename);
+                    // BirdCLEF has nested paths — flatten to dest/<basename>
+                    let basename = std::path::Path::new(filename)
+                        .file_name().unwrap_or(std::ffi::OsStr::new(filename));
+                    let dest_file = dest.join(basename);
+                    tokio::fs::write(&dest_file, &bytes).await
+                        .context(format!("write {}", dest_file.display()))?;
+                    log::info!("Downloaded audio file: {} → {}", filename, basename.to_string_lossy());
                     audio_count += 1;
                 } else {
                     log::warn!("Failed to download {}: {}", filename, file_resp.status());

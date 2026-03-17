@@ -216,12 +216,23 @@ async fn settle_validated_jobs(
             None
         };
 
+        // ── Score-based reward: amount = reward_sompi × score (0.0..1.0) ─────
+        // Minimum floor of 1_000 sompi for any valid non-zero score.
+        const MIN_SOMPI: u64 = 1_000;
+        let scored_sompi: u64 = if best_score > 0.0 {
+            let raw = (reward_sompi as f64 * best_score.clamp(0.0, 1.0)).round() as u64;
+            raw.max(MIN_SOMPI)
+        } else {
+            0
+        };
+        log::info!("  score-based reward: {reward_sompi} × {best_score:.4} = {scored_sompi} sompi");
+
         // ── Register payout with coordinator ─────────────────────────────────
         let payout = Payout {
             payout_id:     Uuid::new_v4().to_string(),
             job_id:        job_id.clone(),
             worker_pubkey: winner_pubkey.clone(),
-            amount_sompi:  reward_sompi,
+            amount_sompi:  scored_sompi,
             txid:          txid.clone(),
             paid_at:       txid.as_ref().map(|_| now_secs()),
         };
@@ -235,7 +246,7 @@ async fn settle_validated_jobs(
 
         if payout_resp.status().is_success() {
             log::info!("  payout {} registered: {} sompi → {}",
-                payout.payout_id, reward_sompi, &winner_pubkey[..12.min(winner_pubkey.len())]);
+                payout.payout_id, scored_sompi, &winner_pubkey[..12.min(winner_pubkey.len())]);
         } else {
             let s = payout_resp.status();
             let b = payout_resp.text().await.unwrap_or_default();
