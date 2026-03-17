@@ -82,6 +82,8 @@ struct AppState {
     /// Coordinator's secp256k1 keypair for encrypting/decrypting L2 results.
     coordinator_privkey: String,
     coordinator_pubkey: String,
+    /// Directory where inference scripts are stored (served to miners via GET /scripts/:task)
+    scripts_dir: std::path::PathBuf,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -579,8 +581,46 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/payouts",                 get(list_payouts).post(create_payout))
         .route("/datasets/:job_id/files",  get(list_dataset_files))
         .route("/datasets/:job_id/download/*filename", get(download_dataset_file))
+        .route("/scripts/:task",            get(get_inference_script))
         .layer(CorsLayer::permissive())
         .with_state(state)
+}
+
+// ── Inference script serving ─────────────────────────────────────────────────
+
+/// GET /scripts/:task — returns the Python inference script for the given task.
+/// Miners download this instead of relying on a local file.
+/// Task → script mapping:
+///   acoustic_classification  →  yamnet_infer.py
+///   (add more as new themes are added)
+async fn get_inference_script(
+    State(s): State<Arc<AppState>>,
+    Path(task): Path<String>,
+) -> impl IntoResponse {
+    let script_name = match task.as_str() {
+        "acoustic_classification" | "birdclef" => "yamnet_infer.py",
+        other => {
+            // Try {task}.py as a convention for future themes
+            return serve_script_file(&s.scripts_dir, &format!("{other}.py")).await;
+        }
+    };
+    serve_script_file(&s.scripts_dir, script_name).await
+}
+
+async fn serve_script_file(scripts_dir: &std::path::Path, filename: &str) -> axum::response::Response {
+    use axum::http::header;
+    let path = scripts_dir.join(filename);
+    match tokio::fs::read_to_string(&path).await {
+        Ok(content) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/x-python")],
+            content,
+        ).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, Json(serde_json::json!({
+            "error": format!("Script not found: {filename}"),
+            "scripts_dir": scripts_dir.display().to_string(),
+        }))).into_response(),
+    }
 }
 
 // ── Dataset download ──────────────────────────────────────────────────────────
@@ -768,10 +808,19 @@ async fn main() -> Result<()> {
     let (coordinator_privkey, coordinator_pubkey) = load_or_generate_keypair(&db_path)?;
     log::info!("Coordinator pubkey: {coordinator_pubkey}");
 
+    // Find scripts directory: --scripts-dir flag, next to binary, or ./scripts/
+    let scripts_dir = m.get_one::<String>("scripts-dir")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::current_exe().ok()
+            .and_then(|p| p.parent().map(|d| d.join("scripts"))))
+        .unwrap_or_else(|| std::path::PathBuf::from("scripts"));
+    log::info!("Scripts dir: {}", scripts_dir.display());
+
     let state  = Arc::new(AppState { 
         pool,
         coordinator_privkey,
         coordinator_pubkey,
+        scripts_dir,
     });
     let router = build_router(state);
 
@@ -881,4 +930,7 @@ fn cli() -> Command {
             .short('l').long("listen").value_name("ADDR")
             .default_value("0.0.0.0:8091")
             .help("REST API listen address"))
+        .arg(Arg::new("scripts-dir")
+            .long("scripts-dir").value_name("PATH")
+            .help("Directory containing Python inference scripts served to miners (default: ./scripts/ next to binary)"))
 }

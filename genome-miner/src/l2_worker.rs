@@ -94,37 +94,46 @@ async fn execute(
     tokio::fs::create_dir_all(&input_dir).await?;
     tokio::fs::create_dir_all(&output_dir).await?;
 
-    // ── 3. Download dataset ───────────────────────────────────────────────────
+    // ── 3. Fetch inference script from coordinator ────────────────────────────
+    let fetched_script = fetch_inference_script(&http, &cfg.coordinator_url, task, &work_dir).await;
+    if let Some(ref s) = fetched_script {
+        info!("L2: inference script fetched from coordinator: {}", s.display());
+    } else {
+        warn!("L2: could not fetch inference script from coordinator — using local fallback");
+    }
+    let effective_script = fetched_script.as_ref().or(cfg.perch_script.as_ref()).cloned();
+
+    // ── 4. Download dataset ───────────────────────────────────────────────────
     if let Some(url) = dataset_url {
         if let Err(e) = download(&http, url, &input_dir, job_id).await {
             warn!("L2: dataset download failed (will use stub): {e:#}");
         }
     }
 
-    // ── 4. Execute ────────────────────────────────────────────────────────────
-    let (score, trace) = dispatch_task(task, &input_dir, &output_dir, cfg).await;
+    // ── 5. Execute ────────────────────────────────────────────────────────────
+    let (score, trace) = dispatch_task(task, &input_dir, &output_dir, cfg, effective_script.as_ref()).await;
     let trace_hash = blake3_hex(trace.as_bytes());
     tokio::fs::write(work_dir.join("trace.log"), &trace).await.ok();
     info!("L2: {job_id} score={score:.4} trace_hash={trace_hash}");
 
-    // ── 5. Hash outputs (before encryption) ──────────────────────────────────
+    // ── 6. Hash outputs (before encryption) ──────────────────────────────────
     let result_root = hash_dir(&output_dir).await;
     info!("L2: result_root={result_root}");
 
-    // ── 5b. Encrypt output files on disk ──────────────────────────────────────
+    // ── 6b. Encrypt output files on disk ──────────────────────────────────────
     if let Err(e) = encrypt_output_dir(&output_dir, &cfg.privkey_hex).await {
         warn!("L2: failed to encrypt output files: {e} — continuing with plaintext");
     } else {
         info!("L2: encrypted output files in {}", output_dir.display());
     }
 
-    // ── 6. Sign ───────────────────────────────────────────────────────────────
+    // ── 7. Sign ───────────────────────────────────────────────────────────────
     let sign_data = format!("{job_id}:{result_root}:{score:.6}");
     let digest    = *blake3::hash(sign_data.as_bytes()).as_bytes();
     let worker_sig = sign_manifest(&digest, &cfg.privkey_hex)
         .unwrap_or_else(|_| "unsigned".to_owned());
 
-    // ── 7. Encrypt result payload ─────────────────────────────────────────────
+    // ── 8. Encrypt result payload ─────────────────────────────────────────────
     // Fetch coordinator's public key for encryption
     let coordinator_pubkey = match fetch_coordinator_pubkey(&http, &cfg.coordinator_url).await {
         Ok(pk) => pk,
@@ -208,9 +217,26 @@ async fn fetch_coordinator_pubkey(http: &reqwest::Client, coordinator_url: &str)
 
 // ── Task dispatcher ───────────────────────────────────────────────────────────
 
-async fn dispatch_task(task: &str, input_dir: &Path, output_dir: &Path, cfg: &L2Config) -> (f64, String) {
+/// Fetch inference script from coordinator API and save to work_dir/inference.py
+async fn fetch_inference_script(
+    http: &reqwest::Client,
+    coordinator_url: &str,
+    task: &str,
+    work_dir: &Path,
+) -> Option<PathBuf> {
+    let url = format!("{coordinator_url}/scripts/{task}");
+    let resp = http.get(&url).send().await.ok()?;
+    if !resp.status().is_success() { return None; }
+    let content = resp.text().await.ok()?;
+    if content.trim().is_empty() { return None; }
+    let dest = work_dir.join("inference.py");
+    tokio::fs::write(&dest, content.as_bytes()).await.ok()?;
+    Some(dest)
+}
+
+async fn dispatch_task(task: &str, input_dir: &Path, output_dir: &Path, cfg: &L2Config, script: Option<&PathBuf>) -> (f64, String) {
     match task {
-        "acoustic_classification" => acoustic_classification(input_dir, output_dir, cfg).await,
+        "acoustic_classification" => acoustic_classification(input_dir, output_dir, cfg, script).await,
         "variant_calling" | "cancer_genomics" | "genome_assembly" | "metagenomics"
             => genomics_analysis(task, input_dir, output_dir).await,
         "gene_expression" | "rna_expression" | "biomarker_discovery"
@@ -462,22 +488,14 @@ fn score_from_sra_csv(csv: &str) -> (f64, serde_json::Value) {
 }
 
 /// Acoustic species classification — YAMNet (primary) or stub.
-async fn acoustic_classification(input_dir: &Path, output_dir: &Path, cfg: &L2Config) -> (f64, String) {
+async fn acoustic_classification(input_dir: &Path, output_dir: &Path, cfg: &L2Config, script: Option<&PathBuf>) -> (f64, String) {
     let files = collect_audio(input_dir).await;
     let mut trace = format!("acoustic_classification on {} file(s)\n", files.len());
     let mut predictions = Vec::new();
     let mut score_sum   = 0.0f64;
 
-    // Find YAMNet script - use perch_script if it points to yamnet_infer.py
-    let yamnet_script = if let Some(ref script) = cfg.perch_script {
-        if script.file_name().and_then(|n| n.to_str()) == Some("yamnet_infer.py") {
-            Some(script.clone())
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    // Use script provided (fetched from coordinator or local fallback)
+    let yamnet_script = script.cloned();
 
     let python = detect_python().await;
     for audio in &files {
