@@ -35,7 +35,8 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let privkey     = m.get_one::<String>("private-key").unwrap().clone();
+    let privkey     = load_privkey("WORKER_PRIVKEY", m.get_one::<String>("key-file").map(|s| s.as_str()))
+        .context("private key required (set $WORKER_PRIVKEY or use --key-file)")?;
     let coordinator = m.get_one::<String>("coordinator").unwrap().clone();
     let work_root   = PathBuf::from(m.get_one::<String>("work-root").unwrap());
     let poll_ms: u64 = m.get_one::<String>("poll-ms")
@@ -62,6 +63,23 @@ async fn main() -> Result<()> {
     };
 
     run_loop(&http, &cfg).await
+}
+
+/// Load private key from env var (first) or key file (second).
+/// Never reads from CLI args to avoid exposure in `ps aux`.
+fn load_privkey(env_var: &str, key_file: Option<&str>) -> Result<String> {
+    if let Ok(hex) = std::env::var(env_var) {
+        let hex = hex.trim().to_string();
+        if !hex.is_empty() { return Ok(hex); }
+    }
+    if let Some(path) = key_file {
+        let hex = std::fs::read_to_string(path)
+            .with_context(|| format!("cannot read key file '{path}'"))?
+            .trim()
+            .to_string();
+        return Ok(hex);
+    }
+    anyhow::bail!("No private key found. Set ${env_var} or use --key-file <PATH>")
 }
 
 async fn run_loop(http: &reqwest::Client, cfg: &WorkerConfig) -> Result<()> {
@@ -161,6 +179,9 @@ async fn try_claim_and_execute(
         weights_hash:            None,
         submission_bundle_hash:  None,
         worker_sig,
+        encrypted_payload:       None,
+        ephemeral_pubkey:        None,
+        predictions_csv:         None,
         submitted_at: now_secs(),
     };
 
@@ -440,9 +461,9 @@ fn cli() -> Command {
             .long("gen-key")
             .action(ArgAction::SetTrue)
             .help("Generate a fresh secp256k1 keypair and exit"))
-        .arg(Arg::new("private-key")
-            .short('k').long("private-key").value_name("HEX").required(false)
-            .help("Worker secp256k1 private key (64 hex chars)"))
+        .arg(Arg::new("key-file")
+            .short('k').long("key-file").value_name("PATH")
+            .help("Path to file containing the secp256k1 private key (64 hex chars). Alternatively set $WORKER_PRIVKEY."))
         .arg(Arg::new("coordinator")
             .short('c').long("coordinator").value_name("URL")
             .default_value("http://localhost:8091")

@@ -46,20 +46,20 @@ async fn main() -> Result<()> {
         log::info!("  evm-node:    none (mainnet: will use coinbase extra_data)");
     }
 
-    let privkey_hex: Option<String> = m.get_one::<String>("private-key").cloned();
+    let privkey_hex: Option<String> = load_privkey_opt("SETTLEMENT_PRIVKEY", m.get_one::<String>("key-file").map(|s| s.as_str()));
     let fee_sompi: u64 = m.get_one::<String>("fee-sompi")
         .and_then(|s| s.parse().ok())
         .unwrap_or(xenom_anchor_client::DEFAULT_FEE_PER_INPUT);
 
     if !dry_run && privkey_hex.is_none() {
-        anyhow::bail!("--submit requires --private-key <HEX>");
+        anyhow::bail!("--submit requires a private key: set $SETTLEMENT_PRIVKEY or use --key-file <PATH>");
     }
 
     let keypair: Option<secp256k1::Keypair> = privkey_hex
         .as_deref()
         .map(xenom_anchor_client::keypair_from_hex)
         .transpose()
-        .context("--private-key")?;
+        .context("invalid private key (expected 64 hex chars)")?;
 
     if let Some(ref kp) = keypair {
         log::info!("  funding: {}",
@@ -92,6 +92,22 @@ async fn main() -> Result<()> {
         }
         sleep(Duration::from_millis(poll_ms)).await;
     }
+}
+
+/// Load private key from env var or key file. Returns None if neither provided.
+/// Never reads from CLI args to avoid exposure in `ps aux`.
+fn load_privkey_opt(env_var: &str, key_file: Option<&str>) -> Option<String> {
+    if let Ok(hex) = std::env::var(env_var) {
+        let hex = hex.trim().to_string();
+        if !hex.is_empty() { return Some(hex); }
+    }
+    if let Some(path) = key_file {
+        if let Ok(hex) = std::fs::read_to_string(path) {
+            let hex = hex.trim().to_string();
+            if !hex.is_empty() { return Some(hex); }
+        }
+    }
+    None
 }
 
 // ── Settlement logic ──────────────────────────────────────────────────────────
@@ -313,9 +329,9 @@ fn cli() -> Command {
             .long("submit")
             .action(clap::ArgAction::SetTrue)
             .help("Anchor settlement on-chain (default: dry-run)"))
-        .arg(Arg::new("private-key")
-            .short('k').long("private-key").value_name("HEX")
-            .help("secp256k1 private key (64 hex chars) for the funding/signing address. Required with --submit."))
+        .arg(Arg::new("key-file")
+            .short('k').long("key-file").value_name("PATH")
+            .help("Path to file containing the secp256k1 private key (64 hex chars). Alternatively set $SETTLEMENT_PRIVKEY. Required with --submit."))
         .arg(Arg::new("fee-sompi")
             .long("fee-sompi").value_name("N")
             .default_value("2000")
