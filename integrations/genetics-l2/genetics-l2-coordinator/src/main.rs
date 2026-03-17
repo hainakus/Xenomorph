@@ -328,6 +328,60 @@ async fn get_results(
     }
 }
 
+// GET /results/:job_id/csv — decrypt best valid result, return predictions_csv as text/csv
+async fn get_result_csv(
+    State(s): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+) -> impl IntoResponse {
+    use sqlx::Row;
+
+    // Fetch best valid result (encrypted_payload + ephemeral_pubkey)
+    let row = sqlx::query(
+        "SELECT encrypted_payload, ephemeral_pubkey FROM results
+         WHERE job_id = ?1 AND verdict = 'valid'
+         ORDER BY score DESC LIMIT 1",
+    )
+    .bind(&job_id)
+    .fetch_optional(&s.pool)
+    .await;
+
+    let row = match row {
+        Ok(Some(r)) => r,
+        Ok(None) => return (StatusCode::NOT_FOUND,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            "{\"error\":\"no valid result for job\"}".to_owned()).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            format!("{{\"error\":\"{e}\"}}")).into_response(),
+    };
+
+    let encrypted: Option<String> = row.get("encrypted_payload");
+    let ephemeral: Option<String> = row.get("ephemeral_pubkey");
+
+    let (Some(enc), Some(eph)) = (encrypted, ephemeral) else {
+        return (StatusCode::NOT_FOUND,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            "{\"error\":\"no encrypted payload\"}".to_owned()).into_response();
+    };
+
+    match genetics_l2_core::JobResult::decrypt_payload(&enc, &eph, &s.coordinator_privkey) {
+        Ok(payload) => {
+            let csv = payload.predictions_csv
+                .unwrap_or_else(|| format!("job_id,score\n{job_id},{}\n", payload.score));
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8")],
+                csv,
+            ).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            format!("{{\"error\":\"decrypt failed: {e}\"}}"),
+        ).into_response(),
+    }
+}
+
 // GET /datasets/:job_id/files - List available dataset files for a job (recursive)
 async fn list_dataset_files(
     Path(job_id): Path<String>,
@@ -587,6 +641,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/jobs/:job_id/claim",      post(claim_job))
         .route("/results",                 post(submit_result))
         .route("/results/:job_id",         get(get_results))
+        .route("/results/:job_id/csv",     get(get_result_csv))
         .route("/validations",             post(submit_validation))
         .route("/payouts",                 get(list_payouts).post(create_payout))
         .route("/datasets/:job_id/files",  get(list_dataset_files))

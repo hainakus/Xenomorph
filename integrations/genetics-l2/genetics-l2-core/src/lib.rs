@@ -216,6 +216,9 @@ pub struct JobResult {
     pub encrypted_payload: Option<String>,
     /// Ephemeral public key (hex) used for ECDH key exchange to derive encryption key.
     pub ephemeral_pubkey: Option<String>,
+    /// Plain CSV of predictions (filename,confidence) — included in encrypted_payload, never stored plain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub predictions_csv: Option<String>,
     pub submitted_at:   u64,
 }
 
@@ -347,6 +350,8 @@ pub struct EncryptedResultPayload {
     pub container_hash: Option<String>,
     pub weights_hash: Option<String>,
     pub submission_bundle_hash: Option<String>,
+    /// Plain-text CSV of predictions (filename,confidence) — only readable by coordinator.
+    pub predictions_csv: Option<String>,
 }
 
 impl JobResult {
@@ -395,6 +400,7 @@ impl JobResult {
             container_hash: self.container_hash.clone(),
             weights_hash: self.weights_hash.clone(),
             submission_bundle_hash: self.submission_bundle_hash.clone(),
+            predictions_csv: self.predictions_csv.clone(),
         };
         let plaintext = serde_json::to_vec(&payload)
             .map_err(|e| format!("Serialize failed: {e}"))?;

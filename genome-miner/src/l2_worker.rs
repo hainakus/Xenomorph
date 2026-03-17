@@ -146,6 +146,9 @@ async fn execute(
         }
     };
 
+    // Read predictions.json (still plain before encryption) → build CSV for coordinator
+    let predictions_csv = build_predictions_csv(&output_dir, score).await;
+
     let result_id = format!("{job_id}-{}", &trace_hash[..8]);
     let mut result = JobResult {
         result_id:              result_id.clone(),
@@ -161,6 +164,7 @@ async fn execute(
         worker_sig,
         encrypted_payload:      None,
         ephemeral_pubkey:       None,
+        predictions_csv:        Some(predictions_csv),
         submitted_at:           now_secs(),
     };
 
@@ -175,6 +179,7 @@ async fn execute(
                 result.result_root = String::new();
                 result.score = 0.0;
                 result.trace_hash = None;
+                result.predictions_csv = None; // travels only inside encrypted_payload
             }
             Err(e) => {
                 warn!("L2: encryption failed: {e} — submitting unencrypted");
@@ -935,6 +940,27 @@ async fn detect_python() -> String {
     }
     warn!("L2: tensorflow_hub not found — YAMNet will use stub");
     "python3".to_string()
+}
+
+/// Build CSV string from predictions.json (called before encryption — file is still plain).
+/// Returns "filename,confidence\n..." — included in encrypted payload sent to coordinator.
+async fn build_predictions_csv(output_dir: &Path, mean_score: f64) -> String {
+    let mut csv = String::from("filename,confidence\n");
+    if let Ok(data) = tokio::fs::read(output_dir.join("predictions.json")).await {
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&data) {
+            if let Some(preds) = v["predictions"].as_array() {
+                for p in preds {
+                    let file = p["file"].as_str().unwrap_or("unknown");
+                    let conf = p["confidence"].as_f64().unwrap_or(0.0);
+                    csv.push_str(&format!("{file},{conf:.6}\n"));
+                }
+            }
+        }
+    }
+    if csv == "filename,confidence\n" {
+        csv.push_str(&format!("mean,{mean_score:.6}\n"));
+    }
+    csv
 }
 
 async fn collect_audio(dir: &Path) -> Vec<PathBuf> {
