@@ -94,7 +94,10 @@ async fn execute(
     tokio::fs::create_dir_all(&input_dir).await?;
     tokio::fs::create_dir_all(&output_dir).await?;
 
-    // ── 3. Fetch inference script from coordinator ────────────────────────────
+    // ── 3. Fetch inference script + install requirements from coordinator ────────
+    let python = detect_python().await;
+    fetch_and_install_requirements(&http, &cfg.coordinator_url, task, &python).await;
+
     let fetched_script = fetch_inference_script(&http, &cfg.coordinator_url, task, &work_dir).await;
     if let Some(ref s) = fetched_script {
         info!("L2: inference script fetched from coordinator: {}", s.display());
@@ -111,7 +114,7 @@ async fn execute(
     }
 
     // ── 5. Execute ────────────────────────────────────────────────────────────
-    let (score, trace) = dispatch_task(task, &input_dir, &output_dir, cfg, effective_script.as_ref()).await;
+    let (score, trace) = dispatch_task(task, &input_dir, &output_dir, cfg, effective_script.as_ref(), &python).await;
     let trace_hash = blake3_hex(trace.as_bytes());
     tokio::fs::write(work_dir.join("trace.log"), &trace).await.ok();
     info!("L2: {job_id} score={score:.4} trace_hash={trace_hash}");
@@ -217,14 +220,86 @@ async fn fetch_coordinator_pubkey(http: &reqwest::Client, coordinator_url: &str)
 
 // ── Task dispatcher ───────────────────────────────────────────────────────────
 
-/// Fetch inference script from coordinator API and save to work_dir/inference.py
+/// Fetch requirements.txt from coordinator and pip-install if changed (hash-cached).
+/// Cache marker: /tmp/genome-miner-l2/pip-{hash}.installed
+async fn fetch_and_install_requirements(
+    http: &reqwest::Client,
+    coordinator_url: &str,
+    task: &str,
+    python: &str,
+) {
+    #[cfg(target_os = "macos")]
+    let url = format!("{coordinator_url}/scripts/{task}/requirements?backend=efficientnet");
+    #[cfg(not(target_os = "macos"))]
+    let url = format!("{coordinator_url}/scripts/{task}/requirements");
+
+    let content = match http.get(&url).send().await {
+        Ok(r) if r.status().is_success() => match r.text().await {
+            Ok(t) if !t.trim().is_empty() => t,
+            _ => return,
+        },
+        _ => {
+            warn!("L2: could not fetch requirements.txt from coordinator");
+            return;
+        }
+    };
+
+    // Only install if requirements changed
+    let hash = blake3_hex(content.as_bytes());
+    let marker = std::env::temp_dir()
+        .join("genome-miner-l2")
+        .join(format!("pip-{}.installed", &hash[..16]));
+
+    if marker.exists() {
+        return; // already installed
+    }
+
+    // Write requirements to temp file
+    let req_path = std::env::temp_dir()
+        .join("genome-miner-l2")
+        .join(format!("requirements-{}.txt", &hash[..16]));
+    if let Err(e) = tokio::fs::create_dir_all(req_path.parent().unwrap()).await {
+        warn!("L2: cannot create pip dir: {e}");
+        return;
+    }
+    if let Err(e) = tokio::fs::write(&req_path, content.as_bytes()).await {
+        warn!("L2: cannot write requirements.txt: {e}");
+        return;
+    }
+
+    info!("L2: installing requirements from coordinator ({} bytes)...", content.len());
+    let out = tokio::process::Command::new(python)
+        .args(["-m", "pip", "install", "-q", "-r", req_path.to_str().unwrap()])
+        .output()
+        .await;
+
+    match out {
+        Ok(o) if o.status.success() => {
+            info!("L2: pip install completed");
+            tokio::fs::write(&marker, b"ok").await.ok();
+        }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            warn!("L2: pip install failed: {stderr}");
+        }
+        Err(e) => warn!("L2: pip install error: {e}"),
+    }
+}
+
+/// Fetch inference script from coordinator API and save to work_dir/inference.py.
+/// On macOS, requests ?backend=efficientnet (PyTorch/MPS) automatically.
 async fn fetch_inference_script(
     http: &reqwest::Client,
     coordinator_url: &str,
     task: &str,
     work_dir: &Path,
 ) -> Option<PathBuf> {
+    // macOS uses PyTorch EfficientNet (native MPS support, no TF Hub required)
+    #[cfg(target_os = "macos")]
+    let url = format!("{coordinator_url}/scripts/{task}?backend=efficientnet");
+    #[cfg(not(target_os = "macos"))]
     let url = format!("{coordinator_url}/scripts/{task}");
+
     let resp = http.get(&url).send().await.ok()?;
     if !resp.status().is_success() { return None; }
     let content = resp.text().await.ok()?;
@@ -234,9 +309,9 @@ async fn fetch_inference_script(
     Some(dest)
 }
 
-async fn dispatch_task(task: &str, input_dir: &Path, output_dir: &Path, cfg: &L2Config, script: Option<&PathBuf>) -> (f64, String) {
+async fn dispatch_task(task: &str, input_dir: &Path, output_dir: &Path, cfg: &L2Config, script: Option<&PathBuf>, python: &str) -> (f64, String) {
     match task {
-        "acoustic_classification" => acoustic_classification(input_dir, output_dir, cfg, script).await,
+        "acoustic_classification" => acoustic_classification(input_dir, output_dir, cfg, script, python).await,
         "variant_calling" | "cancer_genomics" | "genome_assembly" | "metagenomics"
             => genomics_analysis(task, input_dir, output_dir).await,
         "gene_expression" | "rna_expression" | "biomarker_discovery"
@@ -488,7 +563,7 @@ fn score_from_sra_csv(csv: &str) -> (f64, serde_json::Value) {
 }
 
 /// Acoustic species classification — YAMNet (primary) or stub.
-async fn acoustic_classification(input_dir: &Path, output_dir: &Path, cfg: &L2Config, script: Option<&PathBuf>) -> (f64, String) {
+async fn acoustic_classification(input_dir: &Path, output_dir: &Path, cfg: &L2Config, script: Option<&PathBuf>, python: &str) -> (f64, String) {
     let files = collect_audio(input_dir).await;
     let mut trace = format!("acoustic_classification on {} file(s)\n", files.len());
     let mut predictions = Vec::new();
@@ -497,7 +572,6 @@ async fn acoustic_classification(input_dir: &Path, output_dir: &Path, cfg: &L2Co
     // Use script provided (fetched from coordinator or local fallback)
     let yamnet_script = script.cloned();
 
-    let python = detect_python().await;
     for audio in &files {
         // Use YAMNet script if available, otherwise stub
         let mut cmd = if let Some(ref script) = yamnet_script {
@@ -831,8 +905,15 @@ fn stub_conf(path: &Path) -> f64 {
     (blake3::hash(&src).as_bytes()[0] as f64) / 255.0
 }
 
-/// Returns the first Python executable that has tensorflow_hub importable (for YAMNet).
+/// Returns the first Python executable that has the required inference library.
+/// macOS: checks for `torch` (EfficientNet/PyTorch)
+/// Linux: checks for `tensorflow_hub` (YAMNet)
 async fn detect_python() -> String {
+    #[cfg(target_os = "macos")]
+    let check_import = "import torch";
+    #[cfg(not(target_os = "macos"))]
+    let check_import = "import tensorflow_hub";
+
     let candidates = [
         "python3",
         "python3.11",
@@ -843,7 +924,7 @@ async fn detect_python() -> String {
     ];
     for candidate in &candidates {
         let ok = tokio::process::Command::new(candidate)
-            .args(["-c", "import tensorflow_hub"])
+            .args(["-c", check_import])
             .output()
             .await
             .map(|o| o.status.success())

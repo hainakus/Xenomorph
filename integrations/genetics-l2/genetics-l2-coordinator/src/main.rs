@@ -582,29 +582,59 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/datasets/:job_id/files",  get(list_dataset_files))
         .route("/datasets/:job_id/download/*filename", get(download_dataset_file))
         .route("/scripts/:task",            get(get_inference_script))
+        .route("/scripts/:task/requirements", get(get_script_requirements))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
 
 // ── Inference script serving ─────────────────────────────────────────────────
 
-/// GET /scripts/:task — returns the Python inference script for the given task.
-/// Miners download this instead of relying on a local file.
-/// Task → script mapping:
-///   acoustic_classification  →  yamnet_infer.py
-///   (add more as new themes are added)
+/// GET /scripts/:task?backend=yamnet|efficientnet
+/// Returns the Python inference script for the given task.
+///
+/// Task → default script:
+///   acoustic_classification / birdclef → yamnet_infer.py  (TensorFlow, Linux/GPU)
+///
+/// Optional ?backend= query param:
+///   ?backend=efficientnet  → efficientnet_infer.py  (PyTorch, macOS/MPS)
+///   ?backend=yamnet        → yamnet_infer.py         (TensorFlow Hub)
+#[derive(Deserialize)]
+struct ScriptQuery {
+    backend: Option<String>,
+}
+
 async fn get_inference_script(
     State(s): State<Arc<AppState>>,
     Path(task): Path<String>,
+    Query(q): Query<ScriptQuery>,
 ) -> impl IntoResponse {
-    let script_name = match task.as_str() {
-        "acoustic_classification" | "birdclef" => "yamnet_infer.py",
-        other => {
-            // Try {task}.py as a convention for future themes
-            return serve_script_file(&s.scripts_dir, &format!("{other}.py")).await;
-        }
+    let script_name = match q.backend.as_deref() {
+        Some("efficientnet") => "efficientnet_infer.py",
+        Some("yamnet")       => "yamnet_infer.py",
+        _ => match task.as_str() {
+            "acoustic_classification" | "birdclef" => "yamnet_infer.py",
+            other => return serve_script_file(&s.scripts_dir, &format!("{other}.py")).await,
+        },
     };
     serve_script_file(&s.scripts_dir, script_name).await
+}
+
+/// GET /scripts/:task/requirements?backend=yamnet|efficientnet
+/// Returns the pip requirements.txt for the given task's inference backend.
+async fn get_script_requirements(
+    State(s): State<Arc<AppState>>,
+    Path(task): Path<String>,
+    Query(q): Query<ScriptQuery>,
+) -> impl IntoResponse {
+    let req_name = match q.backend.as_deref() {
+        Some("efficientnet") => "requirements-efficientnet.txt",
+        Some("yamnet")       => "requirements-yamnet.txt",
+        _ => match task.as_str() {
+            "acoustic_classification" | "birdclef" => "requirements-yamnet.txt",
+            other => return serve_script_file(&s.scripts_dir, &format!("requirements-{other}.txt")).await,
+        },
+    };
+    serve_script_file(&s.scripts_dir, req_name).await
 }
 
 async fn serve_script_file(scripts_dir: &std::path::Path, filename: &str) -> axum::response::Response {
