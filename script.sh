@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 echo "=== Xenom BirdCLEF Devnet Setup ==="
 echo "L2 Work Encryption: ENABLED"
 echo "Theme: BirdWatch (Blue UI)"
@@ -153,6 +155,7 @@ echo "=== Starting genetics-l2-coordinator ==="
 "$BIN/genetics-l2-coordinator" \
   --db-path /tmp/genetics-l2-nih2.db \
   --listen 0.0.0.0:8091 \
+  --scripts-dir "$SCRIPT_DIR/scripts" \
   > /tmp/xenom-logs/coordinator.log 2>&1 &
 PIDS+=($!)
 sleep 2
