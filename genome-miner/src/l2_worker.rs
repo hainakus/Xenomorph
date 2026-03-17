@@ -588,6 +588,12 @@ async fn acoustic_classification(input_dir: &Path, output_dir: &Path, cfg: &L2Co
         "--output", &output_dir.to_string_lossy(),
     ]);
     if !cfg.use_gpu { cmd.arg("--cpu"); }
+    // Pass sample_submission.csv so script emits exactly the right row_ids
+    let sample_sub = input_dir.join("sample_submission.csv");
+    if sample_sub.exists() {
+        cmd.args(["--sample-submission", sample_sub.to_str().unwrap_or("")]);
+        trace.push_str(&format!("  [infer] using sample_submission.csv for row_ids\n"));
+    }
     trace.push_str(&format!("  [infer] {} --input {:?}\n", infer_script.display(), input_dir));
 
     let score = match cmd.output().await {
@@ -1016,46 +1022,48 @@ async fn download_kaggle_dataset(_url: &str, dest: &Path, job_id: &str) -> Resul
     }
     
     log::info!("Found {} files from coordinator, downloading...", files.len());
-    
-    // Download up to 5 audio files (enough for scoring, keeps transfer time short)
+
+    // Always download sample_submission.csv first (enables exact row_id matching)
+    let sample_sub_url = format!("{}/datasets/{}/download/sample_submission.csv",
+        coordinator_url, job_id);
+    if let Ok(resp) = http.get(&sample_sub_url).send().await {
+        if resp.status().is_success() {
+            if let Ok(bytes) = resp.bytes().await {
+                tokio::fs::write(dest.join("sample_submission.csv"), &bytes).await.ok();
+                log::info!("Downloaded sample_submission.csv ({} bytes)", bytes.len());
+            }
+        }
+    }
+
+    // Download audio files — prefer test_soundscapes/, skip train_audio/
     let mut audio_count = 0;
-    for file in files.iter().take(5) {
-        let filename = file["filename"].as_str()
-            .ok_or_else(|| anyhow::anyhow!("Invalid filename in response"))?;
-        
-        // Check if it's an audio file
+    for file in &files {
+        let filename = match file["filename"].as_str() { Some(f) => f, None => continue };
+
+        // Skip train_audio — only use test_soundscapes or train_soundscapes for inference
+        if filename.starts_with("train_audio/") { continue; }
+
         if let Some(ext) = std::path::Path::new(filename).extension() {
             let ext_str = ext.to_string_lossy().to_lowercase();
             if matches!(ext_str.as_str(), "wav" | "ogg" | "mp3" | "flac") {
-                // Download file from coordinator
-                let download_url = format!("{}/datasets/{}/download/{}", 
+                let download_url = format!("{}/datasets/{}/download/{}",
                     coordinator_url, job_id, filename);
-                
-                let file_resp = http.get(&download_url).send().await
-                    .context(format!("Failed to download {}", filename))?;
-                
-                if file_resp.status().is_success() {
-                    let bytes = file_resp.bytes().await?;
-                    // BirdCLEF has nested paths — flatten to dest/<basename>
-                    let basename = std::path::Path::new(filename)
-                        .file_name().unwrap_or(std::ffi::OsStr::new(filename));
-                    let dest_file = dest.join(basename);
-                    tokio::fs::write(&dest_file, &bytes).await
-                        .context(format!("write {}", dest_file.display()))?;
-                    log::info!("Downloaded audio file: {} → {}", filename, basename.to_string_lossy());
-                    audio_count += 1;
-                } else {
-                    log::warn!("Failed to download {}: {}", filename, file_resp.status());
+                if let Ok(file_resp) = http.get(&download_url).send().await {
+                    if file_resp.status().is_success() {
+                        if let Ok(bytes) = file_resp.bytes().await {
+                            let basename = std::path::Path::new(filename)
+                                .file_name().unwrap_or(std::ffi::OsStr::new(filename));
+                            let dest_file = dest.join(basename);
+                            tokio::fs::write(&dest_file, &bytes).await.ok();
+                            log::info!("Downloaded: {} → {}", filename, basename.to_string_lossy());
+                            audio_count += 1;
+                        }
+                    }
                 }
             }
         }
     }
-    
-    log::info!("Downloaded {audio_count} audio files from coordinator to {}", dest.display());
-    
-    if audio_count == 0 {
-        anyhow::bail!("No audio files downloaded from coordinator");
-    }
+    log::info!("Downloaded {audio_count} test audio files to {}", dest.display());
     
     Ok(())
 }

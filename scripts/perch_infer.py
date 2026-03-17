@@ -21,9 +21,7 @@ import os
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
-from birdclef2026 import SPECIES, N_SPECIES, UNIFORM_P, NUMERIC_XC_IDS, collect_audio, write_submission, uniform_probs
-
-AUDIO_EXTS = {".wav", ".ogg", ".mp3", ".flac"}
+from birdclef2026 import SPECIES, N_SPECIES, UNIFORM_P, AUDIO_EXTS, NUMERIC_XC_IDS, collect_audio, write_submission, uniform_probs, load_expected_rows
 MODEL_HANDLE = "google/bird-vocalization-classifier/tensorFlow2/perch-v2"
 SAMPLE_RATE  = 32000
 CLIP_SECS    = 5
@@ -50,6 +48,8 @@ def main():
     parser.add_argument("--input",  required=True, help="Audio file or directory")
     parser.add_argument("--output", required=True, help="Output directory")
     parser.add_argument("--cpu",    action="store_true", help="Disable GPU")
+    parser.add_argument("--sample-submission", dest="sample_submission",
+                        help="Path to sample_submission.csv — output will match its row_ids exactly")
     args = parser.parse_args()
 
     if args.cpu:
@@ -76,45 +76,73 @@ def main():
         _fatal(f"Failed to load Perch model: {e}")
 
     input_path = Path(args.input)
-    audio_files = collect_audio(input_path)
-    if not audio_files:
+
+    # Build stem → Path map
+    audio_map: dict = {}
+    for f in collect_audio(input_path):
+        audio_map[f.stem] = f
+    for subdir in ("test_soundscapes", "train_soundscapes"):
+        sub = input_path / subdir
+        if sub.is_dir():
+            for f in collect_audio(sub):
+                audio_map.setdefault(f.stem, f)
+
+    if args.sample_submission and Path(args.sample_submission).exists():
+        expected = load_expected_rows(args.sample_submission)
+        print(f"[perch] sample_submission: {len(expected)} soundscapes, "
+              f"{sum(len(v) for v in expected.values())} rows", file=sys.stderr)
+    else:
+        expected = {}
+        for stem, audio_file in audio_map.items():
+            try:
+                waveform, _ = librosa.load(str(audio_file), sr=SAMPLE_RATE, mono=True)
+                n_clips = max(1, len(waveform) // CLIP_LEN)
+            except Exception:
+                n_clips = 1
+            expected[stem] = [(i + 1) * CLIP_SECS for i in range(n_clips)]
+
+    if not expected:
         write_submission(args.output, [], 0.0)
         print(json.dumps({"score": 0.0, "rows": 0}))
         return
 
-    rows = []
-    max_probs = []
+    audio_cache: dict = {}
+    rows:      list   = []
+    max_probs: list   = []
 
-    for audio_file in audio_files:
-        stem = audio_file.stem
-        try:
-            waveform, _ = librosa.load(str(audio_file), sr=SAMPLE_RATE, mono=True)
-        except Exception as e:
-            print(f"[perch] skip {audio_file.name}: {e}", file=sys.stderr)
-            continue
+    for stem, end_secs in expected.items():
+        audio_file = audio_map.get(stem)
 
-        n_clips = max(1, len(waveform) // CLIP_LEN)
-        for clip_idx in range(n_clips):
-            start = clip_idx * CLIP_LEN
-            clip  = waveform[start: start + CLIP_LEN]
-            if len(clip) < CLIP_LEN:
-                clip = np.pad(clip, (0, CLIP_LEN - len(clip)))
-
-            end_sec = (clip_idx + 1) * CLIP_SECS
-            row_id  = f"{stem}_{end_sec}"
-
-            clip_tensor = tf.constant(clip[np.newaxis, :], dtype=tf.float32)
+        if audio_file and stem not in audio_cache:
             try:
-                try:
-                    result = model.infer_tf(clip_tensor)
-                    logits = result[0] if isinstance(result, (list, tuple)) else result["output_0"]
-                except Exception:
-                    out    = infer(clip_tensor)
-                    logits = list(out.values())[0]
-                raw_probs = tf.nn.softmax(logits).numpy()[0]
-                probs = perch_probs_to_species(raw_probs, np, perch_class_list)
+                waveform, _ = librosa.load(str(audio_file), sr=SAMPLE_RATE, mono=True)
+                audio_cache[stem] = waveform
             except Exception as e:
-                print(f"[perch] inference error clip {clip_idx}: {e}", file=sys.stderr)
+                print(f"[perch] skip {audio_file.name}: {e}", file=sys.stderr)
+
+        waveform = audio_cache.get(stem)
+
+        for end_sec in end_secs:
+            row_id = f"{stem}_{end_sec}"
+            if waveform is not None:
+                start = max(0, (end_sec - CLIP_SECS) * SAMPLE_RATE)
+                clip  = waveform[start: start + CLIP_LEN]
+                if len(clip) < CLIP_LEN:
+                    clip = np.pad(clip, (0, CLIP_LEN - len(clip)))
+                clip_tensor = tf.constant(clip[np.newaxis, :], dtype=tf.float32)
+                try:
+                    try:
+                        result = model.infer_tf(clip_tensor)
+                        logits = result[0] if isinstance(result, (list, tuple)) else result["output_0"]
+                    except Exception:
+                        out    = infer(clip_tensor)
+                        logits = list(out.values())[0]
+                    raw_probs = tf.nn.softmax(logits).numpy()[0]
+                    probs = perch_probs_to_species(raw_probs, np, perch_class_list)
+                except Exception as e:
+                    print(f"[perch] {row_id} error: {e}", file=sys.stderr)
+                    probs = uniform_probs(np)
+            else:
                 probs = uniform_probs(np)
 
             max_probs.append(float(probs.max()))

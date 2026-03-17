@@ -19,9 +19,7 @@ import os
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
-from birdclef2026 import SPECIES, N_SPECIES, UNIFORM_P, collect_audio, write_submission, uniform_probs
-
-AUDIO_EXTS  = {".wav", ".ogg", ".mp3", ".flac"}
+from birdclef2026 import SPECIES, N_SPECIES, UNIFORM_P, AUDIO_EXTS, collect_audio, write_submission, uniform_probs, load_expected_rows
 SAMPLE_RATE = 16000   # YAMNet expects 16 kHz
 CLIP_SECS   = 5
 CLIP_LEN    = SAMPLE_RATE * CLIP_SECS
@@ -62,6 +60,8 @@ def main():
     parser.add_argument("--input",  required=True, help="Audio file or directory")
     parser.add_argument("--output", required=True, help="Output directory")
     parser.add_argument("--cpu",    action="store_true", help="Disable GPU")
+    parser.add_argument("--sample-submission", dest="sample_submission",
+                        help="Path to sample_submission.csv — output will match its row_ids exactly")
     args = parser.parse_args()
 
     if args.cpu:
@@ -82,43 +82,64 @@ def main():
         _fatal(f"Failed to load YAMNet: {e}")
 
     input_path = Path(args.input)
-    audio_files = collect_audio(input_path)
-    if not audio_files:
+    out_dir = Path(args.output)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Build stem → Path map
+    audio_map: dict = {}
+    for f in collect_audio(input_path):
+        audio_map[f.stem] = f
+    for subdir in ("test_soundscapes", "train_soundscapes"):
+        sub = input_path / subdir
+        if sub.is_dir():
+            for f in collect_audio(sub):
+                audio_map.setdefault(f.stem, f)
+
+    if args.sample_submission and Path(args.sample_submission).exists():
+        expected = load_expected_rows(args.sample_submission)
+        print(f"[yamnet] sample_submission: {len(expected)} soundscapes, "
+              f"{sum(len(v) for v in expected.values())} rows", file=sys.stderr)
+    else:
+        expected = {stem: [(i + 1) * CLIP_SECS for i in range(
+            max(1, len(librosa.load(str(p), sr=SAMPLE_RATE, mono=True, duration=None)[0]) // CLIP_LEN)
+        )] for stem, p in audio_map.items()}
+
+    if not expected:
         write_submission(args.output, [], 0.0)
         print(json.dumps({"score": 0.0, "rows": 0}))
         return
 
-    out_dir = Path(args.output)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    audio_cache: dict = {}
+    rows:      list   = []
+    max_probs: list   = []
 
-    rows = []
-    max_probs = []
+    for stem, end_secs in expected.items():
+        audio_file = audio_map.get(stem)
 
-    for audio_file in audio_files:
-        stem = audio_file.stem
-        try:
-            waveform, _ = librosa.load(str(audio_file), sr=SAMPLE_RATE, mono=True)
-        except Exception as e:
-            print(f"[yamnet] skip {audio_file.name}: {e}", file=sys.stderr)
-            continue
-
-        # Split into 5-second clips
-        n_clips = max(1, len(waveform) // CLIP_LEN)
-        for clip_idx in range(n_clips):
-            start  = clip_idx * CLIP_LEN
-            clip   = waveform[start: start + CLIP_LEN]
-            if len(clip) < CLIP_LEN:
-                clip = np.pad(clip, (0, CLIP_LEN - len(clip)))
-
-            end_sec = (clip_idx + 1) * CLIP_SECS
-            row_id  = f"{stem}_{end_sec}"
-
+        if audio_file and stem not in audio_cache:
             try:
-                scores, _, _ = model(clip)
-                frame_scores = scores.numpy().mean(axis=0)  # mean over YAMNet frames
-                probs = yamnet_to_species_probs(frame_scores, np)
+                waveform, _ = librosa.load(str(audio_file), sr=SAMPLE_RATE, mono=True)
+                audio_cache[stem] = waveform
             except Exception as e:
-                print(f"[yamnet] inference error clip {clip_idx}: {e}", file=sys.stderr)
+                print(f"[yamnet] skip {audio_file.name}: {e}", file=sys.stderr)
+
+        waveform = audio_cache.get(stem)
+
+        for end_sec in end_secs:
+            row_id = f"{stem}_{end_sec}"
+            if waveform is not None:
+                start = max(0, (end_sec - CLIP_SECS) * SAMPLE_RATE)
+                clip  = waveform[start: start + CLIP_LEN]
+                if len(clip) < CLIP_LEN:
+                    clip = np.pad(clip, (0, CLIP_LEN - len(clip)))
+                try:
+                    scores, _, _ = model(clip)
+                    frame_scores = scores.numpy().mean(axis=0)
+                    probs = yamnet_to_species_probs(frame_scores, np)
+                except Exception as e:
+                    print(f"[yamnet] {row_id} error: {e}", file=sys.stderr)
+                    probs = np.full(N_SPECIES, UNIFORM_P)
+            else:
                 probs = np.full(N_SPECIES, UNIFORM_P)
 
             max_probs.append(float(probs.max()))
@@ -126,8 +147,7 @@ def main():
 
     score = float(np.mean(max_probs)) if max_probs else 0.0
     write_submission(args.output, rows, score)
-    result = {"score": score, "rows": len(rows)}
-    print(json.dumps(result))
+    print(json.dumps({"score": score, "rows": len(rows)}))
 
 
 

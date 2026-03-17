@@ -29,7 +29,7 @@ import torch.nn as nn
 import torchaudio
 
 sys.path.insert(0, str(Path(__file__).parent))
-from birdclef2026 import SPECIES, N_SPECIES, collect_audio, write_submission, uniform_probs
+from birdclef2026 import SPECIES, N_SPECIES, AUDIO_EXTS, collect_audio, write_submission, uniform_probs, load_expected_rows
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -142,6 +142,8 @@ def main():
     parser.add_argument("--input",  required=True, help="Audio file or directory")
     parser.add_argument("--output", required=True, help="Output directory")
     parser.add_argument("--cpu",    action="store_true", help="Force CPU")
+    parser.add_argument("--sample-submission", dest="sample_submission",
+                        help="Path to sample_submission.csv — output will match its row_ids exactly")
     args = parser.parse_args()
 
     # Device selection
@@ -177,24 +179,44 @@ def main():
 
     mel_transform.to(device)
 
-    # Collect audio files
     input_path = Path(args.input)
-    audio_files = collect_audio(input_path)
-    if not audio_files:
+
+    # Build stem → Path map for quick audio lookup
+    audio_map: dict = {}
+    for f in collect_audio(input_path):
+        audio_map[f.stem] = f
+    # Also search subdirs explicitly (test_soundscapes/, train_soundscapes/)
+    for subdir in ("test_soundscapes", "train_soundscapes"):
+        sub = input_path / subdir
+        if sub.is_dir():
+            for f in collect_audio(sub):
+                audio_map.setdefault(f.stem, f)
+
+    # Determine iteration order
+    if args.sample_submission and Path(args.sample_submission).exists():
+        expected = load_expected_rows(args.sample_submission)
+        print(f"[efficientnet] sample_submission: {len(expected)} soundscapes, "
+              f"{sum(len(v) for v in expected.values())} rows", file=sys.stderr)
+    else:
+        # Build expected from discovered audio files (original behaviour)
+        expected = {}
+        for f in collect_audio(input_path):
+            total = max(1, _audio_duration_clips(f))
+            expected[f.stem] = [(i + 1) * DURATION for i in range(total)]
+
+    if not expected:
         write_submission(args.output, [], 0.0)
         print(json.dumps({"score": 0.0, "rows": 0}))
         return
 
-    # Audio cache (avoid reloading same file for multiple clips)
     audio_cache: dict = {}
+    rows:      list   = []
+    max_probs: list   = []
 
-    rows      = []
-    max_probs = []
+    for stem, end_secs in expected.items():
+        audio_file = audio_map.get(stem)
 
-    for audio_file in audio_files:
-        stem = audio_file.stem
-
-        if str(audio_file) not in audio_cache:
+        if audio_file and str(audio_file) not in audio_cache:
             try:
                 waveform, sr = torchaudio.load(str(audio_file))
                 if sr != SR:
@@ -202,36 +224,32 @@ def main():
                 audio_cache[str(audio_file)] = waveform[0]  # mono
             except Exception as e:
                 print(f"[efficientnet] skip {audio_file.name}: {e}", file=sys.stderr)
-                continue
+                audio_file = None
 
-        audio = audio_cache[str(audio_file)]
-        total_samples = audio.shape[0]
-        n_clips = max(1, total_samples // SAMPLES)
+        audio = audio_cache.get(str(audio_file)) if audio_file else None
 
-        for clip_idx in range(n_clips):
-            end_sec = (clip_idx + 1) * DURATION
-            start   = max(0, (end_sec - DURATION) * SR)
-            clip    = audio[start: start + SAMPLES]
-            if clip.shape[0] < SAMPLES:
-                clip = torch.nn.functional.pad(clip, (0, SAMPLES - clip.shape[0]))
-
+        for end_sec in end_secs:
             row_id = f"{stem}_{end_sec}"
 
-            try:
-                mel    = audio_to_mel(clip.to(device))          # [1, 224, 224]
-                tensor = mel.unsqueeze(0)                        # [1, 1, 224, 224]
-                with torch.no_grad():
-                    out  = model(tensor)
-                    prob = torch.sigmoid(out).cpu().numpy()[0]   # [num_classes]
-
-                # Reorder from model label order → submission SPECIES order
-                species_probs = uniform_probs(np) * 1e-6
-                for model_idx, sub_idx in enumerate(MODEL_TO_SUBMISSION):
-                    if model_idx < len(prob):
-                        species_probs[sub_idx] = float(prob[model_idx])
-
-            except Exception as e:
-                print(f"[efficientnet] clip {clip_idx} error: {e}", file=sys.stderr)
+            if audio is not None:
+                start = max(0, (end_sec - DURATION) * SR)
+                clip  = audio[start: start + SAMPLES]
+                if clip.shape[0] < SAMPLES:
+                    clip = torch.nn.functional.pad(clip, (0, SAMPLES - clip.shape[0]))
+                try:
+                    mel    = audio_to_mel(clip.to(device))
+                    tensor = mel.unsqueeze(0)
+                    with torch.no_grad():
+                        out  = model(tensor)
+                        prob = torch.sigmoid(out).cpu().numpy()[0]
+                    species_probs = uniform_probs(np) * 1e-6
+                    for model_idx, sub_idx in enumerate(MODEL_TO_SUBMISSION):
+                        if model_idx < len(prob):
+                            species_probs[sub_idx] = float(prob[model_idx])
+                except Exception as e:
+                    print(f"[efficientnet] {row_id} error: {e}", file=sys.stderr)
+                    species_probs = uniform_probs(np)
+            else:
                 species_probs = uniform_probs(np)
 
             max_probs.append(float(species_probs.max()))
@@ -240,6 +258,15 @@ def main():
     score = float(np.mean(max_probs)) if max_probs else 0.0
     write_submission(args.output, rows, score)
     print(json.dumps({"score": score, "rows": len(rows)}))
+
+
+def _audio_duration_clips(audio_file: Path) -> int:
+    """Return number of 5-second clips in an audio file without fully loading it."""
+    try:
+        info = torchaudio.info(str(audio_file))
+        return max(1, info.num_frames // (SR * DURATION))
+    except Exception:
+        return 1
 
 
 def _infer_num_classes(state_dict: dict) -> int:

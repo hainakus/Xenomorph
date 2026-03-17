@@ -81,3 +81,30 @@ def write_submission(output_dir: str, rows: list, score: float):
 
 def uniform_probs(np_module):
     return np_module.full(N_SPECIES, UNIFORM_P)
+
+
+def load_expected_rows(sample_submission_path: str) -> "dict[str, list[int]]":
+    """Parse sample_submission.csv → {soundscape_stem: [end_sec, ...]} ordered dict.
+
+    Row-id format: ``{stem}_{end_sec}``  e.g. ``BC2026_Test_0001_S05_20250227_010002_5``.
+    Returns stems in the order they first appear in the CSV.
+    """
+    import collections
+    expected: "dict[str, list[int]]" = collections.OrderedDict()
+    with open(sample_submission_path, newline="") as f:
+        reader = csv.reader(f)
+        next(reader, None)  # skip header
+        for row in reader:
+            if not row:
+                continue
+            row_id = row[0]
+            parts = row_id.rsplit("_", 1)
+            if len(parts) != 2:
+                continue
+            stem, end_str = parts
+            try:
+                end_sec = int(end_str)
+            except ValueError:
+                continue
+            expected.setdefault(stem, []).append(end_sec)
+    return expected

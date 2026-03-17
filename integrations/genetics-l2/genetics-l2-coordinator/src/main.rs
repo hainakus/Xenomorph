@@ -395,25 +395,38 @@ async fn list_dataset_files(
         }))).into_response();
     }
     
-    // Walk recursively — BirdCLEF stores audio in train_audio/{species}/*.ogg
-    let mut files = Vec::new();
-    let mut stack = vec![dataset_dir.clone()];
-    'outer: while let Some(dir) = stack.pop() {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else if let Some(ext) = path.extension() {
-                    let e = ext.to_string_lossy().to_lowercase();
-                    if matches!(e.as_str(), "ogg" | "wav" | "mp3" | "flac") {
-                        if let Ok(rel) = path.strip_prefix(&dataset_dir) {
-                            let size = path.metadata().map(|m| m.len()).unwrap_or(0);
-                            files.push(serde_json::json!({
-                                "filename": rel.to_string_lossy(),
-                                "size": size,
-                            }));
-                            if files.len() >= 100 { break 'outer; }
+    let mut files: Vec<serde_json::Value> = Vec::new();
+
+    // Always include sample_submission.csv so miners can produce exact row_ids
+    let sample_sub = dataset_dir.join("sample_submission.csv");
+    if sample_sub.exists() {
+        let size = sample_sub.metadata().map(|m| m.len()).unwrap_or(0);
+        files.push(serde_json::json!({ "filename": "sample_submission.csv", "size": size }));
+    }
+
+    // Walk audio: prioritise test_soundscapes → train_soundscapes → train_audio
+    let priority_dirs = ["test_soundscapes", "train_soundscapes", "train_audio"];
+    'outer: for dir_name in &priority_dirs {
+        let subdir = dataset_dir.join(dir_name);
+        if !subdir.exists() { continue; }
+        let mut stack = vec![subdir];
+        while let Some(dir) = stack.pop() {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if let Some(ext) = path.extension() {
+                        let e = ext.to_string_lossy().to_lowercase();
+                        if matches!(e.as_str(), "ogg" | "wav" | "mp3" | "flac") {
+                            if let Ok(rel) = path.strip_prefix(&dataset_dir) {
+                                let size = path.metadata().map(|m| m.len()).unwrap_or(0);
+                                files.push(serde_json::json!({
+                                    "filename": rel.to_string_lossy(),
+                                    "size": size,
+                                }));
+                                if files.len() >= 101 { break 'outer; }
+                            }
                         }
                     }
                 }
@@ -474,6 +487,38 @@ async fn download_dataset_file(
     }
 }
 
+/// Decrypt the winning result's encrypted_payload and save predictions_csv to disk.
+async fn save_predictions_csv_on_validation(s: &AppState, job_id: &str, result_id: &str) {
+    use sqlx::Row;
+    let row = sqlx::query(
+        "SELECT encrypted_payload, ephemeral_pubkey FROM results WHERE result_id = ?1",
+    )
+    .bind(result_id)
+    .fetch_optional(&s.pool)
+    .await;
+
+    let row = match row { Ok(Some(r)) => r, _ => return };
+    let enc: Option<String> = row.get("encrypted_payload");
+    let eph: Option<String> = row.get("ephemeral_pubkey");
+    let (Some(enc), Some(eph)) = (enc, eph) else { return };
+
+    let payload = match genetics_l2_core::JobResult::decrypt_payload(&enc, &eph, &s.coordinator_privkey) {
+        Ok(p) => p,
+        Err(e) => { log::warn!("CSV save: decrypt failed for {result_id}: {e}"); return }
+    };
+
+    let csv = payload.predictions_csv
+        .unwrap_or_else(|| format!("job_id,score\n{job_id},{}\n", payload.score));
+
+    let dir = std::path::Path::new("/tmp/kaggle-submissions");
+    if tokio::fs::create_dir_all(dir).await.is_err() { return }
+    let path = dir.join(format!("{job_id}.csv"));
+    match tokio::fs::write(&path, csv.as_bytes()).await {
+        Ok(_)  => log::info!("Saved predictions CSV: {}", path.display()),
+        Err(e) => log::warn!("Failed to save predictions CSV: {e}"),
+    }
+}
+
 // POST /validations  (validator posts a validation report)
 async fn submit_validation(
     State(s): State<Arc<AppState>>,
@@ -509,6 +554,9 @@ async fn submit_validation(
             .bind(&report.job_id)
             .execute(&s.pool)
             .await;
+
+        // Decrypt and save predictions CSV to disk
+        save_predictions_csv_on_validation(&s, &report.job_id, &report.result_id).await;
     }
 
     match res {
