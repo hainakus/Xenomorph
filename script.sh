@@ -204,8 +204,8 @@ echo "=== Starting xenom-stratum-bridge ==="
   --mining-address "$MINING_ADDR" \
   --rpcserver "$NODE_RPC" \
   --listen 0.0.0.0:5555 \
-  --l2-coordinator "$COORDINATOR" \
   --db-path /tmp/genetics-l2-nih2-pool.db \
+  --l2-coordinator "$COORDINATOR" \
   --l2-theme birdclef \
   --devnet \
   > /tmp/xenom-logs/stratum-bridge.log 2>&1 &

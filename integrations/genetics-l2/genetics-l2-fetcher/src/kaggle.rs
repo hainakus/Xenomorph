@@ -97,8 +97,8 @@ impl SourceFetcher for KaggleFetcher {
                 );
                 let dataset_url = Some(format!("https://www.kaggle.com/c/{slug}/data"));
 
-                // Convert USD reward to sompi approximation (1 XEN ~ $0.001)
-                let reward_sompi = reward_usd.saturating_mul(1_000_000);
+                // Convert USD reward to sompi (1 XEN ~ $0.001). Min 100k XEN for non-monetary competitions.
+                let reward_sompi = if reward_usd > 0 { reward_usd.saturating_mul(1_000_000) } else { 100_000_000_000 };
 
                 let job = ScientificJob::new(
                     ExternalSource::Kaggle,
@@ -197,7 +197,7 @@ impl KaggleFetcher {
         let dataset_root = hex::encode(
             blake3::hash(format!("kaggle:{slug}").as_bytes()).as_bytes()
         );
-        let reward_sompi = reward_usd.saturating_mul(1_000_000);
+        let reward_sompi = if reward_usd > 0 { reward_usd.saturating_mul(1_000_000) } else { 100_000_000_000 };
         let task_desc = format!("{title} — {description}");
 
         let job = ScientificJob::new(
