@@ -27,11 +27,16 @@ echo "Kaggle API Key: Auto-detected from ~/.kaggle/kaggle.json"
 KAGGLE_KEY=""
 
 export BIN
-export PRIVKEY
 export MINING_ADDR
 export NODE_RPC
 export COORDINATOR
 export KAGGLE_KEY
+
+# Export private key as env vars — never pass as CLI args (ps aux / /proc/$PID/cmdline exposure)
+export SETTLEMENT_PRIVKEY="$PRIVKEY"
+export VALIDATOR_PRIVKEY="$PRIVKEY"
+export L2_PRIVKEY="$PRIVKEY"
+unset PRIVKEY  # clear original after mapping to named vars
 
 echo ""
 echo "=== Environment ==="
@@ -105,15 +110,15 @@ if [ -d "venv" ]; then
   pip install --quiet --upgrade pip
   
   # Install TensorFlow with CUDA support for YAMNet GPU inference
-  echo "Installing: tensorflow (CUDA), tensorflow-hub, librosa, numpy..."
-  pip install --quiet tensorflow tensorflow-hub librosa numpy soundfile || echo "Warning: Some packages failed to install"
+  echo "Installing: tensorflow, tensorflow-hub, torch, torchaudio, timm, numpy, pandas..."
+  pip install --quiet tensorflow tensorflow-hub numpy soundfile torch torchaudio timm pandas || echo "Warning: Some packages failed to install"
   
   echo "Note: YAMNet will use GPU if CUDA is available, otherwise CPU"
 else
   echo "Warning: venv not available, using system Python"
   if command -v pip3 &> /dev/null; then
-    pip3 install --quiet --break-system-packages kaggle kagglehub tensorflow librosa numpy 2>/dev/null || \
-    pip3 install --quiet --user kaggle kagglehub tensorflow librosa numpy 2>/dev/null || \
+    pip3 install --quiet --break-system-packages kaggle kagglehub tensorflow numpy torch torchaudio timm pandas 2>/dev/null || \
+    pip3 install --quiet --user kaggle kagglehub tensorflow numpy torch torchaudio timm pandas 2>/dev/null || \
     echo "Warning: pip3 install failed, continuing anyway..."
   fi
 fi
@@ -151,26 +156,34 @@ echo "=== Starting xenom node ==="
 PIDS+=($!)
 sleep 3
 
+# Persistent data directory (survives reboots)
+XENOM_DATA="${XENOM_DATA_DIR:-$HOME/.local/share/xenom}"
+KAGGLE_DATASETS_DIR="$XENOM_DATA/kaggle-datasets"
+COORDINATOR_DB="$XENOM_DATA/genetics-l2.db"
+mkdir -p "$KAGGLE_DATASETS_DIR/_cache/birdclef-2026"
+
 echo "=== Starting genetics-l2-coordinator ==="
+echo "    DB:       $COORDINATOR_DB"
+echo "    Datasets: $KAGGLE_DATASETS_DIR"
 "$BIN/genetics-l2-coordinator" \
-  --db-path /tmp/genetics-l2-nih2.db \
+  --db-path "$COORDINATOR_DB" \
   --listen 0.0.0.0:8091 \
   --scripts-dir "$SCRIPT_DIR/scripts" \
+  --datasets-dir "$KAGGLE_DATASETS_DIR" \
   > /tmp/xenom-logs/coordinator.log 2>&1 &
 PIDS+=($!)
 sleep 2
 
-# Pre-download BirdCLEF-2026 dataset to cache before starting pool/miner
-BIRDCLEF_CACHE="/tmp/kaggle-datasets/_cache/birdclef-2026"
-mkdir -p "$BIRDCLEF_CACHE"
+# Pre-download BirdCLEF-2026 dataset to persistent cache
+BIRDCLEF_CACHE="$KAGGLE_DATASETS_DIR/_cache/birdclef-2026"
 AUDIO_COUNT=$(find "$BIRDCLEF_CACHE" \( -name '*.ogg' -o -name '*.wav' -o -name '*.mp3' \) 2>/dev/null | wc -l | tr -d ' ')
 if [ "$AUDIO_COUNT" -gt "0" ]; then
   echo "=== BirdCLEF-2026 already cached: $AUDIO_COUNT audio files — skipping download ==="
 elif [ -f "$BIRDCLEF_CACHE/.ready" ]; then
   echo "=== BirdCLEF-2026 cache marked ready ==="
 else
-  echo "=== Downloading BirdCLEF-2026 dataset (pool starts after download) ==="
-  LOCK_FILE="/tmp/kaggle-datasets/_birdclef-2026.lock"
+  echo "=== Downloading BirdCLEF-2026 dataset → $BIRDCLEF_CACHE ==="
+  LOCK_FILE="$KAGGLE_DATASETS_DIR/_birdclef-2026.lock"
   if [ ! -f "$LOCK_FILE" ]; then
     touch "$LOCK_FILE"
     if kaggle competitions download -c birdclef-2026 --path "$BIRDCLEF_CACHE/" 2>&1 | tee -a /tmp/xenom-logs/coordinator.log; then
@@ -228,15 +241,13 @@ sleep 2
 echo "=== Starting genetics-l2-validator ==="
 # Validator needs coordinator privkey to decrypt encrypted results
 COORDINATOR_PRIVKEY_FILE="/tmp/genetics-l2-nih2.db.key"
-COORDINATOR_PRIVKEY=""
 if [ -f "$COORDINATOR_PRIVKEY_FILE" ]; then
+  export COORDINATOR_PRIVKEY
   COORDINATOR_PRIVKEY=$(cat "$COORDINATOR_PRIVKEY_FILE")
 fi
 
 "$BIN/genetics-l2-validator" \
-  --private-key "$PRIVKEY" \
   --coordinator "$COORDINATOR" \
-  --coordinator-privkey "$COORDINATOR_PRIVKEY" \
   --poll-ms 10000 \
   --score-tolerance 0.05 \
   > /tmp/xenom-logs/validator.log 2>&1 &
@@ -247,7 +258,6 @@ echo "=== Starting genetics-l2-settlement ==="
 "$BIN/genetics-l2-settlement" \
   --coordinator "$COORDINATOR" \
   --node "grpc://$NODE_RPC" \
-  --private-key "$PRIVKEY" \
   --submit \
   --devnet \
   --poll-ms 15000 \
@@ -268,7 +278,6 @@ echo "=== Starting genome-miner gpu (BirdCLEF + Encryption) ==="
   --gpu 0 \
   --no-tui \
   --l2-coordinator "$COORDINATOR" \
-  --l2-private-key "$PRIVKEY" \
   --l2-gpu \
   --l2-perch-script scripts/perch_infer.py \
   > /tmp/xenom-logs/miner.log 2>&1 &

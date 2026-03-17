@@ -84,6 +84,9 @@ struct AppState {
     coordinator_pubkey: String,
     /// Directory where inference scripts are stored (served to miners via GET /scripts/:task)
     scripts_dir: std::path::PathBuf,
+    /// Persistent base directory for Kaggle dataset caches.
+    /// Cache layout: {datasets_dir}/_cache/{slug}/  Job symlinks: {datasets_dir}/{job_id}
+    datasets_dir: std::path::PathBuf,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -188,8 +191,9 @@ async fn create_job(
                 if dataset_url.starts_with("kaggle://competitions/") {
                     let job_id = job.job_id.clone();
                     let dataset_url = dataset_url.clone();
+                    let datasets_dir = s.datasets_dir.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = download_kaggle_dataset(&job_id, &dataset_url).await {
+                        if let Err(e) = download_kaggle_dataset(&job_id, &dataset_url, &datasets_dir).await {
                             log::warn!("Background dataset download failed for {job_id}: {e}");
                         }
                     });
@@ -384,10 +388,11 @@ async fn get_result_csv(
 
 // GET /datasets/:job_id/files - List available dataset files for a job (recursive)
 async fn list_dataset_files(
+    State(s): State<Arc<AppState>>,
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
-    let dataset_dir = std::path::PathBuf::from("/tmp/kaggle-datasets").join(&job_id);
-    
+    let dataset_dir = s.datasets_dir.join(&job_id);
+
     if !dataset_dir.exists() {
         return (StatusCode::NOT_FOUND, Json(serde_json::json!({
             "error": "Dataset not found for job",
@@ -443,12 +448,13 @@ async fn list_dataset_files(
 
 // GET /datasets/:job_id/download/*filename - Download a specific dataset file (supports nested paths)
 async fn download_dataset_file(
+    State(s): State<Arc<AppState>>,
     Path((job_id, filename)): Path<(String, String)>,
 ) -> impl IntoResponse {
     use axum::body::Body;
     use axum::http::header;
     
-    let dataset_dir = std::path::PathBuf::from("/tmp/kaggle-datasets").join(&job_id);
+    let dataset_dir = s.datasets_dir.join(&job_id);
     // filename may contain slashes for nested paths (e.g. train_audio/Abrupto/file.ogg)
     let file_path = dataset_dir.join(&filename);
     
@@ -771,16 +777,18 @@ async fn serve_script_file(scripts_dir: &std::path::Path, filename: &str) -> axu
 // ── Dataset download ──────────────────────────────────────────────────────────
 
 /// Download Kaggle dataset once per slug (cached), then symlink to job_id dir.
-/// Cache: /tmp/kaggle-datasets/_cache/{slug}/
-/// Job dir: /tmp/kaggle-datasets/{job_id} -> symlink to cache
-async fn download_kaggle_dataset(job_id: &str, dataset_url: &str) -> Result<()> {
-    use std::path::Path;
-
+/// Cache: {datasets_dir}/_cache/{slug}/
+/// Job dir: {datasets_dir}/{job_id} -> symlink to cache
+async fn download_kaggle_dataset(
+    job_id: &str,
+    dataset_url: &str,
+    datasets_dir: &std::path::Path,
+) -> Result<()> {
     let slug = dataset_url.strip_prefix("kaggle://competitions/")
         .ok_or_else(|| anyhow::anyhow!("Invalid kaggle:// URL: {dataset_url}"))?;
 
-    let cache_dir = Path::new("/tmp/kaggle-datasets/_cache").join(slug);
-    let job_link  = Path::new("/tmp/kaggle-datasets").join(job_id);
+    let cache_dir = datasets_dir.join("_cache").join(slug);
+    let job_link  = datasets_dir.join(job_id);
 
     // If job symlink already exists, nothing to do
     if job_link.exists() {
@@ -799,7 +807,7 @@ async fn download_kaggle_dataset(job_id: &str, dataset_url: &str) -> Result<()> 
     }
 
     // Lock file to prevent concurrent full downloads of the same slug
-    let lock_file = Path::new("/tmp/kaggle-datasets").join(format!("_{slug}.lock"));
+    let lock_file = datasets_dir.join(format!("_{slug}.lock"));
     if lock_file.exists() {
         log::info!("Download already in progress for {slug}, job {job_id} will use partial cache");
         return Ok(());
@@ -812,7 +820,7 @@ async fn download_kaggle_dataset(job_id: &str, dataset_url: &str) -> Result<()> 
     }
 
     // Acquire lock and download missing files
-    tokio::fs::create_dir_all(Path::new("/tmp/kaggle-datasets")).await?;
+    tokio::fs::create_dir_all(datasets_dir).await?;
     tokio::fs::write(&lock_file, job_id.as_bytes()).await?;
 
     log::info!("Downloading Kaggle dataset for job {job_id}: {slug} (--skip-existing)");
@@ -961,11 +969,25 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| std::path::PathBuf::from("scripts"));
     log::info!("Scripts dir: {}", scripts_dir.display());
 
+    // Persistent datasets directory: --datasets-dir > env XENOM_DATASETS_DIR > $HOME/.local/share/xenom/kaggle-datasets
+    let datasets_dir = m.get_one::<String>("datasets-dir")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var("XENOM_DATASETS_DIR").ok().map(std::path::PathBuf::from))
+        .unwrap_or_else(|| {
+            dirs_next::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/xenom"))
+                .join(".local/share/xenom/kaggle-datasets")
+        });
+    tokio::fs::create_dir_all(&datasets_dir).await
+        .context("create datasets_dir")?;
+    log::info!("Datasets dir: {}", datasets_dir.display());
+
     let state  = Arc::new(AppState { 
         pool,
         coordinator_privkey,
         coordinator_pubkey,
         scripts_dir,
+        datasets_dir,
     });
     let router = build_router(state);
 
@@ -1078,4 +1100,7 @@ fn cli() -> Command {
         .arg(Arg::new("scripts-dir")
             .long("scripts-dir").value_name("PATH")
             .help("Directory containing Python inference scripts served to miners (default: ./scripts/ next to binary)"))
+        .arg(Arg::new("datasets-dir")
+            .long("datasets-dir").value_name("PATH")
+            .help("Persistent directory for Kaggle dataset caches (default: $XENOM_DATASETS_DIR or ~/.local/share/xenom/kaggle-datasets)"))
 }

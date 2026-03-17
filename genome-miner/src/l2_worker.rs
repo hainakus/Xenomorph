@@ -28,18 +28,28 @@ impl L2Config {
     }
 }
 
-/// Search for yamnet_infer.py in common locations.
+/// Search for a local inference script fallback (used when coordinator is unreachable).
+/// Priority: birdclef_gpu_infer.py (best) → yamnet_infer.py → efficientnet_infer.py
 fn find_perch_script() -> Option<PathBuf> {
-    let candidates = [
-        "scripts/yamnet_infer.py",
-        "/opt/xenom/scripts/yamnet_infer.py",
+    let script_names: &[&str] = if cfg!(target_os = "macos") {
+        &["efficientnet_infer.py", "yamnet_infer.py", "birdclef_gpu_infer.py"]
+    } else {
+        &["birdclef_gpu_infer.py", "yamnet_infer.py", "efficientnet_infer.py"]
+    };
+    let search_dirs = [
+        std::path::PathBuf::from("scripts"),
+        std::path::PathBuf::from("/opt/xenom/scripts"),
+        std::env::current_exe().ok()
+            .and_then(|p| p.parent().map(|d| d.join("scripts")))
+            .unwrap_or_default(),
     ];
-    // also check next to the running executable
-    let exe_dir = std::env::current_exe().ok()
-        .and_then(|p| p.parent().map(|d| d.join("yamnet_infer.py")));
-    candidates.iter().map(PathBuf::from)
-        .chain(exe_dir)
-        .find(|p| p.exists())
+    for name in script_names {
+        for dir in &search_dirs {
+            let p = dir.join(name);
+            if p.exists() { return Some(p); }
+        }
+    }
+    None
 }
 
 // ── Entry point — called per L2 job received from stratum ─────────────────────

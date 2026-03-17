@@ -6,12 +6,14 @@
 #   chmod +x scripts/download-datasets.sh
 #   ./scripts/download-datasets.sh
 #
-# Cache location: /tmp/kaggle-datasets/_cache/{competition}/
+# Cache location: ~/.local/share/xenom/kaggle-datasets/_cache/{competition}/  (persistent)
+# Override with XENOM_DATA_DIR env variable.
 # The pool coordinator symlinks each job_id to the relevant cache dir.
 
 set -euo pipefail
 
-CACHE_BASE="/tmp/kaggle-datasets/_cache"
+XENOM_DATA="${XENOM_DATA_DIR:-$HOME/.local/share/xenom}"
+CACHE_BASE="$XENOM_DATA/kaggle-datasets/_cache"
 
 # ── Colour helpers ────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
