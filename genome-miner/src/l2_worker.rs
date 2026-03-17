@@ -236,7 +236,7 @@ async fn fetch_and_install_requirements(
     #[cfg(target_os = "macos")]
     let url = format!("{coordinator_url}/scripts/{task}/requirements?backend=efficientnet");
     #[cfg(not(target_os = "macos"))]
-    let url = format!("{coordinator_url}/scripts/{task}/requirements");
+    let url = format!("{coordinator_url}/scripts/{task}/requirements?backend=gpu");
 
     let content = match http.get(&url).send().await {
         Ok(r) if r.status().is_success() => match r.text().await {
@@ -299,11 +299,11 @@ async fn fetch_inference_script(
     task: &str,
     work_dir: &Path,
 ) -> Option<PathBuf> {
-    // macOS uses PyTorch EfficientNet (native MPS support, no TF Hub required)
+    // macOS: EfficientNet via MPS; Linux: GPU-optimised EfficientNet-B4 via CUDA
     #[cfg(target_os = "macos")]
     let url = format!("{coordinator_url}/scripts/{task}?backend=efficientnet");
     #[cfg(not(target_os = "macos"))]
-    let url = format!("{coordinator_url}/scripts/{task}");
+    let url = format!("{coordinator_url}/scripts/{task}?backend=gpu");
 
     let resp = http.get(&url).send().await.ok()?;
     if !resp.status().is_success() { return None; }

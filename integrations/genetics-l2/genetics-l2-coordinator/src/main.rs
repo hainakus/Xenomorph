@@ -722,6 +722,7 @@ async fn get_inference_script(
     Query(q): Query<ScriptQuery>,
 ) -> impl IntoResponse {
     let script_name = match q.backend.as_deref() {
+        Some("gpu")          => "birdclef_gpu_infer.py",
         Some("efficientnet") => "efficientnet_infer.py",
         Some("yamnet")       => "yamnet_infer.py",
         _ => match task.as_str() {
@@ -740,6 +741,7 @@ async fn get_script_requirements(
     Query(q): Query<ScriptQuery>,
 ) -> impl IntoResponse {
     let req_name = match q.backend.as_deref() {
+        Some("gpu")          => "requirements-birdclef_gpu.txt",
         Some("efficientnet") => "requirements-efficientnet.txt",
         Some("yamnet")       => "requirements-yamnet.txt",
         _ => match task.as_str() {
