@@ -5,6 +5,7 @@ use std::{
 };
 
 use kaspa_consensus_core::{hashing::header::hash_override_nonce_time, header::Header};
+use kaspa_core::warn;
 use kaspa_rpc_core::{RpcRawBlock, RpcRawHeader};
 
 const MAX_JOBS: usize = 64;
@@ -109,12 +110,73 @@ impl JobManager {
         Self { jobs: HashMap::new(), current: None, counter: 0, last_template_id: None }
     }
 
+    /// Returns `true` when the coinbase payload is structurally valid for the
+    /// template's PoW mode.
+    ///
+    /// Once Genome PoW activates the node serialises a V2 payload:
+    ///   blue_score(8) + subsidy(8) + spk_ver(2) + spk_len(1) + spk(N) + fitness(4) + extra_data
+    ///
+    /// `modify_block_template` (triggered server-side when the template cache
+    /// was warmed by a *different* miner address) used to call `modify_coinbase_payload`
+    /// which dropped the 4 fitness bytes.  The resulting payload then had the first
+    /// 4 bytes of the extra_data version string (e.g. "0.15") parsed as fitness ≈ 892M,
+    /// far above the fitness_threshold (10_000), which clamps the multiplier to 2.0.
+    /// The node then computes expected_subsidy = 2 × base while the payload carries the
+    /// original subsidy (computed with the real fitness), producing a WrongSubsidy error.
+    ///
+    /// This guard is a belt-and-suspenders check: the upstream bug is fixed in
+    /// `modify_coinbase_payload`, but we also reject any template where the fitness
+    /// bytes look like corrupted data (valid genome fitness is at most 3000).
+    fn coinbase_payload_valid(template: &RpcRawBlock) -> bool {
+        let Some(coinbase) = template.transactions.first() else { return false; };
+        let p = &coinbase.payload;
+        // V1 minimum: blue_score(8) + subsidy(8) + spk_ver(2) + spk_len(1) = 19 bytes
+        if p.len() < 19 {
+            return false;
+        }
+        let spk_len = p[18] as usize;
+        if p.len() < 19 + spk_len {
+            return false;
+        }
+        // For Genome-PoW (V2) blocks the fitness field must immediately follow the SPK.
+        // genome_active here uses the same epoch_seed heuristic as the rest of the bridge.
+        let genome_active = template.header.epoch_seed != kaspa_hashes::Hash::default();
+        if genome_active {
+            if p.len() < 19 + spk_len + 4 {
+                return false;
+            }
+            // genome_pow::compute_fitness returns values in [0, 3000].
+            // Corrupted payloads (stripped fitness, version-string bytes in its place)
+            // produce values like 892_415_536.  Reject anything implausibly large.
+            let fitness = u32::from_le_bytes(
+                p[19 + spk_len..19 + spk_len + 4].try_into().unwrap(),
+            );
+            if fitness > 100_000 {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Register a new template if it differs from the last one.
     ///
     /// Returns `Some(job)` when the template changed, `None` when unchanged.
     pub fn update(&mut self, template: RpcRawBlock) -> Option<Arc<Job>> {
         let template_id = template.header.accepted_id_merkle_root;
         if self.last_template_id == Some(template_id) {
+            return None;
+        }
+        // Reject templates with a corrupted V2 coinbase payload (fitness bytes
+        // stripped by a server-side modify_coinbase_payload call).  Mark the
+        // template as seen so we don't spam this warning on every poll cycle;
+        // the bridge will simply hold the previous job until the virtual state
+        // advances and the node builds a fresh, correct template.
+        if !Self::coinbase_payload_valid(&template) {
+            warn!(
+                "Dropping template with invalid coinbase payload (V2 fitness bytes missing); \
+                 waiting for fresh template"
+            );
+            self.last_template_id = Some(template_id);
             return None;
         }
         self.last_template_id = Some(template_id);

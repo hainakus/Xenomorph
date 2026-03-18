@@ -1,4 +1,4 @@
-use std::{fmt, sync::Arc};
+use std::{collections::HashSet, fmt, sync::Arc};
 
 use anyhow::{Context, Result};
 use kaspa_addresses::Address;
@@ -105,12 +105,19 @@ fn estimate_tx_mass(input_amounts: &[u64], output_amounts: &[u64]) -> u64 {
 /// Build, sign and broadcast a payout transaction for one confirmed block.
 ///
 /// Requires the Xenom node to be started with `--utxoindex`.
+///
+/// `spent` is a per-cycle set of `(tx_id, index)` outpoints already submitted
+/// in earlier payouts this cycle.  The node UTXO index does not reflect
+/// unconfirmed (mempool) spends, so without this filter back-to-back payouts
+/// within one batch would reuse the same UTXOs and be rejected as double-spends.
+/// On success, newly consumed outpoints are inserted into `spent`.
 pub async fn execute_payout(
     rpc:          &Arc<GrpcClient>,
     pool_address: &RpcAddress,
     keypair:      &Keypair,
     payout:       &PendingPayout,
     cfg:          &PaymentConfig,
+    spent:        &mut HashSet<(RpcTransactionId, u32)>,
 ) -> Result<RpcTransactionId> {
     // ── 1. Fetch all pool UTXOs (mature only) ───────────────────────────────
     let current_daa = rpc
@@ -141,7 +148,12 @@ pub async fn execute_payout(
     }
 
     // ── 2. UTXO pool: sort by value DESC (largest inputs → lowest storage mass) ─
-    let mut sorted_utxos: Vec<_> = utxo_entries.iter().collect();
+    // Filter out outpoints already submitted in earlier payouts this cycle —
+    // the node UTXO index does not see unconfirmed mempool spends.
+    let mut sorted_utxos: Vec<_> = utxo_entries
+        .iter()
+        .filter(|e| !spent.contains(&(e.outpoint.transaction_id, e.outpoint.index)))
+        .collect();
     sorted_utxos.sort_unstable_by(|a, b| b.utxo_entry.amount.cmp(&a.utxo_entry.amount));
     let total_pool: u64 = sorted_utxos.iter().map(|e| e.utxo_entry.amount).sum();
 
@@ -201,6 +213,42 @@ pub async fn execute_payout(
     // Sort outputs DESC so the largest (lowest storage-mass) outputs go first.
     outputs_plan.sort_unstable_by(|a, b| b.1.cmp(&a.1));
 
+    // ── 4a. Pre-filter outputs that can never satisfy the storage-mass limit ───
+    // Storage mass for a single output v (best-case, with up to MAX_INPUTS inputs
+    // each at the pool's current mean value):
+    //   storage = C/v − C·N/mean_in
+    // Viable when: C/v ≤ MAX_SELECTABLE_MASS + best_arithmetic_ins
+    // => min_viable = C / (MAX_SELECTABLE_MASS + best_arithmetic_ins)
+    {
+        let n_best = sorted_utxos.len().min(MAX_INPUTS) as u64;
+        if n_best > 0 {
+            let sum_best: u64 = sorted_utxos.iter().take(n_best as usize)
+                .map(|e| e.utxo_entry.amount).sum();
+            let mean_best    = (sum_best / n_best).max(1);
+            let best_arith   = n_best.saturating_mul(STORAGE_MASS_PARAMETER / mean_best);
+            let max_harmonic = MAX_SELECTABLE_MASS.saturating_add(best_arith);
+            let min_viable   = if max_harmonic == 0 { u64::MAX }
+                               else { STORAGE_MASS_PARAMETER / max_harmonic };
+            if min_viable > 1 {
+                let before = outputs_plan.len();
+                outputs_plan.retain(|(_, v)| *v >= min_viable);
+                let dropped = before - outputs_plan.len();
+                if dropped > 0 {
+                    warn!(
+                        "Dropped {dropped} payout output(s) below storage-mass minimum \
+                         ({min_viable} sompi). Raise --min-payout-sompi to >= {min_viable}."
+                    );
+                }
+            }
+        }
+    }
+
+    if outputs_plan.is_empty() {
+        return Err(anyhow::Error::new(RetryablePayoutError(
+            "All payout outputs dropped by storage-mass filter — raise --min-payout-sompi (will retry)".into()
+        )));
+    }
+
     // ── 4. Batch loop: build/sign/submit one tx per mass-safe batch ───────────
     //
     // Storage mass formula (KIP-9 Alpha):
@@ -252,8 +300,7 @@ pub async fn execute_payout(
             }
             let mass = estimate_tx_mass(&input_amts, &out_amts);
 
-            if mass <= MAX_SELECTABLE_MASS || batch_outputs.is_empty() {
-                // Fits (or force-include the very first output even if it alone is heavy).
+            if mass <= MAX_SELECTABLE_MASS {
                 batch_outputs.push((addr.clone(), *amount));
                 batch_inputs_end  = temp_end;
                 batch_input_total = temp_total;
@@ -343,6 +390,11 @@ pub async fn execute_payout(
                 format!("submit_transaction batch {batch_num} RPC failed: {e} — will retry")
             )))?;
 
+        // Record consumed outpoints so subsequent payouts in this cycle skip them.
+        for e in batch_utxos {
+            spent.insert((e.outpoint.transaction_id, e.outpoint.index));
+        }
+
         info!(
             "Payout batch {batch_num}/{} submitted: {tx_id}  outputs={}  total_out={} sompi",
             (outputs_plan.len() + batch_outputs.len() - 1) / batch_outputs.len().max(1),
@@ -355,9 +407,9 @@ pub async fn execute_payout(
         }
     }
 
-    first_tx_id.ok_or_else(|| anyhow::anyhow!(
-        "No UTXOs available to cover any payout output — will retry next cycle"
-    ))
+    first_tx_id.ok_or_else(|| anyhow::Error::new(RetryablePayoutError(
+        "No UTXOs available to cover any payout output — will retry next cycle".into()
+    )))
 }
 
 // ── UTXO consolidation sweep ──────────────────────────────────────────────────

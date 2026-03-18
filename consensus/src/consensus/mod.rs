@@ -771,8 +771,8 @@ impl ConsensusApi for Consensus {
         Ok(utxos)
     }
 
-    fn modify_coinbase_payload(&self, payload: Vec<u8>, miner_data: &MinerData) -> CoinbaseResult<Vec<u8>> {
-        self.services.coinbase_manager.modify_coinbase_payload(payload, miner_data)
+    fn modify_coinbase_payload(&self, payload: Vec<u8>, miner_data: &MinerData, daa_score: u64) -> CoinbaseResult<Vec<u8>> {
+        self.services.coinbase_manager.modify_coinbase_payload(payload, miner_data, daa_score)
     }
 
     fn calc_transaction_hash_merkle_root(&self, txs: &[Transaction], pov_daa_score: u64) -> Hash {

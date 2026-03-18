@@ -213,26 +213,33 @@ async fn handle_miner(
 
                     // ── authorize ─────────────────────────────────────────
                     "mining.authorize" => {
-                        worker_name = params.first()
+                        let raw_name = params.first()
                             .and_then(|v| v.as_str())
-                            .unwrap_or("unknown")
+                            .unwrap_or("")
                             .to_owned();
+                        let miner_address = raw_name.split('.').next().unwrap_or(&raw_name).to_owned();
+
+                        // Reject miners whose username is not a valid xenom: address.
+                        if kaspa_addresses::Address::try_from(miner_address.as_str()).is_err() {
+                            warn!(
+                                "{peer}: rejected '{raw_name}' — username must be a valid xenom: address \
+                                 (format: xenom:qYOURADDR[.workername])"
+                            );
+                            write_line(&mut writer, &StratumResponse::err(
+                                id, 24,
+                                "Unauthorized: username must be a valid xenom: address \
+                                 (format: xenom:qYOURADDR[.workername])",
+                            )).await?;
+                            return Ok(());
+                        }
+
+                        worker_name = raw_name;
                         authorized = true;
                         info!("{peer}: authorized as {worker_name}  init_diff={}", vardiff.current_diff);
 
                         // ── API: register miner ───────────────────────────
                         let conn_now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-                        let miner_address = worker_name.split('.').next().unwrap_or(&worker_name).to_owned();
-
-                        // Warn if worker name doesn't start with a valid xenom: address — payouts will fail
-                        if kaspa_addresses::Address::try_from(miner_address.as_str()).is_err() {
-                            warn!(
-                                "{peer}: worker '{worker_name}' does not start with a valid xenom: address. \
-                                 Auto-payouts require username format  xenom:qYOURADDR[.workername]  — \
-                                 shares will be recorded but payouts CANNOT be sent to this worker."
-                            );
-                        }
 
                         if let Some(ref api) = api_state {
                             let mut e = MinerApiEntry {
@@ -534,8 +541,12 @@ async fn process_submit(
         }
         meets_block
     } else {
-        // ── Genome PoW — no local dataset, forward to node for validation ───
-        true
+        // ── Genome PoW — no local dataset ───────────────────────────────────
+        // Cannot validate the nonce locally: do NOT submit to the node and
+        // do NOT award PPLNS credit.  Start bridge with --genome-file.
+        return Err(ShareError::BadFormat(
+            "genome pow active but --genome-file not loaded — share rejected".to_owned()
+        ));
     };
 
     // ── 5. Only submit to node when the share meets the BLOCK target ───────
@@ -552,11 +563,6 @@ async fn process_submit(
     if matches!(resp.report, SubmitBlockReport::Success) {
         let daa_score = job.template.header.daa_score.saturating_add(1);
         Ok((SubmitOutcome::Block { daa_score }, bits))
-    } else if job.genome_active && packed_genome.is_none() {
-        // No local Genome PoW validation was possible; the node is the only
-        // arbiter.  A non-Success response means the PoW itself is invalid
-        // (not just "not a block") — discard, no PPLNS credit.
-        Err(ShareError::BadFormat("node rejected genome pow share".to_owned()))
     } else {
         // Local validation already confirmed the PoW is correct.
         // Node rejection here is a timing / orphan race — the work is still
