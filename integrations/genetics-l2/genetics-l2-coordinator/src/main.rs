@@ -516,8 +516,10 @@ async fn save_predictions_csv_on_validation(s: &AppState, job_id: &str, result_i
     let csv = payload.predictions_csv
         .unwrap_or_else(|| format!("job_id,score\n{job_id},{}\n", payload.score));
 
-    let dir = std::path::Path::new("/tmp/kaggle-submissions");
-    if tokio::fs::create_dir_all(dir).await.is_err() { return }
+    let dir = s.datasets_dir.parent()
+        .unwrap_or(&s.datasets_dir)
+        .join("kaggle-submissions");
+    if tokio::fs::create_dir_all(&dir).await.is_err() { return }
     let path = dir.join(format!("{job_id}.csv"));
     match tokio::fs::write(&path, csv.as_bytes()).await {
         Ok(_)  => log::info!("Saved predictions CSV: {}", path.display()),
@@ -731,8 +733,11 @@ async fn get_inference_script(
         Some("gpu")          => "birdclef_gpu_infer.py",
         Some("efficientnet") => "efficientnet_infer.py",
         Some("yamnet")       => "yamnet_infer.py",
+        Some("genome")       => "genome_annotate.py",
         _ => match task.as_str() {
             "acoustic_classification" | "birdclef" => "yamnet_infer.py",
+            "variant_calling" | "cancer_genomics" | "genome_assembly"
+            | "metagenomics"  | "annotation"        => "genome_annotate.py",
             other => return serve_script_file(&s.scripts_dir, &format!("{other}.py")).await,
         },
     };
@@ -750,8 +755,11 @@ async fn get_script_requirements(
         Some("gpu")          => "requirements-birdclef_gpu.txt",
         Some("efficientnet") => "requirements-efficientnet.txt",
         Some("yamnet")       => "requirements-yamnet.txt",
+        Some("genome")       => "requirements-genome.txt",
         _ => match task.as_str() {
             "acoustic_classification" | "birdclef" => "requirements-yamnet.txt",
+            "variant_calling" | "cancer_genomics" | "genome_assembly"
+            | "metagenomics"  | "annotation"        => "requirements-genome.txt",
             other => return serve_script_file(&s.scripts_dir, &format!("requirements-{other}.txt")).await,
         },
     };

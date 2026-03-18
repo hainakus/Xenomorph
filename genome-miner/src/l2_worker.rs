@@ -243,10 +243,8 @@ async fn fetch_and_install_requirements(
     task: &str,
     python: &str,
 ) {
-    #[cfg(target_os = "macos")]
-    let url = format!("{coordinator_url}/scripts/{task}/requirements?backend=efficientnet");
-    #[cfg(not(target_os = "macos"))]
-    let url = format!("{coordinator_url}/scripts/{task}/requirements?backend=gpu");
+    let backend = task_backend(task);
+    let url = format!("{coordinator_url}/scripts/{task}/requirements?backend={backend}");
 
     let content = match http.get(&url).send().await {
         Ok(r) if r.status().is_success() => match r.text().await {
@@ -301,19 +299,27 @@ async fn fetch_and_install_requirements(
     }
 }
 
+/// Select the right coordinator backend string for a given task.
+fn task_backend(task: &str) -> &'static str {
+    match task {
+        "variant_calling" | "cancer_genomics" | "genome_assembly"
+        | "metagenomics"  | "annotation" => "genome",
+        _ => {
+            #[cfg(target_os = "macos")] { "efficientnet" }
+            #[cfg(not(target_os = "macos"))] { "gpu" }
+        }
+    }
+}
+
 /// Fetch inference script from coordinator API and save to work_dir/inference.py.
-/// On macOS, requests ?backend=efficientnet (PyTorch/MPS) automatically.
 async fn fetch_inference_script(
     http: &reqwest::Client,
     coordinator_url: &str,
     task: &str,
     work_dir: &Path,
 ) -> Option<PathBuf> {
-    // macOS: EfficientNet via MPS; Linux: GPU-optimised EfficientNet-B4 via CUDA
-    #[cfg(target_os = "macos")]
-    let url = format!("{coordinator_url}/scripts/{task}?backend=efficientnet");
-    #[cfg(not(target_os = "macos"))]
-    let url = format!("{coordinator_url}/scripts/{task}?backend=gpu");
+    let backend = task_backend(task);
+    let url = format!("{coordinator_url}/scripts/{task}?backend={backend}");
 
     let resp = http.get(&url).send().await.ok()?;
     if !resp.status().is_success() { return None; }
@@ -327,8 +333,8 @@ async fn fetch_inference_script(
 async fn dispatch_task(task: &str, input_dir: &Path, output_dir: &Path, cfg: &L2Config, script: Option<&PathBuf>, python: &str) -> (f64, String) {
     match task {
         "acoustic_classification" => acoustic_classification(input_dir, output_dir, cfg, script, python).await,
-        "variant_calling" | "cancer_genomics" | "genome_assembly" | "metagenomics"
-            => genomics_analysis(task, input_dir, output_dir).await,
+        "variant_calling" | "cancer_genomics" | "genome_assembly" | "metagenomics" | "annotation"
+            => genomics_pipeline(task, input_dir, output_dir, script, python).await,
         "gene_expression" | "rna_expression" | "biomarker_discovery"
         | "network_biology" | "sequence_alignment" | "protein_folding" | "molecular_docking"
             => omics_analysis(task, input_dir, output_dir).await,
@@ -575,6 +581,54 @@ fn score_from_sra_csv(csv: &str) -> (f64, serde_json::Value) {
     let score = (base_score * 0.65 + len_score * 0.35).max(0.05);
 
     (score, serde_json::Value::Object(map))
+}
+
+/// Genomic variant annotation pipeline — genome_annotate.py (Ensembl VEP REST, GRCh38) or E-utils stub.
+async fn genomics_pipeline(task: &str, input_dir: &Path, output_dir: &Path, script: Option<&PathBuf>, python: &str) -> (f64, String) {
+    let mut trace = format!("genomics_pipeline task={task}\n");
+
+    let Some(infer_script) = script else {
+        trace.push_str("  [no script, falling back to NCBI E-utils stub]\n");
+        return genomics_analysis(task, input_dir, output_dir).await;
+    };
+
+    trace.push_str(&format!("  [script] {}\n", infer_script.display()));
+    let status = tokio::process::Command::new(python)
+        .args([
+            infer_script.to_string_lossy().as_ref(),
+            "--input",  &input_dir.to_string_lossy(),
+            "--output", &output_dir.to_string_lossy(),
+        ])
+        .output()
+        .await;
+
+    match status {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            trace.push_str(&format!("  script OK: {}\n", stdout.trim()));
+            let score = read_score_from_predictions(output_dir).await
+                .or_else(|| {
+                    serde_json::from_str::<serde_json::Value>(stdout.trim()).ok()
+                        .and_then(|v| v["score"].as_f64())
+                })
+                .unwrap_or(0.1);
+            trace.push_str(&format!("  score={score:.4}\n"));
+            (score, trace)
+        }
+        Ok(out) => {
+            let err = String::from_utf8_lossy(&out.stderr);
+            trace.push_str(&format!("  script exit≠0: {}\n  falling back to E-utils\n", err.trim()));
+            let (s, t) = genomics_analysis(task, input_dir, output_dir).await;
+            trace.push_str(&t);
+            (s, trace)
+        }
+        Err(e) => {
+            trace.push_str(&format!("  script launch failed: {e}\n  falling back to E-utils\n"));
+            let (s, t) = genomics_analysis(task, input_dir, output_dir).await;
+            trace.push_str(&t);
+            (s, trace)
+        }
+    }
 }
 
 /// Acoustic species classification — YAMNet (primary) or stub.
@@ -927,21 +981,35 @@ async fn detect_python() -> String {
             return candidate.to_string();
         }
     }
-    warn!("L2: tensorflow_hub not found — YAMNet will use stub");
+    warn!("L2: torch not found — inference script will use stub fallback");
     "python3".to_string()
 }
 
 /// Build CSV string to embed in encrypted payload (called before encryption).
-/// Reads submission.csv (BirdCLEF 2026 format) produced by inference script.
-/// Falls back to a minimal score-only row if submission.csv is absent.
+/// Reads submission.csv (BirdCLEF) or annotated.vcf summary (genomics).
+/// Falls back to a minimal score-only row if neither is present.
 async fn build_predictions_csv(output_dir: &Path, mean_score: f64) -> String {
-    // Prefer submission.csv (BirdCLEF 2026: row_id + 234 species columns)
+    // BirdCLEF: prefer submission.csv (row_id + 234 species columns)
     if let Ok(csv) = tokio::fs::read_to_string(output_dir.join("submission.csv")).await {
         if !csv.trim().is_empty() {
             return csv;
         }
     }
-    // Fallback: minimal CSV with overall score
+    // Genomics: summarise annotated.vcf line count + analysis.json metrics
+    if let Ok(json_str) = tokio::fs::read_to_string(output_dir.join("analysis.json")).await {
+        if let Ok(m) = serde_json::from_str::<serde_json::Value>(&json_str) {
+            let total     = m["total_variants"].as_u64().unwrap_or(0);
+            let annotated = m["annotated"].as_u64().unwrap_or(0);
+            let high      = m["high_impact"].as_u64().unwrap_or(0);
+            let pathogenic = m["pathogenic_count"].as_u64().unwrap_or(0);
+            let score     = m["score"].as_f64().unwrap_or(mean_score);
+            return format!(
+                "metric,value\nreference,GRCh38\ntotal_variants,{total}\n\
+                 annotated,{annotated}\nhigh_impact,{high}\npathogenic_count,{pathogenic}\nscore,{score:.6}\n"
+            );
+        }
+    }
+    // Fallback: minimal CSV
     format!("row_id,score\nresult,{mean_score:.6}\n")
 }
 
