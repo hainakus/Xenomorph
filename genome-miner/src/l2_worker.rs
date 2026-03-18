@@ -118,7 +118,7 @@ async fn execute(
 
     // ── 4. Download dataset ───────────────────────────────────────────────────
     if let Some(url) = dataset_url {
-        if let Err(e) = download(&http, url, &input_dir, job_id).await {
+        if let Err(e) = download(&http, url, &input_dir, job_id, &cfg.coordinator_url).await {
             warn!("L2: dataset download failed (will use stub): {e:#}");
         }
     }
@@ -903,13 +903,10 @@ fn stub_conf(path: &Path) -> f64 {
 }
 
 /// Returns the first Python executable that has the required inference library.
-/// macOS: checks for `torch` (EfficientNet/PyTorch)
-/// Linux: checks for `tensorflow_hub` (YAMNet)
+/// macOS: checks for `torch` (EfficientNet/PyTorch/MPS)
+/// Linux: checks for `torch` (birdclef_gpu_infer.py uses PyTorch/CUDA)
 async fn detect_python() -> String {
-    #[cfg(target_os = "macos")]
     let check_import = "import torch";
-    #[cfg(not(target_os = "macos"))]
-    let check_import = "import tensorflow_hub";
 
     let candidates = [
         "python3",
@@ -970,14 +967,14 @@ async fn collect_audio(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-async fn download(http: &reqwest::Client, url: &str, dest: &Path, job_id: &str) -> Result<()> {
+async fn download(http: &reqwest::Client, url: &str, dest: &Path, job_id: &str, coordinator_url: &str) -> Result<()> {
     tokio::fs::create_dir_all(dest).await?;
-    
+
     // Handle kaggle:// protocol for Kaggle datasets (e.g., BirdCLEF)
     if url.starts_with("kaggle://") {
-        return download_kaggle_dataset(url, dest, job_id).await;
+        return download_kaggle_dataset(url, dest, job_id, coordinator_url).await;
     }
-    
+
     // Standard HTTP(S) download
     let resp = http.get(url).send().await.context("download")?;
     if !resp.status().is_success() {
@@ -991,13 +988,9 @@ async fn download(http: &reqwest::Client, url: &str, dest: &Path, job_id: &str) 
 
 /// Download dataset from coordinator API.
 /// URL format: kaggle://competitions/{slug} or http://coordinator/datasets/{job_id}/files
-async fn download_kaggle_dataset(_url: &str, dest: &Path, job_id: &str) -> Result<()> {
+async fn download_kaggle_dataset(_url: &str, dest: &Path, job_id: &str, coordinator_url: &str) -> Result<()> {
     log::info!("Downloading dataset from coordinator for job: {job_id}");
-    
-    // Get coordinator URL from environment or default
-    let coordinator_url = std::env::var("L2_COORDINATOR_URL")
-        .unwrap_or_else(|_| "http://localhost:8091".to_string());
-    
+
     let http = reqwest::Client::new();
     let files_url = format!("{}/datasets/{}/files", coordinator_url, job_id);
     
