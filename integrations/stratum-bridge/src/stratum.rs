@@ -534,8 +534,12 @@ async fn process_submit(
         }
         meets_block
     } else {
-        // ── Genome PoW — no local dataset, forward to node for validation ───
-        true
+        // ── Genome PoW — no local dataset ───────────────────────────────────
+        // Cannot validate the nonce locally: do NOT submit to the node and
+        // do NOT award PPLNS credit.  Start bridge with --genome-file.
+        return Err(ShareError::BadFormat(
+            "genome pow active but --genome-file not loaded — share rejected".to_owned()
+        ));
     };
 
     // ── 5. Only submit to node when the share meets the BLOCK target ───────
@@ -552,11 +556,6 @@ async fn process_submit(
     if matches!(resp.report, SubmitBlockReport::Success) {
         let daa_score = job.template.header.daa_score.saturating_add(1);
         Ok((SubmitOutcome::Block { daa_score }, bits))
-    } else if job.genome_active && packed_genome.is_none() {
-        // No local Genome PoW validation was possible; the node is the only
-        // arbiter.  A non-Success response means the PoW itself is invalid
-        // (not just "not a block") — discard, no PPLNS credit.
-        Err(ShareError::BadFormat("node rejected genome pow share".to_owned()))
     } else {
         // Local validation already confirmed the PoW is correct.
         // Node rejection here is a timing / orphan race — the work is still
