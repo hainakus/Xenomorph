@@ -5,7 +5,7 @@
 # Starts 3 processes:
 #   1. genetics-l2-coordinator  (REST API for job management)
 #   2. xenom-stratum-bridge     (Stratum pool + L2 dispatcher)
-#   3. genetics-l2-fetcher      (seeds BirdCLEF jobs from Kaggle - runs once)
+#   3. genetics-l2-fetcher      (seeds jobs - runs once then exits)
 #
 # Usage:
 #   ./scripts/pool-genetics.sh [options]
@@ -15,10 +15,18 @@
 #   --rpc HOST:PORT         Node gRPC endpoint (default: 127.0.0.1:18610)
 #   --coordinator-port N    L2 coordinator port (default: 8091)
 #   --stratum-port N        Stratum listen port (default: 5555)
-#   --competition SLUG      Kaggle competition to seed (default: birdclef-2026)
 #   --db PATH               Coordinator DB path (default: /tmp/genetics-l2.db)
-#   --kaggle-key USER:TOKEN Kaggle API key (overrides KAGGLE_KEY env var and ~/.kaggle/kaggle.json)
 #   --build                 Force rebuild of all binaries
+#
+#   Dataset sources (fetcher flags):
+#   --competition SLUG      Kaggle competition to seed (default: birdclef-2026)
+#   --kaggle-key USER:TOKEN Kaggle API key (overrides KAGGLE_KEY env / ~/.kaggle/kaggle.json)
+#   --genomics              Enable all 5 genomics sources (SRA + IGSR + gnomAD + GDC + ClinVar)
+#   --sra                   Seed NCBI SRA GRCh38 VCF jobs (GIAB benchmarks)
+#   --igsr                  Seed 1000 Genomes / IGSR GRCh38 30x phased VCF jobs
+#   --gnomad                Seed gnomAD v4.1 exome VCF allele-frequency jobs
+#   --gdc                   Fetch open-access TCGA/GDC cancer cohort jobs
+#   --clinvar               Seed ClinVar weekly GRCh38 VCF clinical annotation jobs
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -36,6 +44,13 @@ DB_PATH="/tmp/genetics-l2.db"
 KAGGLE_KEY="${KAGGLE_KEY:-}"
 BUILD=0
 
+# Dataset source flags (all off by default; --genomics enables all 5)
+OPT_SRA=0
+OPT_IGSR=0
+OPT_GNOMAD=0
+OPT_GDC=0
+OPT_CLINVAR=0
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --mining-address)   MINING_ADDRESS="$2"; shift 2 ;;
@@ -46,6 +61,12 @@ while [[ $# -gt 0 ]]; do
     --db)               DB_PATH="$2";         shift 2 ;;
     --kaggle-key)       KAGGLE_KEY="$2";      shift 2 ;;
     --build)            BUILD=1;              shift 1 ;;
+    --genomics)         OPT_SRA=1; OPT_IGSR=1; OPT_GNOMAD=1; OPT_GDC=1; OPT_CLINVAR=1; shift 1 ;;
+    --sra)              OPT_SRA=1;            shift 1 ;;
+    --igsr)             OPT_IGSR=1;           shift 1 ;;
+    --gnomad)           OPT_GNOMAD=1;         shift 1 ;;
+    --gdc)              OPT_GDC=1;            shift 1 ;;
+    --clinvar)          OPT_CLINVAR=1;        shift 1 ;;
     *) shift 1 ;;
   esac
 done
@@ -116,26 +137,41 @@ else
 fi
 
 # ── 3. Fetcher (seed jobs - once) ─────────────────────────────────────────────
-echo "[pool] Seeding '$COMPETITION' jobs via genetics-l2-fetcher..."
 FETCHER_ARGS=(--coordinator "$COORDINATOR_URL" --competition "$COMPETITION")
 [[ -n "$KAGGLE_KEY" ]] && FETCHER_ARGS+=(--kaggle-key "$KAGGLE_KEY")
+[[ $OPT_SRA    -eq 1 ]] && FETCHER_ARGS+=(--sra)
+[[ $OPT_IGSR   -eq 1 ]] && FETCHER_ARGS+=(--igsr)
+[[ $OPT_GNOMAD -eq 1 ]] && FETCHER_ARGS+=(--gnomad)
+[[ $OPT_GDC    -eq 1 ]] && FETCHER_ARGS+=(--gdc)
+[[ $OPT_CLINVAR -eq 1 ]] && FETCHER_ARGS+=(--clinvar)
+
+echo "[pool] Seeding jobs via genetics-l2-fetcher (args: ${FETCHER_ARGS[*]})..."
 "$BIN/genetics-l2-fetcher" "${FETCHER_ARGS[@]}" && echo "[pool] Seed complete."
 
 # ── Summary ───────────────────────────────────────────────────────────────────
+ACTIVE_SOURCES="kaggle:$COMPETITION"
+[[ $OPT_SRA    -eq 1 ]] && ACTIVE_SOURCES+=", sra"
+[[ $OPT_IGSR   -eq 1 ]] && ACTIVE_SOURCES+=", igsr"
+[[ $OPT_GNOMAD -eq 1 ]] && ACTIVE_SOURCES+=", gnomad"
+[[ $OPT_GDC    -eq 1 ]] && ACTIVE_SOURCES+=", gdc"
+[[ $OPT_CLINVAR -eq 1 ]] && ACTIVE_SOURCES+=", clinvar"
+
+POOL_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo '127.0.0.1')"
+
 echo ""
-echo "══════════════════════════════════════════"
+echo "══════════════════════════════════════════════════"
 echo " Genetics L2 Pool running"
-echo "══════════════════════════════════════════"
-echo " Stratum       stratum+tcp://$(hostname -I | awk '{print $1}'):$STRATUM_PORT"
+echo "══════════════════════════════════════════════════"
+echo " Stratum       stratum+tcp://$POOL_IP:$STRATUM_PORT"
 echo " Coordinator   $COORDINATOR_URL"
-echo " Competition   $COMPETITION"
+echo " Datasets      $ACTIVE_SOURCES"
 echo " Pool address  $MINING_ADDRESS"
-echo "══════════════════════════════════════════"
+echo "══════════════════════════════════════════════════"
 echo ""
 echo "Miner command:"
 echo "  ./genome-miner mine --devnet \\"
 echo "    --mining-address <YOUR_ADDRESS> \\"
-echo "    --stratum stratum+tcp://$(hostname -I | awk '{print $1}'):$STRATUM_PORT \\"
+echo "    --stratum stratum+tcp://$POOL_IP:$STRATUM_PORT \\"
 echo "    --l2-coordinator $COORDINATOR_URL \\"
 echo "    --l2-private-key <HEX_KEY>"
 echo ""

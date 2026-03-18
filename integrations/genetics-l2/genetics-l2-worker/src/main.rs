@@ -165,9 +165,22 @@ async fn try_claim_and_execute(
     let worker_sig = sign_manifest(&digest, &cfg.privkey_hex)
         .unwrap_or_else(|_| "unsigned".to_owned());
 
-    // ── 8. Submit result ──────────────────────────────────────────────────────
+    // ── 8. Fetch coordinator pubkey for result encryption ─────────────────────
+    let coordinator_pubkey = match http
+        .get(format!("{}/pubkey", cfg.coordinator_url))
+        .send().await
+        .and_then(|r| r.error_for_status())
+    {
+        Ok(resp) => resp.json::<serde_json::Value>().await
+            .ok()
+            .and_then(|v| v["pubkey"].as_str().map(str::to_owned))
+            .unwrap_or_default(),
+        Err(e) => { log::warn!("Cannot fetch coordinator pubkey: {e}"); String::new() },
+    };
+
+    // ── 9. Build and optionally encrypt result ────────────────────────────────
     let result_id = format!("{}-{}", job.job_id, &trace_hash[..8]);
-    let result = JobResult {
+    let mut result = JobResult {
         result_id:    result_id.clone(),
         job_id:       job.job_id.clone(),
         worker_pubkey: cfg.worker_pubkey.clone(),
@@ -184,6 +197,23 @@ async fn try_claim_and_execute(
         predictions_csv:         None,
         submitted_at: now_secs(),
     };
+
+    if !coordinator_pubkey.is_empty() {
+        match result.encrypt_payload(&coordinator_pubkey) {
+            Ok((enc, eph)) => {
+                log::info!("Encrypted result payload for {}", job.job_id);
+                result.encrypted_payload = Some(enc);
+                result.ephemeral_pubkey  = Some(eph);
+                result.result_root  = String::new();
+                result.score        = 0.0;
+                result.trace_hash   = None;
+                result.predictions_csv = None;
+            }
+            Err(e) => log::warn!("Encryption failed: {e} — submitting unencrypted"),
+        }
+    } else {
+        log::warn!("No coordinator pubkey — submitting unencrypted result");
+    }
 
     let submit_resp = http
         .post(format!("{}/results", cfg.coordinator_url))

@@ -3,6 +3,9 @@
 Genome Variant Annotation Pipeline — GRCh38 (MVP)
 CPU-first. Uses Ensembl VEP REST API — no local bioinformatics tools required.
 
+Pipeline:
+  VCF → normalization → annotation → gene scoring → cohort grouping → dataset index
+
 Usage:
   python genome_annotate.py --input DIR --output DIR [--max-variants 200]
 
@@ -10,9 +13,10 @@ Inputs (optional — uses built-in demo variants if none found):
   *.vcf or *.vcf.gz files in --input DIR
 
 Outputs:
-  annotated.vcf    — VCF with VEP consequence, IMPACT, gene, AF, ClinVar in INFO/CSQ
-  analysis.json    — quality metrics and L2 score
-  predictions.json — score field for miner (mirrors analysis.json score)
+  annotated.vcf       — VCF with VEP consequence, IMPACT, gene, AF, ClinVar in INFO/CSQ
+  analysis.json       — quality metrics and L2 score
+  predictions.json    — score field for miner (mirrors analysis.json score)
+  dataset_index.json  — searchable dataset index with gene scores and cohort summary
 """
 
 import argparse
@@ -109,6 +113,51 @@ def collect_vcf_variants(input_dir: Path, max_variants: int) -> list[dict]:
         if len(variants) >= max_variants:
             break
     return variants[:max_variants]
+
+# ── Stage 1: Normalization ─────────────────────────────────────────────────────
+
+MAX_ALLELE_LEN = 50  # Ensembl VEP REST rejects very long alleles
+
+def normalize_variant(v: dict) -> "dict | None":
+    """Left-trim common prefix/suffix, reject symbolic/complex alleles."""
+    ref = v["ref"].upper()
+    alt = v["alt"].upper()
+    # Reject symbolic alleles (<DEL>, <INS>, etc.) and missing alleles
+    if alt.startswith("<") or "." in alt or "*" in alt or alt == "N":
+        return None
+    # Trim common suffix (right-align)
+    while len(ref) > 1 and len(alt) > 1 and ref[-1] == alt[-1]:
+        ref, alt = ref[:-1], alt[:-1]
+    # Trim common prefix (left-align) — adjust POS
+    offset = 0
+    while len(ref) > 1 and len(alt) > 1 and ref[0] == alt[0]:
+        ref, alt = ref[1:], alt[1:]
+        offset += 1
+    # Reject alleles that are still too long for the REST API
+    if len(ref) > MAX_ALLELE_LEN or len(alt) > MAX_ALLELE_LEN:
+        return None
+    return {**v, "ref": ref, "alt": alt, "pos": v["pos"] + offset}
+
+def normalize_variants(variants: list) -> list:
+    """Normalize and deduplicate variant list."""
+    seen: set = set()
+    result = []
+    skipped = 0
+    for v in variants:
+        n = normalize_variant(v)
+        if n is None:
+            skipped += 1
+            continue
+        key = (n["chrom"], n["pos"], n["ref"], n["alt"])
+        if key in seen:
+            skipped += 1
+            continue
+        seen.add(key)
+        result.append(n)
+    if skipped:
+        print(f"[INFO] Normalization: kept {len(result)}, skipped {skipped} (symbolic/dup/toolong)",
+              file=sys.stderr)
+    return result
 
 # ── Ensembl VEP REST annotation ────────────────────────────────────────────────
 
@@ -241,14 +290,111 @@ def write_annotated_vcf(output_path: Path, variants: list[dict], annotations: li
             chrom    = v["chrom"] if v["chrom"].startswith("chr") else f"chr{v['chrom']}"
             fh.write(f"{chrom}\t{v['pos']}\t{v['id']}\t{v['ref']}\t{v['alt']}\t.\tPASS\t{info}\n")
 
-# ── Scoring ────────────────────────────────────────────────────────────────────
+# ── Scoring constants ──────────────────────────────────────────────────────────
 
-HIGH_IMPACT  = {"HIGH"}
-MED_IMPACT   = {"HIGH", "MODERATE"}
-PATHOGENIC   = {"pathogenic", "likely_pathogenic"}
+IMPACT_WEIGHT = {"HIGH": 1.0, "MODERATE": 0.4, "LOW": 0.1, "MODIFIER": 0.01}
+HIGH_IMPACT   = {"HIGH"}
+MED_IMPACT    = {"HIGH", "MODERATE"}
+PATHOGENIC    = {"pathogenic", "likely_pathogenic"}
 
-def compute_score(variants: list[dict], annotations: list[dict]) -> tuple[float, dict]:
-    """Compute L2 score from annotation quality metrics."""
+# ── Stage 3: Gene scoring ───────────────────────────────────────────────────
+
+
+def score_genes(annotations: list) -> dict:
+    """Aggregate per-gene scores from variant annotations."""
+    genes: dict = {}
+    for ann in annotations:
+        gene = ann.get("gene", "-")
+        if gene == "-":
+            continue
+        if gene not in genes:
+            genes[gene] = {"variants": 0, "high_impact": 0, "pathogenic": 0, "raw_score": 0.0}
+        g = genes[gene]
+        g["variants"] += 1
+        impact = ann.get("impact", "MODIFIER")
+        if impact == "HIGH":
+            g["high_impact"] += 1
+        if any(s in PATHOGENIC for s in ann.get("clin_sig", "-").split(",")):
+            g["pathogenic"] += 1
+        g["raw_score"] += IMPACT_WEIGHT.get(impact, 0.01)
+    # Normalise: cap per-variant avg at 1.0, boost by pathogenic presence
+    result = {}
+    for gene, g in genes.items():
+        base  = min(g["raw_score"] / max(g["variants"], 1), 1.0)
+        boost = min(g["pathogenic"] * 0.15, 0.30)
+        score = round(min(base + boost, 1.0), 4)
+        result[gene] = {
+            "variants":    g["variants"],
+            "high_impact": g["high_impact"],
+            "pathogenic":  g["pathogenic"],
+            "score":       score,
+        }
+    return result
+
+# ── Stage 4: Cohort grouping ──────────────────────────────────────────────────
+
+def group_cohorts(variants: list, annotations: list) -> dict:
+    """Group variants by chromosome and aggregate stats per cohort."""
+    chroms: dict = {}
+    for v, ann in zip(variants[:len(annotations)], annotations):
+        chrom = "chr" + v["chrom"].lstrip("chr")
+        if chrom not in chroms:
+            chroms[chrom] = {"variants": 0, "high_impact": 0, "pathogenic": 0, "genes": set()}
+        c = chroms[chrom]
+        c["variants"] += 1
+        if ann.get("impact") == "HIGH":
+            c["high_impact"] += 1
+        if any(s in PATHOGENIC for s in ann.get("clin_sig", "-").split(",")):
+            c["pathogenic"] += 1
+        gene = ann.get("gene", "-")
+        if gene != "-":
+            c["genes"].add(gene)
+    # Sort chromosomes numerically, convert gene sets to sorted lists
+    def _chrom_key(k: str) -> tuple:
+        s = k.lstrip("chr")
+        return (0, int(s)) if s.isdigit() else (1, s)
+    return {
+        k: {**v, "genes": sorted(v["genes"])[:15]}
+        for k, v in sorted(chroms.items(), key=lambda x: _chrom_key(x[0]))
+    }
+
+# ── Stage 5: Dataset index ───────────────────────────────────────────────────
+
+def build_dataset_index(
+    variants:    list,
+    annotations: list,
+    gene_scores: dict,
+    cohorts:     dict,
+    score:       float,
+) -> dict:
+    """Build a searchable dataset index for the result set."""
+    top_genes = sorted(
+        gene_scores.items(),
+        key=lambda x: (x[1]["score"], x[1]["pathogenic"]),
+        reverse=True,
+    )[:20]
+    top_pathogenic = [
+        {"gene": ann.get("gene","-"), "csq": ann.get("csq","-"),
+         "clin_sig": ann.get("clin_sig","-"), "hgvsp": ann.get("hgvsp","-")}
+        for ann in annotations
+        if any(s in PATHOGENIC for s in ann.get("clin_sig","-").split(","))
+    ][:20]
+    return {
+        "schema_version":       "1.0",
+        "reference":            "GRCh38",
+        "pipeline":             "variant_annotation_grch38",
+        "total_variants":       len(variants),
+        "annotated_variants":   len(annotations),
+        "genes_affected":       len(gene_scores),
+        "chromosomes_affected": list(cohorts.keys()),
+        "score":                score,
+        "top_genes_by_score":   [{"gene": g, **s} for g, s in top_genes],
+        "top_pathogenic":       top_pathogenic,
+        "cohort_summary":       cohorts,
+    }
+
+def compute_score(variants: list, annotations: list, gene_scores: dict) -> "tuple[float, dict]":
+    """Compute L2 score from annotation quality metrics and gene scores."""
     n_total = len(variants)
     if n_total == 0:
         return 0.1, {"error": "no_variants"}
@@ -258,23 +404,28 @@ def compute_score(variants: list[dict], annotations: list[dict]) -> tuple[float,
     n_coding     = sum(1 for a in annotations if a.get("impact") in MED_IMPACT)
     n_pathogenic = sum(1 for a in annotations
                        if any(s in PATHOGENIC for s in a.get("clin_sig", "-").split(",")))
-    genes        = {a.get("gene", "-") for a in annotations if a.get("gene", "-") != "-"}
-    n_genes      = len(genes)
+    n_genes      = len(gene_scores)
 
     annotation_rate  = n_annotated / n_total
     coding_rate      = n_coding / max(n_annotated, 1)
-    pathogenic_score = min(n_pathogenic / max(n_annotated, 1) * 5, 1.0)  # scale up small numbers
+    pathogenic_score = min(n_pathogenic / max(n_annotated, 1) * 5, 1.0)
     diversity_score  = min(n_genes / 10, 1.0)
+    # Gene-score quality: average of top-10 gene scores
+    top10_avg = (sum(g["score"] for g in sorted(
+        gene_scores.values(), key=lambda x: x["score"], reverse=True
+    )[:10]) / 10) if gene_scores else 0.0
 
-    raw = (annotation_rate * 0.40
-           + coding_rate   * 0.30
+    raw = (annotation_rate  * 0.35
+           + coding_rate    * 0.25
            + pathogenic_score * 0.20
-           + diversity_score  * 0.10)
+           + diversity_score  * 0.10
+           + top10_avg        * 0.10)
     score = round(0.10 + raw * 0.85, 6)
     score = max(0.10, min(0.95, score))
 
     metrics = {
         "reference":        "GRCh38",
+        "pipeline":         "variant_annotation_grch38",
         "total_variants":   n_total,
         "annotated":        n_annotated,
         "annotation_rate":  round(annotation_rate, 4),
@@ -283,7 +434,8 @@ def compute_score(variants: list[dict], annotations: list[dict]) -> tuple[float,
         "coding_rate":      round(coding_rate, 4),
         "pathogenic_count": n_pathogenic,
         "unique_genes":     n_genes,
-        "top_genes":        sorted(genes)[:20],
+        "top_genes":        sorted(gene_scores.keys(),
+                                   key=lambda g: gene_scores[g]["score"], reverse=True)[:20],
         "score":            score,
     }
     return score, metrics
@@ -301,38 +453,55 @@ def main() -> None:
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── 1. Collect variants ──────────────────────────────────────────────────
-    variants = collect_vcf_variants(input_dir, args.max_variants)
-    if variants:
-        print(f"[INFO] Loaded {len(variants)} variant(s) from VCF files in {input_dir}")
+    # ── Stage 1: Collect + Normalize ──────────────────────────────────────────────
+    raw_variants = collect_vcf_variants(input_dir, args.max_variants)
+    if raw_variants:
+        print(f"[INFO] Stage 1: Loaded {len(raw_variants)} raw variant(s) from {input_dir}")
+        variants = normalize_variants(raw_variants)
+        print(f"[INFO] Stage 1: {len(variants)} variants after normalization")
     else:
-        print(f"[INFO] No VCF files found in {input_dir} — using {len(DEMO_VARIANTS)} demo variants (GRCh38 known pathogenic)")
+        print(f"[INFO] Stage 1: No VCF files found — using {len(DEMO_VARIANTS)} demo variants (GRCh38 known pathogenic)")
         variants = DEMO_VARIANTS[:args.max_variants]
 
-    # ── 2. Annotate via Ensembl VEP REST ────────────────────────────────────
+    # ── Stage 2: Annotation via Ensembl VEP REST ──────────────────────────────────
     annotations = annotate_variants(variants)
-    print(f"[INFO] Annotated {len(annotations)} of {len(variants)} variants")
+    print(f"[INFO] Stage 2: Annotated {len(annotations)} of {len(variants)} variants")
 
-    # ── 3. Write outputs ─────────────────────────────────────────────────────
+    # ── Stage 3: Gene scoring ───────────────────────────────────────────────────
+    gene_scores = score_genes(annotations)
+    print(f"[INFO] Stage 3: Scored {len(gene_scores)} gene(s)")
+
+    # ── Stage 4: Cohort grouping ────────────────────────────────────────────────
+    cohorts = group_cohorts(variants, annotations)
+    print(f"[INFO] Stage 4: Grouped into {len(cohorts)} chromosome cohort(s)")
+
+    # ── Stage 5: Compute score + write all outputs ───────────────────────────────
+    score, metrics = compute_score(variants, annotations, gene_scores)
+
     vcf_path = output_dir / "annotated.vcf"
     write_annotated_vcf(vcf_path, variants, annotations)
     print(f"[INFO] Wrote {vcf_path}")
 
-    score, metrics = compute_score(variants, annotations)
-
+    analysis = {**metrics, "gene_scores": gene_scores, "cohort_summary": cohorts}
     analysis_path = output_dir / "analysis.json"
     with open(analysis_path, "w") as fh:
-        json.dump(metrics, fh, indent=2)
+        json.dump(analysis, fh, indent=2)
     print(f"[INFO] Wrote {analysis_path}")
 
-    # predictions.json — miner reads 'score' field from here
     pred_path = output_dir / "predictions.json"
     with open(pred_path, "w") as fh:
         json.dump({"score": score, "task": "variant_annotation_grch38", **metrics}, fh, indent=2)
+    print(f"[INFO] Wrote {pred_path}")
+
+    idx = build_dataset_index(variants, annotations, gene_scores, cohorts, score)
+    idx_path = output_dir / "dataset_index.json"
+    with open(idx_path, "w") as fh:
+        json.dump(idx, fh, indent=2)
+    print(f"[INFO] Wrote {idx_path}")
 
     print(f"[RESULT] score={score:.4f}  annotated={len(annotations)}/{len(variants)}  "
-          f"high_impact={metrics['high_impact']}  pathogenic={metrics['pathogenic_count']}  "
-          f"genes={metrics['unique_genes']}")
+          f"genes={len(gene_scores)}  cohorts={len(cohorts)}  "
+          f"high_impact={metrics['high_impact']}  pathogenic={metrics['pathogenic_count']}")
     print(json.dumps({"score": score}))
 
 if __name__ == "__main__":

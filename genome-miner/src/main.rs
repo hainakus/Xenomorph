@@ -56,7 +56,7 @@ fn cli() -> Command {
                 .arg(Arg::new("stratum-worker").long("stratum-worker").value_name("NAME").help("Stratum worker name (default: --mining-address)"))
                 .arg(Arg::new("stratum-password").long("stratum-password").value_name("PASS").default_value("x").help("Stratum password (default: x)"))
                 .arg(Arg::new("l2-coordinator").long("l2-coordinator").value_name("URL").help("L2 coordinator URL for inline job execution (e.g. http://localhost:8091)"))
-                .arg(Arg::new("l2-private-key").long("l2-private-key").value_name("HEX").help("secp256k1 private key (64 hex) for signing L2 results"))
+                .arg(Arg::new("l2-key-file").long("l2-key-file").value_name("PATH").help("Path to file with secp256k1 private key (64 hex) for signing L2 results. Alternatively set $L2_PRIVKEY."))
                 .arg(Arg::new("l2-gpu").long("l2-gpu").action(clap::ArgAction::SetTrue).help("Use GPU for BirdNET inference (requires CUDA + PyTorch GPU)"))
                 .arg(Arg::new("l2-perch-script").long("l2-perch-script").value_name("PATH").help("Path to perch_infer.py (auto-detected if omitted)"))
         )
@@ -104,10 +104,25 @@ fn cli() -> Command {
                 .arg(Arg::new("stratum-password").long("stratum-password").value_name("PASS").default_value("x").help("Stratum password (default: x)"))
                 .arg(Arg::new("api-port").long("api-port").value_name("PORT").value_parser(clap::value_parser!(u16)).default_value("4000").help("HiveOS stats API port (0 = disabled)"))
                 .arg(Arg::new("l2-coordinator").long("l2-coordinator").value_name("URL").help("L2 coordinator URL for inline job execution (e.g. http://localhost:8091)"))
-                .arg(Arg::new("l2-private-key").long("l2-private-key").value_name("HEX").help("secp256k1 private key (64 hex) for signing L2 results"))
+                .arg(Arg::new("l2-key-file").long("l2-key-file").value_name("PATH").help("Path to file with secp256k1 private key (64 hex) for signing L2 results. Alternatively set $L2_PRIVKEY."))
                 .arg(Arg::new("l2-gpu").long("l2-gpu").action(clap::ArgAction::SetTrue).help("Use GPU for BirdNET inference (requires CUDA + PyTorch GPU)"))
                 .arg(Arg::new("l2-perch-script").long("l2-perch-script").value_name("PATH").help("Path to perch_infer.py (auto-detected if omitted)"))
         )
+}
+
+/// Load L2 private key from $L2_PRIVKEY env var or --l2-key-file path.
+fn load_l2_privkey(key_file: Option<&str>) -> Option<String> {
+    if let Ok(hex) = std::env::var("L2_PRIVKEY") {
+        let hex = hex.trim().to_string();
+        if !hex.is_empty() { return Some(hex); }
+    }
+    if let Some(path) = key_file {
+        if let Ok(hex) = std::fs::read_to_string(path) {
+            let hex = hex.trim().to_string();
+            if !hex.is_empty() { return Some(hex); }
+        }
+    }
+    None
 }
 
 // ── Miner state (mine subcommand) ────────────────────────────────────────────
@@ -260,7 +275,7 @@ async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
 
         let l2_cfg = match (
             m.get_one::<String>("l2-coordinator").cloned(),
-            m.get_one::<String>("l2-private-key").cloned(),
+            load_l2_privkey(m.get_one::<String>("l2-key-file").map(|s| s.as_str())),
         ) {
             (Some(url), Some(key)) => {
                 let use_gpu = m.get_flag("l2-gpu");
@@ -702,7 +717,7 @@ fn cmd_keygen() {
     let kp = bioproof_core::BioProofKeypair::generate();
     println!();
     println!("=== L2 Worker Keypair ===");
-    println!("Private key (--l2-private-key): {}", kp.privkey_hex());
+    println!("Private key (set as $L2_PRIVKEY):  {}", kp.privkey_hex());
     println!("Public  key (worker identity):  {}", kp.pubkey_hex());
     println!();
     println!("KEEP THE PRIVATE KEY SECRET — never share it.");

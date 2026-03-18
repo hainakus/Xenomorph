@@ -3,20 +3,24 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title id="page-title">Xenom BirdWatch Pool</title>
+<title id="page-title">Xenom Genome Mining Pool</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet"/>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>
 :root{
-  --g:#00d4ff;--gd:#0099cc;--gg:#00d4ff1f;
+  /* genetics green (default) */
+  --g:#00ff88;--gd:#00cc66;--gg:#00ff8820;
   --c:#f59e0b;--r:#f43f5e;--y:#fcd34d;
-  --bg:#020c18;--dark:#041a2e;--gray:#0a1929;--bd:#1a4d6b;
-  --tx:#7fc7e8;--txd:#2d5a7a;
+  --bg:#020d10;--dark:#031a10;--gray:#081a10;--bd:#1a4d2e;
+  --tx:#7fe8a8;--txd:#2d5a3e;
   --fm:"Share Tech Mono",monospace;
   --fd:"Orbitron",sans-serif;
   --fb:"Rajdhani",sans-serif;
-  /* birdwatch blue theme */
+  /* genetics accent */
+  --gen1:#00ff88;--gen2:#39d98a;--gen3:#0af5b0;
+  --gen-bg:#00ff881a;--gen-bd:#00ff8833;
+  /* birdwatch blue (applied by applyTheme('birdclef')) */
   --bird1:#00d4ff;--bird2:#60a5fa;--bird3:#38bdf8;
   --bird-bg:#00d4ff1a;--bird-bd:#00d4ff33;
 }
@@ -24,7 +28,7 @@
 html,body,#root{width:100%;min-width:100%;min-height:100vh}
 body{background:var(--bg);color:var(--tx);font-family:var(--fb);min-height:100vh;overflow-x:hidden}
 body::after{content:"";pointer-events:none;z-index:9999;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.04) 2px,rgba(0,0,0,.04) 4px);position:fixed;inset:0}
-.bg-grid{pointer-events:none;z-index:0;background-image:linear-gradient(#00d4ff06 1px,transparent 1px),linear-gradient(90deg,#00d4ff06 1px,transparent 1px);background-size:40px 40px;position:fixed;inset:0}
+.bg-grid{pointer-events:none;z-index:0;background-image:linear-gradient(#00ff8806 1px,transparent 1px),linear-gradient(90deg,#00ff8806 1px,transparent 1px);background-size:40px 40px;position:fixed;inset:0}
 .wrap{z-index:1;flex-direction:column;min-height:100vh;display:flex;position:relative}
 
 nav{z-index:100;border-bottom:1px solid var(--bd);backdrop-filter:blur(12px);background:rgba(2,4,8,.96);align-items:center;gap:1.5rem;height:58px;padding:0 2rem;display:flex;position:sticky;top:0}
@@ -125,14 +129,14 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
 
 <!-- NAV -->
 <nav>
-  <div class="logo" id="pool-logo"><span class="logo-icon" id="logo-icon">🦅</span> <span id="logo-text">BIRDWATCH</span></div>
+  <div class="logo" id="pool-logo"><span class="logo-icon" id="logo-icon">�</span> <span id="logo-text">GENOME MINING</span></div>
   <ul class="nav-links">
     <li><button class="active" onclick="showPage('overview',this)" id="nav-overview">Overview</button></li>
     <li><button onclick="showPage('miners',this)" id="nav-miners">Miners</button></li>
     <li><button onclick="showPage('blocks',this)" id="nav-blocks">Blocks</button></li>
     <li><button onclick="showPage('payments',this)" id="nav-payments">Payments</button></li>
     <li><button onclick="showPage('network',this)" id="nav-network">Network</button></li>
-    <li id="nav-genomics-li"><button onclick="showPage('genomics',this)" id="nav-genomics">� BirdCLEF</button></li>
+    <li id="nav-genomics-li"><button onclick="showPage('genomics',this)" id="nav-genomics">🧬 Genomics</button></li>
   </ul>
   <div class="nav-right">
     <span class="last-upd" id="last-updated"></span>
@@ -144,12 +148,12 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
 <!-- MAIN -->
 <main>
 
-  <!-- L2 BIRDCLEF JOB BANNER -->
-  <div id="genetics-banner" class="bird-hero">
-    <div class="bird-silhouette">�</div>
+  <!-- L2 GENOMICS JOB BANNER -->
+  <div id="genetics-banner" class="bird-hero" style="border-color:var(--gen-bd);background:linear-gradient(135deg,#020d10 0%,#031a10 50%,#020d10 100%)">
+    <div class="bird-silhouette">🧬</div>
     <div class="bird-hero-inner">
       <div>
-        <div class="bird-job-label">Current BirdCLEF Job</div>
+        <div class="bird-job-label" id="banner-job-label">Current Genomics Job</div>
         <div class="bird-job-val" id="g-task">–</div>
         <div class="bird-job-sub" id="g-jobid">–</div>
       </div>
@@ -242,26 +246,26 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
 
   <!-- GENOMICS LAB -->
   <div id="page-genomics" style="display:none">
-    <div style="margin-bottom:1.2rem;padding:1rem 1.4rem;border:1px solid var(--bird-bd);background:linear-gradient(135deg,#020c18,#041a2e);position:relative;overflow:hidden">
-      <div style="position:absolute;right:2rem;top:50%;transform:translateY(-50%);font-size:5rem;opacity:.07;pointer-events:none">🦜</div>
-      <div style="font-family:var(--fd);color:var(--bird1);font-size:1.1rem;font-weight:900;letter-spacing:.15em;margin-bottom:.2rem">XENOM BIRDWATCH</div>
-      <div style="font-family:var(--fm);color:var(--txd);font-size:.62rem">Distributed Acoustic Species Classification — BirdCLEF 2026 &nbsp;|&nbsp; Perch v2 + GPU Inference</div>
+    <div style="margin-bottom:1.2rem;padding:1rem 1.4rem;border:1px solid var(--gen-bd);background:linear-gradient(135deg,#020d10,#031a10);position:relative;overflow:hidden">
+      <div style="position:absolute;right:2rem;top:50%;transform:translateY(-50%);font-size:5rem;opacity:.07;pointer-events:none">�</div>
+      <div style="font-family:var(--fd);color:var(--g);font-size:1.1rem;font-weight:900;letter-spacing:.15em;margin-bottom:.2rem">XENOM GENOME MINING</div>
+      <div style="font-family:var(--fm);color:var(--txd);font-size:.62rem">Distributed VCF Annotation &mdash; GRCh38 &nbsp;|&nbsp; Ensembl VEP &nbsp;|&nbsp; Gene Scoring &nbsp;|&nbsp; Cohort Analysis</div>
     </div>
 
     <div class="stats" style="margin-bottom:1.5rem">
-      <div class="stat" style="--g:var(--bird1)"><div class="stat-lbl">Current Task</div><div class="stat-val" id="gp-task" style="color:var(--bird1);font-size:.85rem">–</div><div class="stat-sub" id="gp-jobid">–</div></div>
-      <div class="stat" style="--g:var(--bird3)"><div class="stat-lbl">Audio Clip</div><div class="stat-val" id="gp-fragment" style="color:var(--bird3)">–</div><div class="stat-sub">clip window</div></div>
+      <div class="stat"><div class="stat-lbl">Current Task</div><div class="stat-val" id="gp-task" style="font-size:.85rem">–</div><div class="stat-sub" id="gp-jobid">–</div></div>
+      <div class="stat"><div class="stat-lbl">Variants / Fragment</div><div class="stat-val" id="gp-fragment">–</div><div class="stat-sub">dataset fragment</div></div>
       <div class="stat"><div class="stat-lbl">Reward</div><div class="stat-val" id="gp-reward">–</div><div class="stat-sub">SOMPI per result</div></div>
-      <div class="stat" style="--g:var(--bird2)"><div class="stat-lbl">Pipeline</div><div class="stat-val" style="color:var(--bird2);font-size:.75rem">Perch v2</div><div class="stat-sub">Google AI + GPU</div></div>
+      <div class="stat"><div class="stat-lbl">Pipeline</div><div class="stat-val" style="font-size:.75rem">VEP GRCh38</div><div class="stat-sub">Ensembl + gene scoring</div></div>
     </div>
 
     <div class="grid2">
       <div class="panel">
-        <div class="panel-hdr"><span class="sec-title" style="color:var(--bird1)">Job Details</span><span class="live-badge"><span class="dot" style="background:var(--bird1);box-shadow:0 0 8px var(--bird1)"></span>Live</span></div>
+        <div class="panel-hdr"><span class="sec-title">Job Details</span><span class="live-badge"><span class="dot"></span>Live</span></div>
         <div style="padding:1.2rem;font-family:var(--fm);font-size:.68rem">
           <table style="width:100%;border-collapse:collapse">
-            <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Theme</td><td style="color:var(--bird1);text-align:right">birdclef / acoustic-classification</td></tr>
-            <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Job ID</td><td id="gp-jobid2" style="color:var(--bird2);text-align:right;word-break:break-all">–</td></tr>
+            <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Theme</td><td id="gp-theme" style="color:var(--g);text-align:right">genetics / vcf_annotation</td></tr>
+            <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Job ID</td><td id="gp-jobid2" style="color:var(--g);text-align:right;word-break:break-all">–</td></tr>
             <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Task</td><td id="gp-task2" style="color:var(--g);text-align:right">–</td></tr>
             <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Dataset</td><td id="gp-dataset2" style="color:var(--bird2);text-align:right">–</td></tr>
             <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Fragment</td><td id="gp-fragment2" style="color:var(--bird3);text-align:right">–</td></tr>
@@ -318,13 +322,13 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
 </main>
 
 <footer>
-  <span id="pool-name-footer">Xenom BirdWatch Pool — Pool</span>
-  <span>🦜 BirdCLEF &mdash; Acoustic Classification &nbsp;|&nbsp; Stratum :1444 &nbsp;|&nbsp; API :1445</span>
+  <span id="pool-name-footer">Xenom Genome Mining Pool — Pool</span>
+  <span id="footer-pipeline">� Genome Mining &mdash; VCF Annotation GRCh38 &nbsp;|&nbsp; Stratum :1444 &nbsp;|&nbsp; API :1445</span>
 </footer>
 </div>
 
 <script>
-let hrChart=null,hrHistory=[],allMiners=[],statsCache=null,l2Cache=null,poolTheme='birdclef';
+let hrChart=null,hrHistory=[],allMiners=[],statsCache=null,l2Cache=null,poolTheme='genetics';
 
 function fmtHash(h){
   if(!h)return'0 H/s';
@@ -433,10 +437,35 @@ async function loadL2(){
 
 function applyTheme(theme){
   poolTheme=theme;
+  const r=document.documentElement.style;
   if(theme==='birdclef'){
+    r.setProperty('--g','#00d4ff');r.setProperty('--gd','#0099cc');r.setProperty('--gg','#00d4ff1f');
+    r.setProperty('--bg','#020c18');r.setProperty('--dark','#041a2e');r.setProperty('--gray','#0a1929');r.setProperty('--bd','#1a4d6b');
+    r.setProperty('--tx','#7fc7e8');r.setProperty('--txd','#2d5a7a');
     document.getElementById('page-title').textContent='Xenom BirdWatch Pool';
     document.getElementById('logo-icon').textContent='🦅';
     document.getElementById('logo-text').textContent='BIRDWATCH';
+    document.getElementById('nav-genomics').textContent='🦜 BirdCLEF';
+    const b=document.getElementById('genetics-banner');
+    if(b){b.style.borderColor='var(--bird-bd)';b.style.background='linear-gradient(135deg,#020c18 0%,#041a2e 50%,#020c18 100%)';}
+    const lbl=document.getElementById('banner-job-label');if(lbl)lbl.textContent='Current BirdCLEF Job';
+    const fp=document.getElementById('footer-pipeline');if(fp)fp.innerHTML='🦜 BirdCLEF &mdash; Acoustic Classification &nbsp;|&nbsp; Stratum :1444 &nbsp;|&nbsp; API :1445';
+    set('pool-name-footer','Xenom BirdWatch Pool — Pool');
+    document.getElementById('nav-genomics-li').style.display='';
+    document.getElementById('genetics-banner').style.display='';
+  }else{
+    r.setProperty('--g','#00ff88');r.setProperty('--gd','#00cc66');r.setProperty('--gg','#00ff8820');
+    r.setProperty('--bg','#020d10');r.setProperty('--dark','#031a10');r.setProperty('--gray','#081a10');r.setProperty('--bd','#1a4d2e');
+    r.setProperty('--tx','#7fe8a8');r.setProperty('--txd','#2d5a3e');
+    document.getElementById('page-title').textContent='Xenom Genome Mining Pool';
+    document.getElementById('logo-icon').textContent='🧬';
+    document.getElementById('logo-text').textContent='GENOME MINING';
+    document.getElementById('nav-genomics').textContent='🧬 Genomics';
+    const b=document.getElementById('genetics-banner');
+    if(b){b.style.borderColor='var(--gen-bd)';b.style.background='linear-gradient(135deg,#020d10 0%,#031a10 50%,#020d10 100%)';}
+    const lbl=document.getElementById('banner-job-label');if(lbl)lbl.textContent='Current Genomics Job';
+    const fp=document.getElementById('footer-pipeline');if(fp)fp.innerHTML='🧬 Genome Mining &mdash; VCF Annotation GRCh38 &nbsp;|&nbsp; Stratum :1444 &nbsp;|&nbsp; API :1445';
+    set('pool-name-footer','Xenom Genome Mining Pool — Pool');
     document.getElementById('nav-genomics-li').style.display='';
     document.getElementById('genetics-banner').style.display='';
   }

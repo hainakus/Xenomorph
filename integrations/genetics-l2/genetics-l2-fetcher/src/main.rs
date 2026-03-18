@@ -10,12 +10,22 @@ mod nih;
 mod boinc;
 mod dream;
 mod horizon;
+mod sra;
+mod igsr;
+mod gnomad;
+mod gdc;
+mod clinvar;
 
 pub use kaggle::KaggleFetcher;
 pub use nih::{NihFetcher, NihChallengeFetcher};
 pub use boinc::BoincFetcher;
 pub use dream::DreamFetcher;
 pub use horizon::HorizonFetcher;
+pub use sra::SraFetcher;
+pub use igsr::IgsrFetcher;
+pub use gnomad::GnomadFetcher;
+pub use gdc::GdcFetcher;
+pub use clinvar::ClinvarFetcher;
 
 #[async_trait::async_trait]
 pub trait SourceFetcher: Send + Sync {
@@ -51,6 +61,11 @@ async fn main() -> Result<()> {
     let horizon_enabled  = m.get_flag("horizon");
     let synapse_pat      = m.get_one::<String>("synapse-pat").cloned()
         .or_else(|| std::env::var("SYNAPSE_PAT").ok());
+    let sra_enabled      = m.get_flag("sra");
+    let igsr_enabled     = m.get_flag("igsr");
+    let gnomad_enabled   = m.get_flag("gnomad");
+    let gdc_enabled      = m.get_flag("gdc");
+    let clinvar_enabled  = m.get_flag("clinvar");
 
     let http = reqwest::Client::new();
 
@@ -79,6 +94,21 @@ async fn main() -> Result<()> {
         }
         if horizon_enabled {
             v.push(Box::new(HorizonFetcher::new()));
+        }
+        if sra_enabled {
+            v.push(Box::new(SraFetcher::new()));
+        }
+        if igsr_enabled {
+            v.push(Box::new(IgsrFetcher::new()));
+        }
+        if gnomad_enabled {
+            v.push(Box::new(GnomadFetcher::new()));
+        }
+        if gdc_enabled {
+            v.push(Box::new(GdcFetcher::new()));
+        }
+        if clinvar_enabled {
+            v.push(Box::new(ClinvarFetcher::new()));
         }
         v
     };
@@ -168,4 +198,24 @@ fn cli() -> Command {
             .long("horizon")
             .action(clap::ArgAction::SetTrue)
             .help("Poll EU Horizon Prize Challenges from CORDIS (cordis.europa.eu)"))
+        .arg(Arg::new("sra")
+            .long("sra")
+            .action(clap::ArgAction::SetTrue)
+            .help("Seed NCBI SRA GRCh38 VCF annotation jobs (GIAB benchmarks + E-utilities search)"))
+        .arg(Arg::new("igsr")
+            .long("igsr")
+            .action(clap::ArgAction::SetTrue)
+            .help("Seed 1000 Genomes / IGSR GRCh38 30x phased VCF annotation jobs"))
+        .arg(Arg::new("gnomad")
+            .long("gnomad")
+            .action(clap::ArgAction::SetTrue)
+            .help("Seed gnomAD v4.1 exome VCF allele-frequency annotation jobs"))
+        .arg(Arg::new("gdc")
+            .long("gdc")
+            .action(clap::ArgAction::SetTrue)
+            .help("Fetch open-access TCGA/GDC cancer cohort MAF annotation jobs"))
+        .arg(Arg::new("clinvar")
+            .long("clinvar")
+            .action(clap::ArgAction::SetTrue)
+            .help("Seed NCBI ClinVar weekly GRCh38 VCF clinical annotation jobs"))
 }

@@ -97,12 +97,50 @@ async fn execute(
     }
     info!("L2: claimed {job_id}");
 
+    // ── 1.5. Fetch full job manifest (dataset_root + determinism fields) ──────────
+    let job_manifest: serde_json::Value = match http
+        .get(format!("{}/jobs/{job_id}", cfg.coordinator_url))
+        .send().await
+    {
+        Ok(r) if r.status().is_success() => {
+            r.json().await.unwrap_or(serde_json::Value::Null)
+        }
+        _ => {
+            warn!("L2: could not fetch job manifest for {job_id} — skipping dataset_root check");
+            serde_json::Value::Null
+        }
+    };
+    let dataset_root      = job_manifest["dataset_root"].as_str().unwrap_or("").to_owned();
+    let reference_genome  = job_manifest["reference_genome"].as_str().unwrap_or("GRCh38").to_owned();
+    let reference_hash    = job_manifest["reference_hash"].as_str().unwrap_or("").to_owned();
+    let job_container_hash = job_manifest["container_hash"].as_str().unwrap_or("").to_owned();
+    let config_hash       = job_manifest["config_hash"].as_str().unwrap_or("").to_owned();
+
     // ── 2. Prepare work dirs ──────────────────────────────────────────────────
     let work_dir   = cfg.work_root.join(job_id);
     let input_dir  = work_dir.join("input");
     let output_dir = work_dir.join("output");
     tokio::fs::create_dir_all(&input_dir).await?;
     tokio::fs::create_dir_all(&output_dir).await?;
+
+    // ── 2b. Write job_manifest.json to work_dir ──────────────────────────────
+    let manifest_record = serde_json::json!({
+        "job_id":           job_id,
+        "dataset_url":      dataset_url,
+        "dataset_root":     dataset_root,
+        "pipeline":         job_manifest["pipeline"].as_str().unwrap_or(task),
+        "pipeline_hash":    job_manifest["pipeline_hash"],
+        "reference_genome": reference_genome,
+        "reference_hash":   reference_hash,
+        "container_hash":   job_container_hash,
+        "config_hash":      config_hash,
+        "reward":           job_manifest["reward_sompi"],
+        "deadline":         job_manifest["deadline"],
+    });
+    tokio::fs::write(
+        work_dir.join("job_manifest.json"),
+        serde_json::to_vec_pretty(&manifest_record).unwrap_or_default(),
+    ).await.ok();
 
     // ── 3. Fetch inference script + install requirements from coordinator ────────
     let python = detect_python().await;
@@ -123,13 +161,74 @@ async fn execute(
         }
     }
 
+    // ── 4b. Dataset integrity — compare local Merkle root to coordinator's dataset_root ──
+    const ZERO_ROOT: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+    if !dataset_root.is_empty() && dataset_root != ZERO_ROOT {
+        let local_root = hash_dir(&input_dir).await;
+        if local_root != dataset_root {
+            anyhow::bail!(
+                "L2: dataset integrity FAILED for {job_id}: expected={dataset_root} computed={local_root}"
+            );
+        }
+        info!("L2: dataset integrity verified root={local_root}");
+    }
+
+    // ── 4c. Hash input (before execution — part of the receipt) ────────────────
+    let input_hash  = hash_dir(&input_dir).await;
+    let pipeline_hash = effective_script.as_ref()
+        .and_then(|p| std::fs::read(p).ok())
+        .map(|b| blake3_hex(&b))
+        .unwrap_or_else(|| blake3_hex(b"no-script"));
+
     // ── 5. Execute ────────────────────────────────────────────────────────────
+    let exec_start = std::time::Instant::now();
     let (score, trace) = dispatch_task(task, &input_dir, &output_dir, cfg, effective_script.as_ref(), &python).await;
-    let trace_hash = blake3_hex(trace.as_bytes());
+    let exec_secs   = exec_start.elapsed().as_secs_f64();
+    let trace_hash  = blake3_hex(trace.as_bytes());
     tokio::fs::write(work_dir.join("trace.log"), &trace).await.ok();
     info!("L2: {job_id} score={score:.4} trace_hash={trace_hash}");
 
-    // ── 6. Hash outputs (before encryption) ──────────────────────────────────
+    // ── 5b. Write job_receipt.json ───────────────────────────────────────────────
+    let receipt = serde_json::json!({
+        "job_id":           job_id,
+        "worker_pubkey":    cfg.pubkey_hex,
+        "task":             task,
+        "input_hash":       input_hash,
+        "pipeline_hash":    pipeline_hash,
+        "reference_genome": reference_genome,
+        "reference_hash":   reference_hash,
+        "container_hash":   job_container_hash,
+        "config_hash":      config_hash,
+        "execution_time_secs": exec_secs,
+        "timestamp":        now_secs(),
+    });
+    tokio::fs::write(
+        output_dir.join("job_receipt.json"),
+        serde_json::to_vec_pretty(&receipt).unwrap_or_default(),
+    ).await.ok();
+
+    // ── 5c. Write checksums.sha256 (BLAKE3 of all output files incl. receipt) ────
+    let mut checksums = String::new();
+    if let Ok(mut rd) = tokio::fs::read_dir(&output_dir).await {
+        let mut entries: Vec<std::path::PathBuf> = Vec::new();
+        while let Ok(Some(e)) = rd.next_entry().await {
+            let p = e.path();
+            if p.is_file() && p.file_name().map_or(true, |n| n != "checksums.sha256") {
+                entries.push(p);
+            }
+        }
+        entries.sort();
+        for path in &entries {
+            if let Ok(bytes) = tokio::fs::read(path).await {
+                let hash = blake3_hex(&bytes);
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                checksums.push_str(&format!("{hash}  {name}\n"));
+            }
+        }
+    }
+    tokio::fs::write(output_dir.join("checksums.sha256"), &checksums).await.ok();
+
+    // ── 6. Hash outputs (includes receipt + checksums) ──────────────────────
     let result_root = hash_dir(&output_dir).await;
     info!("L2: result_root={result_root}");
 
@@ -140,8 +239,8 @@ async fn execute(
         info!("L2: encrypted output files in {}", output_dir.display());
     }
 
-    // ── 7. Sign ───────────────────────────────────────────────────────────────
-    let sign_data = format!("{job_id}:{result_root}:{score:.6}");
+    // ── 7. Sign ── covers job_id:result_root:score:trace_hash ──────────────────
+    let sign_data = format!("{job_id}:{result_root}:{score:.6}:{trace_hash}");
     let digest    = *blake3::hash(sign_data.as_bytes()).as_bytes();
     let worker_sig = sign_manifest(&digest, &cfg.privkey_hex)
         .unwrap_or_else(|_| "unsigned".to_owned());
@@ -340,7 +439,7 @@ async fn dispatch_task(task: &str, input_dir: &Path, output_dir: &Path, cfg: &L2
             => omics_analysis(task, input_dir, output_dir).await,
         "digital_health" | "biotechnology" | "drug_discovery"
             => horizon_analysis(task, input_dir, output_dir).await,
-        _ => generic_stub(task, output_dir).await,
+        _ => genomics_pipeline(task, input_dir, output_dir, script, python).await,
     }
 }
 
@@ -694,15 +793,6 @@ async fn read_score_from_predictions(output_dir: &Path) -> Option<f64> {
     let data = tokio::fs::read(output_dir.join("predictions.json")).await.ok()?;
     serde_json::from_slice::<serde_json::Value>(&data).ok()
         .and_then(|v| v["score"].as_f64())
-}
-
-async fn generic_stub(task: &str, output_dir: &Path) -> (f64, String) {
-    let trace = format!("generic stub for task={task}\n");
-    tokio::fs::write(
-        output_dir.join("result.json"),
-        format!("{{\"task\":\"{task}\",\"note\":\"no handler\"}}"),
-    ).await.ok();
-    (0.1, trace)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

@@ -17,20 +17,28 @@ use tower_http::cors::CorsLayer;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS jobs (
-    job_id          TEXT    PRIMARY KEY,
-    source          TEXT    NOT NULL,
-    external_ref    TEXT,
-    dataset_root    TEXT    NOT NULL,
-    dataset_url     TEXT,
-    algorithm       TEXT    NOT NULL,
-    task_description TEXT   NOT NULL,
-    reward_sompi    INTEGER NOT NULL DEFAULT 0,
-    max_time_secs   INTEGER NOT NULL DEFAULT 3600,
-    status          TEXT    NOT NULL DEFAULT 'open',
-    claimed_by      TEXT,
-    created_at      INTEGER NOT NULL,
-    claimed_at      INTEGER,
-    completed_at    INTEGER
+    job_id           TEXT    PRIMARY KEY,
+    source           TEXT    NOT NULL,
+    external_ref     TEXT,
+    dataset_root     TEXT    NOT NULL,
+    dataset_url      TEXT,
+    algorithm        TEXT    NOT NULL,
+    task_description TEXT    NOT NULL,
+    reward_sompi     INTEGER NOT NULL DEFAULT 0,
+    max_time_secs    INTEGER NOT NULL DEFAULT 3600,
+    status           TEXT    NOT NULL DEFAULT 'open',
+    claimed_by       TEXT,
+    created_at       INTEGER NOT NULL,
+    claimed_at       INTEGER,
+    completed_at     INTEGER,
+    pipeline         TEXT,
+    pipeline_hash    TEXT,
+    reference_genome TEXT,
+    reference_hash   TEXT,
+    container_hash   TEXT,
+    config_hash      TEXT,
+    deadline         INTEGER,
+    dataset_category TEXT
 );
 
 CREATE TABLE IF NOT EXISTS results (
@@ -73,6 +81,26 @@ CREATE TABLE IF NOT EXISTS payouts (
     paid_at         INTEGER
 );
 "#;
+
+// ── Schema migration (adds columns missing from pre-spec DBs) ────────────────
+
+async fn migrate_schema(pool: &SqlitePool) {
+    let new_cols = [
+        ("pipeline",          "TEXT"),
+        ("pipeline_hash",     "TEXT"),
+        ("reference_genome",  "TEXT"),
+        ("reference_hash",    "TEXT"),
+        ("container_hash",    "TEXT"),
+        ("config_hash",       "TEXT"),
+        ("deadline",          "INTEGER"),
+        ("dataset_category",  "TEXT"),
+    ];
+    for (col, ty) in new_cols {
+        let _ = sqlx::query(&format!("ALTER TABLE jobs ADD COLUMN {col} {ty}"))
+            .execute(pool)
+            .await;
+    }
+}
 
 // ── App state ─────────────────────────────────────────────────────────────────
 
@@ -120,7 +148,9 @@ async fn list_jobs(
     let rows = sqlx::query(
         "SELECT job_id, source, external_ref, dataset_root, dataset_url,
                 algorithm, task_description, reward_sompi, max_time_secs,
-                status, claimed_by, created_at, claimed_at, completed_at
+                status, claimed_by, created_at, claimed_at, completed_at,
+                pipeline, pipeline_hash, reference_genome, reference_hash,
+                container_hash, config_hash, deadline, dataset_category
          FROM jobs WHERE status = ?1 ORDER BY created_at ASC LIMIT ?2 OFFSET ?3",
     )
     .bind(status)
@@ -146,6 +176,14 @@ async fn list_jobs(
                     "status":           r.get::<String, _>("status"),
                     "claimed_by":       r.get::<Option<String>, _>("claimed_by"),
                     "created_at":       r.get::<i64, _>("created_at"),
+                    "pipeline":         r.get::<Option<String>, _>("pipeline"),
+                    "pipeline_hash":    r.get::<Option<String>, _>("pipeline_hash"),
+                    "reference_genome": r.get::<Option<String>, _>("reference_genome"),
+                    "reference_hash":   r.get::<Option<String>, _>("reference_hash"),
+                    "container_hash":   r.get::<Option<String>, _>("container_hash"),
+                    "config_hash":      r.get::<Option<String>, _>("config_hash"),
+                    "deadline":         r.get::<Option<i64>, _>("deadline"),
+                    "dataset_category": r.get::<Option<String>, _>("dataset_category"),
                 })
             }).collect();
             (StatusCode::OK, Json(serde_json::json!({ "jobs": jobs }))).into_response()
@@ -167,8 +205,10 @@ async fn create_job(
     let res = sqlx::query(
         "INSERT OR IGNORE INTO jobs
          (job_id, source, external_ref, dataset_root, dataset_url, algorithm,
-          task_description, reward_sompi, max_time_secs, status, created_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+          task_description, reward_sompi, max_time_secs, status, created_at,
+          pipeline, pipeline_hash, reference_genome, reference_hash,
+          container_hash, config_hash, deadline, dataset_category)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
     )
     .bind(&job.job_id)
     .bind(job.source.to_string())
@@ -181,6 +221,14 @@ async fn create_job(
     .bind(job.max_time_secs as i64)
     .bind(initial_status)
     .bind(job.created_at as i64)
+    .bind(&job.pipeline)
+    .bind(&job.pipeline_hash)
+    .bind(&job.reference_genome)
+    .bind(&job.reference_hash)
+    .bind(&job.container_hash)
+    .bind(&job.config_hash)
+    .bind(job.deadline.map(|d| d as i64))
+    .bind(job.dataset_category.as_ref().map(|c| c.to_string()))
     .execute(&s.pool)
     .await;
 
@@ -202,6 +250,55 @@ async fn create_job(
             (StatusCode::CREATED, Json(serde_json::json!({ "job_id": job.job_id, "status": "open" }))).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+// GET /jobs/:job_id — single job detail (used by worker to fetch dataset_root)
+async fn get_job(
+    State(s): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+) -> impl IntoResponse {
+    use sqlx::Row;
+    let row = sqlx::query(
+        "SELECT job_id, source, external_ref, dataset_root, dataset_url, algorithm,
+                task_description, reward_sompi, max_time_secs, status, claimed_by, created_at,
+                pipeline, pipeline_hash, reference_genome, reference_hash,
+                container_hash, config_hash, deadline, dataset_category
+         FROM jobs WHERE job_id = ?1",
+    )
+    .bind(&job_id)
+    .fetch_optional(&s.pool)
+    .await;
+
+    match row {
+        Ok(Some(r)) => (StatusCode::OK, Json(serde_json::json!({
+            "job_id":           r.get::<String, _>("job_id"),
+            "source":           r.get::<String, _>("source"),
+            "external_ref":     r.get::<Option<String>, _>("external_ref"),
+            "dataset_root":     r.get::<String, _>("dataset_root"),
+            "dataset_url":      r.get::<Option<String>, _>("dataset_url"),
+            "algorithm":        r.get::<String, _>("algorithm"),
+            "task_description": r.get::<String, _>("task_description"),
+            "reward_sompi":     r.get::<i64, _>("reward_sompi"),
+            "max_time_secs":    r.get::<i64, _>("max_time_secs"),
+            "status":           r.get::<String, _>("status"),
+            "claimed_by":       r.get::<Option<String>, _>("claimed_by"),
+            "created_at":       r.get::<i64, _>("created_at"),
+            "pipeline":         r.get::<Option<String>, _>("pipeline"),
+            "pipeline_hash":    r.get::<Option<String>, _>("pipeline_hash"),
+            "reference_genome": r.get::<Option<String>, _>("reference_genome"),
+            "reference_hash":   r.get::<Option<String>, _>("reference_hash"),
+            "container_hash":   r.get::<Option<String>, _>("container_hash"),
+            "config_hash":      r.get::<Option<String>, _>("config_hash"),
+            "deadline":         r.get::<Option<i64>, _>("deadline"),
+            "dataset_category": r.get::<Option<String>, _>("dataset_category"),
+        }))).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({
+            "error": "job not found", "job_id": job_id
+        }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+            "error": e.to_string()
+        }))).into_response(),
     }
 }
 
@@ -242,6 +339,36 @@ async fn submit_result(
     State(s): State<Arc<AppState>>,
     Json(result): Json<JobResult>,
 ) -> impl IntoResponse {
+    // ── Verify worker_sig before persisting ──────────────────────────────────
+    let (verify_root, verify_score, verify_trace) = if let (Some(enc), Some(eph)) =
+        (&result.encrypted_payload, &result.ephemeral_pubkey)
+    {
+        match genetics_l2_core::JobResult::decrypt_payload(enc, eph, &s.coordinator_privkey) {
+            Ok(p)  => (p.result_root, p.score, p.trace_hash.unwrap_or_default()),
+            Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                "error": format!("payload decrypt failed: {e}")
+            }))).into_response(),
+        }
+    } else {
+        (
+            result.result_root.clone(),
+            result.score,
+            result.trace_hash.clone().unwrap_or_default(),
+        )
+    };
+
+    let sign_data = format!("{}:{}:{:.6}:{}", result.job_id, verify_root, verify_score, verify_trace);
+    let digest    = *blake3::hash(sign_data.as_bytes()).as_bytes();
+    match bioproof_core::verify_manifest_sig(&digest, &result.worker_sig, &result.worker_pubkey) {
+        Ok(true)  => {}
+        Ok(false) => return (StatusCode::FORBIDDEN, Json(serde_json::json!({
+            "error": "invalid worker_sig"
+        }))).into_response(),
+        Err(e)    => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "error": format!("worker_sig verification error: {e}")
+        }))).into_response(),
+    }
+
     let now = now_secs() as i64;
     let res = sqlx::query(
         "INSERT OR IGNORE INTO results
@@ -532,7 +659,20 @@ async fn submit_validation(
     State(s): State<Arc<AppState>>,
     Json(report): Json<ValidationReport>,
 ) -> impl IntoResponse {
+    // ── Verify validator_sig before persisting ────────────────────────────────
     let verdict_str = format!("{:?}", report.verdict).to_lowercase();
+    let sign_data   = format!("{}:{}:{}", report.report_id, report.result_id, verdict_str);
+    let digest      = *blake3::hash(sign_data.as_bytes()).as_bytes();
+    match bioproof_core::verify_manifest_sig(&digest, &report.validator_sig, &report.validator_pubkey) {
+        Ok(true)  => {}
+        Ok(false) => return (StatusCode::FORBIDDEN, Json(serde_json::json!({
+            "error": "invalid validator_sig"
+        }))).into_response(),
+        Err(e)    => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "error": format!("validator_sig verification error: {e}")
+        }))).into_response(),
+    }
+
     let res = sqlx::query(
         "INSERT OR IGNORE INTO validation_reports
          (report_id, job_id, result_id, validator_pubkey, verdict,
@@ -694,6 +834,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/pubkey",                  get(get_pubkey))
         .route("/stats",                   get(stats))
         .route("/jobs",                    get(list_jobs).post(create_job))
+        .route("/jobs/:job_id",            get(get_job))
         .route("/jobs/:job_id/claim",      post(claim_job))
         .route("/results",                 post(submit_result))
         .route("/results/:job_id",         get(get_results))
@@ -963,6 +1104,7 @@ async fn main() -> Result<()> {
         .await
         .context("open SQLite")?;
     sqlx::raw_sql(SCHEMA).execute(&pool).await.context("schema init")?;
+    migrate_schema(&pool).await;
     log::info!("Database: {db_path}");
 
     // Generate or load coordinator keypair for result encryption

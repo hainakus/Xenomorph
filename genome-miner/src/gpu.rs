@@ -653,7 +653,7 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
 
     let l2_cfg: Option<crate::l2_worker::L2Config> = match (
         m.get_one::<String>("l2-coordinator").cloned(),
-        m.get_one::<String>("l2-private-key").cloned(),
+        crate::load_l2_privkey(m.get_one::<String>("l2-key-file").map(|s| s.as_str())),
     ) {
         (Some(url), Some(key)) => {
             let use_gpu     = m.get_flag("l2-gpu");

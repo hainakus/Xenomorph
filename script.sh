@@ -4,9 +4,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "=== Xenom BirdCLEF Devnet Setup ==="
+echo "=== Xenom L2 Genetics Devnet Setup ==="
 echo "L2 Work Encryption: ENABLED"
-echo "Theme: BirdWatch (Blue UI)"
+echo "Primary:   Genomics — VCF → normalization → annotation → gene scoring → cohort grouping"
+echo "Optional:  BirdCLEF acoustic classification (GPU/CUDA)"
+echo "Reference: GRCh38"
 echo ""
 
 read -r -p "BIN path [./target/release]: " BIN
@@ -45,46 +47,64 @@ echo "MINING_ADDR=$MINING_ADDR"
 echo "NODE_RPC=$NODE_RPC"
 echo "COORDINATOR=$COORDINATOR"
 echo ""
-echo "=== BirdCLEF Configuration ==="
-echo "Theme: BirdWatch (Blue UI)"
-echo "Competition: birdclef-2026"
-echo "Model: Google YAMNet (GPU/CUDA) / Stub fallback"
-echo "Inference: GPU accelerated with TensorFlow CUDA"
-echo "Encryption: ENABLED (2-layer)"
-echo "  - Layer 1: Local output files (ChaCha20-Poly1305)"
-echo "  - Layer 2: Submitted payload (ECIES)"
+echo "=== Configuration ==="
+echo "Primary:   Genomics (GRCh38 VCF → Ensembl VEP → gene scores)"
+echo "Optional:  BirdCLEF-2026 acoustic classification (YAMNet/Perch, GPU)"
+echo "Encryption: ENABLED (ChaCha20-Poly1305 local + ECIES submit)"
 echo ""
 
 # Kaggle API key setup (for coordinator only - miners will download from coordinator API)
 KAGGLE_DIR="$HOME/.kaggle"
 KAGGLE_JSON="$KAGGLE_DIR/kaggle.json"
 
-if [ ! -f "$KAGGLE_JSON" ]; then
-  echo "=== Kaggle API Setup ==="
-  echo "Coordinator needs Kaggle credentials to download BirdCLEF datasets."
-  echo "Miners will download datasets from coordinator API (no Kaggle key needed on miners)."
-  echo ""
-  read -p "Do you have a Kaggle API key? (y/n): " has_key
-  
-  if [ "$has_key" = "y" ] || [ "$has_key" = "Y" ]; then
+# ── Dataset sources ──────────────────────────────────────────────────────────
+echo "=== Dataset Sources ==="
+echo "--- Genomics (primary, GRCh38, all open-access) ---"
+read -r -p "Enable SRA    (NCBI SRA — GIAB benchmark VCFs)         ? [Y/n]: " _ans
+OPT_SRA=1;    [[ "$_ans" =~ ^[Nn]$ ]] && OPT_SRA=0
+
+read -r -p "Enable IGSR   (1000 Genomes 30x phased VCFs, chr1-X)   ? [Y/n]: " _ans
+OPT_IGSR=1;   [[ "$_ans" =~ ^[Nn]$ ]] && OPT_IGSR=0
+
+read -r -p "Enable gnomAD (gnomAD v4.1 exome AF annotation)        ? [Y/n]: " _ans
+OPT_GNOMAD=1; [[ "$_ans" =~ ^[Nn]$ ]] && OPT_GNOMAD=0
+
+read -r -p "Enable GDC    (TCGA open-access cancer cohorts)         ? [Y/n]: " _ans
+OPT_GDC=1;    [[ "$_ans" =~ ^[Nn]$ ]] && OPT_GDC=0
+
+read -r -p "Enable ClinVar (weekly GRCh38 clinical variant VCF)    ? [Y/n]: " _ans
+OPT_CLINVAR=1; [[ "$_ans" =~ ^[Nn]$ ]] && OPT_CLINVAR=0
+
+echo ""
+echo "--- Acoustic (optional) ---"
+read -r -p "Enable BirdCLEF-2026 (Kaggle acoustic classification)  ? [y/N]: " _ans
+OPT_BIRDCLEF=0; [[ "$_ans" =~ ^[Yy]$ ]] && OPT_BIRDCLEF=1
+echo ""
+
+if [[ $OPT_BIRDCLEF -eq 1 ]]; then
+  if [ ! -f "$KAGGLE_JSON" ]; then
+    echo "=== Kaggle API Setup ==="
+    echo "BirdCLEF requires Kaggle credentials to download the dataset."
     echo ""
-    echo "Please enter your Kaggle credentials:"
-    read -p "Kaggle username: " kaggle_user
-    read -p "Kaggle API key: " kaggle_key
-    
-    mkdir -p "$KAGGLE_DIR"
-    cat > "$KAGGLE_JSON" <<EOF
+    read -p "Do you have a Kaggle API key? (y/n): " has_key
+    if [ "$has_key" = "y" ] || [ "$has_key" = "Y" ]; then
+      echo ""
+      read -p "Kaggle username: " kaggle_user
+      read -p "Kaggle API key: "  kaggle_key
+      mkdir -p "$KAGGLE_DIR"
+      cat > "$KAGGLE_JSON" <<EOF
 {"username":"$kaggle_user","key":"$kaggle_key"}
 EOF
-    chmod 600 "$KAGGLE_JSON"
-    echo "✓ Kaggle credentials saved to $KAGGLE_JSON"
+      chmod 600 "$KAGGLE_JSON"
+      echo "✓ Kaggle credentials saved to $KAGGLE_JSON"
+    else
+      echo "No Kaggle key — disabling BirdCLEF."
+      OPT_BIRDCLEF=0
+    fi
+    echo ""
   else
-    echo "Skipping Kaggle setup. Coordinator will use stub data."
-    echo "To add credentials later, create: $KAGGLE_JSON"
+    echo "✓ Kaggle credentials found at $KAGGLE_JSON"
   fi
-  echo ""
-else
-  echo "✓ Kaggle credentials found at $KAGGLE_JSON"
 fi
 echo ""
 
@@ -109,16 +129,16 @@ if [ -d "venv" ]; then
   echo "Installing Python dependencies for Perch v2 (CUDA)..."
   pip install --quiet --upgrade pip
   
-  # Install TensorFlow with CUDA support for YAMNet GPU inference
-  echo "Installing: tensorflow, tensorflow-hub, torch, torchaudio, timm, numpy, pandas..."
-  pip install --quiet tensorflow tensorflow-hub numpy soundfile torch torchaudio timm pandas || echo "Warning: Some packages failed to install"
+  # Acoustic classification (YAMNet/Perch) + genomics pipeline (genome_annotate.py)
+  echo "Installing: tensorflow, torch, torchaudio, timm, numpy, pandas, soundfile, requests..."
+  pip install --quiet tensorflow tensorflow-hub numpy soundfile torch torchaudio timm pandas requests || echo "Warning: Some packages failed to install"
   
   echo "Note: YAMNet will use GPU if CUDA is available, otherwise CPU"
 else
   echo "Warning: venv not available, using system Python"
   if command -v pip3 &> /dev/null; then
-    pip3 install --quiet --break-system-packages kaggle kagglehub tensorflow numpy torch torchaudio timm pandas 2>/dev/null || \
-    pip3 install --quiet --user kaggle kagglehub tensorflow numpy torch torchaudio timm pandas 2>/dev/null || \
+    pip3 install --quiet --break-system-packages kaggle kagglehub tensorflow numpy torch torchaudio timm pandas requests 2>/dev/null || \
+    pip3 install --quiet --user kaggle kagglehub tensorflow numpy torch torchaudio timm pandas requests 2>/dev/null || \
     echo "Warning: pip3 install failed, continuing anyway..."
   fi
 fi
@@ -160,7 +180,7 @@ sleep 3
 XENOM_DATA="${XENOM_DATA_DIR:-$HOME/.local/share/xenom}"
 KAGGLE_DATASETS_DIR="$XENOM_DATA/kaggle-datasets"
 COORDINATOR_DB="$XENOM_DATA/genetics-l2.db"
-mkdir -p "$KAGGLE_DATASETS_DIR/_cache/birdclef-2026"
+mkdir -p "$KAGGLE_DATASETS_DIR"
 
 echo "=== Starting genetics-l2-coordinator ==="
 echo "    DB:       $COORDINATOR_DB"
@@ -174,32 +194,36 @@ echo "    Datasets: $KAGGLE_DATASETS_DIR"
 PIDS+=($!)
 sleep 2
 
-# Pre-download BirdCLEF-2026 dataset to persistent cache
-BIRDCLEF_CACHE="$KAGGLE_DATASETS_DIR/_cache/birdclef-2026"
-AUDIO_COUNT=$(find "$BIRDCLEF_CACHE" \( -name '*.ogg' -o -name '*.wav' -o -name '*.mp3' \) 2>/dev/null | wc -l | tr -d ' ')
-if [ "$AUDIO_COUNT" -gt "0" ]; then
-  echo "=== BirdCLEF-2026 already cached: $AUDIO_COUNT audio files — skipping download ==="
-elif [ -f "$BIRDCLEF_CACHE/.ready" ]; then
-  echo "=== BirdCLEF-2026 cache marked ready ==="
-else
-  echo "=== Downloading BirdCLEF-2026 dataset → $BIRDCLEF_CACHE ==="
-  LOCK_FILE="$KAGGLE_DATASETS_DIR/_birdclef-2026.lock"
-  if [ ! -f "$LOCK_FILE" ]; then
-    touch "$LOCK_FILE"
-    if kaggle competitions download -c birdclef-2026 --path "$BIRDCLEF_CACHE/" 2>&1 | tee -a /tmp/xenom-logs/coordinator.log; then
-      echo "Extracting BirdCLEF-2026..."
-      for z in "$BIRDCLEF_CACHE"/*.zip; do
-        [ -f "$z" ] && unzip -n -q "$z" -d "$BIRDCLEF_CACHE/" && rm -f "$z"
-      done
-      touch "$BIRDCLEF_CACHE/.ready"
-      AUDIO_COUNT=$(find "$BIRDCLEF_CACHE" \( -name '*.ogg' -o -name '*.wav' \) | wc -l | tr -d ' ')
-      echo "BirdCLEF-2026 ready: $AUDIO_COUNT audio files"
-    else
-      echo "Warning: BirdCLEF-2026 download failed — mining with stub until data available"
-    fi
-    rm -f "$LOCK_FILE"
+# Pre-download BirdCLEF-2026 dataset (only when BirdCLEF source is enabled)
+if [[ $OPT_BIRDCLEF -eq 1 ]]; then
+  BIRDCLEF_CACHE="$KAGGLE_DATASETS_DIR/_cache/birdclef-2026"
+  mkdir -p "$BIRDCLEF_CACHE"
+  AUDIO_COUNT=$(find "$BIRDCLEF_CACHE" \( -name '*.ogg' -o -name '*.wav' -o -name '*.mp3' \) 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$AUDIO_COUNT" -gt "0" ]; then
+    echo "=== BirdCLEF-2026 already cached: $AUDIO_COUNT audio files ==="
+  elif [ -f "$BIRDCLEF_CACHE/.ready" ]; then
+    echo "=== BirdCLEF-2026 cache marked ready ==="
   else
-    echo "Warning: download lock exists, skipping"
+    echo "=== Downloading BirdCLEF-2026 dataset → $BIRDCLEF_CACHE ==="
+    LOCK_FILE="$KAGGLE_DATASETS_DIR/_birdclef-2026.lock"
+    if [ ! -f "$LOCK_FILE" ]; then
+      touch "$LOCK_FILE"
+      if kaggle competitions download -c birdclef-2026 --path "$BIRDCLEF_CACHE/" 2>&1 | tee -a /tmp/xenom-logs/coordinator.log; then
+        echo "Extracting BirdCLEF-2026..."
+        for z in "$BIRDCLEF_CACHE"/*.zip; do
+          [ -f "$z" ] && unzip -n -q "$z" -d "$BIRDCLEF_CACHE/" && rm -f "$z"
+        done
+        touch "$BIRDCLEF_CACHE/.ready"
+        AUDIO_COUNT=$(find "$BIRDCLEF_CACHE" \( -name '*.ogg' -o -name '*.wav' \) | wc -l | tr -d ' ')
+        echo "BirdCLEF-2026 ready: $AUDIO_COUNT audio files"
+      else
+        echo "Warning: BirdCLEF-2026 download failed — skipping acoustic jobs"
+        OPT_BIRDCLEF=0
+      fi
+      rm -f "$LOCK_FILE"
+    else
+      echo "Warning: download lock exists, skipping BirdCLEF"
+    fi
   fi
 fi
 
@@ -212,28 +236,37 @@ echo "=== Starting xenom-evm-node ==="
 PIDS+=($!)
 sleep 2
 
-echo "=== Starting xenom-stratum-bridge ==="
+STRATUM_THEME="genetics"
+[[ $OPT_BIRDCLEF -eq 1 ]] && STRATUM_THEME="birdclef"
+
+echo "=== Starting xenom-stratum-bridge (theme: $STRATUM_THEME) ==="
 "$BIN/xenom-stratum-bridge" \
   --mining-address "$MINING_ADDR" \
   --rpcserver "$NODE_RPC" \
   --listen 0.0.0.0:5555 \
   --db-path /tmp/genetics-l2-nih2-pool.db \
   --l2-coordinator "$COORDINATOR" \
-  --l2-theme birdclef \
+  --l2-theme "$STRATUM_THEME" \
   --devnet \
   > /tmp/xenom-logs/stratum-bridge.log 2>&1 &
 PIDS+=($!)
 sleep 2
 
-echo "=== Starting genetics-l2-fetcher (BirdCLEF only) ==="
-# Fetches ONLY BirdCLEF-2026 competition from Kaggle
-# Uses ~/.kaggle/kaggle.json for authentication
-# --kaggle-only disables NIH and other default sources
-"$BIN/genetics-l2-fetcher" \
-  --coordinator "$COORDINATOR" \
-  --competition birdclef-2026 \
-  --kaggle-only \
-  --poll-secs 300 \
+echo "=== Starting genetics-l2-fetcher ==="
+FETCHER_ARGS=(
+  --coordinator "$COORDINATOR"
+  --poll-secs 300
+)
+[[ $OPT_BIRDCLEF -eq 1 ]] && FETCHER_ARGS+=(--competition birdclef-2026)
+[[ $OPT_BIRDCLEF -eq 0 ]] && FETCHER_ARGS+=(--kaggle-only)  # suppress kaggle if not opted in
+[[ $OPT_SRA      -eq 1 ]] && FETCHER_ARGS+=(--sra)
+[[ $OPT_IGSR     -eq 1 ]] && FETCHER_ARGS+=(--igsr)
+[[ $OPT_GNOMAD   -eq 1 ]] && FETCHER_ARGS+=(--gnomad)
+[[ $OPT_GDC      -eq 1 ]] && FETCHER_ARGS+=(--gdc)
+[[ $OPT_CLINVAR  -eq 1 ]] && FETCHER_ARGS+=(--clinvar)
+ACTIVE_FETCHER_SRC="$([ $OPT_BIRDCLEF -eq 1 ] && echo 'birdclef-2026, ')$([ $OPT_SRA -eq 1 ] && echo 'sra, ')$([ $OPT_IGSR -eq 1 ] && echo 'igsr, ')$([ $OPT_GNOMAD -eq 1 ] && echo 'gnomad, ')$([ $OPT_GDC -eq 1 ] && echo 'gdc, ')$([ $OPT_CLINVAR -eq 1 ] && echo 'clinvar')"
+echo "    sources: ${ACTIVE_FETCHER_SRC%, }"
+"$BIN/genetics-l2-fetcher" "${FETCHER_ARGS[@]}" \
   > /tmp/xenom-logs/fetcher.log 2>&1 &
 PIDS+=($!)
 sleep 2
@@ -296,21 +329,29 @@ echo "  /tmp/xenom-logs/validator.log"
 echo "  /tmp/xenom-logs/settlement.log"
 echo "  /tmp/xenom-logs/miner.log"
 echo ""
-echo "=== BirdCLEF L2 System ==="
-echo "Pool UI: http://localhost:5555 (Blue BirdWatch theme)"
-echo "Coordinator: $COORDINATOR"
-echo "Competition: BirdCLEF-2026 (Kaggle)"
+ACTIVE_SOURCES=""
+[[ $OPT_SRA      -eq 1 ]] && ACTIVE_SOURCES+="sra, "
+[[ $OPT_IGSR     -eq 1 ]] && ACTIVE_SOURCES+="igsr, "
+[[ $OPT_GNOMAD   -eq 1 ]] && ACTIVE_SOURCES+="gnomad, "
+[[ $OPT_GDC      -eq 1 ]] && ACTIVE_SOURCES+="gdc, "
+[[ $OPT_CLINVAR  -eq 1 ]] && ACTIVE_SOURCES+="clinvar, "
+[[ $OPT_BIRDCLEF -eq 1 ]] && ACTIVE_SOURCES+="birdclef-2026"
+ACTIVE_SOURCES="${ACTIVE_SOURCES%, }"
+
+echo "=== Xenom L2 Genetics — running ==="
+echo "Coordinator:  $COORDINATOR"
+echo "Stratum:      stratum+tcp://127.0.0.1:5555 (theme: $STRATUM_THEME)"
+echo "EVM RPC:      http://127.0.0.1:8545"
+echo "Datasets:     ${ACTIVE_SOURCES:-none}"
+echo "Pipeline:     variant_annotation_grch38 (GRCh38)"
 echo ""
-echo "Encryption Status: ACTIVE"
-echo "  ✓ Output files encrypted on disk: /tmp/genome-miner-l2/{job_id}/output/*.enc"
-echo "  ✓ Submitted payloads encrypted with coordinator pubkey"
-echo "  ✓ Coordinator keypair: /tmp/genetics-l2-nih2.db.key"
+echo "Encryption:   ACTIVE"
+echo "  ✓ Output files encrypted: /tmp/genome-miner-l2/{job_id}/output/*.enc"
+echo "  ✓ Payloads encrypted with coordinator pubkey"
 echo ""
-echo "To follow miner logs:"
-echo "  tail -f /tmp/xenom-logs/miner.log"
-echo ""
-echo "To check coordinator pubkey:"
-echo "  curl $COORDINATOR/pubkey"
+echo "Logs:         tail -f /tmp/xenom-logs/miner.log"
+echo "Pubkey:       curl $COORDINATOR/pubkey"
+echo "Jobs:         curl $COORDINATOR/jobs"
 echo ""
 echo "Press Ctrl+C to stop everything."
 
