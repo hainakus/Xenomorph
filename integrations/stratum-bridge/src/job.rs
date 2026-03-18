@@ -117,11 +117,16 @@ impl JobManager {
     ///   blue_score(8) + subsidy(8) + spk_ver(2) + spk_len(1) + spk(N) + fitness(4) + extra_data
     ///
     /// `modify_block_template` (triggered server-side when the template cache
-    /// was warmed by a *different* miner address) calls `modify_coinbase_payload`
-    /// which truncates to `blue_score + subsidy` then re-appends only the new SPK
-    /// and extra_data — discarding the 4 fitness bytes.  The resulting payload
-    /// looks like a V1 payload and will fail `deserialize_coinbase_payload_v2`,
-    /// causing the node to reject the block with `BadCoinbasePayload`.
+    /// was warmed by a *different* miner address) used to call `modify_coinbase_payload`
+    /// which dropped the 4 fitness bytes.  The resulting payload then had the first
+    /// 4 bytes of the extra_data version string (e.g. "0.15") parsed as fitness ≈ 892M,
+    /// far above the fitness_threshold (10_000), which clamps the multiplier to 2.0.
+    /// The node then computes expected_subsidy = 2 × base while the payload carries the
+    /// original subsidy (computed with the real fitness), producing a WrongSubsidy error.
+    ///
+    /// This guard is a belt-and-suspenders check: the upstream bug is fixed in
+    /// `modify_coinbase_payload`, but we also reject any template where the fitness
+    /// bytes look like corrupted data (valid genome fitness is at most 3000).
     fn coinbase_payload_valid(template: &RpcRawBlock) -> bool {
         let Some(coinbase) = template.transactions.first() else { return false; };
         let p = &coinbase.payload;
@@ -136,8 +141,19 @@ impl JobManager {
         // For Genome-PoW (V2) blocks the fitness field must immediately follow the SPK.
         // genome_active here uses the same epoch_seed heuristic as the rest of the bridge.
         let genome_active = template.header.epoch_seed != kaspa_hashes::Hash::default();
-        if genome_active && p.len() < 19 + spk_len + 4 {
-            return false;
+        if genome_active {
+            if p.len() < 19 + spk_len + 4 {
+                return false;
+            }
+            // genome_pow::compute_fitness returns values in [0, 3000].
+            // Corrupted payloads (stripped fitness, version-string bytes in its place)
+            // produce values like 892_415_536.  Reject anything implausibly large.
+            let fitness = u32::from_le_bytes(
+                p[19 + spk_len..19 + spk_len + 4].try_into().unwrap(),
+            );
+            if fitness > 100_000 {
+                return false;
+            }
         }
         true
     }

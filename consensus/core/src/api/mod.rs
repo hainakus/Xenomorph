@@ -195,7 +195,7 @@ pub trait ConsensusApi: Send + Sync {
         unimplemented!()
     }
 
-    fn modify_coinbase_payload(&self, payload: Vec<u8>, miner_data: &MinerData) -> CoinbaseResult<Vec<u8>> {
+    fn modify_coinbase_payload(&self, payload: Vec<u8>, miner_data: &MinerData, daa_score: u64) -> CoinbaseResult<Vec<u8>> {
         unimplemented!()
     }
 
