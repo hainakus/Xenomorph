@@ -6,7 +6,7 @@ use jsonrpsee::{
     server::{PendingSubscriptionSink, Server},
     types::ErrorObject,
 };
-use xenom_evm_core::{Address, BlockRecord, Bytes, B256, U256};
+use xenom_evm_core::{Address, BlockRecord, Bytes, L1CheckpointV1, B256, U256};
 use serde::{Deserialize, Serialize};
 use xenom_evm_core::EvmChain;
 
@@ -102,6 +102,14 @@ pub trait EthRpc {
     /// Retrieve a previously stored anchor by its ID (hex).
     #[method(name = "xenom_getAnchor")]
     async fn xenom_get_anchor(&self, anchor_id: String) -> RpcResult<Option<serde_json::Value>>;
+
+    /// Return the latest mined checkpoint or null if none yet.
+    #[method(name = "xenom_latestCheckpoint")]
+    async fn xenom_latest_checkpoint(&self) -> RpcResult<Option<serde_json::Value>>;
+
+    /// Return a specific checkpoint by block number (hex or decimal string).
+    #[method(name = "xenom_getCheckpoint")]
+    async fn xenom_get_checkpoint(&self, block_number: String) -> RpcResult<Option<serde_json::Value>>;
 }
 
 // ── CallRequest ───────────────────────────────────────────────────────────────
@@ -416,6 +424,17 @@ impl EthRpcServer for EthServer {
         Ok(format!("0x{}", hex::encode(id)))
     }
 
+    async fn xenom_latest_checkpoint(&self) -> RpcResult<Option<serde_json::Value>> {
+        Ok(self.chain.latest_checkpoint().as_ref().map(checkpoint_to_json))
+    }
+
+    async fn xenom_get_checkpoint(&self, block_number: String) -> RpcResult<Option<serde_json::Value>> {
+        let n = u64::from_str_radix(block_number.trim_start_matches("0x"), 16)
+            .or_else(|_| block_number.parse::<u64>())
+            .map_err(|e| rpc_err(format!("invalid block number: {e}")))?;
+        Ok(self.chain.get_checkpoint(n).as_ref().map(checkpoint_to_json))
+    }
+
     async fn xenom_get_anchor(&self, anchor_id: String) -> RpcResult<Option<serde_json::Value>> {
         let raw = anchor_id.strip_prefix("0x").unwrap_or(&anchor_id);
         let bytes = hex::decode(raw).map_err(|e| rpc_err(format!("invalid id: {e}")))?;
@@ -568,6 +587,24 @@ fn build_block_object(block_num: u64, chain: &EvmChain) -> serde_json::Value {
             })
         }
     }
+}
+
+// ── Checkpoint helper ────────────────────────────────────────────────────────
+
+fn checkpoint_to_json(cp: &L1CheckpointV1) -> serde_json::Value {
+    serde_json::json!({
+        "version":                cp.version,
+        "chainId":                format!("0x{:x}", cp.chain_id),
+        "blockNumber":            format!("0x{:x}", cp.block_number),
+        "timestampMs":            format!("0x{:x}", cp.timestamp_ms),
+        "stateRoot":              format!("0x{}", hex::encode(cp.state_root)),
+        "receiptsRoot":           format!("0x{}", hex::encode(cp.receipts_root)),
+        "txRoot":                 format!("0x{}", hex::encode(cp.tx_root)),
+        "anchorRoot":             format!("0x{}", hex::encode(cp.anchor_root)),
+        "geneticsSettlementRoot": format!("0x{}", hex::encode(cp.genetics_settlement_root)),
+        "checkpointId":           format!("0x{}", hex::encode(cp.checkpoint_id())),
+        "bytes":                  format!("0x{}", hex::encode(cp.to_bytes())),
+    })
 }
 
 // ── Start server ──────────────────────────────────────────────────────────────

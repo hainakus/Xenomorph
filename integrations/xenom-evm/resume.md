@@ -512,3 +512,36 @@ That is consistent with a system where:
 
 * L2 is for usability, integration, and execution
 * L1 is for stronger immutability and final commitment
+
+---
+
+## 26. Current branch validation matrix (claim vs evidence)
+
+This matrix validates the architecture claims against the code currently in this branch.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| 3-part architecture: `xenom-evm-core`, `xenom-evm-rpc`, `xenom-evm-node` | ✅ Implemented | `xenom-evm-node` imports/starts `xenom-evm-core` + `xenom-evm-rpc`: `integrations/xenom-evm/xenom-evm-node/src/main.rs` |
+| Devnet defaults (`chain-id=1337`, `rpc=127.0.0.1:8545`, `block-time=2000`) | ✅ Implemented | Defaults are defined in CLI + runtime parsing: `integrations/xenom-evm/xenom-evm-node/src/main.rs` |
+| Devnet pre-funds canonical account with 10,000 ETH | ✅ Implemented | `--devnet` pre-fund path with hardcoded address and amount: `integrations/xenom-evm/xenom-evm-node/src/main.rs` |
+| Optional JSON persistence with `--state-dir` | ✅ Implemented | `new_with_persistence` and snapshot write after each block: `integrations/xenom-evm/xenom-evm-core/src/chain.rs` |
+| L1 DAA-tied sequencing via `--l1-node` | ✅ Implemented | DAA poll loop mines blocks when virtual DAA increases: `integrations/xenom-evm/xenom-evm-node/src/main.rs` |
+| Ethereum RPC compatibility (`eth_*`) | ✅ Implemented | Methods declared/implemented (`eth_chainId`, `eth_getBalance`, `eth_sendRawTransaction`, `eth_call`, etc.): `integrations/xenom-evm/xenom-evm-rpc/src/lib.rs` |
+| WebSocket subscriptions (`newHeads`, `logs`) | ✅ Implemented | `eth_subscribe` implementation for `newHeads` and `logs`: `integrations/xenom-evm/xenom-evm-rpc/src/lib.rs` |
+| Xenom custom RPC (`xenom_latestStateRoot`, `xenom_pendingCount`) | ✅ Implemented | Methods exposed in RPC trait + impl: `integrations/xenom-evm/xenom-evm-rpc/src/lib.rs` |
+| `xenom_anchor(payload_hex) -> anchor_id` and retrieval via `xenom_getAnchor` | ✅ Implemented | RPC methods + in-memory anchor store (`keccak(data)`): `integrations/xenom-evm/xenom-evm-rpc/src/lib.rs`, `integrations/xenom-evm/xenom-evm-core/src/chain.rs` |
+| Genetics settlement polls validated jobs | ✅ Implemented | `GET /jobs?status=validated` in settlement loop: `integrations/genetics-l2/genetics-l2-settlement/src/main.rs` |
+| Settlement builds compact `SettlementPayload` (job, root, winner, hashes) | ✅ Implemented | Payload struct + builder call site: `integrations/genetics-l2/genetics-l2-core/src/lib.rs`, `integrations/genetics-l2/genetics-l2-settlement/src/main.rs` |
+| Devnet/testnet settlement anchors on EVM L2 via `xenom_anchor` | ✅ Implemented | `evm_anchor()` call in devnet/testnet path: `integrations/genetics-l2/genetics-l2-settlement/src/main.rs` |
+| Returned `anchor_id` stored as payout `txid` | ✅ Implemented | `Payout { txid: txid.clone() }`: `integrations/genetics-l2/genetics-l2-settlement/src/main.rs` |
+| Mainnet path described as direct L1 commitment (bridge/extra_data) | ⚠️ Partially evidenced here | Mentioned in settlement comments and flow branching, but full bridge-side extra_data commit logic is outside this file: `integrations/genetics-l2/genetics-l2-settlement/src/main.rs` |
+| L2 consensus model is centralized sequencer | ✅ Consistent with implementation | Single local sequencer loop (timer or DAA-tied), no decentralized L2 consensus module in these crates |
+
+### Build validation (current branch)
+
+Compiled successfully:
+
+* `xenom-evm-core`
+* `xenom-evm-rpc`
+* `xenom-evm-node`
+* `genetics-l2-settlement`

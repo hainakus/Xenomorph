@@ -25,24 +25,13 @@ pub struct StateSnapshot {
     pub accounts: HashMap<String, AccountSnap>,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct AccountSnap {
-    pub balance: String,  // "0x{hex}"
-    pub nonce: u64,
-    pub code: String,     // "0x{hex}" — empty when EOA
-    pub storage: HashMap<String, String>, // "0x{slot}" -> "0x{value}"
-}
-
-// ── Save ──────────────────────────────────────────────────────────────────────
-
-pub fn save_snapshot(
+fn build_snapshot(
     db: &InMemoryDB,
     chain_id: u64,
     block_number: u64,
     tx_index: u64,
     state_root: B256,
-    path: &Path,
-) -> std::io::Result<()> {
+) -> StateSnapshot {
     let mut accounts = HashMap::new();
 
     for (addr, account) in &db.accounts {
@@ -76,41 +65,16 @@ pub fn save_snapshot(
         );
     }
 
-    let snap = StateSnapshot {
+    StateSnapshot {
         chain_id,
         block_number,
         tx_index,
         state_root: format!("0x{}", hex::encode(state_root)),
         accounts,
-    };
-
-    let json = serde_json::to_string_pretty(&snap)
-        .map_err(std::io::Error::other)?;
-
-    // Atomic write: write to .tmp then rename
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &json)?;
-    std::fs::rename(&tmp, path)?;
-
-    log::debug!("state snapshot saved to {}", path.display());
-    Ok(())
+    }
 }
 
-// ── Load ──────────────────────────────────────────────────────────────────────
-
-pub struct LoadedSnapshot {
-    pub db: InMemoryDB,
-    pub block_number: u64,
-    pub tx_index: u64,
-    pub state_root: B256,
-}
-
-pub fn load_snapshot(path: &Path) -> Option<LoadedSnapshot> {
-    let data = std::fs::read(path).ok()?;
-    let snap: StateSnapshot = serde_json::from_slice(&data)
-        .map_err(|e| log::warn!("snapshot parse error: {e}"))
-        .ok()?;
-
+fn snapshot_to_loaded(snap: &StateSnapshot) -> Option<LoadedSnapshot> {
     let mut db = InMemoryDB::default();
 
     for (addr_hex, acc) in &snap.accounts {
@@ -145,12 +109,6 @@ pub fn load_snapshot(path: &Path) -> Option<LoadedSnapshot> {
     }
 
     let state_root = parse_b256(&snap.state_root).unwrap_or(B256::ZERO);
-    log::info!(
-        "state snapshot loaded: block={} accounts={} root={}",
-        snap.block_number,
-        snap.accounts.len(),
-        snap.state_root
-    );
 
     Some(LoadedSnapshot {
         db,
@@ -158,6 +116,79 @@ pub fn load_snapshot(path: &Path) -> Option<LoadedSnapshot> {
         tx_index: snap.tx_index,
         state_root,
     })
+}
+
+pub fn encode_snapshot_bin(
+    db: &InMemoryDB,
+    chain_id: u64,
+    block_number: u64,
+    tx_index: u64,
+    state_root: B256,
+) -> Result<Vec<u8>, String> {
+    let snap = build_snapshot(db, chain_id, block_number, tx_index, state_root);
+    bincode::serialize(&snap).map_err(|e| e.to_string())
+}
+
+pub fn decode_snapshot_bin(data: &[u8]) -> Result<LoadedSnapshot, String> {
+    let snap: StateSnapshot = bincode::deserialize(data).map_err(|e| e.to_string())?;
+    snapshot_to_loaded(&snap).ok_or_else(|| "invalid snapshot data".to_string())
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AccountSnap {
+    pub balance: String,  // "0x{hex}"
+    pub nonce: u64,
+    pub code: String,     // "0x{hex}" — empty when EOA
+    pub storage: HashMap<String, String>, // "0x{slot}" -> "0x{value}"
+}
+
+// ── Save ──────────────────────────────────────────────────────────────────────
+
+pub fn save_snapshot(
+    db: &InMemoryDB,
+    chain_id: u64,
+    block_number: u64,
+    tx_index: u64,
+    state_root: B256,
+    path: &Path,
+) -> std::io::Result<()> {
+    let snap = build_snapshot(db, chain_id, block_number, tx_index, state_root);
+
+    let json = serde_json::to_string_pretty(&snap)
+        .map_err(std::io::Error::other)?;
+
+    // Atomic write: write to .tmp then rename
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &json)?;
+    std::fs::rename(&tmp, path)?;
+
+    log::debug!("state snapshot saved to {}", path.display());
+    Ok(())
+}
+
+// ── Load ──────────────────────────────────────────────────────────────────────
+
+pub struct LoadedSnapshot {
+    pub db: InMemoryDB,
+    pub block_number: u64,
+    pub tx_index: u64,
+    pub state_root: B256,
+}
+
+pub fn load_snapshot(path: &Path) -> Option<LoadedSnapshot> {
+    let data = std::fs::read(path).ok()?;
+    let snap: StateSnapshot = serde_json::from_slice(&data)
+        .map_err(|e| log::warn!("snapshot parse error: {e}"))
+        .ok()?;
+
+    log::info!(
+        "state snapshot loaded: block={} accounts={} root={}",
+        snap.block_number,
+        snap.accounts.len(),
+        snap.state_root
+    );
+
+    snapshot_to_loaded(&snap)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

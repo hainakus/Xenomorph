@@ -82,10 +82,15 @@ async fn main() -> Result<()> {
         None
     };
 
+    let quorum: usize = m.get_one::<String>("quorum")
+        .and_then(|s| s.parse().ok()).unwrap_or(2);
+    let score_tolerance: f64 = m.get_one::<String>("score-tolerance")
+        .and_then(|s| s.parse().ok()).unwrap_or(0.05);
+
     let http = reqwest::Client::new();
 
     loop {
-        match settle_validated_jobs(&http, &coordinator, rpc.as_ref(), keypair.as_ref(), fee_sompi, dry_run, network_prefix, evm_node.as_deref()).await {
+        match settle_validated_jobs(&http, &coordinator, rpc.as_ref(), keypair.as_ref(), fee_sompi, dry_run, network_prefix, evm_node.as_deref(), quorum, score_tolerance).await {
             Ok(n) if n > 0 => log::info!("Settled {n} job(s)"),
             Ok(_)          => {}
             Err(e)         => log::warn!("Settlement cycle error: {e:#}"),
@@ -113,14 +118,16 @@ fn load_privkey_opt(env_var: &str, key_file: Option<&str>) -> Option<String> {
 // ── Settlement logic ──────────────────────────────────────────────────────────
 
 async fn settle_validated_jobs(
-    http:        &reqwest::Client,
-    coordinator: &str,
-    rpc:         Option<&std::sync::Arc<kaspa_grpc_client::GrpcClient>>,
-    keypair:     Option<&secp256k1::Keypair>,
-    fee_sompi:   u64,
-    dry_run:     bool,
-    prefix:      Prefix,
-    evm_node:    Option<&str>,
+    http:            &reqwest::Client,
+    coordinator:     &str,
+    rpc:             Option<&std::sync::Arc<kaspa_grpc_client::GrpcClient>>,
+    keypair:         Option<&secp256k1::Keypair>,
+    fee_sompi:       u64,
+    dry_run:         bool,
+    prefix:          Prefix,
+    evm_node:        Option<&str>,
+    quorum:          usize,
+    score_tolerance: f64,
 ) -> Result<usize> {
     // Fetch validated (not yet settled) jobs
     let resp = http
@@ -155,8 +162,9 @@ async fn settle_validated_jobs(
             .filter(|r| r["verdict"].as_str() == Some("valid"))
             .collect();
 
-        if valid_results.is_empty() {
-            log::debug!("Job {job_id}: no valid results yet, skipping");
+        if valid_results.len() < quorum {
+            log::debug!("Job {job_id}: {}/{quorum} valid results — waiting for quorum",
+                valid_results.len());
             continue;
         }
 
@@ -166,27 +174,49 @@ async fn settle_validated_jobs(
             .collect();
         let results_root = merkle_root_hex(&result_root_hashes);
 
-        // ── Find winner (highest score) ───────────────────────────────────────
-        let winner = valid_results.iter()
-            .max_by(|a, b| {
-                let sa = a["score"].as_f64().unwrap_or(0.0);
-                let sb = b["score"].as_f64().unwrap_or(0.0);
-                sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+        // ── Quorum: winner = result closest to median score ───────────────────
+        let mut scores: Vec<f64> = valid_results.iter()
+            .map(|r| r["score"].as_f64().unwrap_or(0.0))
+            .collect();
+        scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = if scores.len() % 2 == 0 {
+            (scores[scores.len() / 2 - 1] + scores[scores.len() / 2]) / 2.0
+        } else {
+            scores[scores.len() / 2]
+        };
+
+        // Consensus cluster: results within score_tolerance of median
+        let consensus: Vec<&Value> = valid_results.iter()
+            .filter(|r| (r["score"].as_f64().unwrap_or(0.0) - median).abs() <= score_tolerance)
+            .copied()
+            .collect();
+
+        if consensus.is_empty() {
+            log::debug!("Job {job_id}: no consensus cluster (median={median:.4}), skipping");
+            continue;
+        }
+
+        // Winner = result whose score is closest to the median
+        let winner = consensus.iter()
+            .min_by(|a, b| {
+                let da = (a["score"].as_f64().unwrap_or(0.0) - median).abs();
+                let db = (b["score"].as_f64().unwrap_or(0.0) - median).abs();
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
             })
             .cloned();
 
         let Some(winner) = winner else { continue };
+        let best_score = winner["score"].as_f64().unwrap_or(0.0);
+        log::info!(
+            "Settling job {job_id}: winner={} score={best_score:.4} median={median:.4} quorum={}/{quorum} results_root={results_root}",
+            winner["worker_pubkey"].as_str().unwrap_or("").get(..12).unwrap_or(""),
+            valid_results.len()
+        );
         let winner_pubkey          = winner["worker_pubkey"].as_str().unwrap_or("").to_owned();
-        let best_score             = winner["score"].as_f64().unwrap_or(0.0);
         let notebook_or_repo_hash  = winner["notebook_or_repo_hash"].as_str().map(str::to_owned);
         let container_hash         = winner["container_hash"].as_str().map(str::to_owned);
         let weights_hash           = winner["weights_hash"].as_str().map(str::to_owned);
         let submission_bundle_hash = winner["submission_bundle_hash"].as_str().map(str::to_owned);
-
-        log::info!(
-            "Settling job {job_id}: winner={} score={best_score:.2} results_root={results_root}",
-            &winner_pubkey[..12.min(winner_pubkey.len())]
-        );
 
         // ── Build SettlementPayload ───────────────────────────────────────────
         let payload = SettlementPayload {
@@ -347,4 +377,12 @@ fn cli() -> Command {
         .arg(Arg::new("evm-node")
             .long("evm-node").value_name("URL")
             .help("Override default EVM L2 JSON-RPC URL. Defaults to http://127.0.0.1:8545 for devnet/testnet, none for mainnet (uses coinbase extra_data)"))
+        .arg(Arg::new("quorum")
+            .long("quorum").value_name("N")
+            .default_value("2")
+            .help("Minimum number of valid results required before settling a job"))
+        .arg(Arg::new("score-tolerance")
+            .long("score-tolerance").value_name("F")
+            .default_value("0.05")
+            .help("Max score distance from median to be included in the consensus cluster"))
 }

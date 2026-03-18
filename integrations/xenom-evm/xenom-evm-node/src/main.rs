@@ -55,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
     log::info!("  chain_id:   {chain_id}");
     log::info!("  rpc:        http://{rpc_addr}");
     if let Some(ref dir) = state_dir {
-        log::info!("  state:      {dir}/evm-state-{chain_id}.json");
+        log::info!("  state:      {dir}/evm-state-{chain_id}.rocksdb");
     } else {
         log::info!("  state:      volatile (no --state-dir)");
     }
@@ -181,7 +181,7 @@ fn cli() -> Command {
                 .long("state-dir")
                 .value_name("PATH")
                 .help("Directory for persistent state snapshots. \
-                       Saves evm-state-{chain_id}.json atomically after each block. \
-                       State is reloaded on restart. Omit for volatile (dev) mode."),
+                       Stores RocksDB state at evm-state-{chain_id}.rocksdb and \
+                       restores state on restart. Omit for volatile (dev) mode."),
         )
 }

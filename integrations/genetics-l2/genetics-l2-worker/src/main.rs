@@ -160,7 +160,7 @@ async fn try_claim_and_execute(
     log::info!("  result_root={result_root}");
 
     // ── 7. Sign result ────────────────────────────────────────────────────────
-    let sign_data = format!("{}:{}:{:.6}", job.job_id, result_root, score);
+    let sign_data = format!("{}:{}:{:.6}:{}", job.job_id, result_root, score, &trace_hash);
     let digest    = *blake3::hash(sign_data.as_bytes()).as_bytes();
     let worker_sig = sign_manifest(&digest, &cfg.privkey_hex)
         .unwrap_or_else(|_| "unsigned".to_owned());
@@ -204,9 +204,6 @@ async fn try_claim_and_execute(
                 log::info!("Encrypted result payload for {}", job.job_id);
                 result.encrypted_payload = Some(enc);
                 result.ephemeral_pubkey  = Some(eph);
-                result.result_root  = String::new();
-                result.score        = 0.0;
-                result.trace_hash   = None;
                 result.predictions_csv = None;
             }
             Err(e) => log::warn!("Encryption failed: {e} — submitting unencrypted"),
@@ -277,19 +274,21 @@ async fn smith_waterman_stub(
     let mut trace = String::from("smith-waterman alignment\n");
 
     let files = collect_files(input_dir).await.unwrap_or_default();
+    let n = files.len().max(1);
     for f in &files {
         let data = tokio::fs::read(f).await.unwrap_or_default();
-        // Stub: score = sum of G+C base counts (mock for deterministic output)
+        // Stub: mean GC fraction across files — deterministic, always in [0.0, 1.0]
         let gc = data.iter().filter(|&&b| b == b'G' || b == b'C').count();
         score += gc as f64 / data.len().max(1) as f64;
-        trace.push_str(&format!("  {} → gc_fraction={:.4}\n", f.display(), score));
+        trace.push_str(&format!("  {} → gc_fraction={:.4}\n", f.display(), score / n as f64));
     }
 
     // Write stub VCF output
     let vcf_content = "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\n";
     tokio::fs::write(output_dir.join("alignment.vcf"), vcf_content).await?;
 
-    Ok((score * 1000.0, trace))
+    // Normalize: mean GC fraction → in [0.0, 1.0]
+    Ok((score / n as f64, trace))
 }
 
 async fn variant_calling_stub(
@@ -300,7 +299,9 @@ async fn variant_calling_stub(
     let trace = format!("variant-calling on {} input files\n", files.len());
     let vcf   = "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\n";
     tokio::fs::write(output_dir.join("variants.vcf"), vcf).await?;
-    Ok((files.len() as f64 * 100.0, trace))
+    // Normalized: files / (files + 1) → in [0.0, 1.0)
+    let score = files.len() as f64 / (files.len() as f64 + 1.0);
+    Ok((score, trace))
 }
 
 async fn protein_folding_stub(
@@ -311,7 +312,8 @@ async fn protein_folding_stub(
     let trace  = format!("protein-folding on {} sequences\n", files.len());
     let pdb    = "ATOM      1  N   ALA A   1       1.000   1.000   1.000  1.00  0.00\n";
     tokio::fs::write(output_dir.join("structure.pdb"), pdb).await?;
-    Ok((0.85 * files.len() as f64, trace))
+    // Fixed stub confidence — always in [0.0, 1.0]
+    Ok((0.85, trace))
 }
 
 async fn rna_expression_stub(
@@ -322,7 +324,9 @@ async fn rna_expression_stub(
     let trace  = format!("rna-expression on {} files\n", files.len());
     let tsv    = "gene_id\tcount\nGENE1\t1234\nGENE2\t567\n";
     tokio::fs::write(output_dir.join("counts.tsv"), tsv).await?;
-    Ok((files.len() as f64 * 50.0, trace))
+    // Normalized: files / (files + 1) → in [0.0, 1.0)
+    let score = files.len() as f64 / (files.len() as f64 + 1.0);
+    Ok((score, trace))
 }
 
 /// Acoustic species classification for BirdCLEF-style tasks.
@@ -413,7 +417,8 @@ async fn acoustic_classification(
     ).await?;
 
     let n = files.len().max(1);
-    let score = score_acc / n as f64;
+    // mean_confidence is already in [0.0, 1.0] (each confidence ∈ [0,1])
+    let score = (score_acc / n as f64).clamp(0.0, 1.0);
     trace.push_str(&format!("  mean_confidence={score:.4}\n"));
     Ok((score, trace))
 }
@@ -425,7 +430,8 @@ async fn generic_pipeline_stub(
 ) -> Result<(f64, String)> {
     let trace = format!("generic pipeline for {} [{}]\n", job.job_id, job.algorithm);
     tokio::fs::write(output_dir.join("result.json"), serde_json::to_vec(job)?).await?;
-    Ok((42.0, trace))
+    // Fixed stub score in [0.0, 1.0]
+    Ok((0.42, trace))
 }
 
 // ── Dataset download ──────────────────────────────────────────────────────────

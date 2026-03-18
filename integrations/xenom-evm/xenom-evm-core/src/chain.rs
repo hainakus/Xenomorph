@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, VecDeque},
-    path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
 use tokio::sync::broadcast;
@@ -16,8 +15,16 @@ use revm::{
 };
 use thiserror::Error;
 
+use crate::backend::{InMemoryBackend, RocksDbBackend, StateBackend};
+use crate::checkpoint::{
+    anchor_root,
+    genetics_settlement_root,
+    receipts_root,
+    tx_root,
+    L1CheckpointV1,
+    CHECKPOINT_VERSION_V1,
+};
 use crate::types::{decode_raw_tx, DecodedTx, EvmLog, EvmReceipt};
-use crate::persist;
 
 // ── Block record ──────────────────────────────────────────────────────────
 
@@ -57,33 +64,73 @@ pub struct EvmChain {
     blocks: Mutex<HashMap<u64, BlockRecord>>,
     tx_to_block: Mutex<HashMap<B256, u64>>, // tx_hash → block_number
     block_logs: Mutex<HashMap<u64, Vec<EvmLog>>>, // block_number → all logs in that block
-    snapshot_path: Option<PathBuf>,
+    backend: Box<dyn StateBackend>,
     block_tx: broadcast::Sender<BlockRecord>,
     anchors: Mutex<HashMap<B256, (u64, Vec<u8>)>>, // keccak(data) → (block_num, data)
+    latest_checkpoint: Mutex<Option<L1CheckpointV1>>,
 }
 
 impl EvmChain {
     pub fn new(chain_id: u64) -> Self {
-        Self::new_inner(chain_id, InMemoryDB::default(), 1, 0, B256::ZERO, None)
+        Self::new_inner(
+            chain_id,
+            InMemoryDB::default(),
+            1,
+            0,
+            B256::ZERO,
+            Box::new(InMemoryBackend::new()),
+        )
     }
 
-    /// Create an EvmChain that loads existing state from `state_dir` (if
-    /// present) and writes an atomic snapshot after every mined block.
+    /// Backward-compatible constructor: persisted mode now uses RocksDB.
     pub fn new_with_persistence(chain_id: u64, state_dir: &std::path::Path) -> Self {
+        Self::new_with_rocksdb(chain_id, state_dir)
+    }
+
+    /// Create an EvmChain backed by RocksDB.
+    ///
+    /// Stores snapshots and anchors in RocksDB CFs and restores state from
+    /// `meta/state_snapshot_v1` when present.
+    pub fn new_with_rocksdb(chain_id: u64, state_dir: &std::path::Path) -> Self {
         std::fs::create_dir_all(state_dir).ok();
-        let path = persist::snapshot_path(state_dir, chain_id);
-        if let Some(loaded) = persist::load_snapshot(&path) {
-            Self::new_inner(
-                chain_id,
-                loaded.db,
-                loaded.block_number,
-                loaded.tx_index,
-                loaded.state_root,
-                Some(path),
-            )
-        } else {
-            log::info!("no snapshot found at {} — starting fresh", path.display());
-            Self::new_inner(chain_id, InMemoryDB::default(), 1, 0, B256::ZERO, Some(path))
+        match RocksDbBackend::open(state_dir, chain_id) {
+            Ok(backend) => match backend.load_snapshot() {
+                Ok(Some(loaded)) => {
+                    log::info!(
+                        "rocksdb snapshot loaded: block={} tx_index={} root={}",
+                        loaded.block_number,
+                        loaded.tx_index,
+                        loaded.state_root
+                    );
+                    Self::new_inner(
+                        chain_id,
+                        loaded.db,
+                        loaded.block_number,
+                        loaded.tx_index,
+                        loaded.state_root,
+                        Box::new(backend),
+                    )
+                }
+                Ok(None) => {
+                    log::info!("rocksdb state is empty — starting fresh");
+                    Self::new_inner(
+                        chain_id,
+                        InMemoryDB::default(),
+                        1,
+                        0,
+                        B256::ZERO,
+                        Box::new(backend),
+                    )
+                }
+                Err(e) => {
+                    log::warn!("rocksdb snapshot load failed: {e}. Falling back to in-memory backend.");
+                    Self::new(chain_id)
+                }
+            },
+            Err(e) => {
+                log::warn!("rocksdb backend init failed: {e}. Falling back to in-memory backend.");
+                Self::new(chain_id)
+            }
         }
     }
 
@@ -93,7 +140,7 @@ impl EvmChain {
         block_number: u64,
         tx_index: u64,
         state_root: B256,
-        snapshot_path: Option<PathBuf>,
+        backend: Box<dyn StateBackend>,
     ) -> Self {
         Self {
             chain_id,
@@ -106,9 +153,10 @@ impl EvmChain {
             blocks: Mutex::new(HashMap::new()),
             tx_to_block: Mutex::new(HashMap::new()),
             block_logs: Mutex::new(HashMap::new()),
-            snapshot_path,
+            backend,
             block_tx: broadcast::channel(64).0,
             anchors: Mutex::new(HashMap::new()),
+            latest_checkpoint: Mutex::new(None),
         }
     }
 
@@ -117,13 +165,29 @@ impl EvmChain {
     pub fn anchor_data(&self, data: Vec<u8>) -> B256 {
         let id = B256::from_slice(&crate::types::keccak256(&data));
         let block = self.block_number();
-        self.anchors.lock().insert(id, (block, data));
+        self.anchors.lock().insert(id, (block, data.clone()));
+        if let Err(e) = self.backend.put_anchor(id, block, &data) {
+            log::warn!("anchor persist failed: {e}");
+        }
         id
     }
 
     /// Retrieve a previously anchored payload by its ID.
     pub fn get_anchor(&self, id: B256) -> Option<(u64, Vec<u8>)> {
-        self.anchors.lock().get(&id).cloned()
+        if let Some(v) = self.anchors.lock().get(&id).cloned() {
+            return Some(v);
+        }
+        match self.backend.get_anchor(id) {
+            Ok(Some(v)) => {
+                self.anchors.lock().insert(id, v.clone());
+                Some(v)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                log::warn!("anchor lookup failed: {e}");
+                None
+            }
+        }
     }
 
     /// Subscribe to new mined blocks (newHeads).
@@ -299,20 +363,56 @@ impl EvmChain {
             self.block_logs.lock().insert(block, all_block_logs);
         }
 
-        // Persist state after each block if a snapshot path is configured
-        if let Some(ref path) = self.snapshot_path {
-            let tx_idx = self.tx_index.load(Ordering::Relaxed);
-            if let Err(e) = persist::save_snapshot(
-                &self.db.lock(),
-                self.chain_id,
-                block,
-                tx_idx,
-                state_root,
-                path,
-            ) {
-                log::warn!("state snapshot write failed: {e}");
-            }
+        // Persist state snapshot via selected backend
+        let tx_idx = self.tx_index.load(Ordering::Relaxed);
+        if let Err(e) = self.backend.persist_snapshot(
+            &self.db.lock(),
+            self.chain_id,
+            block,
+            tx_idx,
+            state_root,
+        ) {
+            log::warn!("state persistence failed ({}): {e}", self.backend.name());
         }
+
+        let included_receipts: Vec<EvmReceipt> = {
+            let receipts = self.receipts.lock();
+            included_hashes
+                .iter()
+                .filter_map(|h| receipts.get(h).cloned())
+                .collect()
+        };
+
+        let anchors_snapshot: Vec<(B256, u64, Vec<u8>)> = {
+            self.anchors
+                .lock()
+                .iter()
+                .map(|(id, (blk, payload))| (*id, *blk, payload.clone()))
+                .collect()
+        };
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        let checkpoint = L1CheckpointV1 {
+            version: CHECKPOINT_VERSION_V1,
+            chain_id: self.chain_id,
+            block_number: block,
+            timestamp_ms: now_ms,
+            state_root,
+            receipts_root: receipts_root(&included_receipts),
+            tx_root: tx_root(&included_hashes),
+            anchor_root: anchor_root(&anchors_snapshot),
+            genetics_settlement_root: genetics_settlement_root(&anchors_snapshot),
+            reserved: 0,
+        };
+
+        if let Err(e) = self.backend.persist_checkpoint(&checkpoint) {
+            log::warn!("checkpoint persistence failed ({}): {e}", self.backend.name());
+        }
+        *self.latest_checkpoint.lock() = Some(checkpoint);
 
         (block, state_root)
     }
@@ -367,6 +467,25 @@ impl EvmChain {
     /// Latest EVM state root from the most recent mined block (for L1 anchoring).
     pub fn latest_state_root(&self) -> B256 {
         *self.latest_state_root.lock()
+    }
+
+    pub fn latest_checkpoint(&self) -> Option<L1CheckpointV1> {
+        self.latest_checkpoint.lock().as_ref().copied()
+    }
+
+    pub fn get_checkpoint(&self, block_number: u64) -> Option<L1CheckpointV1> {
+        if let Some(cp) = self.latest_checkpoint.lock().as_ref().copied() {
+            if cp.block_number == block_number {
+                return Some(cp);
+            }
+        }
+        match self.backend.get_checkpoint(block_number) {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("checkpoint lookup failed: {e}");
+                None
+            }
+        }
     }
 
     pub fn storage_at(&self, addr: Address, slot: B256) -> B256 {
@@ -629,6 +748,12 @@ mod tests {
             receipt.effective_gas_price.trim_start_matches("0x"), 16
         ).expect("effectiveGasPrice must parse");
         assert_eq!(price, 1_000_000_000, "effectiveGasPrice = gas_price = 1 gwei");
+
+        let checkpoint = chain.latest_checkpoint().expect("checkpoint must exist after mine");
+        assert_eq!(checkpoint.chain_id, 1337);
+        assert_eq!(checkpoint.block_number, block);
+        assert_eq!(checkpoint.state_root, state_root);
+        assert_ne!(checkpoint.tx_root, B256::ZERO, "tx root should include the transfer tx");
 
         println!("blockHash:         {} ✓", &receipt.block_hash[..10]);
         println!("cumulativeGasUsed: {} ✓", receipt.cumulative_gas_used);

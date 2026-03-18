@@ -240,8 +240,9 @@ async fn create_job(
                     let job_id = job.job_id.clone();
                     let dataset_url = dataset_url.clone();
                     let datasets_dir = s.datasets_dir.clone();
+                    let pool_bg = s.pool.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = download_kaggle_dataset(&job_id, &dataset_url, &datasets_dir).await {
+                        if let Err(e) = download_kaggle_dataset(&job_id, &dataset_url, &datasets_dir, &pool_bg).await {
                             log::warn!("Background dataset download failed for {job_id}: {e}");
                         }
                     });
@@ -932,6 +933,7 @@ async fn download_kaggle_dataset(
     job_id: &str,
     dataset_url: &str,
     datasets_dir: &std::path::Path,
+    pool: &SqlitePool,
 ) -> Result<()> {
     let slug = dataset_url.strip_prefix("kaggle://competitions/")
         .ok_or_else(|| anyhow::anyhow!("Invalid kaggle:// URL: {dataset_url}"))?;
@@ -1007,8 +1009,41 @@ async fn download_kaggle_dataset(
     log::info!("Cache complete: {audio_count} audio files in {}", cache_dir.display());
     tokio::fs::write(&ready_marker, b"ready").await.ok();
     tokio::fs::remove_file(&lock_file).await.ok();
+
+    // Compute BLAKE3 Merkle root of all dataset files and update the job
+    let dataset_root = compute_dataset_root(&cache_dir).await;
+    log::info!("dataset_root for {job_id}: {dataset_root}");
+    sqlx::query("UPDATE jobs SET dataset_root = ?1 WHERE job_id = ?2")
+        .bind(&dataset_root)
+        .bind(job_id)
+        .execute(pool)
+        .await
+        .ok();
+
     log::info!("Dataset fully ready for {job_id}");
     Ok(())
+}
+
+async fn compute_dataset_root(dir: &std::path::Path) -> String {
+    let dir = dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let mut all_files = Vec::new();
+        let mut stack = vec![dir.clone()];
+        while let Some(cur) = stack.pop() {
+            if let Ok(entries) = std::fs::read_dir(&cur) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_dir() { stack.push(p); }
+                    else { all_files.push(p); }
+                }
+            }
+        }
+        all_files.sort();
+        let leaves: Vec<String> = all_files.iter().filter_map(|p| {
+            std::fs::read(p).ok().map(|data| hex::encode(blake3::hash(&data).as_bytes()))
+        }).collect();
+        genetics_l2_core::merkle_root_hex(&leaves)
+    }).await.unwrap_or_else(|_| hex::encode([0u8; 32]))
 }
 
 /// Count audio files recursively (BirdCLEF stores in subdirectories)
@@ -1139,6 +1174,31 @@ async fn main() -> Result<()> {
         scripts_dir,
         datasets_dir,
     });
+
+    // Background: reset jobs stuck in 'claimed' for > 10 minutes back to 'open'
+    {
+        let pool = state.pool.clone();
+        tokio::spawn(async move {
+            const CLAIM_TIMEOUT_SECS: i64 = 600;
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                let cutoff = genetics_l2_core::now_secs() as i64 - CLAIM_TIMEOUT_SECS;
+                match sqlx::query(
+                    "UPDATE jobs SET status='open', claimed_by=NULL, claimed_at=NULL \
+                     WHERE status='claimed' AND claimed_at IS NOT NULL AND claimed_at < ?1",
+                )
+                .bind(cutoff)
+                .execute(&pool)
+                .await
+                {
+                    Ok(r) if r.rows_affected() > 0 =>
+                        log::info!("claim-timeout: reset {} stuck job(s) → open", r.rows_affected()),
+                    _ => {}
+                }
+            }
+        });
+    }
+
     let router = build_router(state);
 
     let addr: std::net::SocketAddr = listen.parse().context("invalid --listen address")?;

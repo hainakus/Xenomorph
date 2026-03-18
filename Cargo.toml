@@ -38,6 +38,7 @@ members = [
     "integrations/xenom-evm/xenom-evm-core",
     "integrations/xenom-evm/xenom-evm-rpc",
     "integrations/xenom-evm/xenom-evm-node",
+    "integrations/xenom-evm/xenom-anchor-committer",
     "wasm",
     "wasm/core",
     "math",

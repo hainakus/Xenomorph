@@ -159,11 +159,11 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
       </div>
       <div class="bird-divider">
         <div class="bird-job-label">Dataset</div>
-        <div style="font-family:var(--fm);color:var(--bird2);font-size:.7rem" id="g-dataset">–</div>
+        <div style="font-family:var(--fm);color:var(--gen2);font-size:.7rem" id="g-dataset">–</div>
       </div>
       <div class="bird-divider">
-        <div class="bird-job-label">Audio Clip</div>
-        <div style="font-family:var(--fd);color:var(--bird3);font-size:.85rem;font-weight:700" id="g-fragment">–</div>
+        <div class="bird-job-label">Variant Fragment</div>
+        <div style="font-family:var(--fd);color:var(--gen3);font-size:.85rem;font-weight:700" id="g-fragment">–</div>
       </div>
       <div class="bird-divider">
         <div class="bird-job-label">Reward</div>
@@ -267,8 +267,8 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
             <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Theme</td><td id="gp-theme" style="color:var(--g);text-align:right">genetics / vcf_annotation</td></tr>
             <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Job ID</td><td id="gp-jobid2" style="color:var(--g);text-align:right;word-break:break-all">–</td></tr>
             <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Task</td><td id="gp-task2" style="color:var(--g);text-align:right">–</td></tr>
-            <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Dataset</td><td id="gp-dataset2" style="color:var(--bird2);text-align:right">–</td></tr>
-            <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Fragment</td><td id="gp-fragment2" style="color:var(--bird3);text-align:right">–</td></tr>
+            <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Dataset</td><td id="gp-dataset2" style="color:var(--gen2);text-align:right">–</td></tr>
+            <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Fragment</td><td id="gp-fragment2" style="color:var(--gen3);text-align:right">–</td></tr>
             <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Reward</td><td id="gp-reward2" style="color:var(--g);text-align:right">–</td></tr>
             <tr><td style="color:var(--txd);padding:.4rem 0">Dataset URL</td><td id="gp-url" style="text-align:right">–</td></tr>
           </table>
@@ -276,19 +276,19 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
       </div>
 
       <div class="panel">
-        <div class="panel-hdr"><span class="sec-title" style="color:var(--bird2)">Acoustic Classification Pipeline</span></div>
+        <div class="panel-hdr"><span class="sec-title" style="color:var(--gen2)">Genomics Pipeline</span></div>
         <div style="padding:1.2rem;font-family:var(--fm);font-size:.68rem;display:flex;flex-direction:column;gap:.6rem">
-          <div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem .8rem;border:1px solid var(--bird-bd);background:var(--bird-bg)">
-            <span style="color:var(--bird1)">acoustic_classification</span><span class="badge bg" style="border-color:var(--bird1);color:var(--bird1);background:var(--bird-bg)">Active</span>
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem .8rem;border:1px solid var(--gen-bd);background:var(--gen-bg)">
+            <span style="color:var(--gen1)">vcf_annotation</span><span class="badge bg" style="border-color:var(--gen1);color:var(--gen1);background:var(--gen-bg)">Active</span>
           </div>
           <div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem .8rem;border:1px solid var(--bd)">
-            <span style="color:var(--txd)">Model</span><span style="color:var(--bird2)">Perch v2</span>
+            <span style="color:var(--txd)">Reference</span><span style="color:var(--gen2)">GRCh38</span>
           </div>
           <div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem .8rem;border:1px solid var(--bd)">
-            <span style="color:var(--txd)">Format</span><span style="color:var(--txd)">OGG / WAV / MP3</span>
+            <span style="color:var(--txd)">Pipeline</span><span style="color:var(--txd)">Normalize → Annotate → Gene Score</span>
           </div>
           <div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem .8rem;border:1px solid var(--bd)">
-            <span style="color:var(--txd)">Species</span><span style="color:var(--txd)">10,000+ birds</span>
+            <span style="color:var(--txd)">Output</span><span style="color:var(--txd)">Annotated VCF + score</span>
           </div>
           <div style="margin-top:.3rem;padding:.5rem .8rem;border:1px solid var(--bd);font-size:.58rem;color:var(--txd)">
             Results signed with secp256k1 and anchored on Xenom EVM L2 via <span style="color:var(--g)">xenom_anchor</span>.
@@ -298,9 +298,9 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
     </div>
 
     <div class="panel" style="margin-top:0">
-      <div class="panel-hdr"><span class="sec-title" style="color:var(--bird3)">mining.notify — L2 param[6] preview</span></div>
+      <div class="panel-hdr"><span class="sec-title" style="color:var(--gen3)">mining.notify — L2 param[6] preview</span></div>
       <div style="padding:.9rem 1rem;font-family:var(--fm);font-size:.65rem;color:var(--txd);overflow-x:auto">
-        <pre id="gp-notify-preview" style="margin:0;white-space:pre-wrap;word-break:break-all">Waiting for BirdCLEF job…</pre>
+        <pre id="gp-notify-preview" style="margin:0;white-space:pre-wrap;word-break:break-all">Waiting for genetics job…</pre>
       </div>
     </div>
   </div>
@@ -435,40 +435,23 @@ async function loadL2(){
   }catch(e){}
 }
 
-function applyTheme(theme){
-  poolTheme=theme;
+function applyTheme(_theme){
+  poolTheme='genetics';
   const r=document.documentElement.style;
-  if(theme==='birdclef'){
-    r.setProperty('--g','#00d4ff');r.setProperty('--gd','#0099cc');r.setProperty('--gg','#00d4ff1f');
-    r.setProperty('--bg','#020c18');r.setProperty('--dark','#041a2e');r.setProperty('--gray','#0a1929');r.setProperty('--bd','#1a4d6b');
-    r.setProperty('--tx','#7fc7e8');r.setProperty('--txd','#2d5a7a');
-    document.getElementById('page-title').textContent='Xenom BirdWatch Pool';
-    document.getElementById('logo-icon').textContent='🦅';
-    document.getElementById('logo-text').textContent='BIRDWATCH';
-    document.getElementById('nav-genomics').textContent='🦜 BirdCLEF';
-    const b=document.getElementById('genetics-banner');
-    if(b){b.style.borderColor='var(--bird-bd)';b.style.background='linear-gradient(135deg,#020c18 0%,#041a2e 50%,#020c18 100%)';}
-    const lbl=document.getElementById('banner-job-label');if(lbl)lbl.textContent='Current BirdCLEF Job';
-    const fp=document.getElementById('footer-pipeline');if(fp)fp.innerHTML='🦜 BirdCLEF &mdash; Acoustic Classification &nbsp;|&nbsp; Stratum :1444 &nbsp;|&nbsp; API :1445';
-    set('pool-name-footer','Xenom BirdWatch Pool — Pool');
-    document.getElementById('nav-genomics-li').style.display='';
-    document.getElementById('genetics-banner').style.display='';
-  }else{
-    r.setProperty('--g','#00ff88');r.setProperty('--gd','#00cc66');r.setProperty('--gg','#00ff8820');
-    r.setProperty('--bg','#020d10');r.setProperty('--dark','#031a10');r.setProperty('--gray','#081a10');r.setProperty('--bd','#1a4d2e');
-    r.setProperty('--tx','#7fe8a8');r.setProperty('--txd','#2d5a3e');
-    document.getElementById('page-title').textContent='Xenom Genome Mining Pool';
-    document.getElementById('logo-icon').textContent='🧬';
-    document.getElementById('logo-text').textContent='GENOME MINING';
-    document.getElementById('nav-genomics').textContent='🧬 Genomics';
-    const b=document.getElementById('genetics-banner');
-    if(b){b.style.borderColor='var(--gen-bd)';b.style.background='linear-gradient(135deg,#020d10 0%,#031a10 50%,#020d10 100%)';}
-    const lbl=document.getElementById('banner-job-label');if(lbl)lbl.textContent='Current Genomics Job';
-    const fp=document.getElementById('footer-pipeline');if(fp)fp.innerHTML='🧬 Genome Mining &mdash; VCF Annotation GRCh38 &nbsp;|&nbsp; Stratum :1444 &nbsp;|&nbsp; API :1445';
-    set('pool-name-footer','Xenom Genome Mining Pool — Pool');
-    document.getElementById('nav-genomics-li').style.display='';
-    document.getElementById('genetics-banner').style.display='';
-  }
+  r.setProperty('--g','#00ff88');r.setProperty('--gd','#00cc66');r.setProperty('--gg','#00ff8820');
+  r.setProperty('--bg','#020d10');r.setProperty('--dark','#031a10');r.setProperty('--gray','#081a10');r.setProperty('--bd','#1a4d2e');
+  r.setProperty('--tx','#7fe8a8');r.setProperty('--txd','#2d5a3e');
+  document.getElementById('page-title').textContent='Xenom Genome Mining Pool';
+  document.getElementById('logo-icon').textContent='🧬';
+  document.getElementById('logo-text').textContent='GENOME MINING';
+  document.getElementById('nav-genomics').textContent='🧬 Genomics';
+  const b=document.getElementById('genetics-banner');
+  if(b){b.style.borderColor='var(--gen-bd)';b.style.background='linear-gradient(135deg,#020d10 0%,#031a10 50%,#020d10 100%)';}
+  const lbl=document.getElementById('banner-job-label');if(lbl)lbl.textContent='Current Genomics Job';
+  const fp=document.getElementById('footer-pipeline');if(fp)fp.innerHTML='🧬 Genome Mining &mdash; VCF Annotation GRCh38 &nbsp;|&nbsp; Stratum :1444 &nbsp;|&nbsp; API :1445';
+  set('pool-name-footer','Xenom Genome Mining Pool — Pool');
+  document.getElementById('nav-genomics-li').style.display='';
+  document.getElementById('genetics-banner').style.display='';
 }
 
 function fmtSompi(v){
@@ -652,8 +635,7 @@ window.onload=async()=>{
   initChart();
   await refresh();
   try{renderRecentBlocks(await fetchJSON('/api/blocks'));}catch(e){}
-  // Apply birdclef theme on load
-  applyTheme('birdclef');
+  applyTheme('genetics');
   setInterval(refresh,15000);
   setInterval(loadL2,10000);
 };

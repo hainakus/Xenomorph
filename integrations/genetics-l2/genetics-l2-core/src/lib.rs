@@ -26,6 +26,7 @@ pub enum ExternalSource {
     /// NCI Genomic Data Commons — open-access cancer cohorts (TCGA/TARGET).
     Gdc,
     /// NCBI ClinVar — clinically classified human variant VCFs.
+    #[serde(rename = "clinvar")]
     ClinVar,
     Custom(String),
 }
