@@ -212,13 +212,19 @@ FETCHER_ARGS=(
   --coordinator "$COORDINATOR"
   --poll-secs 300
 )
-[[ $OPT_SRA      -eq 1 ]] && FETCHER_ARGS+=(--sra)
-[[ $OPT_IGSR     -eq 1 ]] && FETCHER_ARGS+=(--igsr)
-[[ $OPT_GNOMAD   -eq 1 ]] && FETCHER_ARGS+=(--gnomad)
-[[ $OPT_GDC      -eq 1 ]] && FETCHER_ARGS+=(--gdc)
-[[ $OPT_CLINVAR  -eq 1 ]] && FETCHER_ARGS+=(--clinvar)
-ACTIVE_FETCHER_SRC="$([ $OPT_SRA -eq 1 ] && echo 'sra, ')$([ $OPT_IGSR -eq 1 ] && echo 'igsr, ')$([ $OPT_GNOMAD -eq 1 ] && echo 'gnomad, ')$([ $OPT_GDC -eq 1 ] && echo 'gdc, ')$([ $OPT_CLINVAR -eq 1 ] && echo 'clinvar')"
-echo "    sources: ${ACTIVE_FETCHER_SRC%, }"
+[[ $OPT_SRA      -eq 1 ]] && FETCHER_ARGS+=(--sra)     || true
+[[ $OPT_IGSR     -eq 1 ]] && FETCHER_ARGS+=(--igsr)    || true
+[[ $OPT_GNOMAD   -eq 1 ]] && FETCHER_ARGS+=(--gnomad)  || true
+[[ $OPT_GDC      -eq 1 ]] && FETCHER_ARGS+=(--gdc)     || true
+[[ $OPT_CLINVAR  -eq 1 ]] && FETCHER_ARGS+=(--clinvar) || true
+ACTIVE_FETCHER_SRC=""
+[[ $OPT_SRA     -eq 1 ]] && ACTIVE_FETCHER_SRC+="sra, "    || true
+[[ $OPT_IGSR    -eq 1 ]] && ACTIVE_FETCHER_SRC+="igsr, "   || true
+[[ $OPT_GNOMAD  -eq 1 ]] && ACTIVE_FETCHER_SRC+="gnomad, " || true
+[[ $OPT_GDC     -eq 1 ]] && ACTIVE_FETCHER_SRC+="gdc, "    || true
+[[ $OPT_CLINVAR -eq 1 ]] && ACTIVE_FETCHER_SRC+="clinvar"  || true
+ACTIVE_FETCHER_SRC="${ACTIVE_FETCHER_SRC%, }"
+echo "    sources: ${ACTIVE_FETCHER_SRC:-(none)}"
 "$BIN/genetics-l2-fetcher" "${FETCHER_ARGS[@]}" \
   > /tmp/xenom-logs/fetcher.log 2>&1 &
 PIDS+=($!)
@@ -254,7 +260,8 @@ echo "=== Starting xenom-anchor-committer (L2 checkpoint → L1 tx.payload) ==="
 echo "    evm-node:  http://127.0.0.1:8545"
 echo "    l1-node:   grpc://$NODE_RPC"
 echo "    state-dir: $COMMITTER_STATE_DIR"
-"$BIN/xenom-anchor-committer" \
+echo "    funding:   $MINING_ADDR (miner key)"
+COMMITTER_PRIVKEY="$PRIVKEY" "$BIN/xenom-anchor-committer" \
   --evm-node 127.0.0.1:8545 \
   --node "$NODE_RPC" \
   --state-dir "$COMMITTER_STATE_DIR" \
