@@ -261,7 +261,7 @@ echo "    evm-node:  http://127.0.0.1:8545"
 echo "    l1-node:   grpc://$NODE_RPC"
 echo "    state-dir: $COMMITTER_STATE_DIR"
 echo "    funding:   $MINING_ADDR (miner key)"
-COMMITTER_PRIVKEY="$PRIVKEY" "$BIN/xenom-anchor-committer" \
+"$BIN/xenom-anchor-committer" \
   --evm-node 127.0.0.1:8545 \
   --node "$NODE_RPC" \
   --state-dir "$COMMITTER_STATE_DIR" \
