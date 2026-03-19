@@ -25,7 +25,7 @@ use crate::{
     api::ApiState,
     db::Db,
     job::JobManager,
-    payments::{execute_payout, PaymentConfig, RetryablePayoutError},
+    payments::{execute_payout, merge_proportions, PaymentConfig, RetryablePayoutError},
     vardiff::VarDiffConfig,
 };
 
@@ -113,10 +113,6 @@ fn cli() -> Command {
             .long("payout-check-interval-secs").value_name("N")
             .default_value("5").value_parser(clap::value_parser!(u64))
             .help("How often to check for confirmed payouts in seconds (default: 5)"))
-        .arg(Arg::new("payout-batch-size")
-            .long("payout-batch-size").value_name("N")
-            .default_value("10").value_parser(clap::value_parser!(usize))
-            .help("Max confirmed blocks to pay out per check cycle (default: 10)"))
         // ── REST API ───────────────────────────────────────────────────────────
         .arg(Arg::new("api-listen")
             .long("api-listen").value_name("ADDR:PORT")
@@ -186,7 +182,6 @@ async fn main() -> Result<()> {
     let payout_file        = m.get_one::<String>("payout-file").map(PathBuf::from);
     let stats_interval     = *m.get_one::<u64>("stats-interval-secs").unwrap();
     let payout_check_secs  = *m.get_one::<u64>("payout-check-interval-secs").unwrap();
-    let payout_batch_size  = *m.get_one::<usize>("payout-batch-size").unwrap();
 
     let payment_cfg = PaymentConfig {
         confirm_depth:    *m.get_one::<u64>("confirm-depth").unwrap(),
@@ -350,9 +345,9 @@ async fn main() -> Result<()> {
         let check_interval = Duration::from_secs(payout_check_secs.max(1));
 
         info!(
-            "Auto-payout enabled: confirm_depth={} min_payout={} sompi pool_fee={:.1}% check_interval={}s batch_size={}",
+            "Auto-payout enabled (accumulated): confirm_depth={} min_payout={} sompi pool_fee={:.1}% check_interval={}s",
             pcfg.confirm_depth, pcfg.min_payout_sompi, pcfg.pool_fee_percent,
-            payout_check_secs, payout_batch_size
+            payout_check_secs
         );
 
         tokio::spawn(async move {
@@ -364,68 +359,76 @@ async fn main() -> Result<()> {
                     Err(e)   => { warn!("get_block_dag_info: {e}"); continue; }
                 };
 
+                // Collect ALL confirmed pending blocks
                 let confirmed = acct3.lock().await
                     .take_confirmed_payouts(current_daa, pcfg.confirm_depth);
 
-                // Process up to payout_batch_size blocks per cycle sequentially.
-                // spent_outpoints tracks UTXOs already consumed this cycle so that
-                // execute_payout can filter them from its UTXO fetch — the node UTXO
-                // index does not reflect unconfirmed mempool spends.
-                let mut spent_outpoints: HashSet<(RpcTransactionId, u32)> = HashSet::new();
-                let mut batch_n = 0usize;
-                for payout in confirmed.into_iter().take(payout_batch_size) {
+                if confirmed.is_empty() {
+                    continue;
+                }
 
-                    info!(
-                        "Block {} confirmed (daa_score={} current={}) [batch {}/{}], executing payout …",
-                        payout.job_id, payout.block_daa_score, current_daa,
-                        batch_n + 1, payout_batch_size
-                    );
-
-                    // Mark as confirmed immediately — block IS valid even if payout later fails
+                // Mark each block as DB-confirmed (independent of payout success)
+                for payout in &confirmed {
                     if let Some(ref d) = db3 {
                         if let Err(e) = d.update_block_status(&payout.job_id, "confirmed", None).await {
                             warn!("DB update_block_status confirmed: {e}");
                         }
                     }
+                }
 
-                    let now_secs = SystemTime::now()
-                        .duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+                // Merge PPLNS proportions across ALL confirmed blocks → ONE payout TX
+                let merged = merge_proportions(&confirmed);
+                let job_ids: Vec<String> = confirmed.iter().map(|p| p.job_id.clone()).collect();
 
-                    match execute_payout(&rpc3, &pay_addr, &keypair, &payout, &pcfg, &mut spent_outpoints).await {
-                        Ok(tx_id) => {
-                            let tx_str = tx_id.to_string();
-                            info!("Payout OK: job={} tx={tx_str}", payout.job_id);
-                            acct3.lock().await.mark_paid(&payout.job_id, tx_str.clone());
+                info!(
+                    "Accumulated payout: {} confirmed block(s), {} unique miner(s), daa={}",
+                    confirmed.len(), merged.len(), current_daa
+                );
+
+                let now_secs = SystemTime::now()
+                    .duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+
+                let mut spent_outpoints: HashSet<(RpcTransactionId, u32)> = HashSet::new();
+                match execute_payout(&rpc3, &pay_addr, &keypair, &merged, &pcfg, &mut spent_outpoints).await {
+                    Ok(tx_id) => {
+                        let tx_str = tx_id.to_string();
+                        info!("Accumulated payout OK: blocks={} tx={tx_str}", job_ids.len());
+                        let mut acct = acct3.lock().await;
+                        for job_id in &job_ids {
+                            acct.mark_paid(job_id, tx_str.clone());
                             if let Some(ref d) = db3 {
-                                if let Err(e) = d.update_block_status(&payout.job_id, "paid", Some(&tx_str)).await {
+                                if let Err(e) = d.update_block_status(job_id, "paid", Some(&tx_str)).await {
                                     warn!("DB update_block_status paid: {e}");
                                 }
-                                if let Err(e) = d.insert_transaction(&tx_str, "confirmed", now_secs).await {
-                                    warn!("DB insert_transaction confirmed: {e}");
-                                }
                             }
-                            batch_n += 1;
                         }
-                        Err(e) => {
-                            let reason = e.to_string();
-                            if e.downcast_ref::<RetryablePayoutError>().is_some() {
-                                // Transient — block stays 'confirmed', will retry next cycle
-                                warn!("Payout retry (job {}): {reason}", payout.job_id);
-                                // Stop batch on transient error — UTXOs may be exhausted
-                                break;
-                            } else {
-                                // Permanent failure — mark so it won't be retried
-                                warn!("Payout FAILED (job {}): {reason}", payout.job_id);
-                                acct3.lock().await.mark_failed(&payout.job_id, reason);
+                        if let Some(ref d) = db3 {
+                            if let Err(e) = d.insert_transaction(&tx_str, "confirmed", now_secs).await {
+                                warn!("DB insert_transaction: {e}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let reason = e.to_string();
+                        if e.downcast_ref::<RetryablePayoutError>().is_some() {
+                            // Transient — all blocks stay Pending, retry next cycle
+                            warn!("Accumulated payout retry ({} blocks): {reason}", job_ids.len());
+                        } else {
+                            // Permanent failure — mark all blocks failed
+                            warn!("Accumulated payout FAILED ({} blocks): {reason}", job_ids.len());
+                            let mut acct = acct3.lock().await;
+                            for job_id in &job_ids {
+                                acct.mark_failed(job_id, reason.clone());
                                 if let Some(ref d) = db3 {
-                                    if let Err(e) = d.update_block_status(&payout.job_id, "payout-failed", None).await {
+                                    if let Err(e) = d.update_block_status(job_id, "payout-failed", None).await {
                                         warn!("DB update_block_status payout-failed: {e}");
                                     }
-                                    if let Err(e) = d.insert_transaction("", "failed", now_secs).await {
-                                        warn!("DB insert_transaction failed: {e}");
-                                    }
                                 }
-                                batch_n += 1;
+                            }
+                            if let Some(ref d) = db3 {
+                                if let Err(e) = d.insert_transaction("", "failed", now_secs).await {
+                                    warn!("DB insert_transaction failed: {e}");
+                                }
                             }
                         }
                     }
