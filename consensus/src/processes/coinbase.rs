@@ -280,7 +280,7 @@ impl CoinbaseManager {
         Ok(payload)
     }
 
-    pub fn modify_coinbase_payload<T: AsRef<[u8]>>(&self, mut payload: Vec<u8>, miner_data: &MinerData<T>, daa_score: u64) -> CoinbaseResult<Vec<u8>> {
+    pub fn modify_coinbase_payload<T: AsRef<[u8]>>(&self, mut payload: Vec<u8>, miner_data: &MinerData<T>) -> CoinbaseResult<Vec<u8>> {
         let script_pub_key_len = miner_data.script_public_key.script().len();
         if script_pub_key_len > self.coinbase_payload_script_public_key_max_len as usize {
             return Err(CoinbaseError::PayloadScriptPublicKeyLenAboveMax(
@@ -288,18 +288,6 @@ impl CoinbaseManager {
                 self.coinbase_payload_script_public_key_max_len,
             ));
         }
-
-        // For V2 (Genome PoW) payloads the fitness field sits between the SPK and
-        // extra_data.  We must extract it from the original payload *before* truncating
-        // so we can re-insert it in the rebuilt payload at the correct position.
-        // Without this, the fitness bytes are silently dropped and the first bytes of
-        // extra_data (e.g. a version string like "0.15.2/") end up being parsed as
-        // fitness by the validator, producing a garbage multiplier and a WrongSubsidy error.
-        let fitness_opt = if self.fitness_coinbase_activated(daa_score) {
-            self.extract_fitness_from_payload(&payload)
-        } else {
-            None
-        };
 
         // Keep only blue score and subsidy. Note that truncate does not modify capacity, so
         // the usual case where the payloads are the same size will not trigger a reallocation
@@ -309,12 +297,52 @@ impl CoinbaseManager {
                 .chain((script_pub_key_len as u8).to_le_bytes().iter().copied()) // Script public key length  (u8)
                 .chain(miner_data.script_public_key.script().iter().copied()),   // Script public key
         );
-        if let Some(fitness) = fitness_opt {
-            payload.extend_from_slice(&fitness.to_le_bytes()); // Fitness (u32) — V2 only
-        }
         payload.extend_from_slice(miner_data.extra_data.as_ref()); // Extra data
 
         Ok(payload)
+    }
+
+    /// Recompute coinbase payload, miner subsidy and fund subsidy for a new miner SPK.
+    ///
+    /// Used by `modify_block_template` for V2 (fitness-activated) blocks where the coinbase
+    /// subsidy depends on the miner's SPK via `calc_expected_fitness`.  Requires only the
+    /// data already present in the cached block template (daa_score, blue_score,
+    /// selected_parent_hash) — no ghostdag rebuild needed.
+    ///
+    /// Returns `(new_payload, new_miner_subsidy, new_fund_subsidy)`.
+    pub fn recompute_coinbase_for_miner<T: AsRef<[u8]>>(
+        &self,
+        original_payload: &[u8],
+        new_miner_data: &MinerData<T>,
+        daa_score: u64,
+        blue_score: u64,
+        selected_parent: &kaspa_hashes::Hash,
+    ) -> CoinbaseResult<(Vec<u8>, u64, u64)> {
+        let script_pub_key_len = new_miner_data.script_public_key.script().len();
+        if script_pub_key_len > self.coinbase_payload_script_public_key_max_len as usize {
+            return Err(CoinbaseError::PayloadScriptPublicKeyLenAboveMax(
+                script_pub_key_len,
+                self.coinbase_payload_script_public_key_max_len,
+            ));
+        }
+
+        let original_v2 = self.deserialize_coinbase_payload_v2(original_payload)?;
+
+        let new_fitness = self.calc_expected_fitness(daa_score, blue_score, selected_parent, &new_miner_data.script_public_key);
+        let new_total_subsidy = self.calc_variable_block_subsidy(daa_score, new_fitness);
+        let (new_miner_subsidy, new_fund_subsidy) = self.split_subsidy_to_miner_and_fund(new_total_subsidy);
+
+        // Serialize V2 payload directly to avoid ownership constraints on generic T
+        let new_payload: Vec<u8> = original_v2.blue_score.to_le_bytes().iter().copied()
+            .chain(new_total_subsidy.to_le_bytes().iter().copied())
+            .chain(new_miner_data.script_public_key.version().to_le_bytes().iter().copied())
+            .chain((script_pub_key_len as u8).to_le_bytes().iter().copied())
+            .chain(new_miner_data.script_public_key.script().iter().copied())
+            .chain(new_fitness.to_le_bytes().iter().copied())
+            .chain(new_miner_data.extra_data.as_ref().iter().copied())
+            .collect();
+
+        Ok((new_payload, new_miner_subsidy, new_fund_subsidy))
     }
 
     pub fn deserialize_coinbase_payload<'a>(&self, payload: &'a [u8]) -> CoinbaseResult<CoinbaseData<&'a [u8]>> {
@@ -658,7 +686,7 @@ mod tests {
         };
 
         let mut payload = cbm.serialize_coinbase_payload(&data).unwrap();
-        payload = cbm.modify_coinbase_payload(payload, &data2.miner_data, 0).unwrap(); // Update the payload with the modified miner data
+        payload = cbm.modify_coinbase_payload(payload, &data2.miner_data).unwrap(); // Update the payload with the modified miner data
         let deserialized_data = cbm.deserialize_coinbase_payload(&payload).unwrap();
 
         assert_eq!(data2, deserialized_data);

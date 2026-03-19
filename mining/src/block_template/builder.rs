@@ -95,14 +95,38 @@ impl BlockTemplateBuilder {
         block_template_to_modify: &BlockTemplate,
     ) -> BuilderResult<BlockTemplate> {
         let mut block_template = block_template_to_modify.clone();
+        let daa_score = block_template.block.header.daa_score;
 
         // The first transaction is always the coinbase transaction
         let coinbase_tx = &mut block_template.block.transactions[COINBASE_TRANSACTION_INDEX];
-        let new_payload = consensus.modify_coinbase_payload(coinbase_tx.payload.clone(), new_miner_data, block_template.block.header.daa_score)?;
-        coinbase_tx.payload = new_payload;
-        if block_template.coinbase_has_red_reward {
-            // The last output is always the coinbase red blocks reward
-            coinbase_tx.outputs.last_mut().unwrap().script_public_key = new_miner_data.script_public_key.clone();
+
+        if consensus.is_fitness_coinbase_activated(daa_score) {
+            // V2: subsidy depends on miner SPK via fitness hash — recompute everything
+            let (new_payload, new_miner_subsidy, new_fund_subsidy) = consensus.recompute_coinbase_for_miner(
+                coinbase_tx.payload.clone(),
+                new_miner_data,
+                daa_score,
+                block_template.block.header.blue_score,
+                block_template.selected_parent_hash,
+            )?;
+            coinbase_tx.payload = new_payload;
+            // output[0] = miner (SPK + value both change)
+            if !coinbase_tx.outputs.is_empty() {
+                coinbase_tx.outputs[0].script_public_key = new_miner_data.script_public_key.clone();
+                coinbase_tx.outputs[0].value = new_miner_subsidy;
+            }
+            // output[1] = fund (only value changes; address is fixed)
+            if coinbase_tx.outputs.len() > 1 {
+                coinbase_tx.outputs[1].value = new_fund_subsidy;
+            }
+        } else {
+            // V1: subsidy is independent of miner SPK — only patch payload + red reward SPK
+            let new_payload = consensus.modify_coinbase_payload(coinbase_tx.payload.clone(), new_miner_data)?;
+            coinbase_tx.payload = new_payload;
+            if block_template.coinbase_has_red_reward {
+                // The last output is always the coinbase red blocks reward
+                coinbase_tx.outputs.last_mut().unwrap().script_public_key = new_miner_data.script_public_key.clone();
+            }
         }
         // Update the hash merkle root according to the modified transactions
         block_template.block.header.hash_merkle_root =

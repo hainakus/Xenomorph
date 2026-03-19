@@ -154,6 +154,21 @@ impl JobManager {
             if fitness > 100_000 {
                 return false;
             }
+            // V2 subsidy depends on the miner's SPK via calc_expected_fitness.
+            // modify_block_template (called when the node's template cache was warmed
+            // by a *different* miner) correctly updates the payload SPK but leaves
+            // outputs 0/1 with the original miner's SPK and fitness-based amounts.
+            // verify_coinbase_transaction then recomputes expected outputs for the new
+            // SPK → different amounts → BadCoinbaseTransaction.
+            // Detect the mismatch by comparing the payload SPK against output 0.
+            let payload_spk_ver = u16::from_le_bytes(p[16..18].try_into().unwrap());
+            let payload_spk_script = &p[19..19 + spk_len];
+            if let Some(out0) = coinbase.outputs.first() {
+                let out_spk = &out0.script_public_key;
+                if out_spk.version() != payload_spk_ver || out_spk.script() != payload_spk_script {
+                    return false;
+                }
+            }
         }
         true
     }
@@ -173,8 +188,8 @@ impl JobManager {
         // advances and the node builds a fresh, correct template.
         if !Self::coinbase_payload_valid(&template) {
             warn!(
-                "Dropping template with invalid coinbase payload (V2 fitness bytes missing); \
-                 waiting for fresh template"
+                "Dropping template with invalid V2 coinbase (bad fitness or SPK/output-0 mismatch \
+                 from modify_block_template); waiting for fresh template"
             );
             self.last_template_id = Some(template_id);
             return None;

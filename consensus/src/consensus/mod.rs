@@ -771,8 +771,23 @@ impl ConsensusApi for Consensus {
         Ok(utxos)
     }
 
-    fn modify_coinbase_payload(&self, payload: Vec<u8>, miner_data: &MinerData, daa_score: u64) -> CoinbaseResult<Vec<u8>> {
-        self.services.coinbase_manager.modify_coinbase_payload(payload, miner_data, daa_score)
+    fn is_fitness_coinbase_activated(&self, daa_score: u64) -> bool {
+        self.services.coinbase_manager.is_fitness_coinbase_activated(daa_score)
+    }
+
+    fn recompute_coinbase_for_miner(
+        &self,
+        payload: Vec<u8>,
+        miner_data: &MinerData,
+        daa_score: u64,
+        blue_score: u64,
+        selected_parent: Hash,
+    ) -> CoinbaseResult<(Vec<u8>, u64, u64)> {
+        self.services.coinbase_manager.recompute_coinbase_for_miner(&payload, miner_data, daa_score, blue_score, &selected_parent)
+    }
+
+    fn modify_coinbase_payload(&self, payload: Vec<u8>, miner_data: &MinerData) -> CoinbaseResult<Vec<u8>> {
+        self.services.coinbase_manager.modify_coinbase_payload(payload, miner_data)
     }
 
     fn calc_transaction_hash_merkle_root(&self, txs: &[Transaction], pov_daa_score: u64) -> Hash {

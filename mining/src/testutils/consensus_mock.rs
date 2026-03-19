@@ -177,7 +177,22 @@ impl ConsensusApi for ConsensusMock {
         VirtualStateApproxId::new(self.get_virtual_daa_score(), 0.into(), ZERO_HASH)
     }
 
-    fn modify_coinbase_payload(&self, payload: Vec<u8>, miner_data: &MinerData, _daa_score: u64) -> CoinbaseResult<Vec<u8>> {
+    fn is_fitness_coinbase_activated(&self, _daa_score: u64) -> bool {
+        false
+    }
+
+    fn recompute_coinbase_for_miner(
+        &self,
+        _payload: Vec<u8>,
+        _miner_data: &MinerData,
+        _daa_score: u64,
+        _blue_score: u64,
+        _selected_parent: kaspa_hashes::Hash,
+    ) -> CoinbaseResult<(Vec<u8>, u64, u64)> {
+        unimplemented!("V2 not activated in mock")
+    }
+
+    fn modify_coinbase_payload(&self, payload: Vec<u8>, miner_data: &MinerData) -> CoinbaseResult<Vec<u8>> {
         let coinbase_manager = CoinbaseManagerMock::new();
         Ok(coinbase_manager.modify_coinbase_payload(payload, miner_data))
     }
