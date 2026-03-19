@@ -100,6 +100,10 @@ fn estimate_tx_mass(input_amounts: &[u64], output_amounts: &[u64]) -> u64 {
     compute.saturating_add(storage)
 }
 
+/// Minimum change amount to create a change output (avoid burning pool funds as TX fee).
+/// Must be well above dust but much lower than min_payout_sompi.
+const CHANGE_DUST_THRESHOLD: u64 = 100_000; // 0.001 XENOM
+
 // ── Payout execution ──────────────────────────────────────────────────────────
 
 /// Merge PPLNS proportions from multiple blocks into a single weighted-average
@@ -313,7 +317,7 @@ pub async fn execute_payout(
                 .iter().map(|e| e.utxo_entry.amount).collect();
             let mut out_amts: Vec<u64> = batch_outputs.iter().map(|(_, v)| *v).collect();
             out_amts.push(*amount);
-            if tentative_change >= cfg.min_payout_sompi {
+            if tentative_change >= CHANGE_DUST_THRESHOLD {
                 out_amts.push(tentative_change);
             }
             let mass = estimate_tx_mass(&input_amts, &out_amts);
@@ -346,11 +350,14 @@ pub async fn execute_payout(
                 script_public_key: pay_to_address_script(addr),
             })
             .collect();
-        if batch_change >= cfg.min_payout_sompi {
+        if batch_change >= CHANGE_DUST_THRESHOLD {
             tx_outputs.push(TransactionOutput {
                 value:             batch_change,
                 script_public_key: pay_to_address_script(pool_address),
             });
+            info!("Batch {batch_num} change: {batch_change} sompi returned to pool");
+        } else if batch_change > 0 {
+            warn!("Batch {batch_num} change {batch_change} sompi below dust threshold — consumed as TX fee");
         }
 
         // ── Build inputs ─────────────────────────────────────────────────────
