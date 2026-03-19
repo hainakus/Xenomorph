@@ -686,7 +686,7 @@ mod tests {
         };
 
         let mut payload = cbm.serialize_coinbase_payload(&data).unwrap();
-        payload = cbm.modify_coinbase_payload(payload, &data2.miner_data, 0).unwrap(); // Update the payload with the modified miner data
+        payload = cbm.modify_coinbase_payload(payload, &data2.miner_data).unwrap(); // Update the payload with the modified miner data
         let deserialized_data = cbm.deserialize_coinbase_payload(&payload).unwrap();
 
         assert_eq!(data2, deserialized_data);
