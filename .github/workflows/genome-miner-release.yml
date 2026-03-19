@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-20.04
+          - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: genome-miner-linux-x86_64
             binary: genome-miner
@@ -48,9 +48,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ── Linux deps ──────────────────────────────────────────────────────────
+      # ── Linux deps (skipped — handled inside Docker) ─────────────────────────
       - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.target != 'x86_64-unknown-linux-gnu'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -70,10 +70,12 @@ jobs:
         run: choco install protoc --yes
 
       - name: Verify protoc installation
+        if: matrix.target != 'x86_64-unknown-linux-gnu'
         run: protoc --version
 
-      # ── Rust toolchain ──────────────────────────────────────────────────────
+      # ── Rust toolchain (non-Linux: handled inside Docker for Linux) ────────────
       - name: Install Rust stable
+        if: matrix.target != 'x86_64-unknown-linux-gnu'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -95,9 +97,31 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-cargo-build-
 
-      # ── Build ────────────────────────────────────────────────────────────────
+      # ── Build (macOS / Windows) ──────────────────────────────────────────────
       - name: Build genome-miner (release)
+        if: matrix.target != 'x86_64-unknown-linux-gnu'
         run: cargo build --release --package genome-miner --target ${{ matrix.target }}
+
+      # ── Build (Linux — Ubuntu 20.04 Docker for glibc 2.31 / HiveOS compat) ────
+      - name: Build genome-miner (Ubuntu 20.04 Docker)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/workspace" \
+            -v "$HOME/.cargo/registry:/root/.cargo/registry" \
+            -w /workspace \
+            ubuntu:20.04 \
+            bash -c "
+              set -e
+              apt-get update -qq
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                curl ca-certificates build-essential pkg-config \
+                protobuf-compiler libvulkan-dev
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+                sh -s -- -y --default-toolchain stable --no-modify-path
+              export PATH=\"\$HOME/.cargo/bin:\$PATH\"
+              cargo build --release --package genome-miner --target x86_64-unknown-linux-gnu
+            "
 
       # ── Package (Linux / macOS) ──────────────────────────────────────────────
       - name: Package binary (Unix)
