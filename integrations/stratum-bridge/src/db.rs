@@ -1,5 +1,5 @@
 use anyhow::Result;
-use sqlx::{Pool, Row, Sqlite, SqlitePool};
+use sqlx::{Pool, Row, Sqlite};
 use std::sync::Arc;
 
 // ── Row types returned to callers ─────────────────────────────────────────────
