@@ -168,7 +168,6 @@ async fn list_jobs(
                     "source":           r.get::<String, _>("source"),
                     "external_ref":     r.get::<Option<String>, _>("external_ref"),
                     "dataset_root":     r.get::<String, _>("dataset_root"),
-                    "dataset_url":      r.get::<Option<String>, _>("dataset_url"),
                     "algorithm":        r.get::<String, _>("algorithm"),
                     "task_description": r.get::<String, _>("task_description"),
                     "reward_sompi":     r.get::<i64, _>("reward_sompi"),
@@ -236,17 +235,22 @@ async fn create_job(
         Ok(_) => {
             // Spawn background download — job is already 'open', miners get it immediately
             if let Some(ref dataset_url) = job.dataset_url {
-                if dataset_url.starts_with("kaggle://competitions/") {
-                    let job_id = job.job_id.clone();
-                    let dataset_url = dataset_url.clone();
-                    let datasets_dir = s.datasets_dir.clone();
-                    let pool_bg = s.pool.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = download_kaggle_dataset(&job_id, &dataset_url, &datasets_dir, &pool_bg).await {
-                            log::warn!("Background dataset download failed for {job_id}: {e}");
-                        }
-                    });
-                }
+                let job_id       = job.job_id.clone();
+                let dataset_url  = dataset_url.clone();
+                let datasets_dir = s.datasets_dir.clone();
+                let pool_bg      = s.pool.clone();
+                tokio::spawn(async move {
+                    let result = if dataset_url.starts_with("kaggle://competitions/") {
+                        download_kaggle_dataset(&job_id, &dataset_url, &datasets_dir, &pool_bg).await
+                    } else if dataset_url.starts_with("http://") || dataset_url.starts_with("https://") || dataset_url.starts_with("ftp://") {
+                        download_http_dataset(&job_id, &dataset_url, &datasets_dir, &pool_bg).await
+                    } else {
+                        Ok(())
+                    };
+                    if let Err(e) = result {
+                        log::warn!("Background dataset pre-cache failed for {job_id}: {e}");
+                    }
+                });
             }
             (StatusCode::CREATED, Json(serde_json::json!({ "job_id": job.job_id, "status": "open" }))).into_response()
         }
@@ -277,7 +281,6 @@ async fn get_job(
             "source":           r.get::<String, _>("source"),
             "external_ref":     r.get::<Option<String>, _>("external_ref"),
             "dataset_root":     r.get::<String, _>("dataset_root"),
-            "dataset_url":      r.get::<Option<String>, _>("dataset_url"),
             "algorithm":        r.get::<String, _>("algorithm"),
             "task_description": r.get::<String, _>("task_description"),
             "reward_sompi":     r.get::<i64, _>("reward_sompi"),
@@ -514,6 +517,23 @@ async fn get_result_csv(
     }
 }
 
+// GET /datasets/:job_id/status  — cache readiness probe
+async fn dataset_status(
+    State(s): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+) -> impl IntoResponse {
+    let dir         = s.datasets_dir.join(&job_id);
+    let ready       = dir.join(".ready").exists();
+    let lock_exists = s.datasets_dir.read_dir().ok()
+        .map(|mut rd| rd.any(|e| e.ok().and_then(|e| e.file_name().into_string().ok()).map_or(false, |n| n.ends_with(".lock"))))
+        .unwrap_or(false);
+    let file_count: usize = if dir.exists() {
+        std::fs::read_dir(&dir).map(|rd| rd.flatten().filter(|e| e.path().is_file()).count()).unwrap_or(0)
+    } else { 0 };
+    let status = if ready { "ready" } else if lock_exists { "caching" } else if file_count > 0 { "partial" } else { "pending" };
+    Json(serde_json::json!({ "job_id": job_id, "status": status, "files": file_count, "ready": ready }))
+}
+
 // GET /datasets/:job_id/files - List available dataset files for a job (recursive)
 async fn list_dataset_files(
     State(s): State<Arc<AppState>>,
@@ -527,50 +547,41 @@ async fn list_dataset_files(
             "job_id": job_id
         }))).into_response();
     }
-    
+
+    let ready = dataset_dir.join(".ready").exists();
     let mut files: Vec<serde_json::Value> = Vec::new();
 
-    // Always include sample_submission.csv so miners can produce exact row_ids
-    let sample_sub = dataset_dir.join("sample_submission.csv");
-    if sample_sub.exists() {
-        let size = sample_sub.metadata().map(|m| m.len()).unwrap_or(0);
-        files.push(serde_json::json!({ "filename": "sample_submission.csv", "size": size }));
-    }
-
-    // Walk audio: prioritise test_soundscapes → train_soundscapes → train_audio
-    let priority_dirs = ["test_soundscapes", "train_soundscapes", "train_audio"];
-    'outer: for dir_name in &priority_dirs {
-        let subdir = dataset_dir.join(dir_name);
-        if !subdir.exists() { continue; }
-        let mut stack = vec![subdir];
-        while let Some(dir) = stack.pop() {
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        stack.push(path);
-                    } else if let Some(ext) = path.extension() {
-                        let e = ext.to_string_lossy().to_lowercase();
-                        if matches!(e.as_str(), "ogg" | "wav" | "mp3" | "flac") {
-                            if let Ok(rel) = path.strip_prefix(&dataset_dir) {
-                                let size = path.metadata().map(|m| m.len()).unwrap_or(0);
-                                files.push(serde_json::json!({
-                                    "filename": rel.to_string_lossy(),
-                                    "size": size,
-                                }));
-                                if files.len() >= 101 { break 'outer; }
-                            }
-                        }
+    // Walk entire dataset dir — return all non-hidden files (audio + genomics + other)
+    let mut stack = vec![dataset_dir.clone()];
+    while let Some(dir) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    // Skip internal markers
+                    if fname.starts_with('.') || fname.ends_with(".lock") { continue; }
+                    if let Ok(rel) = path.strip_prefix(&dataset_dir) {
+                        let size = path.metadata().map(|m| m.len()).unwrap_or(0);
+                        files.push(serde_json::json!({
+                            "filename": rel.to_string_lossy(),
+                            "size": size,
+                        }));
+                        if files.len() >= 200 { break; }
                     }
                 }
             }
         }
     }
-    
+    files.sort_by(|a, b| a["filename"].as_str().cmp(&b["filename"].as_str()));
+
     (StatusCode::OK, Json(serde_json::json!({
-        "job_id": job_id,
-        "files": files,
-        "count": files.len()
+        "job_id":  job_id,
+        "files":   files,
+        "count":   files.len(),
+        "ready":   ready,
     }))).into_response()
 }
 
@@ -842,6 +853,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/results/:job_id/csv",     get(get_result_csv))
         .route("/validations",             post(submit_validation))
         .route("/payouts",                 get(list_payouts).post(create_payout))
+        .route("/datasets/:job_id/status", get(dataset_status))
         .route("/datasets/:job_id/files",  get(list_dataset_files))
         .route("/datasets/:job_id/download/*filename", get(download_dataset_file))
         .route("/scripts/:task",            get(get_inference_script))
@@ -925,6 +937,95 @@ async fn serve_script_file(scripts_dir: &std::path::Path, filename: &str) -> axu
 }
 
 // ── Dataset download ──────────────────────────────────────────────────────────
+
+/// Pre-cache a generic HTTP/HTTPS dataset file.
+/// Cache dir: {datasets_dir}/_cache/{blake3_8bytes_of_url}/
+/// Job link:  {datasets_dir}/{job_id}  (symlink → cache)
+async fn download_http_dataset(
+    job_id: &str,
+    url: &str,
+    datasets_dir: &std::path::Path,
+    pool: &SqlitePool,
+) -> Result<()> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    let url_hash  = hex::encode(&blake3::hash(url.as_bytes()).as_bytes()[..8]);
+    let fname     = url.rsplit('/').next().unwrap_or("dataset.bin").to_owned();
+    let cache_dir = datasets_dir.join("_cache").join(&url_hash);
+    let job_link  = datasets_dir.join(job_id);
+
+    if !job_link.exists() {
+        tokio::fs::create_dir_all(&cache_dir).await?;
+        std::os::unix::fs::symlink(&cache_dir, &job_link).ok();
+    }
+
+    let ready_marker = cache_dir.join(".ready");
+    if ready_marker.exists() {
+        log::info!("Dataset already cached for {job_id} (cache={url_hash})");
+        return Ok(());
+    }
+
+    let lock_file = datasets_dir.join(format!("_{url_hash}.lock"));
+    if lock_file.exists() {
+        log::info!("Dataset download already in progress for {url_hash} (job {job_id})");
+        return Ok(());
+    }
+
+    tokio::fs::create_dir_all(datasets_dir).await?;
+    tokio::fs::write(&lock_file, job_id.as_bytes()).await?;
+    log::info!("Pre-caching HTTP dataset for {job_id}: {url}");
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(7200))
+        .user_agent("xenom-coordinator/1.0")
+        .build()
+        .unwrap_or_default();
+
+    let resp = match client.get(url).send().await {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            tokio::fs::remove_file(&lock_file).await.ok();
+            anyhow::bail!("HTTP {} → {}", url, r.status());
+        }
+        Err(e) => {
+            tokio::fs::remove_file(&lock_file).await.ok();
+            return Err(e.into());
+        }
+    };
+
+    let dest_path = cache_dir.join(&fname);
+    let mut file  = tokio::fs::File::create(&dest_path).await?;
+    let mut stream = resp.bytes_stream();
+    let mut total  = 0usize;
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        total += chunk.len();
+        file.write_all(&chunk).await?;
+        if total % (10 * 1_048_576) < chunk.len() {
+            log::info!("  {job_id} → {:.1} MB downloaded", total as f64 / 1_048_576.0);
+        }
+    }
+    file.flush().await?;
+    drop(file);
+
+    log::info!("Downloaded {total} bytes → {}", dest_path.display());
+
+    let dataset_root = compute_dataset_root(&cache_dir).await;
+    log::info!("dataset_root for {job_id}: {dataset_root}");
+    sqlx::query("UPDATE jobs SET dataset_root = ?1 WHERE job_id = ?2")
+        .bind(&dataset_root)
+        .bind(job_id)
+        .execute(pool)
+        .await
+        .ok();
+
+    tokio::fs::write(&ready_marker, b"ready").await.ok();
+    tokio::fs::remove_file(&lock_file).await.ok();
+    log::info!("HTTP dataset pre-cache complete for {job_id}");
+    Ok(())
+}
 
 /// Download Kaggle dataset once per slug (cached), then symlink to job_id dir.
 /// Cache: {datasets_dir}/_cache/{slug}/

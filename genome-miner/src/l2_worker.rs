@@ -57,30 +57,26 @@ fn find_perch_script() -> Option<PathBuf> {
 /// Claim, execute, and submit a single L2 job.
 /// Runs in a spawned tokio task so it never blocks the PoW loop.
 pub async fn run_l2_job(cfg: L2Config, l2_val: serde_json::Value) {
-    let job_id      = l2_val["job_id"].as_str().unwrap_or("").to_owned();
-    let task        = l2_val["task"].as_str().unwrap_or("").to_owned();
-    // Read from 'dataset' field (sent by stratum-bridge in mining.notify param[6])
-    let dataset_url = l2_val["dataset"].as_str()
-        .or_else(|| l2_val["dataset_url"].as_str())
-        .map(str::to_owned);
+    let job_id = l2_val["job_id"].as_str().unwrap_or("").to_owned();
+    let task   = l2_val["task"].as_str().unwrap_or("").to_owned();
+    let ds_ref = l2_val["dataset"].as_str().unwrap_or("(none)");
 
     if job_id.is_empty() {
         warn!("L2: job_id is empty — skipping");
         return;
     }
 
-    info!("L2: starting job={job_id} task={task} dataset={}", dataset_url.as_deref().unwrap_or("none"));
+    info!("L2: starting job={job_id} task={task} dataset_ref={ds_ref}");
 
-    if let Err(e) = execute(&cfg, &job_id, &task, dataset_url.as_deref()).await {
+    if let Err(e) = execute(&cfg, &job_id, &task).await {
         warn!("L2: job {job_id} failed: {e:#}");
     }
 }
 
 async fn execute(
-    cfg:         &L2Config,
-    job_id:      &str,
-    task:        &str,
-    dataset_url: Option<&str>,
+    cfg:    &L2Config,
+    job_id: &str,
+    task:   &str,
 ) -> Result<()> {
     let http = reqwest::Client::new();
 
@@ -126,7 +122,6 @@ async fn execute(
     // ── 2b. Write job_manifest.json to work_dir ──────────────────────────────
     let manifest_record = serde_json::json!({
         "job_id":           job_id,
-        "dataset_url":      dataset_url,
         "dataset_root":     dataset_root,
         "pipeline":         job_manifest["pipeline"].as_str().unwrap_or(task),
         "pipeline_hash":    job_manifest["pipeline_hash"],
@@ -154,11 +149,9 @@ async fn execute(
     }
     let effective_script = fetched_script.as_ref().or(cfg.perch_script.as_ref()).cloned();
 
-    // ── 4. Download dataset ───────────────────────────────────────────────────
-    if let Some(url) = dataset_url {
-        if let Err(e) = download(&http, url, &input_dir, job_id, &cfg.coordinator_url).await {
-            warn!("L2: dataset download failed (will use stub): {e:#}");
-        }
+    // ── 4. Download dataset from coordinator cache ─────────────────────────────────────
+    if let Err(e) = download_from_coordinator(&http, job_id, &cfg.coordinator_url, &input_dir).await {
+        warn!("L2: dataset fetch from coordinator failed (will proceed with empty input): {e:#}");
     }
 
     // ── 4b. Dataset integrity — compare local Merkle root to coordinator's dataset_root ──
@@ -1122,107 +1115,72 @@ async fn collect_audio(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-async fn download(http: &reqwest::Client, url: &str, dest: &Path, job_id: &str, coordinator_url: &str) -> Result<()> {
-    tokio::fs::create_dir_all(dest).await?;
+/// Fetch all cached dataset files from coordinator and write to dest.
+/// Retries up to 12× with 5 s delay while coordinator is still pre-caching.
+/// Returns Err only if coordinator is unreachable; Ok(()) with zero files is a cache miss.
+async fn download_from_coordinator(
+    http: &reqwest::Client,
+    job_id: &str,
+    coordinator_url: &str,
+    dest: &Path,
+) -> Result<()> {
+    let files_url = format!("{coordinator_url}/datasets/{job_id}/files");
 
-    // Handle kaggle:// protocol for Kaggle datasets (e.g., BirdCLEF)
-    if url.starts_with("kaggle://") {
-        return download_kaggle_dataset(url, dest, job_id, coordinator_url).await;
-    }
-
-    // Standard HTTP(S) download
-    let resp = http.get(url).send().await.context("download")?;
-    if !resp.status().is_success() {
-        anyhow::bail!("download {} → {}", url, resp.status());
-    }
-    let bytes = resp.bytes().await?;
-    let name  = url.rsplit('/').next().unwrap_or("data.bin");
-    tokio::fs::write(dest.join(name), &bytes).await?;
-    Ok(())
-}
-
-/// Download dataset from coordinator API.
-/// URL format: kaggle://competitions/{slug} or http://coordinator/datasets/{job_id}/files
-async fn download_kaggle_dataset(_url: &str, dest: &Path, job_id: &str, coordinator_url: &str) -> Result<()> {
-    log::info!("Downloading dataset from coordinator for job: {job_id}");
-
-    let http = reqwest::Client::new();
-    let files_url = format!("{}/datasets/{}/files", coordinator_url, job_id);
-    
-    // Retry up to 6 times with 5s delay (30s max) — dataset may still be downloading
-    let mut files = Vec::new();
-    for attempt in 1..=6u32 {
+    // Poll until coordinator has at least one file OR .ready marker is set
+    let mut files: Vec<serde_json::Value> = Vec::new();
+    for attempt in 1..=12u32 {
         let resp = http.get(&files_url).send().await
-            .context("Failed to list dataset files from coordinator")?;
-        
+            .context("GET /datasets/{job_id}/files")?;
         if !resp.status().is_success() {
-            anyhow::bail!("Coordinator returned error: {}", resp.status());
+            anyhow::bail!("coordinator returned {} for {job_id}/files", resp.status());
         }
-        
-        let files_data: serde_json::Value = resp.json().await
-            .context("Failed to parse files list")?;
-        
-        let f = files_data["files"].as_array()
-            .cloned()
-            .unwrap_or_default();
-        
+        let data: serde_json::Value = resp.json().await.context("parse files list")?;
+        let ready = data["ready"].as_bool().unwrap_or(false);
+        let f = data["files"].as_array().cloned().unwrap_or_default();
         if !f.is_empty() {
             files = f;
+            if ready {
+                info!("L2: coordinator dataset ready for {job_id} ({} file(s))", files.len());
+            } else {
+                info!("L2: coordinator partial cache for {job_id} ({} file(s), still caching)", files.len());
+            }
             break;
         }
-        
-        log::info!("L2: coordinator dataset not ready yet (attempt {attempt}/12), waiting 5s...");
+        if ready {
+            // ready but no files — dataset is empty, bail early
+            anyhow::bail!("coordinator reports dataset ready but empty for {job_id}");
+        }
+        info!("L2: dataset not ready yet (attempt {attempt}/12) — waiting 5 s...");
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
-    
+
     if files.is_empty() {
-        anyhow::bail!("No dataset files available from coordinator after retries");
-    }
-    
-    log::info!("Found {} files from coordinator, downloading...", files.len());
-
-    // Always download sample_submission.csv first (enables exact row_id matching)
-    let sample_sub_url = format!("{}/datasets/{}/download/sample_submission.csv",
-        coordinator_url, job_id);
-    if let Ok(resp) = http.get(&sample_sub_url).send().await {
-        if resp.status().is_success() {
-            if let Ok(bytes) = resp.bytes().await {
-                tokio::fs::write(dest.join("sample_submission.csv"), &bytes).await.ok();
-                log::info!("Downloaded sample_submission.csv ({} bytes)", bytes.len());
-            }
-        }
+        anyhow::bail!("no dataset files available from coordinator after retries for {job_id}");
     }
 
-    // Download audio files — prefer test_soundscapes/, skip train_audio/
-    let mut audio_count = 0;
+    info!("L2: downloading {} file(s) from coordinator for {job_id}", files.len());
+    let mut downloaded = 0usize;
     for file in &files {
         let filename = match file["filename"].as_str() { Some(f) => f, None => continue };
-
-        // Skip train_audio — only use test_soundscapes or train_soundscapes for inference
-        if filename.starts_with("train_audio/") { continue; }
-
-        if let Some(ext) = std::path::Path::new(filename).extension() {
-            let ext_str = ext.to_string_lossy().to_lowercase();
-            if matches!(ext_str.as_str(), "wav" | "ogg" | "mp3" | "flac") {
-                let download_url = format!("{}/datasets/{}/download/{}",
-                    coordinator_url, job_id, filename);
-                if let Ok(file_resp) = http.get(&download_url).send().await {
-                    if file_resp.status().is_success() {
-                        if let Ok(bytes) = file_resp.bytes().await {
-                            let basename = std::path::Path::new(filename)
-                                .file_name().unwrap_or(std::ffi::OsStr::new(filename));
-                            let dest_file = dest.join(basename);
-                            tokio::fs::write(&dest_file, &bytes).await.ok();
-                            log::info!("Downloaded: {} → {}", filename, basename.to_string_lossy());
-                            audio_count += 1;
-                        }
-                    }
+        let download_url = format!("{coordinator_url}/datasets/{job_id}/download/{filename}");
+        match http.get(&download_url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(bytes) = resp.bytes().await {
+                    let basename = std::path::Path::new(filename)
+                        .file_name().unwrap_or(std::ffi::OsStr::new(filename));
+                    tokio::fs::write(dest.join(basename), &bytes).await.ok();
+                    info!("L2: downloaded {} ({} bytes)", filename, bytes.len());
+                    downloaded += 1;
                 }
             }
+            Ok(r)  => warn!("L2: failed to download {filename}: {}", r.status()),
+            Err(e) => warn!("L2: network error for {filename}: {e}"),
         }
     }
-    log::info!("Downloaded {audio_count} test audio files to {}", dest.display());
-    
+    if downloaded == 0 {
+        anyhow::bail!("coordinator listed files but all downloads failed for {job_id}");
+    }
+    info!("L2: {downloaded}/{} files downloaded from coordinator for {job_id}", files.len());
     Ok(())
 }
 

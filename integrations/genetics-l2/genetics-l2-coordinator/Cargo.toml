@@ -31,6 +31,8 @@ uuid = { version = "1", features = ["v4"] }
 secp256k1 = { version = "0.29", features = ["rand"] }
 blake3.workspace = true
 dirs-next = "2"
+reqwest        = { workspace = true, features = ["stream"] }
+futures-util.workspace = true
 
 [lints]
 workspace = true
