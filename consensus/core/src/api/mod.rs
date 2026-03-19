@@ -195,6 +195,23 @@ pub trait ConsensusApi: Send + Sync {
         unimplemented!()
     }
 
+    fn is_fitness_coinbase_activated(&self, daa_score: u64) -> bool {
+        unimplemented!()
+    }
+
+    /// Recompute coinbase payload + miner/fund subsidies for a new miner SPK (V2 only).
+    /// Returns `(new_payload, new_miner_subsidy, new_fund_subsidy)`.
+    fn recompute_coinbase_for_miner(
+        &self,
+        payload: Vec<u8>,
+        miner_data: &MinerData,
+        daa_score: u64,
+        blue_score: u64,
+        selected_parent: Hash,
+    ) -> CoinbaseResult<(Vec<u8>, u64, u64)> {
+        unimplemented!()
+    }
+
     fn modify_coinbase_payload(&self, payload: Vec<u8>, miner_data: &MinerData) -> CoinbaseResult<Vec<u8>> {
         unimplemented!()
     }
