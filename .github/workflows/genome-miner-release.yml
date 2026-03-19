@@ -3,11 +3,11 @@ name: Build and Release genome-miner
 on:
   push:
     tags:
-      - 'genome-miner-v*.*.*'
+      - 'v.*.*.*-stratum'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. genome-miner-v0.1.0)'
+        description: 'Release tag (e.g. v.1.0.1-stratum)'
         required: true
 
 jobs:
@@ -42,7 +42,7 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     env:
-      MINER_VER: "0.15.2"
+      MINER_VER: "0.15.5"
 
     steps:
       - name: Checkout code
@@ -123,36 +123,27 @@ jobs:
           cp "$BIN" "$HIVEOS_DIR/genome-miner"
           chmod 755 "$HIVEOS_DIR/genome-miner"
 
-          # HiveOS integration scripts
+          # HiveOS integration scripts + manifest
           cp integrations/hiveos/h-config.sh   "$HIVEOS_DIR/"
           cp integrations/hiveos/h-run.sh      "$HIVEOS_DIR/"
           cp integrations/hiveos/h-stats.sh    "$HIVEOS_DIR/"
           cp integrations/hiveos/install.sh    "$HIVEOS_DIR/"
+          cp integrations/hiveos/h-manifest.conf "$HIVEOS_DIR/"
           chmod 755 "$HIVEOS_DIR"/*.sh
+          # Stamp the exact build version into the manifest
+          sed -i "s/CUSTOM_VERSION=.*/CUSTOM_VERSION=\"${MINER_VER}\"/" "$HIVEOS_DIR/h-manifest.conf"
 
-          # Generate manifest
-          cat > "$HIVEOS_DIR/hive-manifest.conf" << EOF
-          MINER_NAME="genome-miner"
-          MINER_VER="${MINER_VER}"
-          MINER_ALGO="genome-pow kheavyhash"
-          MINER_FORK="xenom"
-          MINER_LOG_BASENAME="genome-miner"
-          MINER_API_PORT="4000"
-          MINER_BIN="genome-miner"
-          EOF
-          sed -i 's/^[[:space:]]*//' "$HIVEOS_DIR/hive-manifest.conf"
-
-          # Create archive: genome-miner-<ver>-hiveos.tar.gz
+          # Create archive: genome-miner-<ver>.tar.gz  (HiveOS URL format)
           cd dist
-          tar -czf genome-miner-${MINER_VER}-hiveos.tar.gz -C hiveos-pkg .
-          echo "Created dist/genome-miner-${MINER_VER}-hiveos.tar.gz"
+          tar -czf genome-miner-${MINER_VER}.tar.gz -C hiveos-pkg .
+          echo "Created dist/genome-miner-${MINER_VER}.tar.gz"
 
       - name: Upload HiveOS artifact
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         uses: actions/upload-artifact@v4
         with:
           name: genome-miner-hiveos
-          path: dist/genome-miner-${{ env.MINER_VER }}-hiveos.tar.gz
+          path: dist/genome-miner-${{ env.MINER_VER }}.tar.gz
 
       # ── Package (Windows) ───────────────────────────────────────────────────
       - name: Package binary (Windows)
@@ -279,7 +270,7 @@ jobs:
 
             > Full HiveOS setup guide: [docs/hiveos-install.md](https://github.com/hainakus/Xenomorph/blob/master/docs/hiveos-install.md)
           files: |
-            dist/genome-miner-hiveos/genome-miner-${{ steps.ver.outputs.ver }}-hiveos.tar.gz
+            dist/genome-miner-hiveos/genome-miner-${{ steps.ver.outputs.ver }}.tar.gz
             dist/genome-miner-linux-x86_64/genome-miner-linux-x86_64.tar.gz
             dist/genome-miner-macos-x86_64/genome-miner-macos-x86_64.tar.gz
             dist/genome-miner-macos-aarch64/genome-miner-macos-aarch64.tar.gz
