@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Genome Variant Annotation Pipeline — GRCh38 (MVP)
-CPU-first. Uses Ensembl VEP REST API — no local bioinformatics tools required.
+GPU-accelerated (cupy/CUDA) when available, CPU (numpy) otherwise.
+Uses Ensembl VEP REST API — no local bioinformatics tools required.
 
 Pipeline:
   VCF → normalization → annotation → gene scoring → cohort grouping → dataset index
@@ -28,6 +29,24 @@ import time
 import urllib.request
 import urllib.error
 from pathlib import Path
+
+# ── Array backend (numpy / cupy) — set before pipeline stages ────────────────
+# Honour USE_GPU env var or --gpu CLI flag (checked early via sys.argv).
+
+if "--gpu" in sys.argv:
+    os.environ.setdefault("USE_GPU", "1")
+
+_GPU_BACKEND = "numpy/CPU"
+try:
+    if os.environ.get("USE_GPU", "0") not in ("0", "", "false", "False"):
+        import cupy as _np          # type: ignore
+        _np.array([1.0], dtype=_np.float32)  # smoke-test: raises if CUDA absent
+        _GPU_BACKEND = f"cupy {_np.__version__}/CUDA"
+    else:
+        raise ImportError("GPU disabled")
+except Exception:
+    import numpy as _np             # type: ignore
+    _GPU_BACKEND = f"numpy {_np.__version__}/CPU"
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -301,33 +320,48 @@ PATHOGENIC    = {"pathogenic", "likely_pathogenic"}
 
 
 def score_genes(annotations: list) -> dict:
-    """Aggregate per-gene scores from variant annotations."""
+    """Aggregate per-gene scores — GPU-vectorized weight accumulation via cupy/numpy."""
+    if not annotations:
+        return {}
+
+    genes_list = [a.get("gene", "-") for a in annotations]
+    weights  = _np.array([IMPACT_WEIGHT.get(a.get("impact", "MODIFIER"), 0.01) for a in annotations], dtype=_np.float32)
+    is_high  = _np.array([a.get("impact") == "HIGH" for a in annotations], dtype=_np.bool_)
+    is_path  = _np.array([
+        any(s in PATHOGENIC for s in a.get("clin_sig", "-").split(","))
+        for a in annotations
+    ], dtype=_np.bool_)
+
+    try:  # cupy → pull to host
+        weights_h = weights.get().tolist()
+        is_high_h = is_high.get().tolist()
+        is_path_h = is_path.get().tolist()
+    except AttributeError:  # already numpy
+        weights_h = weights.tolist()
+        is_high_h = is_high.tolist()
+        is_path_h = is_path.tolist()
+
     genes: dict = {}
-    for ann in annotations:
-        gene = ann.get("gene", "-")
+    for i, gene in enumerate(genes_list):
         if gene == "-":
             continue
         if gene not in genes:
             genes[gene] = {"variants": 0, "high_impact": 0, "pathogenic": 0, "raw_score": 0.0}
         g = genes[gene]
-        g["variants"] += 1
-        impact = ann.get("impact", "MODIFIER")
-        if impact == "HIGH":
-            g["high_impact"] += 1
-        if any(s in PATHOGENIC for s in ann.get("clin_sig", "-").split(",")):
-            g["pathogenic"] += 1
-        g["raw_score"] += IMPACT_WEIGHT.get(impact, 0.01)
-    # Normalise: cap per-variant avg at 1.0, boost by pathogenic presence
+        g["variants"]  += 1
+        g["raw_score"] += weights_h[i]
+        if is_high_h[i]: g["high_impact"] += 1
+        if is_path_h[i]: g["pathogenic"]  += 1
+
     result = {}
     for gene, g in genes.items():
         base  = min(g["raw_score"] / max(g["variants"], 1), 1.0)
         boost = min(g["pathogenic"] * 0.15, 0.30)
-        score = round(min(base + boost, 1.0), 4)
         result[gene] = {
             "variants":    g["variants"],
             "high_impact": g["high_impact"],
             "pathogenic":  g["pathogenic"],
-            "score":       score,
+            "score":       round(min(base + boost, 1.0), 4),
         }
     return result
 
@@ -394,16 +428,29 @@ def build_dataset_index(
     }
 
 def compute_score(variants: list, annotations: list, gene_scores: dict) -> "tuple[float, dict]":
-    """Compute L2 score from annotation quality metrics and gene scores."""
+    """Compute L2 score — GPU-vectorized count operations via cupy/numpy."""
     n_total = len(variants)
     if n_total == 0:
         return 0.1, {"error": "no_variants"}
 
-    n_annotated  = len(annotations)
-    n_high       = sum(1 for a in annotations if a.get("impact") in HIGH_IMPACT)
-    n_coding     = sum(1 for a in annotations if a.get("impact") in MED_IMPACT)
-    n_pathogenic = sum(1 for a in annotations
-                       if any(s in PATHOGENIC for s in a.get("clin_sig", "-").split(",")))
+    n_annotated = len(annotations)
+    if n_annotated > 0:
+        imp_arr  = _np.array([1 if a.get("impact") in HIGH_IMPACT else 0 for a in annotations], dtype=_np.int32)
+        cod_arr  = _np.array([1 if a.get("impact") in MED_IMPACT  else 0 for a in annotations], dtype=_np.int32)
+        path_arr = _np.array([
+            1 if any(s in PATHOGENIC for s in a.get("clin_sig", "-").split(",")) else 0
+            for a in annotations
+        ], dtype=_np.int32)
+        try:
+            n_high       = int(imp_arr.sum())
+            n_coding     = int(cod_arr.sum())
+            n_pathogenic = int(path_arr.sum())
+        except Exception:
+            n_high       = int(sum(imp_arr.tolist()))
+            n_coding     = int(sum(cod_arr.tolist()))
+            n_pathogenic = int(sum(path_arr.tolist()))
+    else:
+        n_high = n_coding = n_pathogenic = 0
     n_genes      = len(gene_scores)
 
     annotation_rate  = n_annotated / n_total
@@ -447,7 +494,10 @@ def main() -> None:
     parser.add_argument("--input",        required=True, help="Input directory (VCF files or empty for demo variants)")
     parser.add_argument("--output",       required=True, help="Output directory")
     parser.add_argument("--max-variants", type=int, default=200, help="Maximum variants to annotate (default: 200)")
+    parser.add_argument("--gpu",          action="store_true", help="Enable GPU acceleration via cupy/CUDA (also honoured via USE_GPU=1 env var)")
     args = parser.parse_args()
+
+    print(f"[INFO] Array backend: {_GPU_BACKEND}", file=sys.stderr)
 
     input_dir  = Path(args.input)
     output_dir = Path(args.output)

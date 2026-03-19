@@ -103,6 +103,30 @@ else
 fi
 echo ""
 
+# ── NVIDIA GPU detection ─────────────────────────────────────────────────────
+GPU_AVAILABLE=0
+if command -v nvidia-smi &>/dev/null && nvidia-smi -L &>/dev/null 2>&1; then
+  GPU_AVAILABLE=1
+  CUDA_MAJ=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K[0-9]+' | head -1)
+  CUDA_MAJ="${CUDA_MAJ:-12}"
+  echo "=== NVIDIA GPU detected (CUDA ${CUDA_MAJ}.x) — enabling GPU acceleration ==="
+  export USE_GPU=1
+  echo "  Installing cupy-cuda${CUDA_MAJ}x for Python GPU acceleration..."
+  if [ -d "venv" ]; then
+    pip install --quiet "cupy-cuda${CUDA_MAJ}x" 2>/dev/null \
+      || pip install --quiet cupy 2>/dev/null \
+      || echo "  Warning: cupy install failed — Python will use numpy/CPU"
+  else
+    pip3 install --quiet --break-system-packages "cupy-cuda${CUDA_MAJ}x" 2>/dev/null \
+      || echo "  Warning: cupy install failed — Python will use numpy/CPU"
+  fi
+else
+  GPU_AVAILABLE=0
+  export USE_GPU=0
+  echo "=== No NVIDIA GPU detected — using CPU mining and numpy/CPU pipeline ==="
+fi
+echo ""
+
 PIDS=()
 
 cleanup() {
@@ -241,14 +265,26 @@ echo "    state-dir: $COMMITTER_STATE_DIR"
 PIDS+=($!)
 sleep 2
 
-echo "=== Starting genome-miner mine (PoW + Genetics L2 inline) ==="
-"$BIN/genome-miner" mine \
-  --devnet \
-  --mining-address "$MINING_ADDR" \
-  --stratum stratum+tcp://127.0.0.1:5555 \
-  --no-tui \
-  --l2-coordinator "$COORDINATOR" \
-  > /tmp/xenom-logs/miner.log 2>&1 &
+if [ "$GPU_AVAILABLE" -eq 1 ]; then
+  echo "=== Starting genome-miner gpu (wgpu Vulkan/CUDA PoW + L2 GPU inline) ==="
+  "$BIN/genome-miner" gpu \
+    --devnet \
+    --mining-address "$MINING_ADDR" \
+    --stratum stratum+tcp://127.0.0.1:5555 \
+    --no-tui \
+    --l2-coordinator "$COORDINATOR" \
+    --l2-gpu \
+    > /tmp/xenom-logs/miner.log 2>&1 &
+else
+  echo "=== Starting genome-miner mine (PoW CPU + L2 inline) ==="
+  "$BIN/genome-miner" mine \
+    --devnet \
+    --mining-address "$MINING_ADDR" \
+    --stratum stratum+tcp://127.0.0.1:5555 \
+    --no-tui \
+    --l2-coordinator "$COORDINATOR" \
+    > /tmp/xenom-logs/miner.log 2>&1 &
+fi
 PIDS+=($!)
 sleep 2
 

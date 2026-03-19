@@ -430,13 +430,13 @@ async fn dispatch_task(task: &str, input_dir: &Path, output_dir: &Path, cfg: &L2
     match task {
         "acoustic_classification" => acoustic_classification(input_dir, output_dir, cfg, script, python).await,
         "variant_calling" | "cancer_genomics" | "genome_assembly" | "metagenomics" | "annotation"
-            => genomics_pipeline(task, input_dir, output_dir, script, python).await,
+            => genomics_pipeline(task, input_dir, output_dir, script, python, cfg.use_gpu).await,
         "gene_expression" | "rna_expression" | "biomarker_discovery"
         | "network_biology" | "sequence_alignment" | "protein_folding" | "molecular_docking"
             => omics_analysis(task, input_dir, output_dir).await,
         "digital_health" | "biotechnology" | "drug_discovery"
             => horizon_analysis(task, input_dir, output_dir).await,
-        _ => genomics_pipeline(task, input_dir, output_dir, script, python).await,
+        _ => genomics_pipeline(task, input_dir, output_dir, script, python, cfg.use_gpu).await,
     }
 }
 
@@ -680,7 +680,7 @@ fn score_from_sra_csv(csv: &str) -> (f64, serde_json::Value) {
 }
 
 /// Genomic variant annotation pipeline — genome_annotate.py (Ensembl VEP REST, GRCh38) or E-utils stub.
-async fn genomics_pipeline(task: &str, input_dir: &Path, output_dir: &Path, script: Option<&PathBuf>, python: &str) -> (f64, String) {
+async fn genomics_pipeline(task: &str, input_dir: &Path, output_dir: &Path, script: Option<&PathBuf>, python: &str, use_gpu: bool) -> (f64, String) {
     let mut trace = format!("genomics_pipeline task={task}\n");
 
     let Some(infer_script) = script else {
@@ -689,14 +689,14 @@ async fn genomics_pipeline(task: &str, input_dir: &Path, output_dir: &Path, scri
     };
 
     trace.push_str(&format!("  [script] {}\n", infer_script.display()));
-    let status = tokio::process::Command::new(python)
-        .args([
-            infer_script.to_string_lossy().as_ref(),
-            "--input",  &input_dir.to_string_lossy(),
-            "--output", &output_dir.to_string_lossy(),
-        ])
-        .output()
-        .await;
+    let mut cmd = tokio::process::Command::new(python);
+    cmd.args([
+        infer_script.to_string_lossy().as_ref(),
+        "--input",  &input_dir.to_string_lossy(),
+        "--output", &output_dir.to_string_lossy(),
+    ]);
+    if use_gpu { cmd.arg("--gpu"); }
+    let status = cmd.output().await;
 
     match status {
         Ok(out) if out.status.success() => {
