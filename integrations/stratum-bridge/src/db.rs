@@ -1,5 +1,5 @@
 use anyhow::Result;
-use sqlx::{Pool, Row, Sqlite, SqlitePool};
+use sqlx::{Pool, Row, Sqlite};
 use std::sync::Arc;
 
 // ── Row types returned to callers ─────────────────────────────────────────────
@@ -51,8 +51,19 @@ impl Db {
     /// Open (or create) the SQLite database at `path` and run schema migrations.
     pub async fn open(path: &str) -> Result<Self> {
         let url  = format!("sqlite:{path}?mode=rwc");
-        let pool = SqlitePool::connect(&url).await?;
-        let db   = Self(Arc::new(pool));
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(path)
+                    .create_if_missing(true)
+                    .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+                    .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
+                    .busy_timeout(std::time::Duration::from_secs(10)),
+            )
+            .await?;
+        let _ = url; // unused after options refactor
+        let db = Self(Arc::new(pool));
         db.migrate().await?;
         Ok(db)
     }

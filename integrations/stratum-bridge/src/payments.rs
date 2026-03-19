@@ -50,7 +50,7 @@ impl Default for PaymentConfig {
     fn default() -> Self {
         Self {
             confirm_depth:    1000,
-            min_payout_sompi: 100_000, // 0.001 XENOM
+            min_payout_sompi: 20_000_000_000, // 200 XENOM
             pool_fee_percent: 1.0,
             fee_per_output:   2_000,
         }
@@ -100,22 +100,45 @@ fn estimate_tx_mass(input_amounts: &[u64], output_amounts: &[u64]) -> u64 {
     compute.saturating_add(storage)
 }
 
+/// Minimum change amount to create a change output (avoid burning pool funds as TX fee).
+/// Must be well above dust but much lower than min_payout_sompi.
+const CHANGE_DUST_THRESHOLD: u64 = 100_000; // 0.001 XENOM
+
 // ── Payout execution ──────────────────────────────────────────────────────────
 
-/// Build, sign and broadcast a payout transaction for one confirmed block.
+/// Merge PPLNS proportions from multiple blocks into a single weighted-average
+/// distribution.  Each block is weighted equally (one vote per block found).
+/// Returns a sorted `Vec<(worker, merged_proportion)>`.
+pub fn merge_proportions(payouts: &[PendingPayout]) -> Vec<(String, f64)> {
+    let n = payouts.len() as f64;
+    if n == 0.0 {
+        return vec![];
+    }
+    let mut totals: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    for payout in payouts {
+        for (worker, prop) in &payout.proportions {
+            *totals.entry(worker.clone()).or_default() += prop / n;
+        }
+    }
+    let mut merged: Vec<(String, f64)> = totals.into_iter().collect();
+    merged.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    merged
+}
+
+/// Build, sign and broadcast ONE payout transaction covering all `proportions`.
+///
+/// Distributes ALL available pool UTXOs proportionally.
+/// Call once with merged proportions from all confirmed blocks.
 ///
 /// Requires the Xenom node to be started with `--utxoindex`.
 ///
 /// `spent` is a per-cycle set of `(tx_id, index)` outpoints already submitted
-/// in earlier payouts this cycle.  The node UTXO index does not reflect
-/// unconfirmed (mempool) spends, so without this filter back-to-back payouts
-/// within one batch would reuse the same UTXOs and be rejected as double-spends.
-/// On success, newly consumed outpoints are inserted into `spent`.
+/// earlier this cycle to avoid double-spend against unconfirmed mempool TXs.
 pub async fn execute_payout(
     rpc:          &Arc<GrpcClient>,
     pool_address: &RpcAddress,
     keypair:      &Keypair,
-    payout:       &PendingPayout,
+    proportions:  &[(String, f64)],
     cfg:          &PaymentConfig,
     spent:        &mut HashSet<(RpcTransactionId, u32)>,
 ) -> Result<RpcTransactionId> {
@@ -168,8 +191,7 @@ pub async fn execute_payout(
 
     let mut invalid_addr_count = 0usize;
     let mut below_min_count    = 0usize;
-    let mut outputs_plan: Vec<(RpcAddress, u64)> = payout
-        .proportions
+    let mut outputs_plan: Vec<(RpcAddress, u64)> = proportions
         .iter()
         .filter_map(|(worker, proportion)| {
             let addr_str = worker.split('.').next().unwrap_or(worker);
@@ -295,7 +317,7 @@ pub async fn execute_payout(
                 .iter().map(|e| e.utxo_entry.amount).collect();
             let mut out_amts: Vec<u64> = batch_outputs.iter().map(|(_, v)| *v).collect();
             out_amts.push(*amount);
-            if tentative_change >= cfg.min_payout_sompi {
+            if tentative_change >= CHANGE_DUST_THRESHOLD {
                 out_amts.push(tentative_change);
             }
             let mass = estimate_tx_mass(&input_amts, &out_amts);
@@ -328,11 +350,14 @@ pub async fn execute_payout(
                 script_public_key: pay_to_address_script(addr),
             })
             .collect();
-        if batch_change >= cfg.min_payout_sompi {
+        if batch_change >= CHANGE_DUST_THRESHOLD {
             tx_outputs.push(TransactionOutput {
                 value:             batch_change,
                 script_public_key: pay_to_address_script(pool_address),
             });
+            info!("Batch {batch_num} change: {batch_change} sompi returned to pool");
+        } else if batch_change > 0 {
+            warn!("Batch {batch_num} change {batch_change} sompi below dust threshold — consumed as TX fee");
         }
 
         // ── Build inputs ─────────────────────────────────────────────────────

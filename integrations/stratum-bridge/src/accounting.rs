@@ -170,6 +170,7 @@ impl Accounting {
             p.status = PayoutStatus::Paid { tx_id };
             self.flush_file();
         }
+        self.trim_old_payouts(500);
     }
 
     pub fn mark_failed(&mut self, job_id: &str, reason: String) {
@@ -177,6 +178,27 @@ impl Accounting {
             p.status = PayoutStatus::Failed { reason };
             self.flush_file();
         }
+        self.trim_old_payouts(500);
+    }
+
+    /// Remove resolved (Paid/Failed) entries older than the most recent `keep`
+    /// entries, and cap total in-memory size. Keeps all `Pending` entries.
+    pub fn trim_old_payouts(&mut self, keep: usize) {
+        // Partition into pending and resolved
+        let (mut pending_entries, mut resolved): (Vec<_>, Vec<_>) = self
+            .pending
+            .drain(..)
+            .partition(|p| p.status == PayoutStatus::Pending);
+
+        // Keep only the most-recent `keep` resolved entries (they're in insertion order)
+        if resolved.len() > keep {
+            let drop_n = resolved.len() - keep;
+            resolved.drain(..drop_n);
+        }
+
+        // Rebuild: resolved first (oldest), pending last (newest) — preserves insert order
+        self.pending = resolved;
+        self.pending.append(&mut pending_entries);
     }
 
     /// Log a summary of current worker stats.
