@@ -50,7 +50,7 @@ impl Default for PaymentConfig {
     fn default() -> Self {
         Self {
             confirm_depth:    1000,
-            min_payout_sompi: 100_000, // 0.001 XENOM
+            min_payout_sompi: 20_000_000_000, // 200 XENOM
             pool_fee_percent: 1.0,
             fee_per_output:   2_000,
         }
