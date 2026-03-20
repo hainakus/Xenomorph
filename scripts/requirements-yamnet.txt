@@ -1,5 +1,0 @@
-tensorflow>=2.13.0
-tensorflow-hub>=0.14.0
-librosa>=0.10.0
-numpy>=1.24.0
-soundfile>=0.12.0

@@ -3,8 +3,6 @@ use genetics_l2_core::{Algorithm, ExternalSource, ScientificJob};
 
 use crate::SourceFetcher;
 
-// ── NihFetcher — NCBI SRA public datasets ────────────────────────────────────
-
 /// Fetches public genomics datasets from the NIH / NCBI APIs.
 ///
 /// Uses the NCBI E-utilities API (no key required for low-volume access).
@@ -17,10 +15,6 @@ impl NihFetcher {
     pub fn new() -> Self {
         Self { http: reqwest::Client::new() }
     }
-}
-
-impl Default for NihFetcher {
-    fn default() -> Self { Self::new() }
 }
 
 #[async_trait::async_trait]
@@ -72,149 +66,6 @@ impl SourceFetcher for NihFetcher {
             jobs.push(job);
         }
 
-        Ok(jobs)
-    }
-}
-
-// ── NihChallengeFetcher — challenges.nih.gov Prize Challenges ─────────────────
-
-/// Maps a challenge topic string to the most specific Algorithm variant.
-fn algorithm_from_topic(topic: &str) -> Algorithm {
-    let t = topic.to_lowercase();
-    if t.contains("drug") || t.contains("compound") || t.contains("screening") {
-        Algorithm::DrugDiscovery
-    } else if t.contains("cancer") || t.contains("tumor") || t.contains("oncol") {
-        Algorithm::CancerGenomics
-    } else if t.contains("biomarker") || t.contains("diagnostic") {
-        Algorithm::BiomarkerDiscovery
-    } else if t.contains("protein") || t.contains("folding") || t.contains("structure") {
-        Algorithm::ProteinFolding
-    } else if t.contains("network") || t.contains("pathway") || t.contains("interaction") {
-        Algorithm::NetworkBiology
-    } else if t.contains("gene") || t.contains("expression") || t.contains("rna") {
-        Algorithm::GeneExpression
-    } else if t.contains("variant") || t.contains("mutation") || t.contains("snp") {
-        Algorithm::VariantCalling
-    } else if t.contains("metagenom") || t.contains("microbiome") {
-        Algorithm::Metagenomics
-    } else if t.contains("sequence") || t.contains("alignment") {
-        Algorithm::SequenceAlignment
-    } else {
-        Algorithm::Custom(topic.to_owned())
-    }
-}
-
-/// Reward bucket: scale XEN reward proportional to the NIH prize amount.
-/// $10k  →   10 XEN  (10_000_000 sompi)
-/// $100k →  100 XEN (100_000_000 sompi)
-/// $1M   → 1000 XEN (highest bracket)
-fn reward_from_prize_usd(usd: u64) -> u64 {
-    match usd {
-        0..=9_999          =>    1_000_000, // < $10k   →   1 XEN stub
-        10_000..=49_999    =>   10_000_000, // ~$10k    →  10 XEN
-        50_000..=199_999   =>   50_000_000, // ~$100k   →  50 XEN
-        200_000..=999_999  =>  200_000_000, // ~$200k   → 200 XEN
-        _                  => 1_000_000_000, // $1M+    → 1000 XEN
-    }
-}
-
-/// Fetches open Prize Challenges from the NIH challenge.gov API.
-///
-/// Public endpoint (no API key required):
-/// https://api.challenge.gov/api/challenges?status=open&limit=25
-pub struct NihChallengeFetcher {
-    http: reqwest::Client,
-}
-
-impl NihChallengeFetcher {
-    pub fn new() -> Self {
-        Self { http: reqwest::Client::new() }
-    }
-}
-
-impl Default for NihChallengeFetcher {
-    fn default() -> Self { Self::new() }
-}
-
-#[async_trait::async_trait]
-impl SourceFetcher for NihChallengeFetcher {
-    fn name(&self) -> &str { "nih_challenge" }
-
-    async fn fetch_jobs(&self) -> Result<Vec<ScientificJob>> {
-        // challenge.gov uses the CKAN action API
-        let url = "https://api.challenge.gov/api/3/action/package_search\
-            ?q=NIH&rows=50&sort=metadata_modified+desc";
-
-        let resp = self.http
-            .get(url)
-            .header("Accept", "application/json")
-            .send()
-            .await
-            .context("challenge.gov CKAN request")?;
-
-        if !resp.status().is_success() {
-            anyhow::bail!("challenge.gov API {}", resp.status());
-        }
-
-        let json: serde_json::Value = resp.json().await.context("challenge.gov JSON")?;
-
-        // CKAN response: { "success": true, "result": { "count": N, "results": [...] } }
-        if json["success"].as_bool() != Some(true) {
-            log::debug!("[nih_challenge] CKAN returned success=false");
-            return Ok(vec![]);
-        }
-
-        let challenges = json["result"]["results"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-
-        let mut jobs = Vec::new();
-        for ch in &challenges {
-            let id    = ch["id"].as_str().unwrap_or_default();
-            let name  = ch["name"].as_str().unwrap_or(id);
-            let title = ch["title"].as_str().unwrap_or("NIH Challenge");
-            // CKAN uses `notes` for description and `tags` for keywords
-            let topic = ch["notes"].as_str().unwrap_or(title);
-
-            if id.is_empty() { continue; }
-
-            // Extract prize from CKAN extras: [{"key":"prize_total","value":"..."}]
-            let prize_usd: u64 = ch["extras"]
-                .as_array()
-                .and_then(|extras| {
-                    extras.iter()
-                        .find(|e| e["key"].as_str() == Some("prize_total"))
-                        .and_then(|e| e["value"].as_str())
-                        .and_then(|s| s.replace(['$', ',', ' '], "").parse().ok())
-                })
-                .unwrap_or(10_000);
-
-            let dataset_root = hex::encode(
-                blake3::hash(format!("nih_challenge:{id}").as_bytes()).as_bytes()
-            );
-            let dataset_url = Some(format!(
-                "https://www.challenge.gov/challenge/{name}/"
-            ));
-
-            let algorithm   = algorithm_from_topic(topic);
-            let reward      = reward_from_prize_usd(prize_usd);
-            let max_time    = 86_400u64; // 24h — NIH challenges are compute-heavy
-
-            let job = ScientificJob::new(
-                ExternalSource::NihChallenge,
-                Some(id.to_owned()),
-                dataset_root,
-                dataset_url,
-                algorithm,
-                format!("NIH Challenge: {title} (${prize_usd})"),
-                reward,
-                max_time,
-            );
-            jobs.push(job);
-        }
-
-        log::info!("[nih_challenge] {} open challenge(s) found", jobs.len());
         Ok(jobs)
     }
 }

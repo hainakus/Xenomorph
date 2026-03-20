@@ -46,10 +46,9 @@ pub async fn submit_anchor(
     keypair:      &Keypair,
     anchor_bytes: &[u8],
     fee_per_input: u64,
-    prefix:        Prefix,
 ) -> Result<String> {
     let (pubkey, _) = keypair.x_only_public_key();
-    let address     = Address::new(prefix, Version::PubKey, &pubkey.serialize());
+    let address     = Address::new(Prefix::Mainnet, Version::PubKey, &pubkey.serialize());
     let rpc_address: RpcAddress = address.clone();
 
     // ── 1. Fetch mature UTXOs ─────────────────────────────────────────────────
@@ -177,15 +176,10 @@ pub fn keypair_from_hex(privkey_hex: &str) -> Result<Keypair> {
     Ok(Keypair::from_secret_key(&secp, &secret))
 }
 
-/// Derive the Xenom address (P2PK) from a `Keypair` for the given network prefix.
-pub fn address_from_keypair(keypair: &Keypair, prefix: Prefix) -> String {
-    address_from_keypair_prefixed(keypair, prefix)
-}
-
-/// Derive address with an explicit network prefix (Mainnet / Devnet / Testnet).
-pub fn address_from_keypair_prefixed(keypair: &Keypair, prefix: Prefix) -> String {
+/// Derive the Xenom address (mainnet, P2PK) from a `Keypair`.
+pub fn address_from_keypair(keypair: &Keypair) -> String {
     let (pubkey, _) = keypair.x_only_public_key();
-    let addr = Address::new(prefix, Version::PubKey, &pubkey.serialize());
+    let addr = Address::new(Prefix::Mainnet, Version::PubKey, &pubkey.serialize());
     String::from(&addr)
 }
 

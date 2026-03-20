@@ -53,7 +53,7 @@ fn cli() -> Command {
             .default_value("0.0.0.0:1444")
             .help("Stratum TCP listen address"))
         .arg(Arg::new("mining-address")
-            .long("mining-address").short('a').value_name("ADDRESS").required_unless_present("keygen")
+            .long("mining-address").short('a').value_name("ADDRESS").required(true)
             .help("Xenom pool reward address for coinbase output"))
         .arg(Arg::new("poll-interval-ms")
             .long("poll-interval-ms").value_name("MS")
@@ -138,19 +138,6 @@ fn cli() -> Command {
             .help("Path to grch38.xenom packed genome dataset. \
                    When supplied, Genome PoW shares are validated locally and \
                    only block candidates are forwarded to the node."))
-        .arg(Arg::new("genome-activation-daa-score")
-            .long("genome-activation-daa-score").value_name("SCORE")
-            .value_parser(clap::value_parser!(u64))
-            .help("DAA score at which Genome PoW activates (overrides --mainnet/--testnet/--devnet)"))
-        .arg(Arg::new("mainnet")
-            .long("mainnet").action(clap::ArgAction::SetTrue)
-            .help("Mainnet Genome PoW activation (DAA 21_370_801)"))
-        .arg(Arg::new("testnet")
-            .long("testnet").action(clap::ArgAction::SetTrue)
-            .help("Testnet Genome PoW activation (DAA 0)"))
-        .arg(Arg::new("devnet")
-            .long("devnet").action(clap::ArgAction::SetTrue)
-            .help("Devnet Genome PoW activation (DAA 0)"))
         // ── L2 themed pool ────────────────────────────────────────────────────
         .arg(Arg::new("config")
             .long("config").value_name("PATH")
@@ -168,11 +155,6 @@ fn cli() -> Command {
             .long("l2-poll-secs").value_name("N")
             .default_value("10").value_parser(clap::value_parser!(u64))
             .help("L2 coordinator poll interval in seconds"))
-        // ── EVM L2 anchor ─────────────────────────────────────────────────────
-        .arg(Arg::new("evm-node")
-            .long("evm-node").value_name("URL")
-            .help("Xenom EVM node JSON-RPC URL (e.g. http://127.0.0.1:8545). \
-                   When set, the latest EVM state root is embedded in each coinbase extra_data."))
 }
 
 #[tokio::main]
@@ -184,16 +166,18 @@ async fn main() -> Result<()> {
     // ── Key generator (--keygen) ───────────────────────────────────────────────
     if m.get_flag("keygen") {
         let (sk, pk) = secp256k1::generate_keypair(&mut secp256k1::rand::thread_rng());
-        let pub_bytes = pk.x_only_public_key().0.serialize();
-        let addr_main = String::from(&Address::new(Prefix::Mainnet, Version::PubKey, &pub_bytes));
-        let addr_dev  = String::from(&Address::new(Prefix::Devnet,  Version::PubKey, &pub_bytes));
+        let addr = Address::new(
+            Prefix::Mainnet,
+            Version::PubKey,
+            &pk.x_only_public_key().0.serialize(),
+        );
+        let addr_str = String::from(&addr);
         println!();
-        println!("  Private key      : {}", sk.display_secret());
-        println!("  Mainnet address  : {addr_main}");
-        println!("  Devnet  address  : {addr_dev}");
+        println!("  Private key  : {}", sk.display_secret());
+        println!("  Pool address : {addr_str}");
         println!();
         println!("Use these flags when starting the bridge:");
-        println!("  --mining-address <address> \\");
+        println!("  --mining-address {addr_str} \\");
         println!("  --pool-private-key {}", sk.display_secret());
         println!();
         println!("Keep the private key SECRET — it controls spending of all pool coinbase rewards.");
@@ -248,15 +232,6 @@ async fn main() -> Result<()> {
         info!("Config loaded from {cfg_path}: theme={}", bridge_cfg.theme());
     }
 
-    // TOML name overrides CLI default (but explicit --pool-name still wins)
-    let pool_name = if !bridge_cfg.bridge.name.is_empty()
-        && m.get_one::<String>("pool-name").map(|s| s.as_str()) == Some("Xenom Pool")
-    {
-        bridge_cfg.bridge.name.clone()
-    } else {
-        pool_name
-    };
-
     // CLI flags override TOML
     if let Some(t) = m.get_one::<String>("l2-theme")      { bridge_cfg.bridge.theme = t.clone(); }
     if let Some(c) = m.get_one::<String>("l2-coordinator") { bridge_cfg.l2.coordinator = c.clone(); bridge_cfg.l2.enabled = true; }
@@ -301,60 +276,12 @@ async fn main() -> Result<()> {
     let rpc = Arc::new(GrpcClient::connect(url.clone()).await.context("gRPC connect")?);
     info!("Connected to {url}");
 
-    // ── Genome PoW activation ────────────────────────────────────────────────
-    let genome_activation: u64 = if let Some(&s) = m.get_one::<u64>("genome-activation-daa-score") {
-        s
-    } else if m.get_flag("testnet") || m.get_flag("devnet") {
-        0
-    } else {
-        kaspa_consensus_core::hashing::header::EPOCH_SEED_HASH_ACTIVATION_MAINNET
-    };
-    info!("Genome PoW activation DAA score: {genome_activation}");
-
     // ── Shared state ──────────────────────────────────────────────────────────
-    let job_mgr:    Arc<RwLock<JobManager>> = Arc::new(RwLock::new(JobManager::new(genome_activation)));
+    let job_mgr:    Arc<RwLock<JobManager>> = Arc::new(RwLock::new(JobManager::new()));
     let accounting: Arc<Mutex<Accounting>>  = Arc::new(Mutex::new(
         Accounting::new(pplns_window, payout_file),
     ));
     let (job_tx, job_rx) = watch::channel::<Option<Arc<job::Job>>>(None);
-
-    // ── EVM L2 anchor: latest state root in coinbase extra_data ───────────────
-    // Format: b"XEVM" (4 bytes) + state_root (32 bytes) = 36 bytes total
-    let evm_extra_data: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(vec![]));
-    if let Some(evm_url) = m.get_one::<String>("evm-node").cloned() {
-        info!("EVM anchor enabled: {evm_url}");
-        let extra = evm_extra_data.clone();
-        tokio::spawn(async move {
-            let client = reqwest::Client::new();
-            loop {
-                let body = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "method": "xenom_latestStateRoot",
-                    "params": [],
-                    "id": 1
-                });
-                match client.post(&evm_url).json(&body).send().await {
-                    Ok(r) => match r.json::<serde_json::Value>().await {
-                        Ok(v) => {
-                            if let Some(root_hex) = v["result"].as_str() {
-                                let hex = root_hex.trim_start_matches("0x");
-                                if let Ok(root_bytes) = hex::decode(hex) {
-                                    if root_bytes.len() == 32 {
-                                        let mut prefix = b"XEVM".to_vec();
-                                        prefix.extend_from_slice(&root_bytes);
-                                        *extra.lock().await = prefix;
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => warn!("EVM state root parse: {e}"),
-                    },
-                    Err(e) => warn!("EVM node unreachable: {e}"),
-                }
-                sleep(Duration::from_secs(2)).await;
-            }
-        });
-    }
 
     // ── Node polling task ─────────────────────────────────────────────────────
     {
@@ -363,14 +290,12 @@ async fn main() -> Result<()> {
         let jtx2     = job_tx.clone();
         let pay      = pay_address.clone();
         let poll_dur = Duration::from_millis(poll_ms);
-        let evm_data = evm_extra_data.clone();
 
         tokio::spawn(async move {
             info!("Block-template poller started (interval={poll_ms}ms)");
             loop {
-                let extra_data = evm_data.lock().await.clone();
                 match rpc2
-                    .get_block_template_call(None, GetBlockTemplateRequest::new(pay.clone(), extra_data))
+                    .get_block_template_call(None, GetBlockTemplateRequest::new(pay.clone(), vec![]))
                     .await
                 {
                     Ok(resp) => {

@@ -16,9 +16,10 @@ pub struct L2Job {
     pub job_id:      String,
     /// Algorithm or task type (e.g. "sequence_alignment", "variant_calling")
     pub task:        String,
-    /// Internal dataset reference name (e.g. "genetics:igsr-cohort_build-12dd").
-    /// Never contains the external source URL.
+    /// Dataset reference (e.g. "hg38-align-v1", "era5-lite-v1")
     pub dataset:     String,
+    /// Dataset URL where the miner can fetch input data
+    pub dataset_url: Option<String>,
     /// Fragment index for partial tasks (shard for large datasets)
     pub fragment:    u64,
     /// Reward in sompi offered for successful completion
@@ -29,13 +30,13 @@ pub struct L2Job {
 
 impl L2Job {
     /// Serialise to a `serde_json::Value` for embedding in `mining.notify` param[6].
-    /// Note: external source URLs are never included here.
     pub fn to_value(&self) -> Value {
         serde_json::json!({
             "theme":       self.theme,
             "job_id":      self.job_id,
             "task":        self.task,
             "dataset":     self.dataset,
+            "dataset_url": self.dataset_url,
             "fragment":    self.fragment,
             "reward_sompi":self.reward_sompi,
         })
@@ -109,14 +110,16 @@ async fn fetch_next_job(
     };
 
     // Map coordinator ScientificJob fields to L2Job
-    let job_id       = raw["job_id"].as_str().unwrap_or("").to_owned();
-    let task         = raw["algorithm"].as_str().unwrap_or("").to_owned();
+    let job_id      = raw["job_id"].as_str().unwrap_or("").to_owned();
+    let task        = raw["algorithm"].as_str().unwrap_or("").to_owned();
+    let dataset_url = raw["dataset_url"].as_str().map(str::to_owned);
     let reward_sompi = raw["reward_sompi"].as_u64().unwrap_or(0);
-    let posted_at    = raw["created_at"].as_u64().unwrap_or(0);
+    let posted_at   = raw["created_at"].as_u64().unwrap_or(0);
 
-    // Use a deterministic fragment index based on job_id
+    // Use a deterministic fragment index based on the job_id so all miners
+    // receive the same fragment number for the same job.
     let fragment = u64::from_be_bytes(
-        hex::decode(format!("{:016x}", job_id.len()))
+        hex::decode(&format!("{:016x}", job_id.len()))
             .unwrap_or_default()
             .try_into()
             .unwrap_or([0u8; 8])
@@ -126,19 +129,12 @@ async fn fetch_next_job(
         return Ok(None);
     }
 
-    // Internal reference: theme:task-job_id[:8] — never exposes the source URL
-    let short_id  = if job_id.len() >= 8 { &job_id[..8] } else { &job_id };
-    let ds_ref    = if dataset.is_empty() {
-        format!("{theme}:{task}-{short_id}")
-    } else {
-        format!("{dataset}-{short_id}")
-    };
-
     Ok(Some(L2Job {
-        theme: theme.to_owned(),
+        theme:        theme.to_owned(),
         job_id,
         task,
-        dataset:  ds_ref,
+        dataset:      dataset.to_owned(),
+        dataset_url,
         fragment,
         reward_sompi,
         posted_at,

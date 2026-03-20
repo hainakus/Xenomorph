@@ -6,7 +6,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use bioproof_core::{verify_manifest_sig, Certificate};
+use bioproof_core::{compute_proof, verify_manifest_sig, Certificate, Manifest};
 use clap::{Arg, Command};
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};

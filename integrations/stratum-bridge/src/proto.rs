@@ -51,10 +51,7 @@ impl StratumNotification {
     /// 5. timestamp       — 16-char hex (8 bytes): template timestamp in milliseconds
     /// 6. clean_jobs      — bool: true → abandon previous jobs
     /// 7. l2_job          — optional JSON object with themed L2 compute task, or null
-    ///    Miners that do not support L2 safely ignore this field.
-    /// 8. daa_score       — 16-char hex (8 bytes): template DAA score.
-    ///    Miners use this with their --genome-activation-daa-score to
-    ///    select the correct PoW algorithm regardless of epoch_seed value.
+    ///                       Miners that do not support L2 safely ignore this field.
     pub fn notify(
         job_id:      &str,
         pre_pow_hash: &str,
@@ -63,13 +60,12 @@ impl StratumNotification {
         timestamp:   &str,
         clean_jobs:  bool,
         l2_job:      Value,
-        daa_score:   &str,
     ) -> Self {
         Self {
             id: None,
             method: "mining.notify".into(),
             params: serde_json::json!([
-                job_id, pre_pow_hash, bits, epoch_seed, timestamp, clean_jobs, l2_job, daa_score
+                job_id, pre_pow_hash, bits, epoch_seed, timestamp, clean_jobs, l2_job
             ]),
         }
     }

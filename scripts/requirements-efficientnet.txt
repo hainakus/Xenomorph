@@ -1,6 +1,0 @@
-torch>=2.1.0
-torchaudio>=2.1.0
-timm>=0.9.0
-numpy>=1.24.0
-kaggle>=1.6.0
-soundfile>=0.12.0

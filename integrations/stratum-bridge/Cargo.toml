@@ -11,10 +11,6 @@ license.workspace = true
 name = "xenom-stratum-bridge"
 path = "src/main.rs"
 
-[[bin]]
-name = "stratum-test-client"
-path = "src/bin/stratum_test_client.rs"
-
 [dependencies]
 kaspa-addresses.workspace = true
 kaspa-consensus-core.workspace = true

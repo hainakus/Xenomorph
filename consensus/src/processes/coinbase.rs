@@ -127,20 +127,17 @@ impl CoinbaseManager {
         (miner, fund)
     }
 
-    /// Returns the fitness multiplier in basis points (10_000 = 1.0×, 20_000 = 2.0×).
-    /// Uses pure integer arithmetic to guarantee identical results on every CPU architecture.
-    fn calc_fitness_multiplier_bp(&self, fitness: u32) -> u64 {
-        let threshold = self.fitness_threshold.max(1) as u64;
-        // ratio_bp = (fitness / threshold) * 10_000  (fixed-point, 4 decimal places)
-        let ratio_bp = (fitness as u64).saturating_mul(10_000) / threshold;
-        // m = 1 + ratio^2  (same formula as f64 version, in basis points)
-        let m = 10_000u64.saturating_add(ratio_bp.saturating_mul(ratio_bp) / 10_000);
-        m.clamp(10_000, 20_000)
+    fn calc_fitness_multiplier(&self, fitness: u32) -> f64 {
+        let threshold = self.fitness_threshold.max(1) as f64;
+        let ratio = (fitness as f64) / threshold;
+        let m = 1.0 + ratio * ratio;
+        m.clamp(1.0, 2.0)
     }
 
     fn calc_variable_block_subsidy(&self, daa_score: u64, fitness: u32) -> u64 {
-        let base = self.calc_block_subsidy(daa_score);
-        base.saturating_mul(self.calc_fitness_multiplier_bp(fitness)) / 10_000
+        let base = self.calc_block_subsidy(daa_score) as f64;
+        let subsidy = base * self.calc_fitness_multiplier(fitness);
+        subsidy.floor().max(0.0).min(u64::MAX as f64) as u64
     }
 
     fn calc_expected_fitness(&self, daa_score: u64, blue_score: u64, selected_parent: &kaspa_hashes::Hash, miner_spk: &ScriptPublicKey) -> u32 {
@@ -184,7 +181,7 @@ impl CoinbaseManager {
         let mut outputs = Vec::with_capacity(ghostdag_data.mergeset_blues.len() + 1); // + 1 for possible red reward
 
         let activated = self.fitness_coinbase_activated(daa_score);
-        let fitness: u32 = if activated {
+        let fitness = if activated {
             self.calc_expected_fitness(daa_score, ghostdag_data.blue_score, &ghostdag_data.selected_parent, &miner_data.script_public_key)
         } else {
             0

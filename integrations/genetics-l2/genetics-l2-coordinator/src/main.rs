@@ -7,7 +7,7 @@ use axum::{
     Json, Router,
 };
 use clap::{Arg, Command};
-use genetics_l2_core::{now_secs, JobResult, Payout, ScientificJob, ValidationReport};
+use genetics_l2_core::{now_secs, JobResult, JobStatus, Payout, ScientificJob, ValidationReport};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -17,46 +17,32 @@ use tower_http::cors::CorsLayer;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS jobs (
-    job_id           TEXT    PRIMARY KEY,
-    source           TEXT    NOT NULL,
-    external_ref     TEXT,
-    dataset_root     TEXT    NOT NULL,
-    dataset_url      TEXT,
-    algorithm        TEXT    NOT NULL,
-    task_description TEXT    NOT NULL,
-    reward_sompi     INTEGER NOT NULL DEFAULT 0,
-    max_time_secs    INTEGER NOT NULL DEFAULT 3600,
-    status           TEXT    NOT NULL DEFAULT 'open',
-    claimed_by       TEXT,
-    created_at       INTEGER NOT NULL,
-    claimed_at       INTEGER,
-    completed_at     INTEGER,
-    pipeline         TEXT,
-    pipeline_hash    TEXT,
-    reference_genome TEXT,
-    reference_hash   TEXT,
-    container_hash   TEXT,
-    config_hash      TEXT,
-    deadline         INTEGER,
-    dataset_category TEXT
+    job_id          TEXT    PRIMARY KEY,
+    source          TEXT    NOT NULL,
+    external_ref    TEXT,
+    dataset_root    TEXT    NOT NULL,
+    dataset_url     TEXT,
+    algorithm       TEXT    NOT NULL,
+    task_description TEXT   NOT NULL,
+    reward_sompi    INTEGER NOT NULL DEFAULT 0,
+    max_time_secs   INTEGER NOT NULL DEFAULT 3600,
+    status          TEXT    NOT NULL DEFAULT 'open',
+    claimed_by      TEXT,
+    created_at      INTEGER NOT NULL,
+    claimed_at      INTEGER,
+    completed_at    INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS results (
-    result_id              TEXT    PRIMARY KEY,
-    job_id                 TEXT    NOT NULL REFERENCES jobs(job_id),
-    worker_pubkey          TEXT    NOT NULL,
-    result_root            TEXT    NOT NULL,
-    score                  REAL    NOT NULL,
-    trace_hash             TEXT,
-    notebook_or_repo_hash  TEXT,
-    container_hash         TEXT,
-    weights_hash           TEXT,
-    submission_bundle_hash TEXT,
-    worker_sig             TEXT    NOT NULL,
-    encrypted_payload      TEXT,
-    ephemeral_pubkey       TEXT,
-    submitted_at           INTEGER NOT NULL,
-    verdict                TEXT
+    result_id       TEXT    PRIMARY KEY,
+    job_id          TEXT    NOT NULL REFERENCES jobs(job_id),
+    worker_pubkey   TEXT    NOT NULL,
+    result_root     TEXT    NOT NULL,
+    score           REAL    NOT NULL,
+    trace_hash      TEXT,
+    worker_sig      TEXT    NOT NULL,
+    submitted_at    INTEGER NOT NULL,
+    verdict         TEXT
 );
 
 CREATE TABLE IF NOT EXISTS validation_reports (
@@ -82,39 +68,11 @@ CREATE TABLE IF NOT EXISTS payouts (
 );
 "#;
 
-// ── Schema migration (adds columns missing from pre-spec DBs) ────────────────
-
-async fn migrate_schema(pool: &SqlitePool) {
-    let new_cols = [
-        ("pipeline",          "TEXT"),
-        ("pipeline_hash",     "TEXT"),
-        ("reference_genome",  "TEXT"),
-        ("reference_hash",    "TEXT"),
-        ("container_hash",    "TEXT"),
-        ("config_hash",       "TEXT"),
-        ("deadline",          "INTEGER"),
-        ("dataset_category",  "TEXT"),
-    ];
-    for (col, ty) in new_cols {
-        let _ = sqlx::query(&format!("ALTER TABLE jobs ADD COLUMN {col} {ty}"))
-            .execute(pool)
-            .await;
-    }
-}
-
 // ── App state ─────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 struct AppState {
     pool: SqlitePool,
-    /// Coordinator's secp256k1 keypair for encrypting/decrypting L2 results.
-    coordinator_privkey: String,
-    coordinator_pubkey: String,
-    /// Directory where inference scripts are stored (served to miners via GET /scripts/:task)
-    scripts_dir: std::path::PathBuf,
-    /// Persistent base directory for Kaggle dataset caches.
-    /// Cache layout: {datasets_dir}/_cache/{slug}/  Job symlinks: {datasets_dir}/{job_id}
-    datasets_dir: std::path::PathBuf,
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -122,11 +80,6 @@ struct AppState {
 // GET /health
 async fn health() -> impl IntoResponse {
     Json(serde_json::json!({ "status": "ok", "service": "genetics-l2-coordinator" }))
-}
-
-// GET /pubkey - Returns coordinator's public key for result encryption
-async fn get_pubkey(State(s): State<Arc<AppState>>) -> impl IntoResponse {
-    Json(serde_json::json!({ "pubkey": s.coordinator_pubkey }))
 }
 
 // GET /jobs?status=open&limit=20&offset=0
@@ -148,9 +101,7 @@ async fn list_jobs(
     let rows = sqlx::query(
         "SELECT job_id, source, external_ref, dataset_root, dataset_url,
                 algorithm, task_description, reward_sompi, max_time_secs,
-                status, claimed_by, created_at, claimed_at, completed_at,
-                pipeline, pipeline_hash, reference_genome, reference_hash,
-                container_hash, config_hash, deadline, dataset_category
+                status, claimed_by, created_at, claimed_at, completed_at
          FROM jobs WHERE status = ?1 ORDER BY created_at ASC LIMIT ?2 OFFSET ?3",
     )
     .bind(status)
@@ -168,6 +119,7 @@ async fn list_jobs(
                     "source":           r.get::<String, _>("source"),
                     "external_ref":     r.get::<Option<String>, _>("external_ref"),
                     "dataset_root":     r.get::<String, _>("dataset_root"),
+                    "dataset_url":      r.get::<Option<String>, _>("dataset_url"),
                     "algorithm":        r.get::<String, _>("algorithm"),
                     "task_description": r.get::<String, _>("task_description"),
                     "reward_sompi":     r.get::<i64, _>("reward_sompi"),
@@ -175,14 +127,6 @@ async fn list_jobs(
                     "status":           r.get::<String, _>("status"),
                     "claimed_by":       r.get::<Option<String>, _>("claimed_by"),
                     "created_at":       r.get::<i64, _>("created_at"),
-                    "pipeline":         r.get::<Option<String>, _>("pipeline"),
-                    "pipeline_hash":    r.get::<Option<String>, _>("pipeline_hash"),
-                    "reference_genome": r.get::<Option<String>, _>("reference_genome"),
-                    "reference_hash":   r.get::<Option<String>, _>("reference_hash"),
-                    "container_hash":   r.get::<Option<String>, _>("container_hash"),
-                    "config_hash":      r.get::<Option<String>, _>("config_hash"),
-                    "deadline":         r.get::<Option<i64>, _>("deadline"),
-                    "dataset_category": r.get::<Option<String>, _>("dataset_category"),
                 })
             }).collect();
             (StatusCode::OK, Json(serde_json::json!({ "jobs": jobs }))).into_response()
@@ -199,15 +143,11 @@ async fn create_job(
     State(s): State<Arc<AppState>>,
     Json(job): Json<ScientificJob>,
 ) -> impl IntoResponse {
-    let initial_status = "open"; // always open immediately — dataset downloads in background
-
     let res = sqlx::query(
         "INSERT OR IGNORE INTO jobs
          (job_id, source, external_ref, dataset_root, dataset_url, algorithm,
-          task_description, reward_sompi, max_time_secs, status, created_at,
-          pipeline, pipeline_hash, reference_genome, reference_hash,
-          container_hash, config_hash, deadline, dataset_category)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+          task_description, reward_sompi, max_time_secs, status, created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'open',?10)",
     )
     .bind(&job.job_id)
     .bind(job.source.to_string())
@@ -218,91 +158,13 @@ async fn create_job(
     .bind(&job.task_description)
     .bind(job.reward_sompi as i64)
     .bind(job.max_time_secs as i64)
-    .bind(initial_status)
     .bind(job.created_at as i64)
-    .bind(&job.pipeline)
-    .bind(&job.pipeline_hash)
-    .bind(&job.reference_genome)
-    .bind(&job.reference_hash)
-    .bind(&job.container_hash)
-    .bind(&job.config_hash)
-    .bind(job.deadline.map(|d| d as i64))
-    .bind(job.dataset_category.as_ref().map(|c| c.to_string()))
     .execute(&s.pool)
     .await;
 
     match res {
-        Ok(_) => {
-            // Spawn background download — job is already 'open', miners get it immediately
-            if let Some(ref dataset_url) = job.dataset_url {
-                let job_id       = job.job_id.clone();
-                let dataset_url  = dataset_url.clone();
-                let datasets_dir = s.datasets_dir.clone();
-                let pool_bg      = s.pool.clone();
-                tokio::spawn(async move {
-                    let result = if dataset_url.starts_with("kaggle://competitions/") {
-                        download_kaggle_dataset(&job_id, &dataset_url, &datasets_dir, &pool_bg).await
-                    } else if dataset_url.starts_with("http://") || dataset_url.starts_with("https://") || dataset_url.starts_with("ftp://") {
-                        download_http_dataset(&job_id, &dataset_url, &datasets_dir, &pool_bg).await
-                    } else {
-                        Ok(())
-                    };
-                    if let Err(e) = result {
-                        log::warn!("Background dataset pre-cache failed for {job_id}: {e}");
-                    }
-                });
-            }
-            (StatusCode::CREATED, Json(serde_json::json!({ "job_id": job.job_id, "status": "open" }))).into_response()
-        }
+        Ok(_)  => (StatusCode::CREATED, Json(serde_json::json!({ "job_id": job.job_id }))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
-    }
-}
-
-// GET /jobs/:job_id — single job detail (used by worker to fetch dataset_root)
-async fn get_job(
-    State(s): State<Arc<AppState>>,
-    Path(job_id): Path<String>,
-) -> impl IntoResponse {
-    use sqlx::Row;
-    let row = sqlx::query(
-        "SELECT job_id, source, external_ref, dataset_root, dataset_url, algorithm,
-                task_description, reward_sompi, max_time_secs, status, claimed_by, created_at,
-                pipeline, pipeline_hash, reference_genome, reference_hash,
-                container_hash, config_hash, deadline, dataset_category
-         FROM jobs WHERE job_id = ?1",
-    )
-    .bind(&job_id)
-    .fetch_optional(&s.pool)
-    .await;
-
-    match row {
-        Ok(Some(r)) => (StatusCode::OK, Json(serde_json::json!({
-            "job_id":           r.get::<String, _>("job_id"),
-            "source":           r.get::<String, _>("source"),
-            "external_ref":     r.get::<Option<String>, _>("external_ref"),
-            "dataset_root":     r.get::<String, _>("dataset_root"),
-            "algorithm":        r.get::<String, _>("algorithm"),
-            "task_description": r.get::<String, _>("task_description"),
-            "reward_sompi":     r.get::<i64, _>("reward_sompi"),
-            "max_time_secs":    r.get::<i64, _>("max_time_secs"),
-            "status":           r.get::<String, _>("status"),
-            "claimed_by":       r.get::<Option<String>, _>("claimed_by"),
-            "created_at":       r.get::<i64, _>("created_at"),
-            "pipeline":         r.get::<Option<String>, _>("pipeline"),
-            "pipeline_hash":    r.get::<Option<String>, _>("pipeline_hash"),
-            "reference_genome": r.get::<Option<String>, _>("reference_genome"),
-            "reference_hash":   r.get::<Option<String>, _>("reference_hash"),
-            "container_hash":   r.get::<Option<String>, _>("container_hash"),
-            "config_hash":      r.get::<Option<String>, _>("config_hash"),
-            "deadline":         r.get::<Option<i64>, _>("deadline"),
-            "dataset_category": r.get::<Option<String>, _>("dataset_category"),
-        }))).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND, Json(serde_json::json!({
-            "error": "job not found", "job_id": job_id
-        }))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
-            "error": e.to_string()
-        }))).into_response(),
     }
 }
 
@@ -343,43 +205,12 @@ async fn submit_result(
     State(s): State<Arc<AppState>>,
     Json(result): Json<JobResult>,
 ) -> impl IntoResponse {
-    // ── Verify worker_sig before persisting ──────────────────────────────────
-    let (verify_root, verify_score, verify_trace) = if let (Some(enc), Some(eph)) =
-        (&result.encrypted_payload, &result.ephemeral_pubkey)
-    {
-        match genetics_l2_core::JobResult::decrypt_payload(enc, eph, &s.coordinator_privkey) {
-            Ok(p)  => (p.result_root, p.score, p.trace_hash.unwrap_or_default()),
-            Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
-                "error": format!("payload decrypt failed: {e}")
-            }))).into_response(),
-        }
-    } else {
-        (
-            result.result_root.clone(),
-            result.score,
-            result.trace_hash.clone().unwrap_or_default(),
-        )
-    };
-
-    let sign_data = format!("{}:{}:{:.6}:{}", result.job_id, verify_root, verify_score, verify_trace);
-    let digest    = *blake3::hash(sign_data.as_bytes()).as_bytes();
-    match bioproof_core::verify_manifest_sig(&digest, &result.worker_sig, &result.worker_pubkey) {
-        Ok(true)  => {}
-        Ok(false) => return (StatusCode::FORBIDDEN, Json(serde_json::json!({
-            "error": "invalid worker_sig"
-        }))).into_response(),
-        Err(e)    => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
-            "error": format!("worker_sig verification error: {e}")
-        }))).into_response(),
-    }
-
     let now = now_secs() as i64;
     let res = sqlx::query(
         "INSERT OR IGNORE INTO results
          (result_id, job_id, worker_pubkey, result_root, score,
-          trace_hash, notebook_or_repo_hash, container_hash, weights_hash,
-          submission_bundle_hash, worker_sig, encrypted_payload, ephemeral_pubkey, submitted_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+          trace_hash, worker_sig, submitted_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
     )
     .bind(&result.result_id)
     .bind(&result.job_id)
@@ -387,13 +218,7 @@ async fn submit_result(
     .bind(&result.result_root)
     .bind(result.score)
     .bind(&result.trace_hash)
-    .bind(&result.notebook_or_repo_hash)
-    .bind(&result.container_hash)
-    .bind(&result.weights_hash)
-    .bind(&result.submission_bundle_hash)
     .bind(&result.worker_sig)
-    .bind(&result.encrypted_payload)
-    .bind(&result.ephemeral_pubkey)
     .bind(now)
     .execute(&s.pool)
     .await;
@@ -421,14 +246,8 @@ async fn get_results(
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
     let rows = sqlx::query(
-        "SELECT r.result_id, r.worker_pubkey, r.result_root, r.score, r.submitted_at, r.verdict,
-                r.notebook_or_repo_hash, r.container_hash, r.weights_hash,
-                r.submission_bundle_hash, r.encrypted_payload, r.ephemeral_pubkey,
-                vr.recomputed_score
-         FROM results r
-         LEFT JOIN validation_reports vr ON vr.result_id = r.result_id AND vr.verdict = 'valid'
-         WHERE r.job_id = ?1
-         ORDER BY COALESCE(vr.recomputed_score, r.score) DESC",
+        "SELECT result_id, worker_pubkey, result_root, score, submitted_at, verdict
+         FROM results WHERE job_id = ?1 ORDER BY score DESC",
     )
     .bind(&job_id)
     .fetch_all(&s.pool)
@@ -437,232 +256,17 @@ async fn get_results(
     match rows {
         Ok(rows) => {
             use sqlx::Row;
-            let results: Vec<serde_json::Value> = rows.iter().map(|r| {
-                let submitted_score: f64 = r.get::<f64, _>("score");
-                let recomputed_score: Option<f64> = r.get::<Option<f64>, _>("recomputed_score");
-                serde_json::json!({
-                    "result_id":              r.get::<String, _>("result_id"),
-                    "worker_pubkey":          r.get::<String, _>("worker_pubkey"),
-                    "result_root":            r.get::<String, _>("result_root"),
-                    "score":                  recomputed_score.unwrap_or(submitted_score),
-                    "submitted_score":        submitted_score,
-                    "recomputed_score":       recomputed_score,
-                    "submitted_at":           r.get::<i64, _>("submitted_at"),
-                    "verdict":                r.get::<Option<String>, _>("verdict"),
-                    "notebook_or_repo_hash":  r.get::<Option<String>, _>("notebook_or_repo_hash"),
-                    "container_hash":         r.get::<Option<String>, _>("container_hash"),
-                    "weights_hash":           r.get::<Option<String>, _>("weights_hash"),
-                    "submission_bundle_hash": r.get::<Option<String>, _>("submission_bundle_hash"),
-                    "encrypted_payload":      r.get::<Option<String>, _>("encrypted_payload"),
-                    "ephemeral_pubkey":       r.get::<Option<String>, _>("ephemeral_pubkey"),
-                })
-            }).collect();
+            let results: Vec<serde_json::Value> = rows.iter().map(|r| serde_json::json!({
+                "result_id":     r.get::<String, _>("result_id"),
+                "worker_pubkey": r.get::<String, _>("worker_pubkey"),
+                "result_root":   r.get::<String, _>("result_root"),
+                "score":         r.get::<f64, _>("score"),
+                "submitted_at":  r.get::<i64, _>("submitted_at"),
+                "verdict":       r.get::<Option<String>, _>("verdict"),
+            })).collect();
             (StatusCode::OK, Json(serde_json::json!({ "job_id": job_id, "results": results }))).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
-    }
-}
-
-// GET /results/:job_id/csv — decrypt best valid result, return predictions_csv as text/csv
-async fn get_result_csv(
-    State(s): State<Arc<AppState>>,
-    Path(job_id): Path<String>,
-) -> impl IntoResponse {
-    use sqlx::Row;
-
-    // Fetch best valid result (encrypted_payload + ephemeral_pubkey)
-    let row = sqlx::query(
-        "SELECT encrypted_payload, ephemeral_pubkey FROM results
-         WHERE job_id = ?1 AND verdict = 'valid'
-         ORDER BY score DESC LIMIT 1",
-    )
-    .bind(&job_id)
-    .fetch_optional(&s.pool)
-    .await;
-
-    let row = match row {
-        Ok(Some(r)) => r,
-        Ok(None) => return (StatusCode::NOT_FOUND,
-            [(axum::http::header::CONTENT_TYPE, "application/json")],
-            "{\"error\":\"no valid result for job\"}".to_owned()).into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR,
-            [(axum::http::header::CONTENT_TYPE, "application/json")],
-            format!("{{\"error\":\"{e}\"}}")).into_response(),
-    };
-
-    let encrypted: Option<String> = row.get("encrypted_payload");
-    let ephemeral: Option<String> = row.get("ephemeral_pubkey");
-
-    let (Some(enc), Some(eph)) = (encrypted, ephemeral) else {
-        return (StatusCode::NOT_FOUND,
-            [(axum::http::header::CONTENT_TYPE, "application/json")],
-            "{\"error\":\"no encrypted payload\"}".to_owned()).into_response();
-    };
-
-    match genetics_l2_core::JobResult::decrypt_payload(&enc, &eph, &s.coordinator_privkey) {
-        Ok(payload) => {
-            let csv = payload.predictions_csv
-                .unwrap_or_else(|| format!("job_id,score\n{job_id},{}\n", payload.score));
-            (
-                StatusCode::OK,
-                [(axum::http::header::CONTENT_TYPE, "text/csv; charset=utf-8")],
-                csv,
-            ).into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            [(axum::http::header::CONTENT_TYPE, "application/json")],
-            format!("{{\"error\":\"decrypt failed: {e}\"}}"),
-        ).into_response(),
-    }
-}
-
-// GET /datasets/:job_id/status  — cache readiness probe
-async fn dataset_status(
-    State(s): State<Arc<AppState>>,
-    Path(job_id): Path<String>,
-) -> impl IntoResponse {
-    let dir         = s.datasets_dir.join(&job_id);
-    let ready       = dir.join(".ready").exists();
-    let lock_exists = s.datasets_dir.read_dir().ok()
-        .map(|mut rd| rd.any(|e| e.ok().and_then(|e| e.file_name().into_string().ok()).is_some_and(|n| n.ends_with(".lock"))))
-        .unwrap_or(false);
-    let file_count: usize = if dir.exists() {
-        std::fs::read_dir(&dir).map(|rd| rd.flatten().filter(|e| e.path().is_file()).count()).unwrap_or(0)
-    } else { 0 };
-    let status = if ready { "ready" } else if lock_exists { "caching" } else if file_count > 0 { "partial" } else { "pending" };
-    Json(serde_json::json!({ "job_id": job_id, "status": status, "files": file_count, "ready": ready }))
-}
-
-// GET /datasets/:job_id/files - List available dataset files for a job (recursive)
-async fn list_dataset_files(
-    State(s): State<Arc<AppState>>,
-    Path(job_id): Path<String>,
-) -> impl IntoResponse {
-    let dataset_dir = s.datasets_dir.join(&job_id);
-
-    if !dataset_dir.exists() {
-        return (StatusCode::NOT_FOUND, Json(serde_json::json!({
-            "error": "Dataset not found for job",
-            "job_id": job_id
-        }))).into_response();
-    }
-
-    let ready = dataset_dir.join(".ready").exists();
-    let mut files: Vec<serde_json::Value> = Vec::new();
-
-    // Walk entire dataset dir — return all non-hidden files (audio + genomics + other)
-    let mut stack = vec![dataset_dir.clone()];
-    while let Some(dir) = stack.pop() {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else {
-                    let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                    // Skip internal markers
-                    if fname.starts_with('.') || fname.ends_with(".lock") { continue; }
-                    if let Ok(rel) = path.strip_prefix(&dataset_dir) {
-                        let size = path.metadata().map(|m| m.len()).unwrap_or(0);
-                        files.push(serde_json::json!({
-                            "filename": rel.to_string_lossy(),
-                            "size": size,
-                        }));
-                        if files.len() >= 200 { break; }
-                    }
-                }
-            }
-        }
-    }
-    files.sort_by(|a, b| a["filename"].as_str().cmp(&b["filename"].as_str()));
-
-    (StatusCode::OK, Json(serde_json::json!({
-        "job_id":  job_id,
-        "files":   files,
-        "count":   files.len(),
-        "ready":   ready,
-    }))).into_response()
-}
-
-// GET /datasets/:job_id/download/*filename - Download a specific dataset file (supports nested paths)
-async fn download_dataset_file(
-    State(s): State<Arc<AppState>>,
-    Path((job_id, filename)): Path<(String, String)>,
-) -> impl IntoResponse {
-    use axum::body::Body;
-    use axum::http::header;
-    
-    let dataset_dir = s.datasets_dir.join(&job_id);
-    // filename may contain slashes for nested paths (e.g. train_audio/Abrupto/file.ogg)
-    let file_path = dataset_dir.join(&filename);
-    
-    // Security: prevent path traversal
-    let canonical_dir  = dataset_dir.canonicalize().unwrap_or(dataset_dir.clone());
-    let canonical_file = file_path.canonicalize().unwrap_or(file_path.clone());
-    if !canonical_file.starts_with(&canonical_dir) {
-        return (StatusCode::FORBIDDEN, Json(serde_json::json!({
-            "error": "Invalid filename"
-        }))).into_response();
-    }
-    
-    if !file_path.exists() {
-        return (StatusCode::NOT_FOUND, Json(serde_json::json!({
-            "error": "File not found",
-            "filename": filename
-        }))).into_response();
-    }
-    
-    match tokio::fs::File::open(&file_path).await {
-        Ok(file) => {
-            let stream = tokio_util::io::ReaderStream::new(file);
-            let body = Body::from_stream(stream);
-            
-            (
-                StatusCode::OK,
-                [(header::CONTENT_TYPE, "application/octet-stream")],
-                body
-            ).into_response()
-        }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
-                "error": format!("Failed to read file: {e}")
-            }))).into_response()
-        }
-    }
-}
-
-/// Decrypt the winning result's encrypted_payload and save predictions_csv to disk.
-async fn save_predictions_csv_on_validation(s: &AppState, job_id: &str, result_id: &str) {
-    use sqlx::Row;
-    let row = sqlx::query(
-        "SELECT encrypted_payload, ephemeral_pubkey FROM results WHERE result_id = ?1",
-    )
-    .bind(result_id)
-    .fetch_optional(&s.pool)
-    .await;
-
-    let row = match row { Ok(Some(r)) => r, _ => return };
-    let enc: Option<String> = row.get("encrypted_payload");
-    let eph: Option<String> = row.get("ephemeral_pubkey");
-    let (Some(enc), Some(eph)) = (enc, eph) else { return };
-
-    let payload = match genetics_l2_core::JobResult::decrypt_payload(&enc, &eph, &s.coordinator_privkey) {
-        Ok(p) => p,
-        Err(e) => { log::warn!("CSV save: decrypt failed for {result_id}: {e}"); return }
-    };
-
-    let csv = payload.predictions_csv
-        .unwrap_or_else(|| format!("job_id,score\n{job_id},{}\n", payload.score));
-
-    let dir = s.datasets_dir.parent()
-        .unwrap_or(&s.datasets_dir)
-        .join("kaggle-submissions");
-    if tokio::fs::create_dir_all(&dir).await.is_err() { return }
-    let path = dir.join(format!("{job_id}.csv"));
-    match tokio::fs::write(&path, csv.as_bytes()).await {
-        Ok(_)  => log::info!("Saved predictions CSV: {}", path.display()),
-        Err(e) => log::warn!("Failed to save predictions CSV: {e}"),
     }
 }
 
@@ -671,20 +275,7 @@ async fn submit_validation(
     State(s): State<Arc<AppState>>,
     Json(report): Json<ValidationReport>,
 ) -> impl IntoResponse {
-    // ── Verify validator_sig before persisting ────────────────────────────────
     let verdict_str = format!("{:?}", report.verdict).to_lowercase();
-    let sign_data   = format!("{}:{}:{}", report.report_id, report.result_id, verdict_str);
-    let digest      = *blake3::hash(sign_data.as_bytes()).as_bytes();
-    match bioproof_core::verify_manifest_sig(&digest, &report.validator_sig, &report.validator_pubkey) {
-        Ok(true)  => {}
-        Ok(false) => return (StatusCode::FORBIDDEN, Json(serde_json::json!({
-            "error": "invalid validator_sig"
-        }))).into_response(),
-        Err(e)    => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
-            "error": format!("validator_sig verification error: {e}")
-        }))).into_response(),
-    }
-
     let res = sqlx::query(
         "INSERT OR IGNORE INTO validation_reports
          (report_id, job_id, result_id, validator_pubkey, verdict,
@@ -714,9 +305,6 @@ async fn submit_validation(
             .bind(&report.job_id)
             .execute(&s.pool)
             .await;
-
-        // Decrypt and save predictions CSV to disk
-        save_predictions_csv_on_validation(&s, &report.job_id, &report.result_id).await;
     }
 
     match res {
@@ -843,374 +431,15 @@ async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
 fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health",                  get(health))
-        .route("/pubkey",                  get(get_pubkey))
         .route("/stats",                   get(stats))
         .route("/jobs",                    get(list_jobs).post(create_job))
-        .route("/jobs/:job_id",            get(get_job))
         .route("/jobs/:job_id/claim",      post(claim_job))
         .route("/results",                 post(submit_result))
         .route("/results/:job_id",         get(get_results))
-        .route("/results/:job_id/csv",     get(get_result_csv))
         .route("/validations",             post(submit_validation))
         .route("/payouts",                 get(list_payouts).post(create_payout))
-        .route("/datasets/:job_id/status", get(dataset_status))
-        .route("/datasets/:job_id/files",  get(list_dataset_files))
-        .route("/datasets/:job_id/download/*filename", get(download_dataset_file))
-        .route("/scripts/:task",            get(get_inference_script))
-        .route("/scripts/:task/requirements", get(get_script_requirements))
         .layer(CorsLayer::permissive())
         .with_state(state)
-}
-
-// ── Inference script serving ─────────────────────────────────────────────────
-
-/// GET /scripts/:task?backend=yamnet|efficientnet
-/// Returns the Python inference script for the given task.
-///
-/// Task → default script:
-///   acoustic_classification / birdclef → yamnet_infer.py  (TensorFlow, Linux/GPU)
-///
-/// Optional ?backend= query param:
-///   ?backend=efficientnet  → efficientnet_infer.py  (PyTorch, macOS/MPS)
-///   ?backend=yamnet        → yamnet_infer.py         (TensorFlow Hub)
-#[derive(Deserialize)]
-struct ScriptQuery {
-    backend: Option<String>,
-}
-
-async fn get_inference_script(
-    State(s): State<Arc<AppState>>,
-    Path(task): Path<String>,
-    Query(q): Query<ScriptQuery>,
-) -> impl IntoResponse {
-    let script_name = match q.backend.as_deref() {
-        Some("gpu")          => "birdclef_gpu_infer.py",
-        Some("efficientnet") => "efficientnet_infer.py",
-        Some("yamnet")       => "yamnet_infer.py",
-        Some("genome")       => "genome_annotate.py",
-        _ => match task.as_str() {
-            "acoustic_classification" | "birdclef" => "yamnet_infer.py",
-            "variant_calling" | "cancer_genomics" | "genome_assembly"
-            | "metagenomics"  | "annotation"        => "genome_annotate.py",
-            other => return serve_script_file(&s.scripts_dir, &format!("{other}.py")).await,
-        },
-    };
-    serve_script_file(&s.scripts_dir, script_name).await
-}
-
-/// GET /scripts/:task/requirements?backend=yamnet|efficientnet
-/// Returns the pip requirements.txt for the given task's inference backend.
-async fn get_script_requirements(
-    State(s): State<Arc<AppState>>,
-    Path(task): Path<String>,
-    Query(q): Query<ScriptQuery>,
-) -> impl IntoResponse {
-    let req_name = match q.backend.as_deref() {
-        Some("gpu")          => "requirements-birdclef_gpu.txt",
-        Some("efficientnet") => "requirements-efficientnet.txt",
-        Some("yamnet")       => "requirements-yamnet.txt",
-        Some("genome")       => "requirements-genome.txt",
-        _ => match task.as_str() {
-            "acoustic_classification" | "birdclef" => "requirements-yamnet.txt",
-            "variant_calling" | "cancer_genomics" | "genome_assembly"
-            | "metagenomics"  | "annotation"        => "requirements-genome.txt",
-            other => return serve_script_file(&s.scripts_dir, &format!("requirements-{other}.txt")).await,
-        },
-    };
-    serve_script_file(&s.scripts_dir, req_name).await
-}
-
-async fn serve_script_file(scripts_dir: &std::path::Path, filename: &str) -> axum::response::Response {
-    use axum::http::header;
-    let path = scripts_dir.join(filename);
-    match tokio::fs::read_to_string(&path).await {
-        Ok(content) => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "text/x-python")],
-            content,
-        ).into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, Json(serde_json::json!({
-            "error": format!("Script not found: {filename}"),
-            "scripts_dir": scripts_dir.display().to_string(),
-        }))).into_response(),
-    }
-}
-
-// ── Dataset download ──────────────────────────────────────────────────────────
-
-/// Pre-cache a generic HTTP/HTTPS dataset file.
-/// Cache dir: {datasets_dir}/_cache/{blake3_8bytes_of_url}/
-/// Job link:  {datasets_dir}/{job_id}  (symlink → cache)
-async fn download_http_dataset(
-    job_id: &str,
-    url: &str,
-    datasets_dir: &std::path::Path,
-    pool: &SqlitePool,
-) -> Result<()> {
-    use futures_util::StreamExt;
-    use tokio::io::AsyncWriteExt;
-
-    let url_hash  = hex::encode(&blake3::hash(url.as_bytes()).as_bytes()[..8]);
-    let fname     = url.rsplit('/').next().unwrap_or("dataset.bin").to_owned();
-    let cache_dir = datasets_dir.join("_cache").join(&url_hash);
-    let job_link  = datasets_dir.join(job_id);
-
-    if !job_link.exists() {
-        tokio::fs::create_dir_all(&cache_dir).await?;
-        std::os::unix::fs::symlink(&cache_dir, &job_link).ok();
-    }
-
-    let ready_marker = cache_dir.join(".ready");
-    if ready_marker.exists() {
-        log::info!("Dataset already cached for {job_id} (cache={url_hash})");
-        return Ok(());
-    }
-
-    let lock_file = datasets_dir.join(format!("_{url_hash}.lock"));
-    if lock_file.exists() {
-        log::info!("Dataset download already in progress for {url_hash} (job {job_id})");
-        return Ok(());
-    }
-
-    tokio::fs::create_dir_all(datasets_dir).await?;
-    tokio::fs::write(&lock_file, job_id.as_bytes()).await?;
-    log::info!("Pre-caching HTTP dataset for {job_id}: {url}");
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(7200))
-        .user_agent("xenom-coordinator/1.0")
-        .build()
-        .unwrap_or_default();
-
-    let resp = match client.get(url).send().await {
-        Ok(r) if r.status().is_success() => r,
-        Ok(r) => {
-            tokio::fs::remove_file(&lock_file).await.ok();
-            anyhow::bail!("HTTP {} → {}", url, r.status());
-        }
-        Err(e) => {
-            tokio::fs::remove_file(&lock_file).await.ok();
-            return Err(e.into());
-        }
-    };
-
-    let dest_path = cache_dir.join(&fname);
-    let mut file  = tokio::fs::File::create(&dest_path).await?;
-    let mut stream = resp.bytes_stream();
-    let mut total  = 0usize;
-
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        total += chunk.len();
-        file.write_all(&chunk).await?;
-        if total % (10 * 1_048_576) < chunk.len() {
-            log::info!("  {job_id} → {:.1} MB downloaded", total as f64 / 1_048_576.0);
-        }
-    }
-    file.flush().await?;
-    drop(file);
-
-    log::info!("Downloaded {total} bytes → {}", dest_path.display());
-
-    let dataset_root = compute_dataset_root(&cache_dir).await;
-    log::info!("dataset_root for {job_id}: {dataset_root}");
-    sqlx::query("UPDATE jobs SET dataset_root = ?1 WHERE job_id = ?2")
-        .bind(&dataset_root)
-        .bind(job_id)
-        .execute(pool)
-        .await
-        .ok();
-
-    tokio::fs::write(&ready_marker, b"ready").await.ok();
-    tokio::fs::remove_file(&lock_file).await.ok();
-    log::info!("HTTP dataset pre-cache complete for {job_id}");
-    Ok(())
-}
-
-/// Download Kaggle dataset once per slug (cached), then symlink to job_id dir.
-/// Cache: {datasets_dir}/_cache/{slug}/
-/// Job dir: {datasets_dir}/{job_id} -> symlink to cache
-async fn download_kaggle_dataset(
-    job_id: &str,
-    dataset_url: &str,
-    datasets_dir: &std::path::Path,
-    pool: &SqlitePool,
-) -> Result<()> {
-    let slug = dataset_url.strip_prefix("kaggle://competitions/")
-        .ok_or_else(|| anyhow::anyhow!("Invalid kaggle:// URL: {dataset_url}"))?;
-
-    let cache_dir = datasets_dir.join("_cache").join(slug);
-    let job_link  = datasets_dir.join(job_id);
-
-    // If job symlink already exists, nothing to do
-    if job_link.exists() {
-        log::info!("Dataset already linked for job {job_id}");
-        return Ok(());
-    }
-
-    // Always symlink first — serve whatever is in cache (partial is fine)
-    tokio::fs::create_dir_all(&cache_dir).await?;
-    std::os::unix::fs::symlink(&cache_dir, &job_link).ok();
-
-    // If cache already has audio files, job can start working immediately
-    let audio_now = count_audio_files_recursive(&cache_dir).await;
-    if audio_now > 0 {
-        log::info!("Partial cache hit for {job_id}: {audio_now} audio files already in cache");
-    }
-
-    // Lock file to prevent concurrent full downloads of the same slug
-    let lock_file = datasets_dir.join(format!("_{slug}.lock"));
-    if lock_file.exists() {
-        log::info!("Download already in progress for {slug}, job {job_id} will use partial cache");
-        return Ok(());
-    }
-
-    let ready_marker = cache_dir.join(".ready");
-    if ready_marker.exists() {
-        log::info!("Dataset fully cached for {job_id}");
-        return Ok(());
-    }
-
-    // Acquire lock and download missing files
-    tokio::fs::create_dir_all(datasets_dir).await?;
-    tokio::fs::write(&lock_file, job_id.as_bytes()).await?;
-
-    log::info!("Downloading Kaggle dataset for job {job_id}: {slug} (--skip-existing)");
-
-    let output = tokio::process::Command::new("kaggle")
-        .args(["competitions", "download", "-c", slug,
-                "--path", cache_dir.to_str().unwrap()])
-        .output()
-        .await
-        .context("Failed to execute kaggle CLI")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        tokio::fs::remove_file(&lock_file).await.ok();
-        anyhow::bail!("kaggle download failed: {stderr}");
-    }
-
-    log::info!("Extracting zip files...");
-
-    let mut entries = tokio::fs::read_dir(&cache_dir).await?;
-    while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("zip") {
-            log::info!("Extracting {}", path.display());
-            let out = tokio::process::Command::new("unzip")
-                .args(["-n", "-q", path.to_str().unwrap(), "-d", cache_dir.to_str().unwrap()])
-                .output().await;
-            if out.is_ok() {
-                tokio::fs::remove_file(&path).await.ok();
-            }
-        }
-    }
-
-    let audio_count = count_audio_files_recursive(&cache_dir).await;
-    log::info!("Cache complete: {audio_count} audio files in {}", cache_dir.display());
-    tokio::fs::write(&ready_marker, b"ready").await.ok();
-    tokio::fs::remove_file(&lock_file).await.ok();
-
-    // Compute BLAKE3 Merkle root of all dataset files and update the job
-    let dataset_root = compute_dataset_root(&cache_dir).await;
-    log::info!("dataset_root for {job_id}: {dataset_root}");
-    sqlx::query("UPDATE jobs SET dataset_root = ?1 WHERE job_id = ?2")
-        .bind(&dataset_root)
-        .bind(job_id)
-        .execute(pool)
-        .await
-        .ok();
-
-    log::info!("Dataset fully ready for {job_id}");
-    Ok(())
-}
-
-async fn compute_dataset_root(dir: &std::path::Path) -> String {
-    let dir = dir.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let mut all_files = Vec::new();
-        let mut stack = vec![dir.clone()];
-        while let Some(cur) = stack.pop() {
-            if let Ok(entries) = std::fs::read_dir(&cur) {
-                for entry in entries.flatten() {
-                    let p = entry.path();
-                    if p.is_dir() { stack.push(p); }
-                    else { all_files.push(p); }
-                }
-            }
-        }
-        all_files.sort();
-        let leaves: Vec<String> = all_files.iter().filter_map(|p| {
-            std::fs::read(p).ok().map(|data| hex::encode(blake3::hash(&data).as_bytes()))
-        }).collect();
-        genetics_l2_core::merkle_root_hex(&leaves)
-    }).await.unwrap_or_else(|_| hex::encode([0u8; 32]))
-}
-
-/// Count audio files recursively (BirdCLEF stores in subdirectories)
-fn count_audio_files_recursive_sync(dir: &std::path::Path) -> usize {
-    let mut count = 0;
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(cur) = stack.pop() {
-        if let Ok(entries) = std::fs::read_dir(&cur) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.is_dir() { stack.push(p); }
-                else if let Some(ext) = p.extension() {
-                    let e = ext.to_string_lossy().to_lowercase();
-                    if matches!(e.as_str(), "wav" | "ogg" | "mp3" | "flac") { count += 1; }
-                }
-            }
-        }
-    }
-    count
-}
-
-async fn count_audio_files_recursive(dir: &std::path::Path) -> usize {
-    let dir = dir.to_path_buf();
-    tokio::task::spawn_blocking(move || count_audio_files_recursive_sync(&dir))
-        .await
-        .unwrap_or(0)
-}
-
-// ── Keypair management ────────────────────────────────────────────────────────
-
-/// Load or generate coordinator's secp256k1 keypair for result encryption.
-/// Keypair is stored in {db_path}.key file.
-fn load_or_generate_keypair(db_path: &str) -> Result<(String, String)> {
-    use secp256k1::{PublicKey, Secp256k1, SecretKey};
-    
-    let key_file = format!("{db_path}.key");
-    let secp = Secp256k1::new();
-
-    // Try to load existing keypair
-    if let Ok(privkey_hex) = std::fs::read_to_string(&key_file) {
-        let privkey_hex = privkey_hex.trim().to_string();
-        if let Ok(privkey_bytes) = hex::decode(&privkey_hex) {
-            if let Ok(secret_key) = SecretKey::from_slice(&privkey_bytes) {
-                let public_key = PublicKey::from_secret_key(&secp, &secret_key);
-                let pubkey_hex = hex::encode(public_key.serialize());
-                log::info!("Loaded existing coordinator keypair from {key_file}");
-                return Ok((privkey_hex, pubkey_hex));
-            }
-        }
-    }
-
-    // Generate new keypair
-    let secret_key = SecretKey::new(&mut secp256k1::rand::thread_rng());
-    let public_key = PublicKey::from_secret_key(&secp, &secret_key);
-    
-    let privkey_hex = hex::encode(secret_key.secret_bytes());
-    let pubkey_hex = hex::encode(public_key.serialize());
-
-    // Save private key to file
-    std::fs::write(&key_file, &privkey_hex)
-        .context(format!("Failed to write keypair to {key_file}"))?;
-    
-    log::info!("Generated new coordinator keypair, saved to {key_file}");
-    log::warn!("IMPORTANT: Backup {key_file} - it's required to decrypt L2 results!");
-
-    Ok((privkey_hex, pubkey_hex))
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -1219,16 +448,7 @@ fn load_or_generate_keypair(db_path: &str) -> Result<(String, String)> {
 async fn main() -> Result<()> {
     kaspa_core::log::init_logger(None, "info");
 
-    let m = cli().get_matches();
-
-    // Handle decrypt subcommand
-    if let Some(decrypt_matches) = m.subcommand_matches("decrypt") {
-        let db_path = decrypt_matches.get_one::<String>("db-path").unwrap();
-        let result_id = decrypt_matches.get_one::<String>("result-id").unwrap();
-        return decrypt_result(db_path, result_id).await;
-    }
-
-    // Normal server mode
+    let m       = cli().get_matches();
     let db_path = m.get_one::<String>("db-path").unwrap();
     let listen  = m.get_one::<String>("listen").unwrap();
 
@@ -1236,66 +456,9 @@ async fn main() -> Result<()> {
         .await
         .context("open SQLite")?;
     sqlx::raw_sql(SCHEMA).execute(&pool).await.context("schema init")?;
-    migrate_schema(&pool).await;
     log::info!("Database: {db_path}");
 
-    // Generate or load coordinator keypair for result encryption
-    let (coordinator_privkey, coordinator_pubkey) = load_or_generate_keypair(db_path.as_str())?;
-    log::info!("Coordinator pubkey: {coordinator_pubkey}");
-
-    // Find scripts directory: --scripts-dir flag, next to binary, or ./scripts/
-    let scripts_dir = m.get_one::<String>("scripts-dir")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::current_exe().ok()
-            .and_then(|p| p.parent().map(|d| d.join("scripts"))))
-        .unwrap_or_else(|| std::path::PathBuf::from("scripts"));
-    log::info!("Scripts dir: {}", scripts_dir.display());
-
-    // Persistent datasets directory: --datasets-dir > env XENOM_DATASETS_DIR > $HOME/.local/share/xenom/kaggle-datasets
-    let datasets_dir = m.get_one::<String>("datasets-dir")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var("XENOM_DATASETS_DIR").ok().map(std::path::PathBuf::from))
-        .unwrap_or_else(|| {
-            dirs_next::home_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/xenom"))
-                .join(".local/share/xenom/kaggle-datasets")
-        });
-    tokio::fs::create_dir_all(&datasets_dir).await
-        .context("create datasets_dir")?;
-    log::info!("Datasets dir: {}", datasets_dir.display());
-
-    let state  = Arc::new(AppState { 
-        pool,
-        coordinator_privkey,
-        coordinator_pubkey,
-        scripts_dir,
-        datasets_dir,
-    });
-
-    // Background: reset jobs stuck in 'claimed' for > 10 minutes back to 'open'
-    {
-        let pool = state.pool.clone();
-        tokio::spawn(async move {
-            const CLAIM_TIMEOUT_SECS: i64 = 600;
-            loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-                let cutoff = genetics_l2_core::now_secs() as i64 - CLAIM_TIMEOUT_SECS;
-                match sqlx::query(
-                    "UPDATE jobs SET status='open', claimed_by=NULL, claimed_at=NULL \
-                     WHERE status='claimed' AND claimed_at IS NOT NULL AND claimed_at < ?1",
-                )
-                .bind(cutoff)
-                .execute(&pool)
-                .await
-                {
-                    Ok(r) if r.rows_affected() > 0 =>
-                        log::info!("claim-timeout: reset {} stuck job(s) → open", r.rows_affected()),
-                    _ => {}
-                }
-            }
-        });
-    }
-
+    let state  = Arc::new(AppState { pool });
     let router = build_router(state);
 
     let addr: std::net::SocketAddr = listen.parse().context("invalid --listen address")?;
@@ -1306,96 +469,11 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-// ── Decrypt subcommand ────────────────────────────────────────────────────────
-
-async fn decrypt_result(db_path: &str, result_id: &str) -> Result<()> {
-    use genetics_l2_core::JobResult;
-    
-    // Load coordinator private key
-    let (coordinator_privkey, _) = load_or_generate_keypair(db_path)?;
-    
-    // Connect to database
-    let pool = SqlitePool::connect(&format!("sqlite:{db_path}?mode=rwc"))
-        .await
-        .context("open SQLite")?;
-    
-    // Fetch result from database
-    let row = sqlx::query(
-        "SELECT result_id, job_id, worker_pubkey, result_root, score,
-                trace_hash, notebook_or_repo_hash, container_hash, weights_hash,
-                submission_bundle_hash, worker_sig, encrypted_payload, ephemeral_pubkey,
-                submitted_at, verdict
-         FROM results WHERE result_id = ?1"
-    )
-    .bind(result_id)
-    .fetch_optional(&pool)
-    .await?;
-    
-    let row = row.ok_or_else(|| anyhow::anyhow!("Result not found: {result_id}"))?;
-    
-    use sqlx::Row;
-    let encrypted_payload = row.get::<Option<String>, _>("encrypted_payload");
-    let ephemeral_pubkey = row.get::<Option<String>, _>("ephemeral_pubkey");
-    
-    if encrypted_payload.is_none() || ephemeral_pubkey.is_none() {
-        println!("Result {} is not encrypted (old format)", result_id);
-        println!("result_root: {}", row.get::<String, _>("result_root"));
-        println!("score: {}", row.get::<f64, _>("score"));
-        println!("trace_hash: {:?}", row.get::<Option<String>, _>("trace_hash"));
-        return Ok(());
-    }
-    
-    // Decrypt
-    println!("Decrypting result {} with coordinator private key...", result_id);
-    
-    let encrypted_payload_hex = encrypted_payload.unwrap();
-    let ephemeral_pubkey_hex = ephemeral_pubkey.unwrap();
-    
-    let decrypted = JobResult::decrypt_payload(
-        &encrypted_payload_hex,
-        &ephemeral_pubkey_hex,
-        &coordinator_privkey
-    )
-    .map_err(|e| anyhow::anyhow!("Failed to decrypt result: {e}"))?;
-    
-    // Display decrypted data
-    println!("\n=== Decrypted Result ===");
-    println!("Metadata (from database):");
-    println!("  result_id: {}", row.get::<String, _>("result_id"));
-    println!("  job_id: {}", row.get::<String, _>("job_id"));
-    println!("  worker_pubkey: {}", row.get::<String, _>("worker_pubkey"));
-    println!("  submitted_at: {}", row.get::<i64, _>("submitted_at"));
-    println!("  verdict: {:?}", row.get::<Option<String>, _>("verdict"));
-    println!("\nDecrypted Payload:");
-    println!("  result_root: {}", decrypted.result_root);
-    println!("  score: {}", decrypted.score);
-    println!("  trace_hash: {:?}", decrypted.trace_hash);
-    println!("  notebook_or_repo_hash: {:?}", decrypted.notebook_or_repo_hash);
-    println!("  container_hash: {:?}", decrypted.container_hash);
-    println!("  weights_hash: {:?}", decrypted.weights_hash);
-    println!("  submission_bundle_hash: {:?}", decrypted.submission_bundle_hash);
-    
-    Ok(())
-}
-
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
 fn cli() -> Command {
     Command::new("genetics-l2-coordinator")
         .about("Genetics L2 coordinator — job registry, scheduler, result aggregator")
-        .subcommand_required(false)
-        .subcommand(
-            Command::new("decrypt")
-                .about("Decrypt and view a submitted result (coordinator owner only)")
-                .arg(Arg::new("db-path")
-                    .short('d').long("db-path").value_name("PATH")
-                    .default_value("genetics-l2.db")
-                    .help("SQLite database path"))
-                .arg(Arg::new("result-id")
-                    .short('r').long("result-id").value_name("ID")
-                    .required(true)
-                    .help("Result ID to decrypt"))
-        )
         .arg(Arg::new("db-path")
             .short('d').long("db-path").value_name("PATH")
             .default_value("genetics-l2.db")
@@ -1404,10 +482,4 @@ fn cli() -> Command {
             .short('l').long("listen").value_name("ADDR")
             .default_value("0.0.0.0:8091")
             .help("REST API listen address"))
-        .arg(Arg::new("scripts-dir")
-            .long("scripts-dir").value_name("PATH")
-            .help("Directory containing Python inference scripts served to miners (default: ./scripts/ next to binary)"))
-        .arg(Arg::new("datasets-dir")
-            .long("datasets-dir").value_name("PATH")
-            .help("Persistent directory for Kaggle dataset caches (default: $XENOM_DATASETS_DIR or ~/.local/share/xenom/kaggle-datasets)"))
 }

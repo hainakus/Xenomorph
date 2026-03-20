@@ -16,18 +16,13 @@ use crate::tui::DashStats;
 
 /// Work unit received from the stratum bridge via `mining.notify`.
 pub struct StratumJob {
-    pub job_id:       String,
+    pub job_id:      String,
     pub pre_pow_hash: Hash,
-    pub bits:         u32,
-    pub epoch_seed:   Hash,
-    pub timestamp:    u64,
-    pub clean_jobs:   bool,
-    pub extranonce1:  u32,
-    /// Optional L2 compute task piggybacked on this PoW job (param[6]).
-    pub l2_job:       Option<serde_json::Value>,
-    /// Template DAA score from param[7].  Used with --genome-activation-daa-score to
-    /// select the correct PoW algorithm regardless of epoch_seed value.
-    pub daa_score:    u64,
+    pub bits:        u32,
+    pub epoch_seed:  Hash,
+    pub timestamp:   u64,
+    pub clean_jobs:  bool,
+    pub extranonce1: u32,
 }
 
 /// Solution to be submitted to the stratum bridge via `mining.submit`.
@@ -90,10 +85,11 @@ impl StratumClient {
         let mut lines = BufReader::new(reader).lines();
 
         let mut extranonce1: u32 = 0;
-        let mut msg_id: u64 = 2; // subscribe=1, authorize=2 use hardcoded ids; loop starts at 3
+        let mut msg_id: u64 = 0;
 
         macro_rules! send_json {
             ($v:expr) => {{
+                msg_id += 1;
                 let mut s = serde_json::to_string(&$v)?;
                 s.push('\n');
                 writer.write_all(s.as_bytes()).await?;
@@ -106,6 +102,8 @@ impl StratumClient {
         send_json!(serde_json::json!({
             "id": 2, "method": "mining.authorize", "params": [&self.worker, &self.password]
         }));
+        msg_id = 2;
+
         info!("Stratum: subscribe + authorize sent");
 
         loop {
@@ -237,20 +235,13 @@ fn parse_notify(msg: &serde_json::Value, extranonce1: u32) -> Option<StratumJob>
     let eseed_hex = params[3].as_str()?;
     let ts_hex    = params[4].as_str()?;
     let clean     = params.get(5).and_then(|v| v.as_bool()).unwrap_or(false);
-    let l2_job    = params.get(6).and_then(|v| {
-        if v.is_null() { None } else { Some(v.clone()) }
-    });
 
     let pre_pow_hash = hex_to_hash32(pph_hex)?;
     let bits         = u32::from_str_radix(bits_hex, 16).ok()?;
     let epoch_seed   = hex_to_hash32(eseed_hex)?;
     let timestamp    = u64::from_str_radix(ts_hex, 16).ok()?;
-    let daa_score    = params.get(7)
-        .and_then(|v| v.as_str())
-        .and_then(|s| u64::from_str_radix(s, 16).ok())
-        .unwrap_or(0);
 
-    Some(StratumJob { job_id, pre_pow_hash, bits, epoch_seed, timestamp, clean_jobs: clean, extranonce1, l2_job, daa_score })
+    Some(StratumJob { job_id, pre_pow_hash, bits, epoch_seed, timestamp, clean_jobs: clean, extranonce1 })
 }
 
 fn hex_to_hash32(hex: &str) -> Option<Hash> {

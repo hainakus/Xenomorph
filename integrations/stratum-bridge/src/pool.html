@@ -3,26 +3,22 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title id="page-title">Xenom Genome Mining Pool</title>
+<title id="page-title">Xenom Pool</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet"/>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>
 :root{
-  /* genetics green (default) */
-  --g:#00ff88;--gd:#00cc66;--gg:#00ff8820;
-  --c:#f59e0b;--r:#f43f5e;--y:#fcd34d;
-  --bg:#020d10;--dark:#031a10;--gray:#081a10;--bd:#1a4d2e;
-  --tx:#7fe8a8;--txd:#2d5a3e;
+  --g:#0f8;--gd:#00cc6a;--gg:#00ff881f;
+  --c:#00e5ff;--r:#f36;--y:#fc0;
+  --bg:#020408;--dark:#060f0a;--gray:#0d1f15;--bd:#0f2a1a;
+  --tx:#7ab090;--txd:#3a5040;
   --fm:"Share Tech Mono",monospace;
   --fd:"Orbitron",sans-serif;
   --fb:"Rajdhani",sans-serif;
-  /* genetics accent */
-  --gen1:#00ff88;--gen2:#39d98a;--gen3:#0af5b0;
-  --gen-bg:#00ff881a;--gen-bd:#00ff8833;
-  /* birdwatch blue (applied by applyTheme('birdclef')) */
-  --bird1:#00d4ff;--bird2:#60a5fa;--bird3:#38bdf8;
-  --bird-bg:#00d4ff1a;--bird-bd:#00d4ff33;
+  /* genetics theme extras */
+  --dna1:#00ffcc;--dna2:#a855f7;--dna3:#3b82f6;
+  --dna-bg:#00ffcc12;--dna-bd:#00ffcc33;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body,#root{width:100%;min-width:100%;min-height:100vh}
@@ -34,7 +30,6 @@ body::after{content:"";pointer-events:none;z-index:9999;background:repeating-lin
 nav{z-index:100;border-bottom:1px solid var(--bd);backdrop-filter:blur(12px);background:rgba(2,4,8,.96);align-items:center;gap:1.5rem;height:58px;padding:0 2rem;display:flex;position:sticky;top:0}
 .logo{font-family:var(--fd);color:var(--g);letter-spacing:.2em;cursor:pointer;text-shadow:0 0 20px #0f86;user-select:none;flex-shrink:0;align-items:center;gap:.5rem;font-size:1.1rem;font-weight:900;display:flex}
 @keyframes glow{0%{text-shadow:0 0 8px var(--g)}to{text-shadow:0 0 30px var(--g),0 0 60px var(--g)}}
-@keyframes wingflap{0%,100%{transform:scaleY(1)}50%{transform:scaleY(.7)}}
 .logo-icon{animation:2s ease-in-out infinite alternate glow;display:inline-block}
 .nav-links{gap:.25rem;list-style:none;display:flex}
 .nav-links button{font-family:var(--fm);color:var(--txd);cursor:pointer;text-transform:uppercase;letter-spacing:.1em;background:none;border:1px solid transparent;padding:.3rem .7rem;font-size:.68rem;transition:all .2s}
@@ -52,7 +47,7 @@ main{flex:1;width:100%;padding:1.5rem 2rem}
 .stats{grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:.85rem;margin-bottom:2rem;display:grid}
 .stat{background:var(--dark);border:1px solid var(--bd);cursor:default;padding:1.1rem 1.1rem 1.1rem 1.4rem;transition:border-color .3s,box-shadow .3s;position:relative;overflow:hidden}
 .stat::before{content:"";background:var(--g);width:2px;height:100%;box-shadow:0 0 8px var(--g);position:absolute;top:0;left:0}
-.stat:hover{box-shadow:0 0 20px var(--gg);border-color:#38bdf840}
+.stat:hover{box-shadow:0 0 20px var(--gg);border-color:#00ff8840}
 .stat-lbl{font-family:var(--fm);color:var(--txd);text-transform:uppercase;letter-spacing:.15em;margin-bottom:.45rem;font-size:.58rem}
 .stat-val{font-family:var(--fd);color:var(--g);text-shadow:0 0 12px #00ff8840;font-size:1.2rem;font-weight:700;line-height:1.1}
 .stat-sub{font-family:var(--fm);color:var(--txd);margin-top:.3rem;font-size:.6rem}
@@ -107,17 +102,6 @@ a.lnk:hover::after{opacity:1}
 ::-webkit-scrollbar-thumb{background:var(--bd)}
 ::-webkit-scrollbar-thumb:hover{background:var(--gd)}
 
-/* BirdCLEF hero banner */
-.bird-hero{position:relative;overflow:hidden;margin-bottom:1.4rem;border:1px solid var(--bird-bd);background:linear-gradient(135deg,#020c18 0%,#041a2e 50%,#020c18 100%)}
-.bird-hero-inner{display:flex;align-items:center;gap:2.5rem;flex-wrap:wrap;padding:1.2rem 1.6rem;position:relative;z-index:1}
-.bird-silhouette{position:absolute;right:-1rem;top:50%;transform:translateY(-50%);opacity:.06;pointer-events:none;font-size:9rem;line-height:1}
-.bird-job-label{font-family:var(--fm);font-size:.52rem;color:var(--txd);text-transform:uppercase;letter-spacing:.18em;margin-bottom:.35rem}
-.bird-job-val{font-family:var(--fd);color:var(--bird1);font-size:.95rem;font-weight:700}
-.bird-job-sub{font-family:var(--fm);font-size:.58rem;color:var(--txd);margin-top:.2rem}
-.bird-divider{border-left:1px solid var(--bird-bd);padding-left:2rem}
-.bird-pulse{display:inline-block;width:6px;height:6px;background:var(--bird1);border-radius:50%;margin-right:.4rem;vertical-align:middle;animation:1.8s ease-in-out infinite alternate pdot}
-.bird-live-badge{font-family:var(--fm);color:var(--bird1);border:1px solid var(--bird-bd);padding:.22rem .6rem;background:var(--bird-bg);white-space:nowrap;font-size:.58rem;margin-left:auto}
-
 footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);justify-content:space-between;align-items:center;gap:.5rem;padding:.85rem 2rem;font-size:.6rem;display:flex}
 
 @media(max-width:600px){nav{gap:.75rem;padding:0 1rem}main{padding:1rem}.stats{grid-template-columns:1fr 1fr}footer{flex-direction:column;text-align:center}}
@@ -129,14 +113,14 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
 
 <!-- NAV -->
 <nav>
-  <div class="logo" id="pool-logo"><span class="logo-icon" id="logo-icon">�</span> <span id="logo-text">GENOME MINING</span></div>
+  <div class="logo" id="pool-logo"><span class="logo-icon" id="logo-icon">⬡</span> <span id="logo-text">XENOM</span></div>
   <ul class="nav-links">
     <li><button class="active" onclick="showPage('overview',this)" id="nav-overview">Overview</button></li>
     <li><button onclick="showPage('miners',this)" id="nav-miners">Miners</button></li>
     <li><button onclick="showPage('blocks',this)" id="nav-blocks">Blocks</button></li>
     <li><button onclick="showPage('payments',this)" id="nav-payments">Payments</button></li>
     <li><button onclick="showPage('network',this)" id="nav-network">Network</button></li>
-    <li id="nav-genomics-li"><button onclick="showPage('genomics',this)" id="nav-genomics">🧬 Genomics</button></li>
+    <li id="nav-genomics-li" style="display:none"><button onclick="showPage('genomics',this)" id="nav-genomics">🧬 Genomics</button></li>
   </ul>
   <div class="nav-right">
     <span class="last-upd" id="last-updated"></span>
@@ -148,28 +132,30 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
 <!-- MAIN -->
 <main>
 
-  <!-- L2 GENOMICS JOB BANNER -->
-  <div id="genetics-banner" class="bird-hero" style="border-color:var(--gen-bd);background:linear-gradient(135deg,#020d10 0%,#031a10 50%,#020d10 100%)">
-    <div class="bird-silhouette">🧬</div>
-    <div class="bird-hero-inner">
+  <!-- L2 GENETICS JOB BANNER (shown only for genetics theme) -->
+  <div id="genetics-banner" style="display:none;margin-bottom:1.2rem;border:1px solid var(--dna-bd);background:linear-gradient(135deg,#020408,#050d10);padding:1rem 1.4rem;position:relative;overflow:hidden">
+    <div style="position:absolute;right:1.5rem;top:50%;transform:translateY(-50%);font-size:2.8rem;opacity:.08;pointer-events:none">🧬</div>
+    <div style="display:flex;align-items:center;gap:2rem;flex-wrap:wrap">
       <div>
-        <div class="bird-job-label" id="banner-job-label">Current Genomics Job</div>
-        <div class="bird-job-val" id="g-task">–</div>
-        <div class="bird-job-sub" id="g-jobid">–</div>
+        <div style="font-family:var(--fm);font-size:.55rem;color:var(--txd);text-transform:uppercase;letter-spacing:.15em;margin-bottom:.3rem">Current Genomics Job</div>
+        <div style="font-family:var(--fd);color:var(--dna1);font-size:.9rem;font-weight:700" id="g-task">–</div>
+        <div style="font-family:var(--fm);font-size:.6rem;color:var(--txd);margin-top:.2rem" id="g-jobid">–</div>
       </div>
-      <div class="bird-divider">
-        <div class="bird-job-label">Dataset</div>
-        <div style="font-family:var(--fm);color:var(--gen2);font-size:.7rem" id="g-dataset">–</div>
+      <div style="border-left:1px solid var(--dna-bd);padding-left:2rem">
+        <div style="font-family:var(--fm);font-size:.55rem;color:var(--txd);text-transform:uppercase;letter-spacing:.15em;margin-bottom:.3rem">Dataset</div>
+        <div style="font-family:var(--fm);color:var(--c);font-size:.7rem" id="g-dataset">–</div>
       </div>
-      <div class="bird-divider">
-        <div class="bird-job-label">Variant Fragment</div>
-        <div style="font-family:var(--fd);color:var(--gen3);font-size:.85rem;font-weight:700" id="g-fragment">–</div>
+      <div style="border-left:1px solid var(--dna-bd);padding-left:2rem">
+        <div style="font-family:var(--fm);font-size:.55rem;color:var(--txd);text-transform:uppercase;letter-spacing:.15em;margin-bottom:.3rem">Fragment</div>
+        <div style="font-family:var(--fd);color:var(--dna2);font-size:.85rem;font-weight:700" id="g-fragment">–</div>
       </div>
-      <div class="bird-divider">
-        <div class="bird-job-label">Reward</div>
+      <div style="border-left:1px solid var(--dna-bd);padding-left:2rem">
+        <div style="font-family:var(--fm);font-size:.55rem;color:var(--txd);text-transform:uppercase;letter-spacing:.15em;margin-bottom:.3rem">Reward</div>
         <div style="font-family:var(--fd);color:var(--g);font-size:.85rem;font-weight:700" id="g-reward">–</div>
       </div>
-      <div class="bird-live-badge"><span class="bird-pulse"></span>DISPATCHING</div>
+      <div style="margin-left:auto;font-family:var(--fm);font-size:.58rem;color:var(--dna1);border:1px solid var(--dna-bd);padding:.25rem .6rem;background:var(--dna-bg);white-space:nowrap">
+        <span style="animation:1.8s ease-in-out infinite alternate pdot;display:inline-block;width:6px;height:6px;background:var(--dna1);border-radius:50%;margin-right:.4rem;vertical-align:middle"></span>DISPATCHING
+      </div>
     </div>
   </div>
 
@@ -246,29 +232,23 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
 
   <!-- GENOMICS LAB -->
   <div id="page-genomics" style="display:none">
-    <div style="margin-bottom:1.2rem;padding:1rem 1.4rem;border:1px solid var(--gen-bd);background:linear-gradient(135deg,#020d10,#031a10);position:relative;overflow:hidden">
-      <div style="position:absolute;right:2rem;top:50%;transform:translateY(-50%);font-size:5rem;opacity:.07;pointer-events:none">�</div>
-      <div style="font-family:var(--fd);color:var(--g);font-size:1.1rem;font-weight:900;letter-spacing:.15em;margin-bottom:.2rem">XENOM GENOME MINING</div>
-      <div style="font-family:var(--fm);color:var(--txd);font-size:.62rem">Distributed VCF Annotation &mdash; GRCh38 &nbsp;|&nbsp; Ensembl VEP &nbsp;|&nbsp; Gene Scoring &nbsp;|&nbsp; Cohort Analysis</div>
-    </div>
-
     <div class="stats" style="margin-bottom:1.5rem">
-      <div class="stat"><div class="stat-lbl">Current Task</div><div class="stat-val" id="gp-task" style="font-size:.85rem">–</div><div class="stat-sub" id="gp-jobid">–</div></div>
-      <div class="stat"><div class="stat-lbl">Variants / Fragment</div><div class="stat-val" id="gp-fragment">–</div><div class="stat-sub">dataset fragment</div></div>
+      <div class="stat" style="--g:var(--dna1)"><div class="stat-lbl">Current Task</div><div class="stat-val" id="gp-task" style="color:var(--dna1);font-size:.9rem">–</div><div class="stat-sub" id="gp-jobid">–</div></div>
+      <div class="stat" style="--g:var(--dna2)"><div class="stat-lbl">Fragment Index</div><div class="stat-val" id="gp-fragment" style="color:var(--dna2)">–</div><div class="stat-sub">genomic window</div></div>
       <div class="stat"><div class="stat-lbl">Reward</div><div class="stat-val" id="gp-reward">–</div><div class="stat-sub">SOMPI per result</div></div>
-      <div class="stat"><div class="stat-lbl">Pipeline</div><div class="stat-val" style="font-size:.75rem">VEP GRCh38</div><div class="stat-sub">Ensembl + gene scoring</div></div>
+      <div class="stat" style="--g:var(--dna3)"><div class="stat-lbl">Dataset</div><div class="stat-val" id="gp-dataset" style="color:var(--dna3);font-size:.75rem">–</div><div class="stat-sub">reference build</div></div>
     </div>
 
     <div class="grid2">
       <div class="panel">
-        <div class="panel-hdr"><span class="sec-title">Job Details</span><span class="live-badge"><span class="dot"></span>Live</span></div>
+        <div class="panel-hdr"><span class="sec-title" style="color:var(--dna1)">Job Details</span><span class="live-badge"><span class="dot" style="background:var(--dna1);box-shadow:0 0 8px var(--dna1)"></span>Live</span></div>
         <div style="padding:1.2rem;font-family:var(--fm);font-size:.68rem">
           <table style="width:100%;border-collapse:collapse">
-            <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Theme</td><td id="gp-theme" style="color:var(--g);text-align:right">genetics / vcf_annotation</td></tr>
-            <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Job ID</td><td id="gp-jobid2" style="color:var(--g);text-align:right;word-break:break-all">–</td></tr>
+            <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Theme</td><td style="color:var(--dna1);text-align:right">genetics</td></tr>
+            <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Job ID</td><td id="gp-jobid2" style="color:var(--c);text-align:right;word-break:break-all">–</td></tr>
             <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Task</td><td id="gp-task2" style="color:var(--g);text-align:right">–</td></tr>
-            <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Dataset</td><td id="gp-dataset2" style="color:var(--gen2);text-align:right">–</td></tr>
-            <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Fragment</td><td id="gp-fragment2" style="color:var(--gen3);text-align:right">–</td></tr>
+            <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Dataset</td><td id="gp-dataset2" style="color:var(--c);text-align:right">–</td></tr>
+            <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Fragment</td><td id="gp-fragment2" style="color:var(--dna2);text-align:right">–</td></tr>
             <tr style="border-bottom:1px solid var(--bd)"><td style="color:var(--txd);padding:.4rem 0">Reward</td><td id="gp-reward2" style="color:var(--g);text-align:right">–</td></tr>
             <tr><td style="color:var(--txd);padding:.4rem 0">Dataset URL</td><td id="gp-url" style="text-align:right">–</td></tr>
           </table>
@@ -276,31 +256,31 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
       </div>
 
       <div class="panel">
-        <div class="panel-hdr"><span class="sec-title" style="color:var(--gen2)">Genomics Pipeline</span></div>
+        <div class="panel-hdr"><span class="sec-title" style="color:var(--dna2)">Supported Algorithms</span></div>
         <div style="padding:1.2rem;font-family:var(--fm);font-size:.68rem;display:flex;flex-direction:column;gap:.6rem">
-          <div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem .8rem;border:1px solid var(--gen-bd);background:var(--gen-bg)">
-            <span style="color:var(--gen1)">vcf_annotation</span><span class="badge bg" style="border-color:var(--gen1);color:var(--gen1);background:var(--gen-bg)">Active</span>
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem .8rem;border:1px solid var(--dna-bd);background:var(--dna-bg)">
+            <span style="color:var(--dna1)">sequence_alignment</span><span class="badge bg" style="border-color:var(--dna1);color:var(--dna1);background:var(--dna-bg)">Active</span>
           </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem .8rem;border:1px solid var(--bd)">
-            <span style="color:var(--txd)">Reference</span><span style="color:var(--gen2)">GRCh38</span>
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem .8rem;border:1px solid var(--bd);background:transparent">
+            <span style="color:var(--txd)">variant_calling</span><span style="color:var(--txd);font-size:.58rem">queued</span>
           </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem .8rem;border:1px solid var(--bd)">
-            <span style="color:var(--txd)">Pipeline</span><span style="color:var(--txd)">Normalize → Annotate → Gene Score</span>
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem .8rem;border:1px solid var(--bd);background:transparent">
+            <span style="color:var(--txd)">genome_assembly</span><span style="color:var(--txd);font-size:.58rem">queued</span>
           </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem .8rem;border:1px solid var(--bd)">
-            <span style="color:var(--txd)">Output</span><span style="color:var(--txd)">Annotated VCF + score</span>
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:.5rem .8rem;border:1px solid var(--bd);background:transparent">
+            <span style="color:var(--txd)">rna_expression</span><span style="color:var(--txd);font-size:.58rem">queued</span>
           </div>
-          <div style="margin-top:.3rem;padding:.5rem .8rem;border:1px solid var(--bd);font-size:.58rem;color:var(--txd)">
-            Results signed with secp256k1 and anchored on Xenom EVM L2 via <span style="color:var(--g)">xenom_anchor</span>.
+          <div style="margin-top:.5rem;padding:.5rem .8rem;border:1px solid var(--bd);font-size:.58rem;color:var(--txd)">
+            Miners support any algorithm subset. Results anchored on Xenom L1 via <span style="color:var(--g)">tx.payload</span>.
           </div>
         </div>
       </div>
     </div>
 
     <div class="panel" style="margin-top:0">
-      <div class="panel-hdr"><span class="sec-title" style="color:var(--gen3)">mining.notify — L2 param[6] preview</span></div>
+      <div class="panel-hdr"><span class="sec-title" style="color:var(--dna3)">mining.notify — L2 param[6] preview</span></div>
       <div style="padding:.9rem 1rem;font-family:var(--fm);font-size:.65rem;color:var(--txd);overflow-x:auto">
-        <pre id="gp-notify-preview" style="margin:0;white-space:pre-wrap;word-break:break-all">Waiting for genetics job…</pre>
+        <pre id="gp-notify-preview" style="margin:0;white-space:pre-wrap;word-break:break-all">Waiting for L2 job…</pre>
       </div>
     </div>
   </div>
@@ -322,13 +302,13 @@ footer{border-top:1px solid var(--bd);font-family:var(--fm);color:var(--txd);jus
 </main>
 
 <footer>
-  <span id="pool-name-footer">Xenom Genome Mining Pool — Pool</span>
-  <span id="footer-pipeline">� Genome Mining &mdash; VCF Annotation GRCh38 &nbsp;|&nbsp; Stratum :1444 &nbsp;|&nbsp; API :1445</span>
+  <span id="pool-name-footer">Xenom Pool</span>
+  <span>Stratum :1444 &nbsp;|&nbsp; API :1445</span>
 </footer>
 </div>
 
 <script>
-let hrChart=null,hrHistory=[],allMiners=[],statsCache=null,l2Cache=null,poolTheme='genetics';
+let hrChart=null,hrHistory=[],allMiners=[],statsCache=null,l2Cache=null,poolTheme='generic';
 
 function fmtHash(h){
   if(!h)return'0 H/s';
@@ -360,13 +340,13 @@ function initChart(){
   const ctx=document.getElementById('hr-chart');if(!ctx)return;
   hrChart=new Chart(ctx,{
     type:'line',
-    data:{labels:[],datasets:[{label:'H/s',data:[],borderColor:'#00ff41',backgroundColor:'#00ff4110',borderWidth:1.5,pointRadius:0,tension:.4,fill:true}]},
+    data:{labels:[],datasets:[{label:'H/s',data:[],borderColor:'#00ff88',backgroundColor:'#00ff8810',borderWidth:1.5,pointRadius:0,tension:.4,fill:true}]},
     options:{
       responsive:true,maintainAspectRatio:false,animation:false,
       plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmtHash(c.raw)}}},
       scales:{
-        x:{grid:{color:'#1a3a1a'},ticks:{color:'#2d5a2d',maxTicksLimit:6,font:{family:'Share Tech Mono',size:10}}},
-        y:{grid:{color:'#1a3a1a'},ticks:{color:'#2d5a2d',callback:v=>fmtHash(v),font:{family:'Share Tech Mono',size:10}},beginAtZero:true}
+        x:{grid:{color:'#0f2a1a'},ticks:{color:'#3a5040',maxTicksLimit:6,font:{family:'Share Tech Mono',size:10}}},
+        y:{grid:{color:'#0f2a1a'},ticks:{color:'#3a5040',callback:v=>fmtHash(v),font:{family:'Share Tech Mono',size:10}},beginAtZero:true}
       }
     }
   });
@@ -435,23 +415,15 @@ async function loadL2(){
   }catch(e){}
 }
 
-function applyTheme(_theme){
-  poolTheme='genetics';
-  const r=document.documentElement.style;
-  r.setProperty('--g','#00ff88');r.setProperty('--gd','#00cc66');r.setProperty('--gg','#00ff8820');
-  r.setProperty('--bg','#020d10');r.setProperty('--dark','#031a10');r.setProperty('--gray','#081a10');r.setProperty('--bd','#1a4d2e');
-  r.setProperty('--tx','#7fe8a8');r.setProperty('--txd','#2d5a3e');
-  document.getElementById('page-title').textContent='Xenom Genome Mining Pool';
-  document.getElementById('logo-icon').textContent='🧬';
-  document.getElementById('logo-text').textContent='GENOME MINING';
-  document.getElementById('nav-genomics').textContent='🧬 Genomics';
-  const b=document.getElementById('genetics-banner');
-  if(b){b.style.borderColor='var(--gen-bd)';b.style.background='linear-gradient(135deg,#020d10 0%,#031a10 50%,#020d10 100%)';}
-  const lbl=document.getElementById('banner-job-label');if(lbl)lbl.textContent='Current Genomics Job';
-  const fp=document.getElementById('footer-pipeline');if(fp)fp.innerHTML='🧬 Genome Mining &mdash; VCF Annotation GRCh38 &nbsp;|&nbsp; Stratum :1444 &nbsp;|&nbsp; API :1445';
-  set('pool-name-footer','Xenom Genome Mining Pool — Pool');
-  document.getElementById('nav-genomics-li').style.display='';
-  document.getElementById('genetics-banner').style.display='';
+function applyTheme(theme){
+  poolTheme=theme;
+  if(theme==='genetics'){
+    document.getElementById('page-title').textContent='Xenom Genetics Pool';
+    document.getElementById('logo-icon').textContent='🧬';
+    document.getElementById('logo-text').textContent='GENETICS';
+    document.getElementById('nav-genomics-li').style.display='';
+    document.getElementById('genetics-banner').style.display='';
+  }
 }
 
 function fmtSompi(v){
@@ -635,7 +607,6 @@ window.onload=async()=>{
   initChart();
   await refresh();
   try{renderRecentBlocks(await fetchJSON('/api/blocks'));}catch(e){}
-  applyTheme('genetics');
   setInterval(refresh,15000);
   setInterval(loadL2,10000);
 };

@@ -12,7 +12,6 @@ use crate::l2_jobs::{L2Job, L2JobSlot};
 /// The `l2_job` field is `null` when no L2 pool is configured or no job is
 /// available.  Miners that do not support L2 simply ignore param[6].
 pub struct DispatchedJob<'a> {
-    #[allow(dead_code)]
     pub pow:    &'a Job,
     pub l2_val: Value,   // serde_json::Value::Null or L2Job object
 }
@@ -33,7 +32,6 @@ pub async fn dispatch<'a>(pow: &'a Job, slot: &L2JobSlot) -> DispatchedJob<'a> {
 }
 
 /// Blocking variant — awaits the read lock.
-#[allow(dead_code)]
 pub async fn dispatch_await<'a>(pow: &'a Job, slot: &L2JobSlot) -> DispatchedJob<'a> {
     let l2_val = slot
         .read()

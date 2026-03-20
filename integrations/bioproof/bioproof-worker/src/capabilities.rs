@@ -102,9 +102,10 @@ async fn detect_backends() -> Vec<ExecutionBackend> {
         if Command::new(bin).args(*args).output().await
             .map(|o| o.status.success())
             .unwrap_or(false)
-            && !found.contains(backend)
         {
-            found.push(backend.clone());
+            if !found.contains(backend) {
+                found.push(backend.clone());
+            }
         }
     }
 

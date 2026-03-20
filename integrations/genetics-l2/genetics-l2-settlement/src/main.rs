@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Arg, Command};
 use genetics_l2_core::{merkle_root_hex, now_secs, Payout, SettlementPayload};
-use kaspa_addresses::Prefix;
 use serde_json::Value;
 use tokio::time::{sleep, Duration};
 use uuid::Uuid;
@@ -18,52 +17,29 @@ async fn main() -> Result<()> {
     let poll_ms: u64 = m.get_one::<String>("poll-ms")
         .and_then(|s| s.parse().ok()).unwrap_or(15_000);
     let dry_run     = !m.get_flag("submit");
-    let network_prefix = if m.get_flag("devnet") {
-        Prefix::Devnet
-    } else if m.get_flag("testnet") {
-        Prefix::Testnet
-    } else {
-        Prefix::Mainnet
-    };
-
-    // Auto-default to EVM anchoring for devnet/testnet/simnet (can be overridden with --evm-node)
-    let evm_node: Option<String> = m.get_one::<String>("evm-node").cloned()
-        .or_else(|| {
-            match network_prefix {
-                Prefix::Devnet | Prefix::Testnet | Prefix::Simnet => Some("http://127.0.0.1:8545".to_string()),
-                Prefix::Mainnet => None,
-            }
-        });
 
     log::info!("Genetics-L2 Settlement started");
     log::info!("  coordinator: {coordinator}");
     log::info!("  node:        {node_addr}");
-    log::info!("  network:     {network_prefix:?}");
     log::info!("  dry_run:     {dry_run}");
-    if let Some(ref e) = evm_node {
-        log::info!("  evm-node:    {e} (anchor target)");
-    } else {
-        log::info!("  evm-node:    none (mainnet: will use coinbase extra_data)");
-    }
 
-    let privkey_hex: Option<String> = load_privkey_opt("SETTLEMENT_PRIVKEY", m.get_one::<String>("key-file").map(|s| s.as_str()));
+    let privkey_hex: Option<String> = m.get_one::<String>("private-key").cloned();
     let fee_sompi: u64 = m.get_one::<String>("fee-sompi")
         .and_then(|s| s.parse().ok())
         .unwrap_or(xenom_anchor_client::DEFAULT_FEE_PER_INPUT);
 
     if !dry_run && privkey_hex.is_none() {
-        anyhow::bail!("--submit requires a private key: set $SETTLEMENT_PRIVKEY or use --key-file <PATH>");
+        anyhow::bail!("--submit requires --private-key <HEX>");
     }
 
     let keypair: Option<secp256k1::Keypair> = privkey_hex
         .as_deref()
         .map(xenom_anchor_client::keypair_from_hex)
         .transpose()
-        .context("invalid private key (expected 64 hex chars)")?;
+        .context("--private-key")?;
 
     if let Some(ref kp) = keypair {
-        log::info!("  funding: {}",
-            xenom_anchor_client::address_from_keypair(kp, network_prefix));
+        log::info!("  funding: {}", xenom_anchor_client::address_from_keypair(kp));
     }
 
     // Set up shared RPC client for settlement daemon
@@ -82,15 +58,10 @@ async fn main() -> Result<()> {
         None
     };
 
-    let quorum: usize = m.get_one::<String>("quorum")
-        .and_then(|s| s.parse().ok()).unwrap_or(2);
-    let score_tolerance: f64 = m.get_one::<String>("score-tolerance")
-        .and_then(|s| s.parse().ok()).unwrap_or(0.05);
-
     let http = reqwest::Client::new();
 
     loop {
-        match settle_validated_jobs(&http, &coordinator, rpc.as_ref(), keypair.as_ref(), fee_sompi, dry_run, network_prefix, evm_node.as_deref(), quorum, score_tolerance).await {
+        match settle_validated_jobs(&http, &coordinator, rpc.as_ref(), keypair.as_ref(), fee_sompi, dry_run).await {
             Ok(n) if n > 0 => log::info!("Settled {n} job(s)"),
             Ok(_)          => {}
             Err(e)         => log::warn!("Settlement cycle error: {e:#}"),
@@ -99,35 +70,15 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Load private key from env var or key file. Returns None if neither provided.
-/// Never reads from CLI args to avoid exposure in `ps aux`.
-fn load_privkey_opt(env_var: &str, key_file: Option<&str>) -> Option<String> {
-    if let Ok(hex) = std::env::var(env_var) {
-        let hex = hex.trim().to_string();
-        if !hex.is_empty() { return Some(hex); }
-    }
-    if let Some(path) = key_file {
-        if let Ok(hex) = std::fs::read_to_string(path) {
-            let hex = hex.trim().to_string();
-            if !hex.is_empty() { return Some(hex); }
-        }
-    }
-    None
-}
-
 // ── Settlement logic ──────────────────────────────────────────────────────────
 
 async fn settle_validated_jobs(
-    http:            &reqwest::Client,
-    coordinator:     &str,
-    rpc:             Option<&std::sync::Arc<kaspa_grpc_client::GrpcClient>>,
-    keypair:         Option<&secp256k1::Keypair>,
-    fee_sompi:       u64,
-    dry_run:         bool,
-    prefix:          Prefix,
-    evm_node:        Option<&str>,
-    quorum:          usize,
-    score_tolerance: f64,
+    http:        &reqwest::Client,
+    coordinator: &str,
+    rpc:         Option<&std::sync::Arc<kaspa_grpc_client::GrpcClient>>,
+    keypair:     Option<&secp256k1::Keypair>,
+    fee_sompi:   u64,
+    dry_run:     bool,
 ) -> Result<usize> {
     // Fetch validated (not yet settled) jobs
     let resp = http
@@ -162,9 +113,8 @@ async fn settle_validated_jobs(
             .filter(|r| r["verdict"].as_str() == Some("valid"))
             .collect();
 
-        if valid_results.len() < quorum {
-            log::debug!("Job {job_id}: {}/{quorum} valid results — waiting for quorum",
-                valid_results.len());
+        if valid_results.is_empty() {
+            log::debug!("Job {job_id}: no valid results yet, skipping");
             continue;
         }
 
@@ -174,86 +124,46 @@ async fn settle_validated_jobs(
             .collect();
         let results_root = merkle_root_hex(&result_root_hashes);
 
-        // ── Quorum: winner = result closest to median score ───────────────────
-        let mut scores: Vec<f64> = valid_results.iter()
-            .map(|r| r["score"].as_f64().unwrap_or(0.0))
-            .collect();
-        scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let median = if scores.len() % 2 == 0 {
-            (scores[scores.len() / 2 - 1] + scores[scores.len() / 2]) / 2.0
-        } else {
-            scores[scores.len() / 2]
-        };
-
-        // Consensus cluster: results within score_tolerance of median
-        let consensus: Vec<&Value> = valid_results.iter()
-            .filter(|r| (r["score"].as_f64().unwrap_or(0.0) - median).abs() <= score_tolerance)
-            .copied()
-            .collect();
-
-        if consensus.is_empty() {
-            log::debug!("Job {job_id}: no consensus cluster (median={median:.4}), skipping");
-            continue;
-        }
-
-        // Winner = result whose score is closest to the median
-        let winner = consensus.iter()
-            .min_by(|a, b| {
-                let da = (a["score"].as_f64().unwrap_or(0.0) - median).abs();
-                let db = (b["score"].as_f64().unwrap_or(0.0) - median).abs();
-                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        // ── Find winner (highest score) ───────────────────────────────────────
+        let winner = valid_results.iter()
+            .max_by(|a, b| {
+                let sa = a["score"].as_f64().unwrap_or(0.0);
+                let sb = b["score"].as_f64().unwrap_or(0.0);
+                sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
             })
             .cloned();
 
         let Some(winner) = winner else { continue };
-        let best_score = winner["score"].as_f64().unwrap_or(0.0);
+        let winner_pubkey = winner["worker_pubkey"].as_str().unwrap_or("").to_owned();
+        let best_score    = winner["score"].as_f64().unwrap_or(0.0);
+
         log::info!(
-            "Settling job {job_id}: winner={} score={best_score:.4} median={median:.4} quorum={}/{quorum} results_root={results_root}",
-            winner["worker_pubkey"].as_str().unwrap_or("").get(..12).unwrap_or(""),
-            valid_results.len()
+            "Settling job {job_id}: winner={} score={best_score:.2} results_root={results_root}",
+            &winner_pubkey[..12.min(winner_pubkey.len())]
         );
-        let winner_pubkey          = winner["worker_pubkey"].as_str().unwrap_or("").to_owned();
-        let notebook_or_repo_hash  = winner["notebook_or_repo_hash"].as_str().map(str::to_owned);
-        let container_hash         = winner["container_hash"].as_str().map(str::to_owned);
-        let weights_hash           = winner["weights_hash"].as_str().map(str::to_owned);
-        let submission_bundle_hash = winner["submission_bundle_hash"].as_str().map(str::to_owned);
 
         // ── Build SettlementPayload ───────────────────────────────────────────
         let payload = SettlementPayload {
-            app:                    SettlementPayload::APP_ID.to_owned(),
-            v:                      1,
-            job_id:                 job_id.clone(),
-            source:                 source.clone(),
-            algorithm:              algorithm.clone(),
-            dataset_root:           dataset_root.clone(),
-            results_root:           results_root.clone(),
+            app:           SettlementPayload::APP_ID.to_owned(),
+            v:             1,
+            job_id:        job_id.clone(),
+            source:        source.clone(),
+            algorithm:     algorithm.clone(),
+            dataset_root:  dataset_root.clone(),
+            results_root:  results_root.clone(),
             best_score,
-            winner_pubkey:          winner_pubkey.clone(),
-            notebook_or_repo_hash,
-            container_hash,
-            weights_hash,
-            submission_bundle_hash,
-            settled_at:             now_secs(),
+            winner_pubkey: winner_pubkey.clone(),
+            settled_at:    now_secs(),
         };
         let payload_bytes = payload.to_payload_bytes();
         log::info!("  settlement payload: {} bytes", payload_bytes.len());
 
         // ── Anchor on Xenom chain ─────────────────────────────────────────────
-        // On devnet/testnet: anchor via xenom_anchor RPC on the EVM L2 node.
-        // On mainnet: the bridge includes the settlement hash in coinbase extra_data.
         let txid = if dry_run {
             log::info!("  dry-run: skipping chain submission");
             None
-        } else if (prefix == Prefix::Devnet || prefix == Prefix::Testnet) && evm_node.is_some() {
-            match evm_anchor(http, evm_node.unwrap(), &payload_bytes).await {
-                Ok(id) => { log::info!("  EVM anchor id={id}"); Some(id) }
-                Err(e) => { log::warn!("  EVM anchor failed: {e:#}"); None }
-            }
-        } else if prefix == Prefix::Devnet || prefix == Prefix::Testnet {
-            log::info!("  devnet/testnet: no --evm-node set, skipping anchor");
-            None
         } else if let (Some(rpc_client), Some(kp)) = (rpc, keypair) {
-            match xenom_anchor_client::submit_anchor(rpc_client, kp, &payload_bytes, fee_sompi, prefix).await {
+            match xenom_anchor_client::submit_anchor(rpc_client, kp, &payload_bytes, fee_sompi).await {
                 Ok(id)  => { log::info!("  anchored txid={id}"); Some(id) }
                 Err(e)  => { log::warn!("  anchor failed: {e:#}"); None }
             }
@@ -262,23 +172,12 @@ async fn settle_validated_jobs(
             None
         };
 
-        // ── Score-based reward: amount = reward_sompi × score (0.0..1.0) ─────
-        // Minimum floor of 1_000 sompi for any valid non-zero score.
-        const MIN_SOMPI: u64 = 1_000;
-        let scored_sompi: u64 = if best_score > 0.0 {
-            let raw = (reward_sompi as f64 * best_score.clamp(0.0, 1.0)).round() as u64;
-            raw.max(MIN_SOMPI)
-        } else {
-            0
-        };
-        log::info!("  score-based reward: {reward_sompi} × {best_score:.4} = {scored_sompi} sompi");
-
         // ── Register payout with coordinator ─────────────────────────────────
         let payout = Payout {
             payout_id:     Uuid::new_v4().to_string(),
             job_id:        job_id.clone(),
             worker_pubkey: winner_pubkey.clone(),
-            amount_sompi:  scored_sompi,
+            amount_sompi:  reward_sompi,
             txid:          txid.clone(),
             paid_at:       txid.as_ref().map(|_| now_secs()),
         };
@@ -292,7 +191,7 @@ async fn settle_validated_jobs(
 
         if payout_resp.status().is_success() {
             log::info!("  payout {} registered: {} sompi → {}",
-                payout.payout_id, scored_sompi, &winner_pubkey[..12.min(winner_pubkey.len())]);
+                payout.payout_id, reward_sompi, &winner_pubkey[..12.min(winner_pubkey.len())]);
         } else {
             let s = payout_resp.status();
             let b = payout_resp.text().await.unwrap_or_default();
@@ -303,39 +202,6 @@ async fn settle_validated_jobs(
     }
 
     Ok(count)
-}
-
-// ── EVM anchor helper ────────────────────────────────────────────────────────
-
-async fn evm_anchor(http: &reqwest::Client, evm_node: &str, data: &[u8]) -> Result<String> {
-    let url = if evm_node.starts_with("http") {
-        evm_node.to_owned()
-    } else {
-        format!("http://{evm_node}")
-    };
-    let payload_hex = format!("0x{}", hex::encode(data));
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "xenom_anchor",
-        "params": [payload_hex],
-        "id": 1
-    });
-    let resp: serde_json::Value = http
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .context("xenom_anchor HTTP POST")?
-        .json()
-        .await
-        .context("xenom_anchor parse response")?;
-    if let Some(err) = resp.get("error") {
-        anyhow::bail!("xenom_anchor RPC error: {err}");
-    }
-    resp["result"]
-        .as_str()
-        .map(str::to_owned)
-        .ok_or_else(|| anyhow::anyhow!("xenom_anchor: missing result field"))
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -359,30 +225,11 @@ fn cli() -> Command {
             .long("submit")
             .action(clap::ArgAction::SetTrue)
             .help("Anchor settlement on-chain (default: dry-run)"))
-        .arg(Arg::new("key-file")
-            .short('k').long("key-file").value_name("PATH")
-            .help("Path to file containing the secp256k1 private key (64 hex chars). Alternatively set $SETTLEMENT_PRIVKEY. Required with --submit."))
+        .arg(Arg::new("private-key")
+            .short('k').long("private-key").value_name("HEX")
+            .help("secp256k1 private key (64 hex chars) for the funding/signing address. Required with --submit."))
         .arg(Arg::new("fee-sompi")
             .long("fee-sompi").value_name("N")
             .default_value("2000")
             .help("Relay fee per input in sompi (default: 2000)"))
-        .arg(Arg::new("devnet")
-            .long("devnet")
-            .action(clap::ArgAction::SetTrue)
-            .help("Use devnet address prefix (xenomdev:). Auto-enables EVM anchoring at http://127.0.0.1:8545"))
-        .arg(Arg::new("testnet")
-            .long("testnet")
-            .action(clap::ArgAction::SetTrue)
-            .help("Use testnet address prefix (xenomtest:). Auto-enables EVM anchoring at http://127.0.0.1:8545"))
-        .arg(Arg::new("evm-node")
-            .long("evm-node").value_name("URL")
-            .help("Override default EVM L2 JSON-RPC URL. Defaults to http://127.0.0.1:8545 for devnet/testnet, none for mainnet (uses coinbase extra_data)"))
-        .arg(Arg::new("quorum")
-            .long("quorum").value_name("N")
-            .default_value("2")
-            .help("Minimum number of valid results required before settling a job"))
-        .arg(Arg::new("score-tolerance")
-            .long("score-tolerance").value_name("F")
-            .default_value("0.05")
-            .help("Max score distance from median to be included in the consensus cluster"))
 }

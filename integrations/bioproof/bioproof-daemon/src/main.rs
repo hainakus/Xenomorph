@@ -1,5 +1,4 @@
-use anyhow::{Context, Result};
-use kaspa_addresses::Prefix;
+use anyhow::{bail, Context, Result};
 use bioproof_core::{
     compute_proof, sign_manifest, AnchorPayload, ArtifactType, BioProofKeypair, Certificate,
     Manifest,
@@ -19,8 +18,7 @@ async fn main() -> Result<()> {
     let dataset_id   = m.get_one::<String>("dataset-id").unwrap().clone();
     let artifact_str = m.get_one::<String>("artifact-type").unwrap();
     let issuer       = m.get_one::<String>("issuer").unwrap().clone();
-    let privkey_hex  = load_privkey("BIOPROOF_PRIVKEY", m.get_one::<String>("key-file").map(|s| s.as_str()))
-        .context("private key required")?;
+    let privkey_hex  = m.get_one::<String>("private-key").unwrap();
     let chunk_size: usize = m
         .get_one::<String>("chunk-size")
         .and_then(|s| s.parse().ok())
@@ -31,18 +29,11 @@ async fn main() -> Result<()> {
     let node_address = m.get_one::<String>("node").cloned();
     let dry_run      = !m.get_flag("submit");
     let out_path     = m.get_one::<String>("out").cloned();
-    let prefix = if m.get_flag("devnet") {
-        Prefix::Devnet
-    } else if m.get_flag("testnet") {
-        Prefix::Testnet
-    } else {
-        Prefix::Mainnet
-    };
 
     let artifact_type = ArtifactType::from_str(artifact_str).unwrap();
 
     // ── Load keypair ────────────────────────────────────────────────────────
-    let keypair = BioProofKeypair::from_hex(&privkey_hex)
+    let keypair = BioProofKeypair::from_hex(privkey_hex)
         .context("invalid --private-key (expected 64 hex chars)")?;
 
     // ── Read file ───────────────────────────────────────────────────────────
@@ -80,7 +71,7 @@ async fn main() -> Result<()> {
     // ── Sign manifest ────────────────────────────────────────────────────────
     let manifest_hash = manifest.hash_hex();
     let digest        = manifest.hash_bytes();
-    let issuer_sig    = sign_manifest(&digest, &privkey_hex)
+    let issuer_sig    = sign_manifest(&digest, privkey_hex)
         .context("signing failed")?;
     let issuer_pubkey = keypair.pubkey_hex();
 
@@ -112,7 +103,7 @@ async fn main() -> Result<()> {
             .unwrap_or("grpc://localhost:36669");
 
         log::info!("Submitting anchor to {node_addr}…");
-        let txid = submit_anchor(node_addr, &op_return_bytes, &privkey_hex, prefix).await?;
+        let txid = submit_anchor(node_addr, &op_return_bytes, privkey_hex).await?;
         log::info!("  txid = {txid}");
         cert.txid = Some(txid);
     }
@@ -131,30 +122,12 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Load private key from env var (first) or key file (second).
-/// Never reads from CLI args to avoid exposure in `ps aux`.
-fn load_privkey(env_var: &str, key_file: Option<&str>) -> Result<String> {
-    if let Ok(hex) = std::env::var(env_var) {
-        let hex = hex.trim().to_string();
-        if !hex.is_empty() { return Ok(hex); }
-    }
-    if let Some(path) = key_file {
-        let hex = std::fs::read_to_string(path)
-            .with_context(|| format!("cannot read key file '{path}'"))?
-            .trim()
-            .to_string();
-        return Ok(hex);
-    }
-    anyhow::bail!("No private key found. Set ${env_var} or use --key-file <PATH>")
-}
-
 // ── Transaction submission ────────────────────────────────────────────────────
 
 async fn submit_anchor(
     node_addr:       &str,
     op_return_bytes: &[u8],
     privkey_hex:     &str,
-    prefix:          Prefix,
 ) -> Result<String> {
     use kaspa_grpc_client::GrpcClient;
     use std::sync::Arc;
@@ -170,7 +143,7 @@ async fn submit_anchor(
 
     log::info!(
         "Funding address: {}",
-        xenom_anchor_client::address_from_keypair(&keypair, prefix)
+        xenom_anchor_client::address_from_keypair(&keypair)
     );
 
     xenom_anchor_client::submit_anchor(
@@ -178,7 +151,6 @@ async fn submit_anchor(
         &keypair,
         op_return_bytes,
         xenom_anchor_client::DEFAULT_FEE_PER_INPUT,
-        prefix,
     ).await
 }
 
@@ -199,9 +171,9 @@ fn cli() -> Command {
         .arg(Arg::new("issuer")
             .short('i').long("issuer").value_name("ID").required(true)
             .help("Issuer identifier (lab ID, DID, public key fingerprint)"))
-        .arg(Arg::new("key-file")
-            .short('k').long("key-file").value_name("PATH")
-            .help("Path to file containing the secp256k1 private key (64 hex chars). Alternatively set $BIOPROOF_PRIVKEY."))
+        .arg(Arg::new("private-key")
+            .short('k').long("private-key").value_name("HEX").required(true)
+            .help("secp256k1 private key as 64-char hex"))
         .arg(Arg::new("chunk-size")
             .long("chunk-size").value_name("BYTES")
             .default_value("4194304")
@@ -226,12 +198,4 @@ fn cli() -> Command {
         .arg(Arg::new("out")
             .short('o').long("out").value_name("PATH")
             .help("Write certificate JSON to file instead of stdout"))
-        .arg(Arg::new("devnet")
-            .long("devnet")
-            .action(clap::ArgAction::SetTrue)
-            .help("Use devnet address prefix (xenomdev:)"))
-        .arg(Arg::new("testnet")
-            .long("testnet")
-            .action(clap::ArgAction::SetTrue)
-            .help("Use testnet address prefix (xenomtest:)"))
 }
