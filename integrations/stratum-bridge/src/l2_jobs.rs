@@ -16,10 +16,9 @@ pub struct L2Job {
     pub job_id:      String,
     /// Algorithm or task type (e.g. "sequence_alignment", "variant_calling")
     pub task:        String,
-    /// Dataset reference (e.g. "hg38-align-v1", "era5-lite-v1")
+    /// Coordinator files API URL: `{coordinator}/datasets/{job_id}/files`
+    /// Miners fetch dataset files directly from this endpoint.
     pub dataset:     String,
-    /// Dataset URL where the miner can fetch input data
-    pub dataset_url: Option<String>,
     /// Fragment index for partial tasks (shard for large datasets)
     pub fragment:    u64,
     /// Reward in sompi offered for successful completion
@@ -36,7 +35,6 @@ impl L2Job {
             "job_id":      self.job_id,
             "task":        self.task,
             "dataset":     self.dataset,
-            "dataset_url": self.dataset_url,
             "fragment":    self.fragment,
             "reward_sompi":self.reward_sompi,
         })
@@ -58,7 +56,6 @@ pub fn new_slot() -> L2JobSlot {
 pub async fn run_poller(
     theme:           String,
     coordinator_url: String,
-    dataset:         String,
     poll_secs:       u64,
     slot:            L2JobSlot,
 ) {
@@ -68,7 +65,7 @@ pub async fn run_poller(
     log::info!("L2 job poller started — theme={theme} coordinator={coordinator_url}");
 
     loop {
-        match fetch_next_job(&http, &theme, &coordinator_url, &dataset).await {
+        match fetch_next_job(&http, &theme, &coordinator_url).await {
             Ok(Some(job)) => {
                 let job_id = job.job_id.clone();
                 *slot.write().await = Some(Arc::new(job));
@@ -89,7 +86,6 @@ async fn fetch_next_job(
     http:            &reqwest::Client,
     theme:           &str,
     coordinator_url: &str,
-    dataset:         &str,
 ) -> anyhow::Result<Option<L2Job>> {
     let url = format!("{coordinator_url}/jobs?status=open&limit=1");
     let resp = http
@@ -110,11 +106,12 @@ async fn fetch_next_job(
     };
 
     // Map coordinator ScientificJob fields to L2Job
-    let job_id      = raw["job_id"].as_str().unwrap_or("").to_owned();
-    let task        = raw["algorithm"].as_str().unwrap_or("").to_owned();
-    let dataset_url = raw["dataset_url"].as_str().map(str::to_owned);
+    let job_id       = raw["job_id"].as_str().unwrap_or("").to_owned();
+    let task         = raw["algorithm"].as_str().unwrap_or("").to_owned();
     let reward_sompi = raw["reward_sompi"].as_u64().unwrap_or(0);
-    let posted_at   = raw["created_at"].as_u64().unwrap_or(0);
+    let posted_at    = raw["created_at"].as_u64().unwrap_or(0);
+    // Dataset = coordinator files endpoint — miners fetch cached files from here
+    let dataset_api  = format!("{coordinator_url}/datasets/{job_id}/files");
 
     // Use a deterministic fragment index based on the job_id so all miners
     // receive the same fragment number for the same job.
@@ -133,8 +130,7 @@ async fn fetch_next_job(
         theme:        theme.to_owned(),
         job_id,
         task,
-        dataset:      dataset.to_owned(),
-        dataset_url,
+        dataset:      dataset_api,
         fragment,
         reward_sompi,
         posted_at,

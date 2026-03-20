@@ -1,5 +1,6 @@
 mod api;
 mod gpu;
+mod l2_worker;
 mod stratum_client;
 mod tui;
 
@@ -27,7 +28,8 @@ use kaspa_rpc_core::{
 use kaspa_pow::genome_file::FileGenomeLoader;
 use kaspa_txscript::pay_to_address_script;
 use rayon::prelude::*;
-use tokio::time::sleep;
+use tokio::{sync::mpsc, time::sleep};
+use crate::stratum_client::{StratumClient, StratumJob, StratumSolution};
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -50,6 +52,13 @@ fn cli() -> Command {
                 .arg(Arg::new("devnet").long("devnet").action(clap::ArgAction::SetTrue).help("Devnet (genome activation DAA 0)"))
                 .arg(Arg::new("no-tui").long("no-tui").action(clap::ArgAction::SetTrue).help("Disable TUI dashboard (plain log output)"))
                 .arg(Arg::new("api-port").long("api-port").value_name("PORT").value_parser(clap::value_parser!(u16)).default_value("4000").help("HiveOS stats API port (0 = disabled)"))
+                .arg(Arg::new("stratum").long("stratum").value_name("URL").help("Stratum pool URL, e.g. stratum+tcp://127.0.0.1:5555 (mutually exclusive with --rpcserver)"))
+                .arg(Arg::new("stratum-worker").long("stratum-worker").value_name("NAME").help("Stratum worker name (default: --mining-address)"))
+                .arg(Arg::new("stratum-password").long("stratum-password").value_name("PASS").default_value("x").help("Stratum password (default: x)"))
+                .arg(Arg::new("l2-coordinator").long("l2-coordinator").value_name("URL").help("L2 coordinator URL for inline job execution (e.g. http://localhost:8091)"))
+                .arg(Arg::new("l2-key-file").long("l2-key-file").value_name("PATH").help("Path to file with secp256k1 private key (64 hex) for signing L2 results. Alternatively set $L2_PRIVKEY."))
+                .arg(Arg::new("l2-gpu").long("l2-gpu").action(clap::ArgAction::SetTrue).help("Use GPU for BirdNET inference (requires CUDA + PyTorch GPU)"))
+                .arg(Arg::new("l2-perch-script").long("l2-perch-script").value_name("PATH").help("Path to perch_infer.py (auto-detected if omitted)"))
         )
         .subcommand(
             Command::new("suggest-params")
@@ -71,6 +80,10 @@ fn cli() -> Command {
                 .arg(Arg::new("address").long("address").short('a').value_name("ADDRESS").required(true).help("Fund wallet address"))
         )
         .subcommand(
+            Command::new("keygen")
+                .about("Generate a fresh secp256k1 keypair for use as --l2-private-key")
+        )
+        .subcommand(
             Command::new("gpu")
                 .about("Run the GPU miner (wgpu — Metal on Mac, Vulkan elsewhere)")
                 .arg(Arg::new("rpcserver").long("rpcserver").short('s').value_name("HOST:PORT").help("gRPC node endpoint (default: localhost:36669)"))
@@ -90,7 +103,26 @@ fn cli() -> Command {
                 .arg(Arg::new("stratum-worker").long("stratum-worker").value_name("NAME").help("Stratum worker name (default: --mining-address)"))
                 .arg(Arg::new("stratum-password").long("stratum-password").value_name("PASS").default_value("x").help("Stratum password (default: x)"))
                 .arg(Arg::new("api-port").long("api-port").value_name("PORT").value_parser(clap::value_parser!(u16)).default_value("4000").help("HiveOS stats API port (0 = disabled)"))
+                .arg(Arg::new("l2-coordinator").long("l2-coordinator").value_name("URL").help("L2 coordinator URL for inline job execution (e.g. http://localhost:8091)"))
+                .arg(Arg::new("l2-key-file").long("l2-key-file").value_name("PATH").help("Path to file with secp256k1 private key (64 hex) for signing L2 results. Alternatively set $L2_PRIVKEY."))
+                .arg(Arg::new("l2-gpu").long("l2-gpu").action(clap::ArgAction::SetTrue).help("Use GPU for BirdNET inference (requires CUDA + PyTorch GPU)"))
+                .arg(Arg::new("l2-perch-script").long("l2-perch-script").value_name("PATH").help("Path to perch_infer.py (auto-detected if omitted)"))
         )
+}
+
+/// Load L2 private key from $L2_PRIVKEY env var or --l2-key-file path.
+fn load_l2_privkey(key_file: Option<&str>) -> Option<String> {
+    if let Ok(hex) = std::env::var("L2_PRIVKEY") {
+        let hex = hex.trim().to_string();
+        if !hex.is_empty() { return Some(hex); }
+    }
+    if let Some(path) = key_file {
+        if let Ok(hex) = std::fs::read_to_string(path) {
+            let hex = hex.trim().to_string();
+            if !hex.is_empty() { return Some(hex); }
+        }
+    }
+    None
 }
 
 // ── Miner state (mine subcommand) ────────────────────────────────────────────
@@ -167,6 +199,7 @@ async fn main() {
         Some(("suggest-params", m))      => cmd_suggest_params(m).await,
         Some(("compute-merkle-root", m)) => cmd_compute_merkle_root(m),
         Some(("address-to-script", m))   => cmd_address_to_script(m),
+        Some(("keygen", _))              => cmd_keygen(),
         Some(("gpu", m)) => {
             let no_tui   = m.get_flag("no-tui");
             let api_port = m.get_one::<u16>("api-port").copied().unwrap_or(4000);
@@ -229,9 +262,45 @@ async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
         warn!("Genome file not found — mainnet Genome PoW will fail. Use --genome-file <PATH>.");
     }
 
+    let mining_addr = m.get_one::<String>("mining-address").cloned().expect("--mining-address required");
+
+    // ── Stratum mode ──────────────────────────────────────────────────────────
+    if let Some(stratum_url) = m.get_one::<String>("stratum").cloned() {
+        let worker = m.get_one::<String>("stratum-worker")
+            .cloned()
+            .unwrap_or_else(|| mining_addr.clone());
+        let password = m.get_one::<String>("stratum-password")
+            .cloned()
+            .unwrap_or_else(|| "x".to_owned());
+
+        let l2_cfg = match (
+            m.get_one::<String>("l2-coordinator").cloned(),
+            load_l2_privkey(m.get_one::<String>("l2-key-file").map(|s| s.as_str())),
+        ) {
+            (Some(url), Some(key)) => {
+                let use_gpu = m.get_flag("l2-gpu");
+                let perch_script = m.get_one::<String>("l2-perch-script").map(std::path::PathBuf::from);
+                match l2_worker::L2Config::new(url, key, use_gpu, perch_script) {
+                    Ok(c)  => { info!("L2 inline worker enabled — coordinator={}", c.coordinator_url); Some(c) }
+                    Err(e) => { warn!("L2 config error: {e} — L2 disabled"); None }
+                }
+            }
+            _ => None,
+        };
+
+        let (job_tx, job_rx) = mpsc::channel::<StratumJob>(8);
+        let (sol_tx, sol_rx) = mpsc::channel::<StratumSolution>(32);
+        let client = StratumClient::new(&stratum_url, &worker, &password);
+        let dash2  = dash.clone();
+        tokio::spawn(async move { client.run(job_tx, sol_rx, dash2).await; });
+
+        mine_stratum(threads, frag_size, genome_activation, file_loader, l2_cfg, job_rx, sol_tx, dash).await;
+        return;
+    }
+
     let cfg = MineConfig {
         rpcserver: m.get_one::<String>("rpcserver").cloned().unwrap_or_else(|| "localhost:16668".to_owned()),
-        mining_address: m.get_one::<String>("mining-address").cloned().expect("--mining-address required"),
+        mining_address: mining_addr,
         threads,
         nonce_batch: m.get_one::<u64>("nonce-batch").copied().unwrap_or(50_000),
         genome_pow_activation_daa_score: genome_activation,
@@ -262,14 +331,13 @@ async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
         if !resp.is_synced { warn!("Node not synced"); }
 
         let current_id = rpc_block.header.accepted_id_merkle_root;
-        {
+        let already_seen = {
             let mut guard = state.template_id.lock().unwrap();
-            if *guard == Some(current_id) {
-                drop(guard); // must drop before .await
-                sleep(Duration::from_millis(200)).await;
-                continue;
-            }
-            *guard = Some(current_id);
+            if *guard == Some(current_id) { true } else { *guard = Some(current_id); false }
+        };
+        if already_seen {
+            sleep(Duration::from_millis(200)).await;
+            continue;
         }
 
         let header: Header = (&rpc_block.header).into();
@@ -352,6 +420,196 @@ async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
             }
         }
     }
+}
+
+// ── mine_stratum — CPU mining loop driven by Stratum pool ─────────────────────
+//
+// Nonce assignment: the bridge owns the upper 32 bits (extranonce1).
+// The miner searches lower 32 bits (extranonce2) in [0, 2^32).
+// Full nonce = (extranonce1 << 32) | extranonce2.
+
+async fn mine_stratum(
+    threads:           usize,
+    frag_size:         u32,
+    genome_activation: u64,
+    file_loader:       Option<Arc<FileGenomeLoader>>,
+    l2_cfg:            Option<l2_worker::L2Config>,
+    mut job_rx:        mpsc::Receiver<StratumJob>,
+    sol_tx:            mpsc::Sender<StratumSolution>,
+    dash:              Arc<Mutex<DashStats>>,
+) {
+    info!("Stratum CPU miner started — waiting for first job …");
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .expect("rayon pool");
+
+    let batch: u64 = 50_000;
+    let mut total_hashes: u64 = 0;
+    let mut report_timer = Instant::now();
+
+    // Wait for first job
+    let mut current_job: StratumJob = match job_rx.recv().await {
+        Some(j) => j,
+        None    => { warn!("Stratum job channel closed before first job"); return; }
+    };
+
+    // nonce_base persists across share submissions for the same job
+    // — only resets when a genuinely new job arrives.
+    let mut nonce_base: u64 = (current_job.extranonce1 as u64) << 32;
+    let mut active_job_id = current_job.job_id.clone();
+    let mut processed_l2_jobs = std::collections::HashSet::new();
+
+    loop {
+        // Apply any pending new job; dispatch L2 task if present
+        loop {
+            match job_rx.try_recv() {
+                Ok(new_job) => {
+                    if new_job.job_id != active_job_id || new_job.clean_jobs {
+                        nonce_base    = (new_job.extranonce1 as u64) << 32;
+                        active_job_id = new_job.job_id.clone();
+                    }
+                    // Spawn inline L2 worker if coordinator is configured
+                    if let (Some(ref cfg), Some(ref l2_val)) = (&l2_cfg, &new_job.l2_job) {
+                        let l2_job_id = l2_val["job_id"].as_str().unwrap_or("").to_owned();
+                        if !l2_job_id.is_empty() && !processed_l2_jobs.contains(&l2_job_id) {
+                            processed_l2_jobs.insert(l2_job_id.clone());
+                            let cfg2  = cfg.clone();
+                            let val2  = l2_val.clone();
+                            tokio::spawn(async move {
+                                l2_worker::run_l2_job(cfg2, val2).await;
+                            });
+                        }
+                    }
+                    current_job = new_job;
+                }
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => return,
+            }
+        }
+
+        let genome_active = current_job.daa_score >= genome_activation;
+        let pre_pow_hash  = current_job.pre_pow_hash;
+        let epoch_seed    = current_job.epoch_seed;
+        let timestamp     = current_job.timestamp;
+        let bits          = current_job.bits;
+        let extranonce1   = current_job.extranonce1;
+        let job_id        = current_job.job_id.clone();
+
+        let nonce_start: u64 = (extranonce1 as u64) << 32;
+        let nonce_max:   u64 = nonce_start + u32::MAX as u64;
+        let target = kaspa_math::Uint256::from_compact_target_bits(bits);
+
+        let packed_opt: Option<&[u8]> = if genome_active {
+            file_loader.as_ref().and_then(|fl| fl.packed_dataset())
+        } else {
+            None
+        };
+        let synth_loader: Option<Arc<dyn GenomeDatasetLoader>> = if genome_active && packed_opt.is_none() {
+            Some(Arc::new(CachedLoader::new(SyntheticLoader::new(frag_size, epoch_seed), 256)))
+        } else {
+            None
+        };
+
+        {
+            let mut s = dash.lock().unwrap();
+            s.bits          = bits;
+            s.genome_active = genome_active;
+            s.connected     = true;
+            let mode = if genome_active { "Genome PoW" } else { "KHeavyHash" };
+            s.mode = format!("CPU×{threads} · {mode} · Pool");
+        }
+
+        // Advance nonce_base, wrapping within [nonce_start, nonce_max]
+        if nonce_base > nonce_max { nonce_base = nonce_start; }
+        let start = nonce_base;
+        let end   = (start + batch * threads as u64).min(nonce_max);
+        nonce_base = end;
+
+        let winning = pool.install(|| {
+            (0..threads as u64).into_par_iter().find_map_first(|tid| {
+                let s = start + tid * batch;
+                let e = (s + batch).min(nonce_max);
+                if genome_active {
+                    if let Some(packed) = packed_opt {
+                        try_nonce_range_genome_packed(packed, &epoch_seed, &pre_pow_hash, &target, s, e)
+                    } else if let Some(ref loader) = synth_loader {
+                        try_nonce_range_genome_stratum(&pre_pow_hash, &target, &epoch_seed, frag_size, loader.as_ref(), s, e)
+                    } else {
+                        None
+                    }
+                } else {
+                    try_nonce_range_legacy_stratum(&pre_pow_hash, timestamp, bits, s, e)
+                }
+            })
+        });
+
+        total_hashes += batch * threads as u64;
+
+        if let Some(nonce) = winning {
+            let extranonce2 = (nonce & 0xFFFF_FFFF) as u32;
+            info!("Share found! nonce={:#018x} en2={:08x} job={job_id}", nonce, extranonce2);
+            dash.lock().unwrap().push_log(format!("Share  nonce={nonce:#018x}  job={job_id}"));
+            // Advance nonce_base past winning nonce to avoid re-finding it
+            nonce_base = nonce + 1;
+            if sol_tx.send(StratumSolution { job_id, extranonce2 }).await.is_err() {
+                warn!("Stratum solution channel closed — exiting");
+                return;
+            }
+        }
+
+        if report_timer.elapsed() >= Duration::from_secs(10) {
+            let elapsed = report_timer.elapsed().as_secs_f64();
+            let mhs = total_hashes as f64 / elapsed / 1_000_000.0;
+            info!("Hashrate: {:.3} MH/s", mhs);
+            dash.lock().unwrap().total_mhs = mhs;
+            total_hashes = 0;
+            report_timer = Instant::now();
+        }
+
+        tokio::task::yield_now().await;
+    }
+}
+
+/// Construct a KHeavyHash PoW state for stratum mining.
+/// Uses public primitives from kaspa_pow — no consensus logic modified.
+#[inline]
+fn stratum_state(pre_pow_hash: kaspa_hashes::Hash, timestamp: u64, bits: u32) -> kaspa_pow::State {
+    kaspa_pow::State::from_parts(pre_pow_hash, timestamp, bits)
+}
+
+fn try_nonce_range_legacy_stratum(
+    pre_pow_hash: &kaspa_hashes::Hash,
+    timestamp:    u64,
+    bits:         u32,
+    start:        u64,
+    end:          u64,
+) -> Option<u64> {
+    let state = stratum_state(*pre_pow_hash, timestamp, bits);
+    for nonce in start..end {
+        let (valid, _) = state.check_pow(nonce);
+        if valid { return Some(nonce); }
+    }
+    None
+}
+
+fn try_nonce_range_genome_stratum(
+    pre_pow_hash: &kaspa_hashes::Hash,
+    target:       &kaspa_math::Uint256,
+    epoch_seed:   &kaspa_hashes::Hash,
+    frag_size:    u32,
+    loader:       &dyn GenomeDatasetLoader,
+    start:        u64,
+    end:          u64,
+) -> Option<u64> {
+    let state = GenomePowState::new(*pre_pow_hash, *target, *epoch_seed, frag_size);
+    for nonce in start..end {
+        let idx      = fragment_index(epoch_seed, nonce, frag_size);
+        let fragment = loader.load_fragment(idx)?;
+        let (valid, _, _) = state.check_pow_with_fragment(nonce, &fragment);
+        if valid { return Some(nonce); }
+    }
+    None
 }
 
 // ── suggest-params ────────────────────────────────────────────────────────────
@@ -447,6 +705,20 @@ fn cmd_address_to_script(m: &ArgMatches) {
     println!();
     println!("// Paste this line into the relevant Params block in params.rs:");
     println!("fund_script_public_key: \"{hex_str}\",");
+}
+
+// ── keygen ────────────────────────────────────────────────────────────────────
+
+fn cmd_keygen() {
+    let kp = bioproof_core::BioProofKeypair::generate();
+    println!();
+    println!("=== L2 Worker Keypair ===");
+    println!("Private key (set as $L2_PRIVKEY):  {}", kp.privkey_hex());
+    println!("Public  key (worker identity):  {}", kp.pubkey_hex());
+    println!();
+    println!("KEEP THE PRIVATE KEY SECRET — never share it.");
+    println!("This keypair is INDEPENDENT from the pool's key.");
+    println!();
 }
 
 // ── PoW search helpers ────────────────────────────────────────────────────────

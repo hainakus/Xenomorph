@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Arg, Command};
-use genetics_l2_core::{Algorithm, ExternalSource, ScientificJob, now_secs};
+use genetics_l2_core::ScientificJob;
 use tokio::time::{sleep, Duration};
 
 // ── Source connectors ─────────────────────────────────────────────────────────
@@ -8,10 +8,24 @@ use tokio::time::{sleep, Duration};
 mod kaggle;
 mod nih;
 mod boinc;
+mod dream;
+mod horizon;
+mod sra;
+mod igsr;
+mod gnomad;
+mod gdc;
+mod clinvar;
 
 pub use kaggle::KaggleFetcher;
-pub use nih::NihFetcher;
+pub use nih::{NihFetcher, NihChallengeFetcher};
 pub use boinc::BoincFetcher;
+pub use dream::DreamFetcher;
+pub use horizon::HorizonFetcher;
+pub use sra::SraFetcher;
+pub use igsr::IgsrFetcher;
+pub use gnomad::GnomadFetcher;
+pub use gdc::GdcFetcher;
+pub use clinvar::ClinvarFetcher;
 
 #[async_trait::async_trait]
 pub trait SourceFetcher: Send + Sync {
@@ -29,20 +43,73 @@ async fn main() -> Result<()> {
     let coordinator_url = m.get_one::<String>("coordinator").unwrap().clone();
     let poll_secs: u64  = m.get_one::<String>("poll-secs")
         .and_then(|s| s.parse().ok()).unwrap_or(300);
-    let kaggle_key      = m.get_one::<String>("kaggle-key").cloned();
-    let boinc_url       = m.get_one::<String>("boinc-url").cloned();
+    let kaggle_key = m.get_one::<String>("kaggle-key").cloned()
+        .or_else(|| std::env::var("KAGGLE_KEY").ok())
+        .or_else(|| {
+            let p = dirs::home_dir()?.join(".kaggle").join("kaggle.json");
+            let s = std::fs::read_to_string(p).ok()?;
+            let v: serde_json::Value = serde_json::from_str(&s).ok()?;
+            let user  = v["username"].as_str()?;
+            let token = v["key"].as_str()?;
+            Some(format!("{user}:{token}"))
+        });
+    let boinc_url        = m.get_one::<String>("boinc-url").cloned();
+    let competition      = m.get_one::<String>("competition").cloned();
+    let kaggle_only      = m.get_flag("kaggle-only");
+    let nih_challenges   = m.get_flag("nih-challenges");
+    let dream_enabled    = m.get_flag("dream");
+    let horizon_enabled  = m.get_flag("horizon");
+    let synapse_pat      = m.get_one::<String>("synapse-pat").cloned()
+        .or_else(|| std::env::var("SYNAPSE_PAT").ok());
+    let sra_enabled      = m.get_flag("sra");
+    let igsr_enabled     = m.get_flag("igsr");
+    let gnomad_enabled   = m.get_flag("gnomad");
+    let gdc_enabled      = m.get_flag("gdc");
+    let clinvar_enabled  = m.get_flag("clinvar");
 
     let http = reqwest::Client::new();
 
     let fetchers: Vec<Box<dyn SourceFetcher>> = {
         let mut v: Vec<Box<dyn SourceFetcher>> = Vec::new();
         if let Some(key) = kaggle_key {
-            v.push(Box::new(KaggleFetcher::new(key)));
+            let mut fetcher = KaggleFetcher::new(key);
+            if let Some(ref slug) = competition {
+                fetcher = fetcher.with_competition(slug.clone());
+            }
+            v.push(Box::new(fetcher));
+        } else if let Some(slug) = competition {
+            v.push(Box::new(KaggleFetcher::new(String::new()).with_competition(slug)));
         }
         if let Some(url) = boinc_url {
             v.push(Box::new(BoincFetcher::new(url)));
         }
-        v.push(Box::new(NihFetcher::new()));
+        if !kaggle_only {
+            v.push(Box::new(NihFetcher::new()));
+        }
+        if nih_challenges {
+            v.push(Box::new(NihChallengeFetcher::new()));
+        }
+        if dream_enabled {
+            v.push(Box::new(DreamFetcher::new(synapse_pat)));
+        }
+        if horizon_enabled {
+            v.push(Box::new(HorizonFetcher::new()));
+        }
+        if sra_enabled {
+            v.push(Box::new(SraFetcher::new()));
+        }
+        if igsr_enabled {
+            v.push(Box::new(IgsrFetcher::new()));
+        }
+        if gnomad_enabled {
+            v.push(Box::new(GnomadFetcher::new()));
+        }
+        if gdc_enabled {
+            v.push(Box::new(GdcFetcher::new()));
+        }
+        if clinvar_enabled {
+            v.push(Box::new(ClinvarFetcher::new()));
+        }
         v
     };
 
@@ -109,4 +176,46 @@ fn cli() -> Command {
         .arg(Arg::new("boinc-url")
             .long("boinc-url").value_name("URL")
             .help("BOINC project XML URL"))
+        .arg(Arg::new("competition")
+            .long("competition").value_name("SLUG")
+            .help("Seed a specific Kaggle competition (e.g. birdclef-2026)"))
+        .arg(Arg::new("kaggle-only")
+            .long("kaggle-only")
+            .action(clap::ArgAction::SetTrue)
+            .help("Fetch ONLY from Kaggle, disable NIH and other default sources"))
+        .arg(Arg::new("nih-challenges")
+            .long("nih-challenges")
+            .action(clap::ArgAction::SetTrue)
+            .help("Poll NIH Prize Challenges from challenges.nih.gov"))
+        .arg(Arg::new("dream")
+            .long("dream")
+            .action(clap::ArgAction::SetTrue)
+            .help("Poll DREAM Challenges from synapse.org"))
+        .arg(Arg::new("synapse-pat")
+            .long("synapse-pat").value_name("TOKEN")
+            .help("Synapse personal access token for authenticated DREAM challenge access (or env SYNAPSE_PAT)"))
+        .arg(Arg::new("horizon")
+            .long("horizon")
+            .action(clap::ArgAction::SetTrue)
+            .help("Poll EU Horizon Prize Challenges from CORDIS (cordis.europa.eu)"))
+        .arg(Arg::new("sra")
+            .long("sra")
+            .action(clap::ArgAction::SetTrue)
+            .help("Seed NCBI SRA GRCh38 VCF annotation jobs (GIAB benchmarks + E-utilities search)"))
+        .arg(Arg::new("igsr")
+            .long("igsr")
+            .action(clap::ArgAction::SetTrue)
+            .help("Seed 1000 Genomes / IGSR GRCh38 30x phased VCF annotation jobs"))
+        .arg(Arg::new("gnomad")
+            .long("gnomad")
+            .action(clap::ArgAction::SetTrue)
+            .help("Seed gnomAD v4.1 exome VCF allele-frequency annotation jobs"))
+        .arg(Arg::new("gdc")
+            .long("gdc")
+            .action(clap::ArgAction::SetTrue)
+            .help("Fetch open-access TCGA/GDC cancer cohort MAF annotation jobs"))
+        .arg(Arg::new("clinvar")
+            .long("clinvar")
+            .action(clap::ArgAction::SetTrue)
+            .help("Seed NCBI ClinVar weekly GRCh38 VCF clinical annotation jobs"))
 }

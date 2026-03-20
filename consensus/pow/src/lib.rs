@@ -27,6 +27,16 @@ pub struct State {
 }
 
 impl State {
+    /// Build a `State` directly from stratum-provided raw parts.
+    /// Used by stratum miners that receive pre_pow_hash + timestamp + bits separately.
+    #[inline]
+    pub fn from_parts(pre_pow_hash: kaspa_hashes::Hash, timestamp: u64, bits: u32) -> Self {
+        let target = Uint256::from_compact_target_bits(bits);
+        let hasher = PowHash::new(pre_pow_hash, timestamp);
+        let matrix = Matrix::generate(pre_pow_hash);
+        Self { matrix, target, hasher }
+    }
+
     #[inline]
     pub fn new(header: &Header) -> Self {
         let target = Uint256::from_compact_target_bits(header.bits);

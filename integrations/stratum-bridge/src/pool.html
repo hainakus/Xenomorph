@@ -458,7 +458,7 @@ function renderL2(l){
   set('gp-reward2',l.reward_sompi!=null?fmtSompi(l.reward_sompi):'–');
   const urlEl=document.getElementById('gp-url');
   if(urlEl){
-    if(l.dataset_url)urlEl.innerHTML=`<a class="lnk" href="${l.dataset_url}" target="_blank" rel="noopener">${l.dataset_url.slice(0,40)}…</a>`;
+    if(l.dataset)urlEl.innerHTML=`<a class="lnk" href="${l.dataset}" target="_blank" rel="noopener">${l.dataset.slice(0,60)}…</a>`;
     else urlEl.textContent='–';
   }
   // mining.notify preview

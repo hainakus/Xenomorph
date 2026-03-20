@@ -134,7 +134,6 @@ struct L2Info {
     job_id:       Option<String>,
     task:         Option<String>,
     dataset:      Option<String>,
-    dataset_url:  Option<String>,
     fragment:     Option<u64>,
     reward_sompi: Option<u64>,
 }
@@ -294,14 +293,13 @@ async fn get_l2(State(s): State<ApiState>) -> Json<L2Info> {
                     job_id:       Some(job.job_id.clone()),
                     task:         Some(job.task.clone()),
                     dataset:      Some(job.dataset.clone()),
-                    dataset_url:  job.dataset_url.clone(),
                     fragment:     Some(job.fragment),
                     reward_sompi: Some(job.reward_sompi),
                 });
             }
         }
     }
-    Json(L2Info { theme, enabled, job_id: None, task: None, dataset: None, dataset_url: None, fragment: None, reward_sompi: None })
+    Json(L2Info { theme, enabled, job_id: None, task: None, dataset: None, fragment: None, reward_sompi: None })
 }
 
 async fn get_network(

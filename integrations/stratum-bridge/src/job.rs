@@ -34,8 +34,10 @@ pub struct Job {
     /// Decoded `pre_pow_hash` used for KHeavyHash share validation.
     #[allow(dead_code)]
     pub pre_pow_hash: kaspa_hashes::Hash,
-    /// `true` once Genome PoW is active (epoch_seed != zero hash).
+    /// `true` once Genome PoW is active (daa_score >= activation threshold).
     pub genome_active: bool,
+    /// Template DAA score as 16-char hex — sent as param[8] to miners.
+    pub daa_score_hex: String,
 
     pub created: Instant,
 }
@@ -52,7 +54,7 @@ impl Job {
         let epoch_seed_hex = bytes_to_hex(&template.header.epoch_seed.as_bytes());
         let timestamp_hex = format!("{:016x}", template.header.timestamp);
 
-        let genome_active = template.header.epoch_seed != kaspa_hashes::Hash::default();
+        let daa_score_hex = format!("{:016x}", template.header.daa_score);
 
         Self {
             id,
@@ -62,9 +64,16 @@ impl Job {
             epoch_seed_hex,
             timestamp_hex,
             pre_pow_hash,
-            genome_active,
+            genome_active: false, // set by JobManager based on activation threshold
+            daa_score_hex,
             created: Instant::now(),
         }
+    }
+
+    /// Update genome_active based on an externally-supplied activation threshold.
+    pub fn with_activation(mut self, activation: u64) -> Self {
+        self.genome_active = self.template.header.daa_score >= activation;
+        self
     }
 
     /// Reconstruct the `RpcRawBlock` with the miner-supplied `nonce` ready for submission.
@@ -103,11 +112,16 @@ pub struct JobManager {
     pub current: Option<Arc<Job>>,
     counter: u64,
     last_template_id: Option<kaspa_hashes::Hash>,
+    genome_pow_activation_daa_score: u64,
 }
 
 impl JobManager {
     pub fn new() -> Self {
-        Self { jobs: HashMap::new(), current: None, counter: 0, last_template_id: None }
+        Self::with_activation(u64::MAX)
+    }
+
+    pub fn with_activation(activation: u64) -> Self {
+        Self { jobs: HashMap::new(), current: None, counter: 0, last_template_id: None, genome_pow_activation_daa_score: activation }
     }
 
     /// Returns `true` when the coinbase payload is structurally valid for the
@@ -139,7 +153,6 @@ impl JobManager {
             return false;
         }
         // For Genome-PoW (V2) blocks the fitness field must immediately follow the SPK.
-        // genome_active here uses the same epoch_seed heuristic as the rest of the bridge.
         let genome_active = template.header.epoch_seed != kaspa_hashes::Hash::default();
         if genome_active {
             if p.len() < 19 + spk_len + 4 {
@@ -197,7 +210,7 @@ impl JobManager {
         self.last_template_id = Some(template_id);
         self.counter += 1;
 
-        let job = Arc::new(Job::new(self.counter, template));
+        let job = Arc::new(Job::new(self.counter, template).with_activation(self.genome_pow_activation_daa_score));
         self.jobs.insert(job.id.clone(), job.clone());
         self.current = Some(job.clone());
 

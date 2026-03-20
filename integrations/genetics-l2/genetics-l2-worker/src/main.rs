@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use bioproof_core::{blake3_hex, compute_proof, merkle_root, sign_manifest, BioProofKeypair};
-use clap::{Arg, Command};
-use genetics_l2_core::{now_secs, Algorithm, JobResult, JobStatus, ScientificJob};
+use clap::{Arg, ArgAction, Command};
+use genetics_l2_core::{now_secs, Algorithm, JobResult, ScientificJob};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use tokio::time::{sleep, Duration};
@@ -21,7 +21,22 @@ async fn main() -> Result<()> {
     kaspa_core::log::init_logger(None, "info");
 
     let m           = cli().get_matches();
-    let privkey     = m.get_one::<String>("private-key").unwrap().clone();
+
+    // ── keygen shortcut ───────────────────────────────────────────────────────
+    if m.get_flag("gen-key") {
+        use secp256k1::Secp256k1;
+        let secp = Secp256k1::new();
+        let mut rng = secp256k1::rand::thread_rng();
+        let (secret_key, public_key) = secp.generate_keypair(&mut rng);
+        let privkey_hex = hex::encode(secret_key.secret_bytes());
+        let pubkey_hex  = hex::encode(public_key.serialize()); // 33-byte compressed
+        println!("Private key (--private-key): {privkey_hex}");
+        println!("Public  key (worker pubkey): {pubkey_hex}");
+        return Ok(());
+    }
+
+    let privkey     = load_privkey("WORKER_PRIVKEY", m.get_one::<String>("key-file").map(|s| s.as_str()))
+        .context("private key required (set $WORKER_PRIVKEY or use --key-file)")?;
     let coordinator = m.get_one::<String>("coordinator").unwrap().clone();
     let work_root   = PathBuf::from(m.get_one::<String>("work-root").unwrap());
     let poll_ms: u64 = m.get_one::<String>("poll-ms")
@@ -48,6 +63,23 @@ async fn main() -> Result<()> {
     };
 
     run_loop(&http, &cfg).await
+}
+
+/// Load private key from env var (first) or key file (second).
+/// Never reads from CLI args to avoid exposure in `ps aux`.
+fn load_privkey(env_var: &str, key_file: Option<&str>) -> Result<String> {
+    if let Ok(hex) = std::env::var(env_var) {
+        let hex = hex.trim().to_string();
+        if !hex.is_empty() { return Ok(hex); }
+    }
+    if let Some(path) = key_file {
+        let hex = std::fs::read_to_string(path)
+            .with_context(|| format!("cannot read key file '{path}'"))?
+            .trim()
+            .to_string();
+        return Ok(hex);
+    }
+    anyhow::bail!("No private key found. Set ${env_var} or use --key-file <PATH>")
 }
 
 async fn run_loop(http: &reqwest::Client, cfg: &WorkerConfig) -> Result<()> {
@@ -128,23 +160,57 @@ async fn try_claim_and_execute(
     log::info!("  result_root={result_root}");
 
     // ── 7. Sign result ────────────────────────────────────────────────────────
-    let sign_data = format!("{}:{}:{:.6}", job.job_id, result_root, score);
+    let sign_data = format!("{}:{}:{:.6}:{}", job.job_id, result_root, score, &trace_hash);
     let digest    = *blake3::hash(sign_data.as_bytes()).as_bytes();
     let worker_sig = sign_manifest(&digest, &cfg.privkey_hex)
         .unwrap_or_else(|_| "unsigned".to_owned());
 
-    // ── 8. Submit result ──────────────────────────────────────────────────────
+    // ── 8. Fetch coordinator pubkey for result encryption ─────────────────────
+    let coordinator_pubkey = match http
+        .get(format!("{}/pubkey", cfg.coordinator_url))
+        .send().await
+        .and_then(|r| r.error_for_status())
+    {
+        Ok(resp) => resp.json::<serde_json::Value>().await
+            .ok()
+            .and_then(|v| v["pubkey"].as_str().map(str::to_owned))
+            .unwrap_or_default(),
+        Err(e) => { log::warn!("Cannot fetch coordinator pubkey: {e}"); String::new() },
+    };
+
+    // ── 9. Build and optionally encrypt result ────────────────────────────────
     let result_id = format!("{}-{}", job.job_id, &trace_hash[..8]);
-    let result = JobResult {
+    let mut result = JobResult {
         result_id:    result_id.clone(),
         job_id:       job.job_id.clone(),
         worker_pubkey: cfg.worker_pubkey.clone(),
         result_root:  result_root.clone(),
         score,
-        trace_hash:   Some(trace_hash),
+        trace_hash:              Some(trace_hash),
+        notebook_or_repo_hash:   None,
+        container_hash:          None,
+        weights_hash:            None,
+        submission_bundle_hash:  None,
         worker_sig,
+        encrypted_payload:       None,
+        ephemeral_pubkey:        None,
+        predictions_csv:         None,
         submitted_at: now_secs(),
     };
+
+    if !coordinator_pubkey.is_empty() {
+        match result.encrypt_payload(&coordinator_pubkey) {
+            Ok((enc, eph)) => {
+                log::info!("Encrypted result payload for {}", job.job_id);
+                result.encrypted_payload = Some(enc);
+                result.ephemeral_pubkey  = Some(eph);
+                result.predictions_csv = None;
+            }
+            Err(e) => log::warn!("Encryption failed: {e} — submitting unencrypted"),
+        }
+    } else {
+        log::warn!("No coordinator pubkey — submitting unencrypted result");
+    }
 
     let submit_resp = http
         .post(format!("{}/results", cfg.coordinator_url))
@@ -188,6 +254,9 @@ async fn execute_algorithm(
         Algorithm::RnaExpression => {
             rna_expression_stub(&input_dir, &output_dir).await
         }
+        Algorithm::AcousticClassification => {
+            acoustic_classification(&input_dir, &output_dir).await
+        }
         _ => {
             // Generic: run pipeline script if present, else return stub score
             generic_pipeline_stub(job, &input_dir, &output_dir).await
@@ -205,19 +274,21 @@ async fn smith_waterman_stub(
     let mut trace = String::from("smith-waterman alignment\n");
 
     let files = collect_files(input_dir).await.unwrap_or_default();
+    let n = files.len().max(1);
     for f in &files {
         let data = tokio::fs::read(f).await.unwrap_or_default();
-        // Stub: score = sum of G+C base counts (mock for deterministic output)
+        // Stub: mean GC fraction across files — deterministic, always in [0.0, 1.0]
         let gc = data.iter().filter(|&&b| b == b'G' || b == b'C').count();
         score += gc as f64 / data.len().max(1) as f64;
-        trace.push_str(&format!("  {} → gc_fraction={:.4}\n", f.display(), score));
+        trace.push_str(&format!("  {} → gc_fraction={:.4}\n", f.display(), score / n as f64));
     }
 
     // Write stub VCF output
     let vcf_content = "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\n";
     tokio::fs::write(output_dir.join("alignment.vcf"), vcf_content).await?;
 
-    Ok((score * 1000.0, trace))
+    // Normalize: mean GC fraction → in [0.0, 1.0]
+    Ok((score / n as f64, trace))
 }
 
 async fn variant_calling_stub(
@@ -228,7 +299,9 @@ async fn variant_calling_stub(
     let trace = format!("variant-calling on {} input files\n", files.len());
     let vcf   = "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\n";
     tokio::fs::write(output_dir.join("variants.vcf"), vcf).await?;
-    Ok((files.len() as f64 * 100.0, trace))
+    // Normalized: files / (files + 1) → in [0.0, 1.0)
+    let score = files.len() as f64 / (files.len() as f64 + 1.0);
+    Ok((score, trace))
 }
 
 async fn protein_folding_stub(
@@ -239,7 +312,8 @@ async fn protein_folding_stub(
     let trace  = format!("protein-folding on {} sequences\n", files.len());
     let pdb    = "ATOM      1  N   ALA A   1       1.000   1.000   1.000  1.00  0.00\n";
     tokio::fs::write(output_dir.join("structure.pdb"), pdb).await?;
-    Ok((0.85 * files.len() as f64, trace))
+    // Fixed stub confidence — always in [0.0, 1.0]
+    Ok((0.85, trace))
 }
 
 async fn rna_expression_stub(
@@ -250,7 +324,103 @@ async fn rna_expression_stub(
     let trace  = format!("rna-expression on {} files\n", files.len());
     let tsv    = "gene_id\tcount\nGENE1\t1234\nGENE2\t567\n";
     tokio::fs::write(output_dir.join("counts.tsv"), tsv).await?;
-    Ok((files.len() as f64 * 50.0, trace))
+    // Normalized: files / (files + 1) → in [0.0, 1.0)
+    let score = files.len() as f64 / (files.len() as f64 + 1.0);
+    Ok((score, trace))
+}
+
+/// Acoustic species classification for BirdCLEF-style tasks.
+///
+/// Production path: calls `birdnet-analyzer` (Python) on each OGG/WAV clip.
+/// Stub path (no model present): returns a deterministic hash-based score.
+async fn acoustic_classification(
+    input_dir:  &Path,
+    output_dir: &Path,
+) -> Result<(f64, String)> {
+    let files = collect_files(input_dir).await.unwrap_or_default();
+    let mut trace = format!("acoustic-classification on {} audio file(s)\n", files.len());
+    let mut all_predictions: Vec<serde_json::Value> = Vec::new();
+    let mut score_acc = 0.0f64;
+
+    for audio_path in &files {
+        let ext = audio_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !matches!(ext.to_lowercase().as_str(), "ogg" | "wav" | "mp3" | "flac") {
+            continue;
+        }
+
+        // ── Try BirdNET-Analyzer (requires: pip install birdnet-analyzer) ──────
+        let birdnet = tokio::process::Command::new("python3")
+            .args([
+                "-m", "birdnet_analyzer.analyze",
+                "--input",  &audio_path.to_string_lossy(),
+                "--output", &output_dir.to_string_lossy(),
+                "--format", "json",
+                "--min_conf", "0.1",
+            ])
+            .output()
+            .await;
+
+        match birdnet {
+            Ok(out) if out.status.success() => {
+                let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+                trace.push_str(&format!("  birdnet OK: {}\n", audio_path.display()));
+                // Parse JSON predictions
+                if let Ok(preds) = serde_json::from_str::<serde_json::Value>(&stdout) {
+                    let conf = preds["detections"]
+                        .as_array()
+                        .and_then(|a| a.first())
+                        .and_then(|d| d["confidence"].as_f64())
+                        .unwrap_or(0.0);
+                    score_acc += conf;
+                    all_predictions.push(preds);
+                }
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                trace.push_str(&format!("  birdnet WARN {}: {}\n", audio_path.display(), stderr.trim()));
+                // Stub score: BLAKE3 of audio bytes → deterministic float in [0,1]
+                let bytes = tokio::fs::read(audio_path).await.unwrap_or_default();
+                let hash  = blake3::hash(&bytes);
+                let stub_conf = (hash.as_bytes()[0] as f64) / 255.0;
+                score_acc += stub_conf;
+                all_predictions.push(serde_json::json!({
+                    "file": audio_path.to_string_lossy(),
+                    "stub": true,
+                    "confidence": stub_conf
+                }));
+            }
+            Err(_) => {
+                // birdnet-analyzer not installed — deterministic stub
+                trace.push_str(&format!("  birdnet not found (stub): {}\n", audio_path.display()));
+                let bytes = tokio::fs::read(audio_path).await.unwrap_or_default();
+                let hash  = blake3::hash(if bytes.is_empty() { audio_path.to_str().unwrap_or("").as_bytes() } else { &bytes });
+                let stub_conf = (hash.as_bytes()[0] as f64) / 255.0;
+                score_acc += stub_conf;
+                all_predictions.push(serde_json::json!({
+                    "file": audio_path.to_string_lossy(),
+                    "stub": true,
+                    "confidence": stub_conf
+                }));
+            }
+        }
+    }
+
+    // Write consolidated predictions JSON
+    let out_json = serde_json::json!({
+        "algorithm": "acoustic_classification",
+        "files_processed": files.len(),
+        "predictions": all_predictions
+    });
+    tokio::fs::write(
+        output_dir.join("predictions.json"),
+        serde_json::to_vec_pretty(&out_json)?,
+    ).await?;
+
+    let n = files.len().max(1);
+    // mean_confidence is already in [0.0, 1.0] (each confidence ∈ [0,1])
+    let score = (score_acc / n as f64).clamp(0.0, 1.0);
+    trace.push_str(&format!("  mean_confidence={score:.4}\n"));
+    Ok((score, trace))
 }
 
 async fn generic_pipeline_stub(
@@ -260,7 +430,8 @@ async fn generic_pipeline_stub(
 ) -> Result<(f64, String)> {
     let trace = format!("generic pipeline for {} [{}]\n", job.job_id, job.algorithm);
     tokio::fs::write(output_dir.join("result.json"), serde_json::to_vec(job)?).await?;
-    Ok((42.0, trace))
+    // Fixed stub score in [0.0, 1.0]
+    Ok((0.42, trace))
 }
 
 // ── Dataset download ──────────────────────────────────────────────────────────
@@ -322,9 +493,13 @@ async fn collect_files(dir: &Path) -> Result<Vec<PathBuf>> {
 fn cli() -> Command {
     Command::new("genetics-l2-worker")
         .about("Genetics L2 worker daemon — polls coordinator for jobs, executes algorithms, submits results")
-        .arg(Arg::new("private-key")
-            .short('k').long("private-key").value_name("HEX").required(true)
-            .help("Worker secp256k1 private key (64 hex chars)"))
+        .arg(Arg::new("gen-key")
+            .long("gen-key")
+            .action(ArgAction::SetTrue)
+            .help("Generate a fresh secp256k1 keypair and exit"))
+        .arg(Arg::new("key-file")
+            .short('k').long("key-file").value_name("PATH")
+            .help("Path to file containing the secp256k1 private key (64 hex chars). Alternatively set $WORKER_PRIVKEY."))
         .arg(Arg::new("coordinator")
             .short('c').long("coordinator").value_name("URL")
             .default_value("http://localhost:8091")

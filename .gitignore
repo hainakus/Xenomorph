@@ -1,5 +1,6 @@
 target
 web-root
+/xenom-mainnet/
 **/.idea/
 /rust-toolchain
 /.vscode/

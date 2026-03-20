@@ -155,6 +155,17 @@ fn cli() -> Command {
             .long("l2-poll-secs").value_name("N")
             .default_value("10").value_parser(clap::value_parser!(u64))
             .help("L2 coordinator poll interval in seconds"))
+        // ── Network selection ─────────────────────────────────────────────────
+        .arg(Arg::new("devnet")
+            .long("devnet").action(clap::ArgAction::SetTrue)
+            .help("Connect to devnet (sets genome PoW activation to DAA score 0)"))
+        .arg(Arg::new("testnet")
+            .long("testnet").action(clap::ArgAction::SetTrue)
+            .help("Connect to testnet"))
+        .arg(Arg::new("genome-activation-daa-score")
+            .long("genome-activation-daa-score").value_name("N")
+            .value_parser(clap::value_parser!(u64))
+            .help("Override genome PoW activation DAA score (default: u64::MAX = always KHeavyHash)"))
 }
 
 #[tokio::main]
@@ -276,8 +287,20 @@ async fn main() -> Result<()> {
     let rpc = Arc::new(GrpcClient::connect(url.clone()).await.context("gRPC connect")?);
     info!("Connected to {url}");
 
+    // ── Genome PoW activation threshold ───────────────────────────────────────
+    let genome_activation: u64 = if let Some(n) = m.get_one::<u64>("genome-activation-daa-score") {
+        *n
+    } else if m.get_flag("devnet") {
+        0
+    } else {
+        u64::MAX
+    };
+    if genome_activation != u64::MAX {
+        info!("Genome PoW activation DAA score: {genome_activation}");
+    }
+
     // ── Shared state ──────────────────────────────────────────────────────────
-    let job_mgr:    Arc<RwLock<JobManager>> = Arc::new(RwLock::new(JobManager::new()));
+    let job_mgr: Arc<RwLock<JobManager>> = Arc::new(RwLock::new(JobManager::with_activation(genome_activation)));
     let accounting: Arc<Mutex<Accounting>>  = Arc::new(Mutex::new(
         Accounting::new(pplns_window, payout_file),
     ));
@@ -481,10 +504,9 @@ async fn main() -> Result<()> {
         let slot2        = slot.clone();
         let theme        = if bridge_cfg.bridge.theme.is_empty() { "generic".to_owned() } else { bridge_cfg.bridge.theme.clone() };
         let coordinator  = bridge_cfg.l2.coordinator.clone();
-        let dataset      = bridge_cfg.l2.dataset.clone();
         let poll_secs    = bridge_cfg.l2.poll_secs;
         tokio::spawn(async move {
-            l2_jobs::run_poller(theme, coordinator, dataset, poll_secs, slot2).await;
+            l2_jobs::run_poller(theme, coordinator, poll_secs, slot2).await;
         });
         info!("L2 pool: theme={} coordinator={} dataset={}",
             bridge_cfg.bridge.theme, bridge_cfg.l2.coordinator, bridge_cfg.l2.dataset);

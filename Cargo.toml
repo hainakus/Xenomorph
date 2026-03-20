@@ -29,6 +29,10 @@ members = [
     "integrations/bioproof/bioproof-api",
     "integrations/bioproof/bioproof-worker",
     "integrations/xenom-anchor-client",
+    "integrations/xenom-evm/xenom-evm-core",
+    "integrations/xenom-evm/xenom-evm-rpc",
+    "integrations/xenom-evm/xenom-evm-node",
+    "integrations/xenom-evm/xenom-anchor-committer",
     "integrations/genetics-l2/genetics-l2-core",
     "integrations/genetics-l2/genetics-l2-coordinator",
     "integrations/genetics-l2/genetics-l2-fetcher",
@@ -258,6 +262,9 @@ serde-wasm-bindgen = "0.6.1"
 sha1 = "0.10.6"
 sha2 = "0.10.8"
 sha3 = "0.10.8"
+revm = { version = "14", default-features = false, features = ["std", "serde"] }
+rlp = "0.5"
+jsonrpsee = { version = "0.22", features = ["server", "http-client", "ws-client", "macros"] }
 slugify-rs = "0.0.3"
 smallvec = { version = "1.11.1", features = ["serde"] }
 sorted-insert = "0.2.3"
@@ -285,6 +292,7 @@ pin-project-lite = "0.2.13"
 tower-http = { version = "0.4.4", features = [
     "map-response-body",
     "map-request-body",
+    "cors",
 ] }
 tower = "0.4.7"
 hyper = "0.14.27"

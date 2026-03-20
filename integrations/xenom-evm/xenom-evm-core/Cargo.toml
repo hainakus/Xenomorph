@@ -1,0 +1,30 @@
+[package]
+name        = "xenom-evm-core"
+description = "Xenom EVM L2 — embedded revm executor + in-memory state"
+rust-version.workspace = true
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+license.workspace      = true
+
+[lib]
+name = "xenom_evm_core"
+path = "src/lib.rs"
+
+[dependencies]
+revm          = { workspace = true }
+rlp           = { workspace = true }
+sha3          = { workspace = true }
+secp256k1     = { workspace = true, features = ["recovery"] }
+hex           = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+bincode       = { workspace = true }
+log           = { workspace = true }
+thiserror     = { workspace = true }
+parking_lot   = { workspace = true }
+tokio         = { workspace = true, features = ["sync"] }
+rocksdb       = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,4 +1,4 @@
-use secp256k1::{ecdsa::Signature, Message, PublicKey, Secp256k1, SecretKey};
+use secp256k1::{ecdsa::Signature, Message, PublicKey, Secp256k1, SecretKey, rand::rngs::OsRng};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -18,6 +18,13 @@ pub struct BioProofKeypair {
 }
 
 impl BioProofKeypair {
+    /// Generate a fresh random keypair.
+    pub fn generate() -> Self {
+        let secp   = Secp256k1::new();
+        let (secret, public) = secp.generate_keypair(&mut OsRng);
+        Self { secret, public }
+    }
+
     /// Load from a 32-byte private key hex string.
     pub fn from_hex(hex_str: &str) -> Result<Self, SigningError> {
         let bytes = hex::decode(hex_str)?;
@@ -25,6 +32,11 @@ impl BioProofKeypair {
         let secp   = Secp256k1::signing_only();
         let public = PublicKey::from_secret_key(&secp, &secret);
         Ok(Self { secret, public })
+    }
+
+    /// Hex-encoded 32-byte private key.
+    pub fn privkey_hex(&self) -> String {
+        hex::encode(self.secret.secret_bytes())
     }
 
     /// Hex-encoded 33-byte compressed public key.
