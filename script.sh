@@ -13,7 +13,7 @@ echo ""
 read -r -p "BIN path [./target/release]: " BIN
 BIN="${BIN:-./target/release}"
 
-read -r -p "Private Key: " PRIVKEY
+read -r -p "Private Key (L2 worker/settlement): " PRIVKEY
 echo ""
 
 read -r -p "Mining Address: " MINING_ADDR
@@ -24,6 +24,19 @@ read -r -p "Coordinator URL [http://localhost:8091]: " COORDINATOR
 COORDINATOR="${COORDINATOR:-http://localhost:8091}"
 
 echo ""
+echo "--- L1 Anchor Committer ---"
+echo "  To commit EVM checkpoints to L1, enter the private key whose address"
+echo "  corresponds to your mining address (it must hold UTXOs from block rewards)."
+echo "  Leave blank to run in dry-run mode (checkpoints logged, not submitted)."
+read -r -p "Anchor Committer Key [blank = dry-run]: " ANCHOR_KEY
+if [[ -n "$ANCHOR_KEY" ]]; then
+  ANCHOR_SUBMIT=1
+else
+  ANCHOR_SUBMIT=0
+  echo "  (dry-run: anchor commits disabled)"
+fi
+echo ""
+
 export BIN
 export MINING_ADDR
 export NODE_RPC
@@ -34,8 +47,8 @@ export SETTLEMENT_PRIVKEY="$PRIVKEY"
 export VALIDATOR_PRIVKEY="$PRIVKEY"
 export L2_PRIVKEY="$PRIVKEY"
 export WORKER_PRIVKEY="$PRIVKEY"   # genetics-l2-worker standalone L2 worker
-export COMMITTER_PRIVKEY="$PRIVKEY" # xenom-anchor-committer L2→L1 checkpoint commits
-unset PRIVKEY  # clear original after mapping to named vars
+export COMMITTER_PRIVKEY="${ANCHOR_KEY:-}" # xenom-anchor-committer L2→L1 checkpoint commits
+unset PRIVKEY ANCHOR_KEY  # clear originals after mapping to named vars
 
 echo ""
 echo "=== Environment ==="
@@ -260,14 +273,14 @@ echo "=== Starting xenom-anchor-committer (L2 checkpoint → L1 tx.payload) ==="
 echo "    evm-node:  http://127.0.0.1:8545"
 echo "    l1-node:   grpc://$NODE_RPC"
 echo "    state-dir: $COMMITTER_STATE_DIR"
-echo "    funding:   $MINING_ADDR (miner key)"
-"$BIN/xenom-anchor-committer" \
-  --evm-node 127.0.0.1:8545 \
-  --node "$NODE_RPC" \
-  --state-dir "$COMMITTER_STATE_DIR" \
-  --poll-ms 10000 \
-  --submit \
-  --devnet \
+if [[ "$ANCHOR_SUBMIT" -eq 1 ]]; then
+  echo "    mode:      SUBMIT (live L1 anchor commits)"
+else
+  echo "    mode:      dry-run (no L1 submission — set Anchor Committer Key to enable)"
+fi
+COMMITTER_ARGS=(--evm-node 127.0.0.1:8545 --node "$NODE_RPC" --state-dir "$COMMITTER_STATE_DIR" --poll-ms 10000 --devnet)
+[[ "$ANCHOR_SUBMIT" -eq 1 ]] && COMMITTER_ARGS+=(--submit) || true
+"$BIN/xenom-anchor-committer" "${COMMITTER_ARGS[@]}" \
   > /tmp/xenom-logs/anchor-committer.log 2>&1 &
 PIDS+=($!)
 sleep 2
