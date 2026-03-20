@@ -745,7 +745,7 @@ async fn acoustic_classification(input_dir: &Path, output_dir: &Path, cfg: &L2Co
     let sample_sub = input_dir.join("sample_submission.csv");
     if sample_sub.exists() {
         cmd.args(["--sample-submission", sample_sub.to_str().unwrap_or("")]);
-        trace.push_str(&format!("  [infer] using sample_submission.csv for row_ids\n"));
+        trace.push_str("  [infer] using sample_submission.csv for row_ids\n");
     }
     trace.push_str(&format!("  [infer] {} --input {:?}\n", infer_script.display(), input_dir));
 

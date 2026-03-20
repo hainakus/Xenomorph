@@ -525,7 +525,7 @@ async fn dataset_status(
     let dir         = s.datasets_dir.join(&job_id);
     let ready       = dir.join(".ready").exists();
     let lock_exists = s.datasets_dir.read_dir().ok()
-        .map(|mut rd| rd.any(|e| e.ok().and_then(|e| e.file_name().into_string().ok()).map_or(false, |n| n.ends_with(".lock"))))
+        .map(|mut rd| rd.any(|e| e.ok().and_then(|e| e.file_name().into_string().ok()).is_some_and(|n| n.ends_with(".lock"))))
         .unwrap_or(false);
     let file_count: usize = if dir.exists() {
         std::fs::read_dir(&dir).map(|rd| rd.flatten().filter(|e| e.path().is_file()).count()).unwrap_or(0)
@@ -1078,7 +1078,7 @@ async fn download_kaggle_dataset(
     log::info!("Downloading Kaggle dataset for job {job_id}: {slug} (--skip-existing)");
 
     let output = tokio::process::Command::new("kaggle")
-        .args(&["competitions", "download", "-c", slug,
+        .args(["competitions", "download", "-c", slug,
                 "--path", cache_dir.to_str().unwrap()])
         .output()
         .await
@@ -1098,7 +1098,7 @@ async fn download_kaggle_dataset(
         if path.extension().and_then(|e| e.to_str()) == Some("zip") {
             log::info!("Extracting {}", path.display());
             let out = tokio::process::Command::new("unzip")
-                .args(&["-n", "-q", path.to_str().unwrap(), "-d", cache_dir.to_str().unwrap()])
+                .args(["-n", "-q", path.to_str().unwrap(), "-d", cache_dir.to_str().unwrap()])
                 .output().await;
             if out.is_ok() {
                 tokio::fs::remove_file(&path).await.ok();
@@ -1173,10 +1173,6 @@ async fn count_audio_files_recursive(dir: &std::path::Path) -> usize {
         .unwrap_or(0)
 }
 
-async fn count_audio_files(dir: &std::path::Path) -> usize {
-    count_audio_files_recursive(dir).await
-}
-
 // ── Keypair management ────────────────────────────────────────────────────────
 
 /// Load or generate coordinator's secp256k1 keypair for result encryption.
@@ -1244,7 +1240,7 @@ async fn main() -> Result<()> {
     log::info!("Database: {db_path}");
 
     // Generate or load coordinator keypair for result encryption
-    let (coordinator_privkey, coordinator_pubkey) = load_or_generate_keypair(&db_path)?;
+    let (coordinator_privkey, coordinator_pubkey) = load_or_generate_keypair(db_path.as_str())?;
     log::info!("Coordinator pubkey: {coordinator_pubkey}");
 
     // Find scripts directory: --scripts-dir flag, next to binary, or ./scripts/

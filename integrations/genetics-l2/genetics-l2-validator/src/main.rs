@@ -299,7 +299,7 @@ async fn partial_recompute(predictions_csv: Option<&str>, claimed_score: f64) ->
         for line in csv.lines() {
             if let Some(val) = line.strip_prefix("score,") {
                 if let Ok(s) = val.trim().parse::<f64>() {
-                    if s >= 0.0 && s <= 1.0 {
+                    if (0.0..=1.0).contains(&s) {
                         return s;
                     }
                 }
@@ -315,7 +315,7 @@ async fn partial_recompute(predictions_csv: Option<&str>, claimed_score: f64) ->
         }
     }
     // No CSV or unparseable: echo claimed_score if in [0.0, 1.0], else reject
-    if claimed_score >= 0.0 && claimed_score <= 1.0 {
+    if (0.0..=1.0).contains(&claimed_score) {
         claimed_score
     } else {
         0.0
