@@ -908,7 +908,8 @@ async fn handle_solution(
                 }
             };
             let extranonce2 = (nonce & 0xFFFF_FFFF) as u32;
-            if sol_tx.send(crate::stratum_client::StratumSolution { job_id, extranonce2 }).await.is_err() {
+            let ntime = template.timestamp;
+            if sol_tx.send(crate::stratum_client::StratumSolution { job_id, extranonce2, ntime, nonce }).await.is_err() {
                 warn!("[GPU{gpu_id}] stratum solution channel closed");
             }
         }

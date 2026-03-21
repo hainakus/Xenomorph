@@ -37,6 +37,8 @@ pub struct StratumJob {
 pub struct StratumSolution {
     pub job_id:      String,
     pub extranonce2: u32,
+    pub ntime:       u64,
+    pub nonce:       u64,
 }
 
 // ── Client ────────────────────────────────────────────────────────────────────
@@ -133,12 +135,14 @@ impl StratumClient {
                         // ── Server notifications ────────────────────────
                         match method {
                             "mining.notify" => {
+                                info!("Stratum: received mining.notify: {}", msg);
                                 let en1 = extranonce1;
                                 let diff = *self.difficulty.lock().unwrap();
                                 if let Some(job) = parse_notify(&msg, en1, diff) {
+                                    let l2_info = if job.l2_job.is_some() { " L2=yes" } else { "" };
                                     let log = format!(
-                                        "Stratum job={} bits={:#010x} clean={}",
-                                        job.job_id, job.bits, job.clean_jobs
+                                        "Stratum job={} bits={:#010x} target={:x} clean={}{}",
+                                        job.job_id, job.bits, job.target, job.clean_jobs, l2_info
                                     );
                                     info!("{log}");
                                     {
@@ -157,8 +161,9 @@ impl StratumClient {
                             }
                             "mining.set_difficulty" => {
                                 if let Some(d) = msg["params"][0].as_f64() {
-                                    info!("Stratum: pool difficulty={d}");
                                     *self.difficulty.lock().unwrap() = d;
+                                    let target = calculate_target(d);
+                                    info!("Stratum: pool difficulty={d} (target: {target:x})");
                                 }
                             }
                             other => {
@@ -218,15 +223,17 @@ impl StratumClient {
                     };
                     msg_id += 1;
                     let en2_hex = format!("{:08x}", sol.extranonce2);
+                    let ntime_hex = format!("{:016x}", sol.ntime);
+                    let nonce_hex = format!("{:016x}", sol.nonce);
                     let submit = serde_json::json!({
                         "id": msg_id,
                         "method": "mining.submit",
-                        "params": [&self.worker, sol.job_id, en2_hex]
+                        "params": [&self.worker, sol.job_id, en2_hex, ntime_hex, nonce_hex]
                     });
                     let mut line = serde_json::to_string(&submit)?;
                     line.push('\n');
                     writer.write_all(line.as_bytes()).await?;
-                    info!("Stratum: submitted extranonce2={en2_hex}");
+                    info!("Stratum: submitted en2={en2_hex} ntime={ntime_hex} nonce={nonce_hex} for job={}", sol.job_id);
                 }
             }
         }
@@ -282,26 +289,36 @@ fn calculate_target(difficulty: f64) -> kaspa_math::Uint256 {
         return kaspa_math::Uint256::MAX;
     }
 
-    let (mantissa, exponent) = {
-        let bits = difficulty.recip().to_bits();
-        let exponent = ((bits >> 52) & 0x7FF) as i16;
-        let mantissa = bits & 0xF_FFFF_FFFF_FFFF;
-        if exponent == 0 {
-            (mantissa << 1, exponent - 1022 - 52)
-        } else {
-            (mantissa | 0x10_0000_0000_0000, exponent - 1023 - 52)
-        }
-    };
+    // Kaspa Stratum difficulty 1.0 = target 0x0000ffff00000000000000000000000000000000000000000000000000000000
+    // which is (2^16 - 1) * 2^208.
+    // target = (2^16 - 1) * 2^208 / difficulty.
 
-    let new_mantissa = (mantissa as u128) * 0xffffu128;
-    let new_exponent = (208 + exponent) as i16;
+    let base_mantissa = 0xffffu128;
+    let base_exponent = 208i16;
 
-    if new_exponent < 0 {
+    // Use f64 for the division to handle the difficulty scaling
+    let target_f64 = (base_mantissa as f64) * (2.0f64.powi(base_exponent as i32)) / difficulty;
+
+    // Convert back to Uint256
+    if target_f64 >= 2.0f64.powi(256) {
+        return kaspa_math::Uint256::MAX;
+    }
+    if target_f64 < 1.0 {
         return kaspa_math::Uint256::ZERO;
     }
 
-    let mut res = kaspa_math::Uint256::from_u128(new_mantissa);
-    res = res.wrapping_shl(new_exponent as u32);
+    // Extract mantissa and exponent from the resulting f64
+    let bits = target_f64.to_bits();
+    let exponent = (((bits >> 52) & 0x7FF) as i16) - 1023;
+    let mantissa = (bits & 0xF_FFFF_FFFF_FFFF) | 0x10_0000_0000_0000;
+
+    let mut res = kaspa_math::Uint256::from_u128(mantissa as u128);
+    let shift = exponent - 52;
+    if shift >= 0 {
+        res = res.wrapping_shl(shift as u32);
+    } else {
+        res = res.overflowing_shr((-shift) as u32).0;
+    }
     res
 }
 

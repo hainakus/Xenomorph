@@ -559,11 +559,12 @@ async fn mine_stratum(
 
         if let Some(nonce) = winning {
             let extranonce2 = (nonce & 0xFFFF_FFFF) as u32;
+            let ntime = current_job.timestamp;
             info!("Share found! nonce={:#018x} en2={:08x} job={job_id}", nonce, extranonce2);
             dash.lock().unwrap().push_log(format!("Share  nonce={nonce:#018x}  job={job_id}"));
             // Advance nonce_base past winning nonce to avoid re-finding it
             nonce_base = nonce + 1;
-            if sol_tx.send(StratumSolution { job_id, extranonce2 }).await.is_err() {
+            if sol_tx.send(StratumSolution { job_id, extranonce2, ntime, nonce }).await.is_err() {
                 warn!("Stratum solution channel closed — exiting");
                 return;
             }
