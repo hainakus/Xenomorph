@@ -18,10 +18,7 @@ pub async fn detect(worker_pubkey: String, max_concurrency: usize) -> Result<Wor
     let backends = detect_backends().await;
     let job_types = infer_job_types(&backends, &gpus);
 
-    let measured_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let measured_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
 
     Ok(WorkerCapabilities {
         worker_pubkey,
@@ -43,17 +40,15 @@ async fn detect_gpus() -> Vec<GpuInfo> {
     let mut gpus = Vec::new();
 
     // Try nvidia-smi (CUDA)
-    if let Ok(out) = Command::new("nvidia-smi")
-        .args(["--query-gpu=index,name,memory.total", "--format=csv,noheader,nounits"])
-        .output()
-        .await
+    if let Ok(out) =
+        Command::new("nvidia-smi").args(["--query-gpu=index,name,memory.total", "--format=csv,noheader,nounits"]).output().await
     {
         if out.status.success() {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
                 let parts: Vec<&str> = line.split(',').map(str::trim).collect();
                 if parts.len() >= 3 {
-                    let index   = parts[0].parse().unwrap_or(0);
-                    let model   = parts[1].to_owned();
+                    let index = parts[0].parse().unwrap_or(0);
+                    let model = parts[1].to_owned();
                     let vram_mb = parts[2].parse().unwrap_or(0);
                     gpus.push(GpuInfo { index, model, vram_mb, cuda: true, rocm: false });
                 }
@@ -67,13 +62,7 @@ async fn detect_gpus() -> Vec<GpuInfo> {
             if out.status.success() {
                 for (i, line) in String::from_utf8_lossy(&out.stdout).lines().enumerate() {
                     if line.contains("GPU") || line.contains("Radeon") || line.contains("gfx") {
-                        gpus.push(GpuInfo {
-                            index:   i,
-                            model:   line.trim().to_owned(),
-                            vram_mb: 0,
-                            cuda:    false,
-                            rocm:    true,
-                        });
+                        gpus.push(GpuInfo { index: i, model: line.trim().to_owned(), vram_mb: 0, cuda: false, rocm: true });
                     }
                 }
             }
@@ -87,38 +76,30 @@ async fn detect_gpus() -> Vec<GpuInfo> {
 
 async fn detect_backends() -> Vec<ExecutionBackend> {
     let probes: &[(&str, &[&str], ExecutionBackend)] = &[
-        ("docker",      &["--version"],     ExecutionBackend::Docker),
-        ("singularity", &["--version"],     ExecutionBackend::Singularity),
-        ("apptainer",   &["--version"],     ExecutionBackend::Singularity),
-        ("nextflow",    &["-version"],      ExecutionBackend::Nextflow),
-        ("snakemake",   &["--version"],     ExecutionBackend::Snakemake),
-        ("cromwell",    &["--version"],     ExecutionBackend::Cromwell),
-        ("python3",     &["--version"],     ExecutionBackend::Native),
-        ("bash",        &["--version"],     ExecutionBackend::Native),
+        ("docker", &["--version"], ExecutionBackend::Docker),
+        ("singularity", &["--version"], ExecutionBackend::Singularity),
+        ("apptainer", &["--version"], ExecutionBackend::Singularity),
+        ("nextflow", &["-version"], ExecutionBackend::Nextflow),
+        ("snakemake", &["--version"], ExecutionBackend::Snakemake),
+        ("cromwell", &["--version"], ExecutionBackend::Cromwell),
+        ("python3", &["--version"], ExecutionBackend::Native),
+        ("bash", &["--version"], ExecutionBackend::Native),
     ];
 
     let mut found = Vec::new();
     for (bin, args, backend) in probes {
-        if Command::new(bin).args(*args).output().await
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-        {
-            if !found.contains(backend) {
+        if Command::new(bin).args(*args).output().await.map(|o| o.status.success()).unwrap_or(false)
+            && !found.contains(backend) {
                 found.push(backend.clone());
             }
-        }
     }
 
     // Check for CUDA toolkit
-    if Command::new("nvcc").arg("--version").output().await
-        .map(|o| o.status.success()).unwrap_or(false)
-    {
+    if Command::new("nvcc").arg("--version").output().await.map(|o| o.status.success()).unwrap_or(false) {
         found.push(ExecutionBackend::Cuda);
     }
     // Check for ROCm HIP
-    if Command::new("hipcc").arg("--version").output().await
-        .map(|o| o.status.success()).unwrap_or(false)
-    {
+    if Command::new("hipcc").arg("--version").output().await.map(|o| o.status.success()).unwrap_or(false) {
         found.push(ExecutionBackend::Rocm);
     }
 
@@ -129,17 +110,14 @@ async fn detect_backends() -> Vec<ExecutionBackend> {
 
 fn infer_job_types(backends: &[ExecutionBackend], gpus: &[GpuInfo]) -> Vec<JobType> {
     let mut types = Vec::new();
-    let has_container = backends.contains(&ExecutionBackend::Docker)
-        || backends.contains(&ExecutionBackend::Singularity);
-    let has_workflow  = backends.contains(&ExecutionBackend::Nextflow)
+    let has_container = backends.contains(&ExecutionBackend::Docker) || backends.contains(&ExecutionBackend::Singularity);
+    let has_workflow = backends.contains(&ExecutionBackend::Nextflow)
         || backends.contains(&ExecutionBackend::Snakemake)
         || backends.contains(&ExecutionBackend::Cromwell);
-    let has_native    = backends.contains(&ExecutionBackend::Native);
-    let has_gpu       = !gpus.is_empty();
-    let has_cuda      = gpus.iter().any(|g| g.cuda)
-        || backends.contains(&ExecutionBackend::Cuda);
-    let has_rocm      = gpus.iter().any(|g| g.rocm)
-        || backends.contains(&ExecutionBackend::Rocm);
+    let has_native = backends.contains(&ExecutionBackend::Native);
+    let has_gpu = !gpus.is_empty();
+    let has_cuda = gpus.iter().any(|g| g.cuda) || backends.contains(&ExecutionBackend::Cuda);
+    let has_rocm = gpus.iter().any(|g| g.rocm) || backends.contains(&ExecutionBackend::Rocm);
 
     if has_container || has_workflow || has_native {
         types.push(JobType::GenomicsPipeline);
@@ -149,8 +127,10 @@ fn infer_job_types(backends: &[ExecutionBackend], gpus: &[GpuInfo]) -> Vec<JobTy
         types.push(JobType::Metagenomics);
     }
 
+    if has_gpu || has_native {
+        types.push(JobType::AiInference);   // CPU/MPS fallback accepted
+    }
     if has_gpu {
-        types.push(JobType::AiInference);
         types.push(JobType::ProteinFolding);
     }
 
@@ -166,11 +146,7 @@ fn infer_job_types(backends: &[ExecutionBackend], gpus: &[GpuInfo]) -> Vec<JobTy
 // ── Disk space ───────────────────────────────────────────────────────────────
 
 async fn available_disk_mib() -> u64 {
-    if let Ok(out) = Command::new("df")
-        .args(["-m", "--output=avail", "."])
-        .output()
-        .await
-    {
+    if let Ok(out) = Command::new("df").args(["-m", "--output=avail", "."]).output().await {
         if out.status.success() {
             let txt = String::from_utf8_lossy(&out.stdout);
             if let Some(line) = txt.lines().nth(1) {

@@ -7,23 +7,13 @@ use tokio::sync::broadcast;
 use parking_lot::Mutex;
 use revm::{
     db::InMemoryDB,
-    primitives::{
-        AccountInfo, Address, Bytes, ExecutionResult, Output, TransactTo, TxEnv,
-        B256, U256,
-    },
+    primitives::{AccountInfo, Address, Bytes, ExecutionResult, Output, TransactTo, TxEnv, B256, U256},
     DatabaseRef, Evm,
 };
 use thiserror::Error;
 
 use crate::backend::{InMemoryBackend, RocksDbBackend, StateBackend};
-use crate::checkpoint::{
-    anchor_root,
-    genetics_settlement_root,
-    receipts_root,
-    tx_root,
-    L1CheckpointV1,
-    CHECKPOINT_VERSION_V1,
-};
+use crate::checkpoint::{anchor_root, genetics_settlement_root, receipts_root, tx_root, L1CheckpointV1, CHECKPOINT_VERSION_V1};
 use crate::types::{decode_raw_tx, DecodedTx, EvmLog, EvmReceipt};
 
 // ── Block record ──────────────────────────────────────────────────────────
@@ -62,7 +52,7 @@ pub struct EvmChain {
     mempool: Mutex<VecDeque<(B256, Vec<u8>)>>, // (hash, raw_rlp)
     latest_state_root: Mutex<B256>,
     blocks: Mutex<HashMap<u64, BlockRecord>>,
-    tx_to_block: Mutex<HashMap<B256, u64>>, // tx_hash → block_number
+    tx_to_block: Mutex<HashMap<B256, u64>>,       // tx_hash → block_number
     block_logs: Mutex<HashMap<u64, Vec<EvmLog>>>, // block_number → all logs in that block
     backend: Box<dyn StateBackend>,
     block_tx: broadcast::Sender<BlockRecord>,
@@ -72,14 +62,7 @@ pub struct EvmChain {
 
 impl EvmChain {
     pub fn new(chain_id: u64) -> Self {
-        Self::new_inner(
-            chain_id,
-            InMemoryDB::default(),
-            1,
-            0,
-            B256::ZERO,
-            Box::new(InMemoryBackend::new()),
-        )
+        Self::new_inner(chain_id, InMemoryDB::default(), 1, 0, B256::ZERO, Box::new(InMemoryBackend::new()))
     }
 
     /// Backward-compatible constructor: persisted mode now uses RocksDB.
@@ -102,25 +85,11 @@ impl EvmChain {
                         loaded.tx_index,
                         loaded.state_root
                     );
-                    Self::new_inner(
-                        chain_id,
-                        loaded.db,
-                        loaded.block_number,
-                        loaded.tx_index,
-                        loaded.state_root,
-                        Box::new(backend),
-                    )
+                    Self::new_inner(chain_id, loaded.db, loaded.block_number, loaded.tx_index, loaded.state_root, Box::new(backend))
                 }
                 Ok(None) => {
                     log::info!("rocksdb state is empty — starting fresh");
-                    Self::new_inner(
-                        chain_id,
-                        InMemoryDB::default(),
-                        1,
-                        0,
-                        B256::ZERO,
-                        Box::new(backend),
-                    )
+                    Self::new_inner(chain_id, InMemoryDB::default(), 1, 0, B256::ZERO, Box::new(backend))
                 }
                 Err(e) => {
                     log::warn!("rocksdb snapshot load failed: {e}. Falling back to in-memory backend.");
@@ -170,6 +139,18 @@ impl EvmChain {
             log::warn!("anchor persist failed: {e}");
         }
         id
+    }
+
+    /// List all stored anchors sorted by block number.
+    /// Returns (anchor_id_hex, block_number, created_at_ms, payload).
+    pub fn list_anchors(&self) -> Vec<(String, u64, u64, Vec<u8>)> {
+        match self.backend.list_anchors() {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("list_anchors failed: {e}");
+                vec![]
+            }
+        }
     }
 
     /// Retrieve a previously anchored payload by its ID.
@@ -226,14 +207,7 @@ impl EvmChain {
 
     // ── eth_call (no state change) ────────────────────────────────────────────
 
-    pub fn call(
-        &self,
-        from: Option<Address>,
-        to: Address,
-        data: Bytes,
-        value: U256,
-        gas_limit: u64,
-    ) -> Result<Bytes, ChainError> {
+    pub fn call(&self, from: Option<Address>, to: Address, data: Bytes, value: U256, gas_limit: u64) -> Result<Bytes, ChainError> {
         let mut db = self.db.lock();
         let block_num = self.block_number.load(Ordering::Relaxed);
         let caller = from.unwrap_or(Address::ZERO);
@@ -306,13 +280,9 @@ impl EvmChain {
 
         *self.latest_state_root.lock() = state_root;
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        let prev_hash = if block > 1 {
-            self.blocks.lock().get(&(block - 1)).map(|b| b.hash).unwrap_or(B256::ZERO)
-        } else {
-            B256::ZERO
-        };
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let prev_hash =
+            if block > 1 { self.blocks.lock().get(&(block - 1)).map(|b| b.hash).unwrap_or(B256::ZERO) } else { B256::ZERO };
         // Block hash = keccak256(block_number || state_root)
         let mut bhash_input = Vec::with_capacity(40);
         bhash_input.extend_from_slice(&block.to_be_bytes());
@@ -333,7 +303,9 @@ impl EvmChain {
         let _ = self.block_tx.send(new_block); // ok if no subscribers
         {
             let mut t2b = self.tx_to_block.lock();
-            for h in &included_hashes { t2b.insert(*h, block); }
+            for h in &included_hashes {
+                t2b.insert(*h, block);
+            }
         }
 
         // Patch block_hash + cumulativeGasUsed into receipts; collect block logs
@@ -347,9 +319,7 @@ impl EvmChain {
                 if let Some(receipt) = receipts.get_mut(h) {
                     receipt.block_hash = block_hash_hex.clone();
                     // parse gas_used back to u64 to accumulate cumulative
-                    let used = u64::from_str_radix(
-                        receipt.gas_used.trim_start_matches("0x"), 16
-                    ).unwrap_or(0);
+                    let used = u64::from_str_radix(receipt.gas_used.trim_start_matches("0x"), 16).unwrap_or(0);
                     cumulative += used;
                     receipt.cumulative_gas_used = format!("0x{:x}", cumulative);
                     for log in &mut receipt.logs {
@@ -365,36 +335,19 @@ impl EvmChain {
 
         // Persist state snapshot via selected backend
         let tx_idx = self.tx_index.load(Ordering::Relaxed);
-        if let Err(e) = self.backend.persist_snapshot(
-            &self.db.lock(),
-            self.chain_id,
-            block,
-            tx_idx,
-            state_root,
-        ) {
+        if let Err(e) = self.backend.persist_snapshot(&self.db.lock(), self.chain_id, block, tx_idx, state_root) {
             log::warn!("state persistence failed ({}): {e}", self.backend.name());
         }
 
         let included_receipts: Vec<EvmReceipt> = {
             let receipts = self.receipts.lock();
-            included_hashes
-                .iter()
-                .filter_map(|h| receipts.get(h).cloned())
-                .collect()
+            included_hashes.iter().filter_map(|h| receipts.get(h).cloned()).collect()
         };
 
-        let anchors_snapshot: Vec<(B256, u64, Vec<u8>)> = {
-            self.anchors
-                .lock()
-                .iter()
-                .map(|(id, (blk, payload))| (*id, *blk, payload.clone()))
-                .collect()
-        };
+        let anchors_snapshot: Vec<(B256, u64, Vec<u8>)> =
+            { self.anchors.lock().iter().map(|(id, (blk, payload))| (*id, *blk, payload.clone())).collect() };
 
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
 
         let checkpoint = L1CheckpointV1 {
             version: CHECKPOINT_VERSION_V1,
@@ -452,10 +405,14 @@ impl EvmChain {
             if let Some(logs) = store.get(&blk) {
                 for log in logs {
                     if let Some(addr) = address_filter {
-                        if !log.address.eq_ignore_ascii_case(addr) { continue; }
+                        if !log.address.eq_ignore_ascii_case(addr) {
+                            continue;
+                        }
                     }
                     if let Some(t0) = topic0_filter {
-                        if log.topics.first().map(|t| t.as_str()) != Some(t0) { continue; }
+                        if log.topics.first().map(|t| t.as_str()) != Some(t0) {
+                            continue;
+                        }
                     }
                     out.push(log.clone());
                 }
@@ -507,17 +464,17 @@ impl EvmChain {
         }
 
         let revm_tx = TxEnv {
-            caller:       tx.from,
-            transact_to:  match tx.to {
+            caller: tx.from,
+            transact_to: match tx.to {
                 Some(addr) => TransactTo::Call(addr),
                 None => TransactTo::Create,
             },
-            data:         tx.data.clone(),
-            value:        tx.value,
-            gas_limit:    tx.gas_limit,
-            gas_price:    tx.gas_price,
-            nonce:        Some(tx.nonce),
-            chain_id:     None, // already validated during sig recovery; skip EVM recheck
+            data: tx.data.clone(),
+            value: tx.value,
+            gas_limit: tx.gas_limit,
+            gas_price: tx.gas_price,
+            nonce: Some(tx.nonce),
+            chain_id: None, // already validated during sig recovery; skip EVM recheck
             ..Default::default()
         };
 
@@ -527,19 +484,22 @@ impl EvmChain {
 
         // Convert revm primitives::Log → EvmLog (block_hash filled as ZERO;
         // mine_block will patch it once the real block hash is known)
-        let logs: Vec<EvmLog> = res.logs.iter().enumerate().map(|(i, log)| EvmLog {
-            address: format!("0x{}", hex::encode(log.address)),
-            topics: log.data.topics().iter()
-                .map(|t| format!("0x{}", hex::encode(t)))
-                .collect(),
-            data: format!("0x{}", hex::encode(&log.data.data)),
-            block_number: format!("0x{:x}", block_num),
-            transaction_hash: format!("0x{}", hex::encode(tx.hash)),
-            transaction_index: format!("0x{:x}", tx_idx),
-            block_hash: "0x".to_string() + &"0".repeat(64), // patched in mine_block
-            log_index: format!("0x{:x}", i),
-            removed: false,
-        }).collect();
+        let logs: Vec<EvmLog> = res
+            .logs
+            .iter()
+            .enumerate()
+            .map(|(i, log)| EvmLog {
+                address: format!("0x{}", hex::encode(log.address)),
+                topics: log.data.topics().iter().map(|t| format!("0x{}", hex::encode(t))).collect(),
+                data: format!("0x{}", hex::encode(&log.data.data)),
+                block_number: format!("0x{:x}", block_num),
+                transaction_hash: format!("0x{}", hex::encode(tx.hash)),
+                transaction_index: format!("0x{:x}", tx_idx),
+                block_hash: "0x".to_string() + &"0".repeat(64), // patched in mine_block
+                log_index: format!("0x{:x}", i),
+                removed: false,
+            })
+            .collect();
 
         let gas_used_hex = format!("0x{:x}", res.gas_used);
         let receipt = EvmReceipt {
@@ -576,17 +536,9 @@ struct ExecResult {
     logs: Vec<revm::primitives::Log>,
 }
 
-fn build_and_run(
-    db: &mut InMemoryDB,
-    block_number: u64,
-    chain_id: u64,
-    tx: TxEnv,
-) -> Result<ExecResult, ChainError> {
+fn build_and_run(db: &mut InMemoryDB, block_number: u64, chain_id: u64, tx: TxEnv) -> Result<ExecResult, ChainError> {
     let _ = chain_id; // chain_id is embedded in TxEnv already
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
 
     let result = Evm::builder()
         .with_db(db)
@@ -653,11 +605,11 @@ mod tests {
         // Build signing input: RLP([nonce, gas_price, gas_limit, to, value, data, chain_id, 0, 0])
         let mut s = RlpStream::new_list(9);
         s.append(&nonce);
-        s.append(&gp_bytes.as_slice());   // &&[u8] → E=&[u8] Sized ✓
+        s.append(&gp_bytes.as_slice()); // &&[u8] → E=&[u8] Sized ✓
         s.append(&gas_limit);
-        s.append(&to_slice);              // &&[u8] ✓
-        s.append(&val_bytes.as_slice());  // &&[u8] ✓
-        s.append(&data_slice);            // &&[u8] ✓
+        s.append(&to_slice); // &&[u8] ✓
+        s.append(&val_bytes.as_slice()); // &&[u8] ✓
+        s.append(&data_slice); // &&[u8] ✓
         s.append(&chain_id);
         s.append(&0u64);
         s.append(&0u64);
@@ -681,7 +633,7 @@ mod tests {
         signed.append(&val_bytes.as_slice());
         signed.append(&data_slice);
         signed.append(&v);
-        signed.append(&r);    // &&[u8] ✓
+        signed.append(&r); // &&[u8] ✓
         signed.append(&sig_s); // &&[u8] ✓
         signed.out().to_vec()
     }
@@ -691,20 +643,15 @@ mod tests {
         let chain = EvmChain::new(1337);
 
         // Hardhat account #0: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
-        let sender_bytes: [u8; 20] =
-            hex::decode("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266").unwrap().try_into().unwrap();
+        let sender_bytes: [u8; 20] = hex::decode("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266").unwrap().try_into().unwrap();
         let sender = Address::from_slice(&sender_bytes);
         chain.fund(sender, U256::from(10_u128) * U256::from(1_000_000_000_000_000_000u128));
 
         // Hardhat account #1: 0x70997970C51812dc3A010C7d01b50e0d17dc79C8
-        let recipient: [u8; 20] =
-            hex::decode("70997970C51812dc3A010C7d01b50e0d17dc79C8").unwrap().try_into().unwrap();
+        let recipient: [u8; 20] = hex::decode("70997970C51812dc3A010C7d01b50e0d17dc79C8").unwrap().try_into().unwrap();
 
         let privkey: [u8; 32] =
-            hex::decode("ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80")
-                .unwrap()
-                .try_into()
-                .unwrap();
+            hex::decode("ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80").unwrap().try_into().unwrap();
 
         let one_eth = 1_000_000_000_000_000_000u128;
         let raw = sign_legacy_tx(0, 1_000_000_000, 21_000, &recipient, one_eth, &[], 1337, &privkey);
@@ -728,25 +675,18 @@ mod tests {
         println!("receipt status: {} ✓", receipt.status);
 
         // Verify receipt fields patched by mine_block
-        assert_ne!(receipt.block_hash, "0x".to_string() + &"0".repeat(64),
-            "block_hash must be patched from placeholder");
-        assert!(receipt.block_hash.starts_with("0x") && receipt.block_hash.len() == 66,
-            "block_hash must be 32-byte hex");
+        assert_ne!(receipt.block_hash, "0x".to_string() + &"0".repeat(64), "block_hash must be patched from placeholder");
+        assert!(receipt.block_hash.starts_with("0x") && receipt.block_hash.len() == 66, "block_hash must be 32-byte hex");
 
-        let cumulative = u64::from_str_radix(
-            receipt.cumulative_gas_used.trim_start_matches("0x"), 16
-        ).expect("cumulativeGasUsed must parse");
-        let used = u64::from_str_radix(
-            receipt.gas_used.trim_start_matches("0x"), 16
-        ).expect("gasUsed must parse");
+        let cumulative =
+            u64::from_str_radix(receipt.cumulative_gas_used.trim_start_matches("0x"), 16).expect("cumulativeGasUsed must parse");
+        let used = u64::from_str_radix(receipt.gas_used.trim_start_matches("0x"), 16).expect("gasUsed must parse");
         assert!(cumulative >= used, "cumulativeGasUsed >= gasUsed");
         assert_eq!(cumulative, 21_000, "simple transfer uses exactly 21000 gas");
 
-        assert!(receipt.effective_gas_price.starts_with("0x"),
-            "effectiveGasPrice must be hex");
-        let price = u64::from_str_radix(
-            receipt.effective_gas_price.trim_start_matches("0x"), 16
-        ).expect("effectiveGasPrice must parse");
+        assert!(receipt.effective_gas_price.starts_with("0x"), "effectiveGasPrice must be hex");
+        let price =
+            u64::from_str_radix(receipt.effective_gas_price.trim_start_matches("0x"), 16).expect("effectiveGasPrice must parse");
         assert_eq!(price, 1_000_000_000, "effectiveGasPrice = gas_price = 1 gwei");
 
         let checkpoint = chain.latest_checkpoint().expect("checkpoint must exist after mine");

@@ -6,9 +6,9 @@ use jsonrpsee::{
     server::{PendingSubscriptionSink, Server},
     types::ErrorObject,
 };
-use xenom_evm_core::{Address, BlockRecord, Bytes, L1CheckpointV1, B256, U256};
 use serde::{Deserialize, Serialize};
 use xenom_evm_core::EvmChain;
+use xenom_evm_core::{Address, BlockRecord, Bytes, L1CheckpointV1, B256, U256};
 
 // ── RPC trait ─────────────────────────────────────────────────────────────────
 
@@ -90,7 +90,12 @@ pub trait EthRpc {
     async fn max_priority_fee_per_gas(&self) -> RpcResult<String>;
 
     #[method(name = "eth_feeHistory")]
-    async fn fee_history(&self, block_count: serde_json::Value, newest_block: String, _reward_percentiles: Option<Vec<f64>>) -> RpcResult<serde_json::Value>;
+    async fn fee_history(
+        &self,
+        block_count: serde_json::Value,
+        newest_block: String,
+        _reward_percentiles: Option<Vec<f64>>,
+    ) -> RpcResult<serde_json::Value>;
 
     #[subscription(name = "eth_subscribe", item = serde_json::Value, unsubscribe = "eth_unsubscribe")]
     async fn subscribe(&self, kind: String, params: Option<serde_json::Value>) -> SubscriptionResult;
@@ -102,6 +107,10 @@ pub trait EthRpc {
     /// Retrieve a previously stored anchor by its ID (hex).
     #[method(name = "xenom_getAnchor")]
     async fn xenom_get_anchor(&self, anchor_id: String) -> RpcResult<Option<serde_json::Value>>;
+
+    /// List all stored anchors with decoded payloads, newest-last.
+    #[method(name = "xenom_listAnchors")]
+    async fn xenom_list_anchors(&self) -> RpcResult<serde_json::Value>;
 
     /// Return the latest mined checkpoint or null if none yet.
     #[method(name = "xenom_latestCheckpoint")]
@@ -204,24 +213,23 @@ impl EthRpcServer for EthServer {
         let from = req.from.as_deref().map(parse_addr).transpose()?;
         let data = req.data.as_deref().map(parse_hex_bytes).unwrap_or_default();
         let value = req.value.as_deref().map(parse_hex_u256).unwrap_or(U256::ZERO);
-        let gas = req.gas.as_deref()
-            .and_then(|s| u64::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16).ok())
-            .unwrap_or(30_000_000);
+        let gas =
+            req.gas.as_deref().and_then(|s| u64::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16).ok()).unwrap_or(30_000_000);
         let out = self.chain.call(from, to, data, value, gas).map_err(rpc_err)?;
         Ok(format!("0x{}", hex::encode(out)))
     }
 
     async fn estimate_gas(&self, req: CallRequest, _tag: Option<String>) -> RpcResult<String> {
         let from = req.from.as_deref().and_then(|s| parse_addr(s).ok());
-        let value = req.value.as_deref()
+        let value = req
+            .value
+            .as_deref()
             .and_then(|s| u128::from_str_radix(s.trim_start_matches("0x"), 16).ok())
-            .map(U256::from).unwrap_or(U256::ZERO);
-        let data: Bytes = req.data.as_deref()
-            .and_then(|s| hex::decode(s.trim_start_matches("0x")).ok())
-            .unwrap_or_default().into();
-        let gas_limit = req.gas.as_deref()
-            .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
-            .unwrap_or(30_000_000);
+            .map(U256::from)
+            .unwrap_or(U256::ZERO);
+        let data: Bytes = req.data.as_deref().and_then(|s| hex::decode(s.trim_start_matches("0x")).ok()).unwrap_or_default().into();
+        let gas_limit =
+            req.gas.as_deref().and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok()).unwrap_or(30_000_000);
         // If no `to`, treat as contract creation estimate
         if req.to.is_none() {
             return Ok(format!("0x{:x}", 500_000u64));
@@ -231,7 +239,9 @@ impl EthRpcServer for EthServer {
             Ok(_) => {
                 // Simulate succeeded — return a reasonable estimate with 20% buffer
                 let base = 21_000u64;
-                let data_cost = req.data.as_deref()
+                let data_cost = req
+                    .data
+                    .as_deref()
                     .and_then(|s| hex::decode(s.trim_start_matches("0x")).ok())
                     .map(|b| b.iter().map(|&x| if x == 0 { 4u64 } else { 16 }).sum::<u64>())
                     .unwrap_or(0);
@@ -296,29 +306,23 @@ impl EthRpcServer for EthServer {
         };
 
         let from = parse_block_tag(filter.get("fromBlock"));
-        let to   = parse_block_tag(filter.get("toBlock"));
+        let to = parse_block_tag(filter.get("toBlock"));
 
         // address filter: string or array-of-one
-        let addr_filter: Option<String> = filter.get("address").and_then(|v| {
-            v.as_str().map(|s| s.to_lowercase())
-                .or_else(|| v.as_array()?.first()?.as_str().map(|s| s.to_lowercase()))
-        });
+        let addr_filter: Option<String> = filter
+            .get("address")
+            .and_then(|v| v.as_str().map(|s| s.to_lowercase()).or_else(|| v.as_array()?.first()?.as_str().map(|s| s.to_lowercase())));
 
         // topics[0] filter
-        let topic0_filter: Option<String> = filter.get("topics")
+        let topic0_filter: Option<String> = filter
+            .get("topics")
             .and_then(|v| v.as_array())
             .and_then(|arr| arr.first())
             .and_then(|v| v.as_str().map(|s| s.to_string()));
 
-        let logs = self.chain.get_logs_for_blocks(
-            from, to,
-            addr_filter.as_deref(),
-            topic0_filter.as_deref(),
-        );
+        let logs = self.chain.get_logs_for_blocks(from, to, addr_filter.as_deref(), topic0_filter.as_deref());
 
-        Ok(logs.into_iter()
-            .map(|l| serde_json::to_value(l).unwrap_or(serde_json::Value::Null))
-            .collect())
+        Ok(logs.into_iter().map(|l| serde_json::to_value(l).unwrap_or(serde_json::Value::Null)).collect())
     }
 
     async fn get_filter_changes(&self, _filter_id: String) -> RpcResult<Vec<serde_json::Value>> {
@@ -350,10 +354,17 @@ impl EthRpcServer for EthServer {
         Ok("0x3b9aca00".to_string()) // 1 gwei tip
     }
 
-    async fn fee_history(&self, block_count: serde_json::Value, _newest_block: String, _reward_percentiles: Option<Vec<f64>>) -> RpcResult<serde_json::Value> {
-        let count = block_count.as_u64().or_else(|| {
-            block_count.as_str().and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
-        }).unwrap_or(1).min(1024);
+    async fn fee_history(
+        &self,
+        block_count: serde_json::Value,
+        _newest_block: String,
+        _reward_percentiles: Option<Vec<f64>>,
+    ) -> RpcResult<serde_json::Value> {
+        let count = block_count
+            .as_u64()
+            .or_else(|| block_count.as_str().and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok()))
+            .unwrap_or(1)
+            .min(1024);
         let base_fee = "0x3b9aca00";
         Ok(serde_json::json!({
             "oldestBlock": format!("0x{:x}", self.chain.block_number().saturating_sub(count)),
@@ -367,8 +378,7 @@ impl EthRpcServer for EthServer {
         let block_num = match tag.as_str() {
             "latest" | "pending" | "safe" | "finalized" => self.chain.block_number(),
             "earliest" => 1,
-            hex => u64::from_str_radix(hex.strip_prefix("0x").unwrap_or(hex), 16)
-                .unwrap_or(self.chain.block_number()),
+            hex => u64::from_str_radix(hex.strip_prefix("0x").unwrap_or(hex), 16).unwrap_or(self.chain.block_number()),
         };
         Ok(build_block_object(block_num, &self.chain))
     }
@@ -376,7 +386,9 @@ impl EthRpcServer for EthServer {
     async fn get_block_by_hash(&self, hash: String, _full_tx: bool) -> RpcResult<serde_json::Value> {
         let h = hash.strip_prefix("0x").unwrap_or(&hash);
         let bytes = hex::decode(h).unwrap_or_default();
-        if bytes.len() != 32 { return Ok(serde_json::Value::Null); }
+        if bytes.len() != 32 {
+            return Ok(serde_json::Value::Null);
+        }
         let b256 = B256::from_slice(&bytes);
         match self.chain.get_block_by_hash(b256) {
             Some(rec) => Ok(block_record_to_json(&rec)),
@@ -387,7 +399,9 @@ impl EthRpcServer for EthServer {
     async fn get_transaction_by_hash(&self, hash: String) -> RpcResult<Option<serde_json::Value>> {
         let h = hash.strip_prefix("0x").unwrap_or(&hash);
         let bytes = hex::decode(h).unwrap_or_default();
-        if bytes.len() != 32 { return Ok(None); }
+        if bytes.len() != 32 {
+            return Ok(None);
+        }
         let b256 = B256::from_slice(&bytes);
         match self.chain.receipt(b256) {
             Some(r) => {
@@ -438,17 +452,41 @@ impl EthRpcServer for EthServer {
     async fn xenom_get_anchor(&self, anchor_id: String) -> RpcResult<Option<serde_json::Value>> {
         let raw = anchor_id.strip_prefix("0x").unwrap_or(&anchor_id);
         let bytes = hex::decode(raw).map_err(|e| rpc_err(format!("invalid id: {e}")))?;
-        if bytes.len() != 32 { return Ok(None); }
+        if bytes.len() != 32 {
+            return Ok(None);
+        }
         let id = B256::from_slice(&bytes);
         match self.chain.get_anchor(id) {
-            Some((block_num, data)) => Ok(Some(serde_json::json!({
-                "anchorId":   anchor_id,
-                "blockNumber": format!("0x{block_num:x}"),
-                "payloadHex": format!("0x{}", hex::encode(&data)),
-                "payloadLen": data.len(),
-            }))),
+            Some((block_num, data)) => {
+                let payload_json: Option<serde_json::Value> = serde_json::from_slice(&data).ok();
+                Ok(Some(serde_json::json!({
+                    "anchorId":    anchor_id,
+                    "blockNumber": format!("0x{block_num:x}"),
+                    "payloadHex":  format!("0x{}", hex::encode(&data)),
+                    "payloadLen":  data.len(),
+                    "payload":     payload_json,
+                })))
+            }
             None => Ok(None),
         }
+    }
+
+    async fn xenom_list_anchors(&self) -> RpcResult<serde_json::Value> {
+        let anchors = self.chain.list_anchors();
+        let items: Vec<serde_json::Value> = anchors
+            .into_iter()
+            .map(|(anchor_id_hex, block_num, created_at_ms, data)| {
+                let payload_json: Option<serde_json::Value> = serde_json::from_slice(&data).ok();
+                serde_json::json!({
+                    "anchorId":    format!("0x{anchor_id_hex}"),
+                    "blockNumber": format!("0x{block_num:x}"),
+                    "createdAtMs": created_at_ms,
+                    "payloadLen":  data.len(),
+                    "payload":     payload_json,
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({ "anchors": items, "count": items.len() }))
     }
 
     async fn subscribe(
@@ -467,7 +505,9 @@ impl EthRpcServer for EthServer {
                             Ok(rec) => {
                                 let val = block_record_to_json(&rec);
                                 if let Ok(msg) = SubscriptionMessage::from_json(&val) {
-                                    if sink.send(msg).await.is_err() { break; }
+                                    if sink.send(msg).await.is_err() {
+                                        break;
+                                    }
                                 }
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -479,10 +519,9 @@ impl EthRpcServer for EthServer {
             "logs" => {
                 let sink = pending.accept().await?;
                 let mut rx = self.chain.subscribe_blocks();
-                let addr_filter = params.as_ref()
-                    .and_then(|p| p.get("address"))
-                    .and_then(|v| v.as_str().map(|s| s.to_lowercase()));
-                let topic0_filter = params.as_ref()
+                let addr_filter = params.as_ref().and_then(|p| p.get("address")).and_then(|v| v.as_str().map(|s| s.to_lowercase()));
+                let topic0_filter = params
+                    .as_ref()
                     .and_then(|p| p.get("topics"))
                     .and_then(|v| v.as_array())
                     .and_then(|arr| arr.first())
@@ -493,15 +532,17 @@ impl EthRpcServer for EthServer {
                         match rx.recv().await {
                             Ok(rec) => {
                                 let logs = chain.get_logs_for_blocks(
-                                    rec.number, rec.number,
+                                    rec.number,
+                                    rec.number,
                                     addr_filter.as_deref(),
                                     topic0_filter.as_deref(),
                                 );
                                 for log in logs {
-                                    let val = serde_json::to_value(log)
-                                        .unwrap_or(serde_json::Value::Null);
+                                    let val = serde_json::to_value(log).unwrap_or(serde_json::Value::Null);
                                     if let Ok(msg) = SubscriptionMessage::from_json(&val) {
-                                        if sink.send(msg).await.is_err() { break; }
+                                        if sink.send(msg).await.is_err() {
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -512,11 +553,7 @@ impl EthRpcServer for EthServer {
                 });
             }
             other => {
-                pending.reject(ErrorObject::owned(
-                    -32602,
-                    format!("unsupported eth_subscribe kind: {other}"),
-                    None::<()>,
-                )).await;
+                pending.reject(ErrorObject::owned(-32602, format!("unsupported eth_subscribe kind: {other}"), None::<()>)).await;
             }
         }
 
@@ -560,8 +597,7 @@ fn build_block_object(block_num: u64, chain: &EvmChain) -> serde_json::Value {
         None => {
             // Block not yet recorded (e.g. genesis or future): return synthetic stub
             let state_root = chain.latest_state_root();
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
             serde_json::json!({
                 "number":     format!("0x{:x}", block_num),
                 "hash":       format!("0x{:064x}", block_num),
@@ -612,15 +648,10 @@ fn checkpoint_to_json(cp: &L1CheckpointV1) -> serde_json::Value {
 pub async fn start_rpc_server(chain: Arc<EvmChain>, addr: &str) -> anyhow::Result<jsonrpsee::server::ServerHandle> {
     use tower_http::cors::{Any, CorsLayer};
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any);
 
-    let server: jsonrpsee::server::Server<_> = Server::builder()
-        .set_http_middleware(tower::ServiceBuilder::new().layer(cors))
-        .build(addr)
-        .await?;
+    let server: jsonrpsee::server::Server<_> =
+        Server::builder().set_http_middleware(tower::ServiceBuilder::new().layer(cors)).build(addr).await?;
 
     let module = EthServer::new(chain).into_rpc();
     let handle = server.start(module);

@@ -17,8 +17,10 @@ read -r -p "Private Key (L2 worker/settlement): " PRIVKEY
 echo ""
 
 read -r -p "Mining Address: " MINING_ADDR
-read -r -p "Node RPC (e.g. 127.0.0.1:18110): " NODE_RPC
+read -r -p "Node gRPC (e.g. 127.0.0.1:18110): " NODE_RPC
 NODE_RPC="${NODE_RPC:-127.0.0.1:18110}"
+# wRPC Borsh WebSocket endpoint (used by wallet + wRPC clients). Default devnet port: 27610
+WRPC_BORSH="${WRPC_BORSH:-127.0.0.1:27610}"
 
 read -r -p "Coordinator URL [http://localhost:8091]: " COORDINATOR
 COORDINATOR="${COORDINATOR:-http://localhost:8091}"
@@ -81,6 +83,11 @@ read -r -p "Enable ClinVar (weekly GRCh38 clinical variant VCF)    ? [Y/n]: " _a
 OPT_CLINVAR=1; [[ "$_ans" =~ ^[Nn]$ ]] && OPT_CLINVAR=0
 
 echo ""
+echo "--- Acoustic Classification ---"
+read -r -p "Enable BirdCLEF (2026 soundscape species classification)  ? [Y/n]: " _ans
+OPT_BIRDCLEF=1; [[ "$_ans" =~ ^[Nn]$ ]] && OPT_BIRDCLEF=0
+
+echo ""
 
 if [ ! -d "$BIN" ]; then
   echo "Error: BIN directory not found: $BIN"
@@ -88,6 +95,16 @@ if [ ! -d "$BIN" ]; then
 fi
 
 mkdir -p /tmp/xenom-logs
+
+# ── Scripts directory — coordinator serves static scripts from here ──────────
+echo "=== Setting up scripts directory ==="
+mkdir -p "$SCRIPT_DIR/scripts"
+# Copy birdclef_classifier.py so the coordinator can serve it immediately
+# (the fetcher also uploads it inline, but this pre-populates scripts_dir)
+if [[ -f "$SCRIPT_DIR/birdclef_classifier.py" ]]; then
+  cp -f "$SCRIPT_DIR/birdclef_classifier.py" "$SCRIPT_DIR/scripts/acoustic_classification.py"
+  echo "  birdclef_classifier.py → scripts/acoustic_classification.py"
+fi
 
 echo "=== Setting up Python virtual environment ==="
 if [ ! -d "venv" ]; then
@@ -106,6 +123,12 @@ if [ -d "venv" ]; then
   # Genomics pipeline (genome_annotate.py)
   echo "Installing: numpy, pandas, requests..."
   pip install --quiet numpy pandas requests || echo "Warning: Some packages failed to install"
+
+  # BirdCLEF 2026 inference script (birdclef_classifier.py)
+  if [[ "${OPT_BIRDCLEF:-0}" -eq 1 ]]; then
+    echo "Installing: torch, torchaudio, librosa (BirdCLEF 2026)..."
+    pip install --quiet torch torchaudio librosa || echo "Warning: torch/librosa install failed — miner will use stub fallback"
+  fi
 else
   echo "Warning: venv not available, using system Python"
   if command -v pip3 &> /dev/null; then
@@ -129,6 +152,11 @@ if command -v nvidia-smi &>/dev/null && nvidia-smi -L &>/dev/null 2>&1; then
     pip install --quiet "cupy-cuda${CUDA_MAJ}x" 2>/dev/null \
       || pip install --quiet cupy 2>/dev/null \
       || echo "  Warning: cupy install failed — Python will use numpy/CPU"
+    if [[ "${OPT_BIRDCLEF:-0}" -eq 1 ]]; then
+      echo "  Installing torch+CUDA for BirdCLEF GPU inference..."
+      pip install --quiet torch torchaudio librosa 2>/dev/null \
+        || echo "  Warning: torch install failed — miner will use stub fallback"
+    fi
   else
     pip3 install --quiet --break-system-packages "cupy-cuda${CUDA_MAJ}x" 2>/dev/null \
       || echo "  Warning: cupy install failed — Python will use numpy/CPU"
@@ -169,7 +197,9 @@ cargo build --release \
   -p xenom-anchor-committer
 
 echo "=== Starting xenom node ==="
-"$BIN/xenom" --devnet --utxoindex --rpclisten="$NODE_RPC"\
+"$BIN/xenom" --devnet --utxoindex \
+  --rpclisten="$NODE_RPC" \
+  --rpclisten-borsh="$WRPC_BORSH" \
   > /tmp/xenom-logs/xenom.log 2>&1 &
 PIDS+=($!)
 sleep 3
@@ -208,6 +238,14 @@ sleep 2
 STRATUM_THEME="genetics"
 
 echo "=== Starting xenom-stratum-bridge (theme: $STRATUM_THEME) ==="
+GENOME_FILE="$HOME/.rusty-xenom/grch38.xenom"
+GENOME_FLAG=()
+if [[ -f "$GENOME_FILE" ]]; then
+  echo "    genome file: $GENOME_FILE"
+  GENOME_FLAG=(--genome-file "$GENOME_FILE")
+else
+  echo "    genome file: not found at $GENOME_FILE (share validation disabled)"
+fi
 "$BIN/xenom-stratum-bridge" \
   --mining-address "$MINING_ADDR" \
   --rpcserver "$NODE_RPC" \
@@ -216,6 +254,7 @@ echo "=== Starting xenom-stratum-bridge (theme: $STRATUM_THEME) ==="
   --l2-coordinator "$COORDINATOR" \
   --l2-theme "$STRATUM_THEME" \
   --devnet \
+  "${GENOME_FLAG[@]}" \
   > /tmp/xenom-logs/stratum-bridge.log 2>&1 &
 PIDS+=($!)
 sleep 2
@@ -225,17 +264,19 @@ FETCHER_ARGS=(
   --coordinator "$COORDINATOR"
   --poll-secs 300
 )
-[[ $OPT_SRA      -eq 1 ]] && FETCHER_ARGS+=(--sra)     || true
-[[ $OPT_IGSR     -eq 1 ]] && FETCHER_ARGS+=(--igsr)    || true
-[[ $OPT_GNOMAD   -eq 1 ]] && FETCHER_ARGS+=(--gnomad)  || true
-[[ $OPT_GDC      -eq 1 ]] && FETCHER_ARGS+=(--gdc)     || true
-[[ $OPT_CLINVAR  -eq 1 ]] && FETCHER_ARGS+=(--clinvar) || true
+[[ $OPT_SRA      -eq 1 ]] && FETCHER_ARGS+=(--sra)      || true
+[[ $OPT_IGSR     -eq 1 ]] && FETCHER_ARGS+=(--igsr)     || true
+[[ $OPT_GNOMAD   -eq 1 ]] && FETCHER_ARGS+=(--gnomad)   || true
+[[ $OPT_GDC      -eq 1 ]] && FETCHER_ARGS+=(--gdc)      || true
+[[ $OPT_CLINVAR  -eq 1 ]] && FETCHER_ARGS+=(--clinvar)  || true
+[[ $OPT_BIRDCLEF -eq 1 ]] && FETCHER_ARGS+=(--birdclef) || true
 ACTIVE_FETCHER_SRC=""
-[[ $OPT_SRA     -eq 1 ]] && ACTIVE_FETCHER_SRC+="sra, "    || true
-[[ $OPT_IGSR    -eq 1 ]] && ACTIVE_FETCHER_SRC+="igsr, "   || true
-[[ $OPT_GNOMAD  -eq 1 ]] && ACTIVE_FETCHER_SRC+="gnomad, " || true
-[[ $OPT_GDC     -eq 1 ]] && ACTIVE_FETCHER_SRC+="gdc, "    || true
-[[ $OPT_CLINVAR -eq 1 ]] && ACTIVE_FETCHER_SRC+="clinvar"  || true
+[[ $OPT_SRA      -eq 1 ]] && ACTIVE_FETCHER_SRC+="sra, "     || true
+[[ $OPT_IGSR     -eq 1 ]] && ACTIVE_FETCHER_SRC+="igsr, "    || true
+[[ $OPT_GNOMAD   -eq 1 ]] && ACTIVE_FETCHER_SRC+="gnomad, "  || true
+[[ $OPT_GDC      -eq 1 ]] && ACTIVE_FETCHER_SRC+="gdc, "     || true
+[[ $OPT_CLINVAR  -eq 1 ]] && ACTIVE_FETCHER_SRC+="clinvar, " || true
+[[ $OPT_BIRDCLEF -eq 1 ]] && ACTIVE_FETCHER_SRC+="birdclef"  || true
 ACTIVE_FETCHER_SRC="${ACTIVE_FETCHER_SRC%, }"
 echo "    sources: ${ACTIVE_FETCHER_SRC:-(none)}"
 "$BIN/genetics-l2-fetcher" "${FETCHER_ARGS[@]}" \
@@ -259,9 +300,8 @@ sleep 2
 echo "=== Starting genetics-l2-settlement ==="
 "$BIN/genetics-l2-settlement" \
   --coordinator "$COORDINATOR" \
-  --node "grpc://$NODE_RPC" \
+  --evm-node http://127.0.0.1:8545 \
   --submit \
-  --devnet \
   --poll-ms 15000 \
   --quorum 1 \
   --score-tolerance 0.05 \
@@ -339,6 +379,7 @@ ACTIVE_SOURCES=""
 [[ $OPT_GNOMAD   -eq 1 ]] && ACTIVE_SOURCES+="gnomad, "
 [[ $OPT_GDC      -eq 1 ]] && ACTIVE_SOURCES+="gdc, "
 [[ $OPT_CLINVAR  -eq 1 ]] && ACTIVE_SOURCES+="clinvar, "
+[[ $OPT_BIRDCLEF -eq 1 ]] && ACTIVE_SOURCES+="birdclef, "
 ACTIVE_SOURCES="${ACTIVE_SOURCES%, }"
 
 echo "=== Xenom L2 Genetics — running ==="

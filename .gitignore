@@ -1,5 +1,10 @@
 target
 web-root
+node_modules/
+**/node_modules/
+xenom-web-wallet/
+xenom_index.db
+*.db
 /xenom-mainnet/
 **/.idea/
 /rust-toolchain

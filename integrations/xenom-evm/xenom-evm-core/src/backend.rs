@@ -1,7 +1,11 @@
-use std::{path::Path, sync::Arc, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    path::Path,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use revm::{db::InMemoryDB, primitives::B256};
-use rocksdb::{ColumnFamilyDescriptor, DB, Options};
+use rocksdb::{ColumnFamilyDescriptor, Options, DB};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -76,6 +80,8 @@ pub trait StateBackend: Send + Sync {
     ) -> Result<(), BackendError>;
     fn put_anchor(&self, anchor_id: B256, block_number: u64, payload: &[u8]) -> Result<(), BackendError>;
     fn get_anchor(&self, anchor_id: B256) -> Result<Option<(u64, Vec<u8>)>, BackendError>;
+    /// Return all stored anchors as (anchor_id_hex, block_number, created_at_ms, payload).
+    fn list_anchors(&self) -> Result<Vec<(String, u64, u64, Vec<u8>)>, BackendError>;
     fn persist_checkpoint(&self, checkpoint: &L1CheckpointV1) -> Result<(), BackendError>;
     fn get_checkpoint(&self, block_number: u64) -> Result<Option<L1CheckpointV1>, BackendError>;
 }
@@ -117,6 +123,10 @@ impl StateBackend for InMemoryBackend {
         Ok(None)
     }
 
+    fn list_anchors(&self) -> Result<Vec<(String, u64, u64, Vec<u8>)>, BackendError> {
+        Ok(vec![])
+    }
+
     fn persist_checkpoint(&self, _checkpoint: &L1CheckpointV1) -> Result<(), BackendError> {
         Ok(())
     }
@@ -146,13 +156,10 @@ impl RocksDbBackend {
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
 
-        let cf_descriptors: Vec<ColumnFamilyDescriptor> = ALL_CFS
-            .iter()
-            .map(|name| ColumnFamilyDescriptor::new(*name, Options::default()))
-            .collect();
+        let cf_descriptors: Vec<ColumnFamilyDescriptor> =
+            ALL_CFS.iter().map(|name| ColumnFamilyDescriptor::new(*name, Options::default())).collect();
 
-        let db = DB::open_cf_descriptors(&opts, db_path, cf_descriptors)
-            .map_err(|e| BackendError::Open(e.to_string()))?;
+        let db = DB::open_cf_descriptors(&opts, db_path, cf_descriptors).map_err(|e| BackendError::Open(e.to_string()))?;
 
         Ok(Self { db: Arc::new(db) })
     }
@@ -181,15 +188,10 @@ impl StateBackend for RocksDbBackend {
 
     fn load_snapshot(&self) -> Result<Option<LoadedSnapshot>, BackendError> {
         let meta = self.cf(CF_META)?;
-        let raw = self
-            .db
-            .get_cf(meta, KEY_STATE_SNAPSHOT_V1)
-            .map_err(|e| BackendError::Db(e.to_string()))?;
+        let raw = self.db.get_cf(meta, KEY_STATE_SNAPSHOT_V1).map_err(|e| BackendError::Db(e.to_string()))?;
 
         match raw {
-            Some(bytes) => decode_snapshot_bin(&bytes)
-                .map(Some)
-                .map_err(BackendError::Snapshot),
+            Some(bytes) => decode_snapshot_bin(&bytes).map(Some).map_err(BackendError::Snapshot),
             None => Ok(None),
         }
     }
@@ -203,21 +205,12 @@ impl StateBackend for RocksDbBackend {
         state_root: B256,
     ) -> Result<(), BackendError> {
         let meta = self.cf(CF_META)?;
-        let snapshot = encode_snapshot_bin(db, chain_id, block_number, tx_index, state_root)
-            .map_err(BackendError::Snapshot)?;
+        let snapshot = encode_snapshot_bin(db, chain_id, block_number, tx_index, state_root).map_err(BackendError::Snapshot)?;
 
-        self.db
-            .put_cf(meta, KEY_STATE_SNAPSHOT_V1, snapshot)
-            .map_err(|e| BackendError::Db(e.to_string()))?;
-        self.db
-            .put_cf(meta, KEY_CHAIN_ID, chain_id.to_be_bytes())
-            .map_err(|e| BackendError::Db(e.to_string()))?;
-        self.db
-            .put_cf(meta, KEY_HEAD_BLOCK_NUMBER, block_number.to_be_bytes())
-            .map_err(|e| BackendError::Db(e.to_string()))?;
-        self.db
-            .put_cf(meta, KEY_LATEST_STATE_ROOT, state_root.as_slice())
-            .map_err(|e| BackendError::Db(e.to_string()))?;
+        self.db.put_cf(meta, KEY_STATE_SNAPSHOT_V1, snapshot).map_err(|e| BackendError::Db(e.to_string()))?;
+        self.db.put_cf(meta, KEY_CHAIN_ID, chain_id.to_be_bytes()).map_err(|e| BackendError::Db(e.to_string()))?;
+        self.db.put_cf(meta, KEY_HEAD_BLOCK_NUMBER, block_number.to_be_bytes()).map_err(|e| BackendError::Db(e.to_string()))?;
+        self.db.put_cf(meta, KEY_LATEST_STATE_ROOT, state_root.as_slice()).map_err(|e| BackendError::Db(e.to_string()))?;
 
         Ok(())
     }
@@ -226,34 +219,40 @@ impl StateBackend for RocksDbBackend {
         let anchors = self.cf(CF_ANCHORS)?;
         let rec = AnchorRecord {
             block_number,
-            created_at_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0),
+            created_at_ms: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
             payload: payload.to_vec(),
         };
         let encoded = bincode::serialize(&rec).map_err(|e| BackendError::Db(e.to_string()))?;
 
-        self.db
-            .put_cf(anchors, Self::anchor_key(anchor_id), encoded)
-            .map_err(|e| BackendError::Db(e.to_string()))
+        self.db.put_cf(anchors, Self::anchor_key(anchor_id), encoded).map_err(|e| BackendError::Db(e.to_string()))
     }
 
     fn get_anchor(&self, anchor_id: B256) -> Result<Option<(u64, Vec<u8>)>, BackendError> {
         let anchors = self.cf(CF_ANCHORS)?;
-        let raw = self
-            .db
-            .get_cf(anchors, Self::anchor_key(anchor_id))
-            .map_err(|e| BackendError::Db(e.to_string()))?;
+        let raw = self.db.get_cf(anchors, Self::anchor_key(anchor_id)).map_err(|e| BackendError::Db(e.to_string()))?;
 
         match raw {
             Some(bytes) => {
-                let rec: AnchorRecord = bincode::deserialize(&bytes)
-                    .map_err(|e| BackendError::Db(e.to_string()))?;
+                let rec: AnchorRecord = bincode::deserialize(&bytes).map_err(|e| BackendError::Db(e.to_string()))?;
                 Ok(Some((rec.block_number, rec.payload)))
             }
             None => Ok(None),
         }
+    }
+
+    fn list_anchors(&self) -> Result<Vec<(String, u64, u64, Vec<u8>)>, BackendError> {
+        let anchors = self.cf(CF_ANCHORS)?;
+        let mut out = Vec::new();
+        let prefix = b"anchor:";
+        for item in self.db.prefix_iterator_cf(anchors, prefix) {
+            let (key, val) = item.map_err(|e| BackendError::Db(e.to_string()))?;
+            let key_str = String::from_utf8_lossy(&key);
+            let anchor_id_hex = key_str.strip_prefix("anchor:").unwrap_or("").to_owned();
+            let rec: AnchorRecord = bincode::deserialize(&val).map_err(|e| BackendError::Db(e.to_string()))?;
+            out.push((anchor_id_hex, rec.block_number, rec.created_at_ms, rec.payload));
+        }
+        out.sort_by_key(|(_, block, ms, _)| (*block, *ms));
+        Ok(out)
     }
 
     fn persist_checkpoint(&self, checkpoint: &L1CheckpointV1) -> Result<(), BackendError> {
@@ -267,19 +266,14 @@ impl StateBackend for RocksDbBackend {
             .put_cf(checkpoints, Self::checkpoint_key(checkpoint.block_number), bytes)
             .map_err(|e| BackendError::Db(e.to_string()))?;
 
-        self.db
-            .put_cf(l1_anchors, Self::l1_anchor_key(checkpoint_id), bytes)
-            .map_err(|e| BackendError::Db(e.to_string()))?;
+        self.db.put_cf(l1_anchors, Self::l1_anchor_key(checkpoint_id), bytes).map_err(|e| BackendError::Db(e.to_string()))?;
 
         Ok(())
     }
 
     fn get_checkpoint(&self, block_number: u64) -> Result<Option<L1CheckpointV1>, BackendError> {
         let checkpoints = self.cf(CF_CHECKPOINTS)?;
-        let raw = self
-            .db
-            .get_cf(checkpoints, Self::checkpoint_key(block_number))
-            .map_err(|e| BackendError::Db(e.to_string()))?;
+        let raw = self.db.get_cf(checkpoints, Self::checkpoint_key(block_number)).map_err(|e| BackendError::Db(e.to_string()))?;
 
         match raw {
             Some(bytes) => Ok(L1CheckpointV1::from_bytes(&bytes)),
@@ -302,10 +296,7 @@ mod tests {
 
     fn temp_rocks_dir(tag: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         p.push(format!("xenom-evm-{tag}-{ts}"));
         p
     }
@@ -317,34 +308,18 @@ mod tests {
 
         let mut db = InMemoryDB::default();
         let addr = Address::from_slice(&[0x11u8; 20]);
-        db.insert_account_info(
-            addr,
-            AccountInfo {
-                balance: U256::from(123_456u64),
-                nonce: 7,
-                ..Default::default()
-            },
-        );
+        db.insert_account_info(addr, AccountInfo { balance: U256::from(123_456u64), nonce: 7, ..Default::default() });
 
         let root = B256::from([0xabu8; 32]);
-        backend
-            .persist_snapshot(&db, 1337, 9, 17, root)
-            .expect("persist snapshot");
+        backend.persist_snapshot(&db, 1337, 9, 17, root).expect("persist snapshot");
 
-        let loaded = backend
-            .load_snapshot()
-            .expect("load snapshot")
-            .expect("snapshot exists");
+        let loaded = backend.load_snapshot().expect("load snapshot").expect("snapshot exists");
 
         assert_eq!(loaded.block_number, 9);
         assert_eq!(loaded.tx_index, 17);
         assert_eq!(loaded.state_root, root);
 
-        let acc = loaded
-            .db
-            .basic_ref(addr)
-            .expect("db query")
-            .expect("account exists");
+        let acc = loaded.db.basic_ref(addr).expect("db query").expect("account exists");
         assert_eq!(acc.balance, U256::from(123_456u64));
         assert_eq!(acc.nonce, 7);
 
@@ -371,10 +346,7 @@ mod tests {
 
         backend.persist_checkpoint(&cp).expect("persist checkpoint");
 
-        let loaded = backend
-            .get_checkpoint(21)
-            .expect("get checkpoint")
-            .expect("checkpoint exists");
+        let loaded = backend.get_checkpoint(21).expect("get checkpoint").expect("checkpoint exists");
         assert_eq!(loaded, cp);
 
         let _ = std::fs::remove_dir_all(&dir);

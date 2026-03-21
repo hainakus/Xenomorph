@@ -13,23 +13,22 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::stratum_client::{StratumClient, StratumJob, StratumSolution};
 use crate::tui::DashStats;
 use clap::{Arg, ArgMatches, Command};
 use kaspa_addresses::Address;
 use kaspa_consensus_core::header::Header;
 use kaspa_core::{info, warn};
 use kaspa_grpc_client::GrpcClient;
-use kaspa_pow::genome_pow::{build_merkle_root, fragment_index, fragment_leaf_hash, genome_mix_hash, CachedLoader, GenomeDatasetLoader, GenomePowState, SyntheticLoader};
-use kaspa_rpc_core::{
-    api::rpc::RpcApi,
-    model::message::GetBlockTemplateRequest,
-    RpcRawBlock, RpcRawHeader,
-};
 use kaspa_pow::genome_file::FileGenomeLoader;
+use kaspa_pow::genome_pow::{
+    build_merkle_root, fragment_index, fragment_leaf_hash, genome_mix_hash, CachedLoader, GenomeDatasetLoader, GenomePowState,
+    SyntheticLoader,
+};
+use kaspa_rpc_core::{api::rpc::RpcApi, model::message::GetBlockTemplateRequest, RpcRawBlock, RpcRawHeader};
 use kaspa_txscript::pay_to_address_script;
 use rayon::prelude::*;
 use tokio::{sync::mpsc, time::sleep};
-use crate::stratum_client::{StratumClient, StratumJob, StratumSolution};
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
 
@@ -114,12 +113,16 @@ fn cli() -> Command {
 fn load_l2_privkey(key_file: Option<&str>) -> Option<String> {
     if let Ok(hex) = std::env::var("L2_PRIVKEY") {
         let hex = hex.trim().to_string();
-        if !hex.is_empty() { return Some(hex); }
+        if !hex.is_empty() {
+            return Some(hex);
+        }
     }
     if let Some(path) = key_file {
         if let Ok(hex) = std::fs::read_to_string(path) {
             let hex = hex.trim().to_string();
-            if !hex.is_empty() { return Some(hex); }
+            if !hex.is_empty() {
+                return Some(hex);
+            }
         }
     }
     None
@@ -157,10 +160,7 @@ async fn main() {
     // When TUI is active the alternate screen owns the terminal; redirect log
     // output to /tmp/genome-miner.log so it doesn't bleed into the TUI display.
     let tui_active = matches!(matches.subcommand_name(), Some("mine") | Some("gpu"))
-        && !matches
-            .subcommand()
-            .map(|(_, m)| m.get_flag("no-tui"))
-            .unwrap_or(true);
+        && !matches.subcommand().map(|(_, m)| m.get_flag("no-tui")).unwrap_or(true);
     if tui_active {
         kaspa_core::log::init_logger(Some("/tmp"), "info,wgpu_core=warn,wgpu_hal=warn,naga=warn");
         // init_logger always adds a stdout appender; silence it completely so
@@ -177,10 +177,10 @@ async fn main() {
     }
     match matches.subcommand() {
         Some(("mine", m)) => {
-            let no_tui  = m.get_flag("no-tui");
+            let no_tui = m.get_flag("no-tui");
             let api_port = m.get_one::<u16>("api-port").copied().unwrap_or(4000);
-            let rpc     = m.get_one::<String>("rpcserver").cloned().unwrap_or_else(|| "localhost:16668".to_owned());
-            let dash    = Arc::new(Mutex::new(DashStats::new(
+            let rpc = m.get_one::<String>("rpcserver").cloned().unwrap_or_else(|| "localhost:16668".to_owned());
+            let dash = Arc::new(Mutex::new(DashStats::new(
                 rpc,
                 "CPU · Genome PoW".to_owned(),
                 m.get_one::<usize>("threads").copied().unwrap_or_else(rayon::current_num_threads),
@@ -196,19 +196,15 @@ async fn main() {
             }
             cmd_mine(m, dash).await;
         }
-        Some(("suggest-params", m))      => cmd_suggest_params(m).await,
+        Some(("suggest-params", m)) => cmd_suggest_params(m).await,
         Some(("compute-merkle-root", m)) => cmd_compute_merkle_root(m),
-        Some(("address-to-script", m))   => cmd_address_to_script(m),
-        Some(("keygen", _))              => cmd_keygen(),
+        Some(("address-to-script", m)) => cmd_address_to_script(m),
+        Some(("keygen", _)) => cmd_keygen(),
         Some(("gpu", m)) => {
-            let no_tui   = m.get_flag("no-tui");
+            let no_tui = m.get_flag("no-tui");
             let api_port = m.get_one::<u16>("api-port").copied().unwrap_or(4000);
-            let rpc      = m.get_one::<String>("rpcserver").cloned().unwrap_or_else(|| "localhost:36669".to_owned());
-            let dash     = Arc::new(Mutex::new(DashStats::new(
-                rpc,
-                "GPU · initialising".to_owned(),
-                0,
-            )));
+            let rpc = m.get_one::<String>("rpcserver").cloned().unwrap_or_else(|| "localhost:36669".to_owned());
+            let dash = Arc::new(Mutex::new(DashStats::new(rpc, "GPU · initialising".to_owned(), 0)));
             if !no_tui {
                 let d2 = dash.clone();
                 std::thread::spawn(move || tui::run_tui(d2));
@@ -241,12 +237,16 @@ fn resolve_activation(m: &ArgMatches) -> u64 {
 // ── mine ─────────────────────────────────────────────────────────────────────
 
 async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
-    let threads  = m.get_one::<usize>("threads").copied().unwrap_or_else(rayon::current_num_threads);
+    let threads = m.get_one::<usize>("threads").copied().unwrap_or_else(rayon::current_num_threads);
     let frag_size = m.get_one::<u32>("genome-fragment-size").copied().unwrap_or(1_048_576);
     let genome_activation = resolve_activation(m);
     let genome_path: Option<String> = m.get_one::<String>("genome-file").cloned().or_else(|| {
         let default = dirs::home_dir()?.join(".rusty-xenom").join("grch38.xenom");
-        if default.exists() { Some(default.to_string_lossy().into_owned()) } else { None }
+        if default.exists() {
+            Some(default.to_string_lossy().into_owned())
+        } else {
+            None
+        }
     });
 
     // Load the real genome dataset if available; otherwise fall back to SyntheticLoader.
@@ -266,12 +266,8 @@ async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
 
     // ── Stratum mode ──────────────────────────────────────────────────────────
     if let Some(stratum_url) = m.get_one::<String>("stratum").cloned() {
-        let worker = m.get_one::<String>("stratum-worker")
-            .cloned()
-            .unwrap_or_else(|| mining_addr.clone());
-        let password = m.get_one::<String>("stratum-password")
-            .cloned()
-            .unwrap_or_else(|| "x".to_owned());
+        let worker = m.get_one::<String>("stratum-worker").cloned().unwrap_or_else(|| mining_addr.clone());
+        let password = m.get_one::<String>("stratum-password").cloned().unwrap_or_else(|| "x".to_owned());
 
         let l2_cfg = match (
             m.get_one::<String>("l2-coordinator").cloned(),
@@ -281,8 +277,14 @@ async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
                 let use_gpu = m.get_flag("l2-gpu");
                 let perch_script = m.get_one::<String>("l2-perch-script").map(std::path::PathBuf::from);
                 match l2_worker::L2Config::new(url, key, use_gpu, perch_script) {
-                    Ok(c)  => { info!("L2 inline worker enabled — coordinator={}", c.coordinator_url); Some(c) }
-                    Err(e) => { warn!("L2 config error: {e} — L2 disabled"); None }
+                    Ok(c) => {
+                        info!("L2 inline worker enabled — coordinator={}", c.coordinator_url);
+                        Some(c)
+                    }
+                    Err(e) => {
+                        warn!("L2 config error: {e} — L2 disabled");
+                        None
+                    }
                 }
             }
             _ => None,
@@ -291,8 +293,10 @@ async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
         let (job_tx, job_rx) = mpsc::channel::<StratumJob>(8);
         let (sol_tx, sol_rx) = mpsc::channel::<StratumSolution>(32);
         let client = StratumClient::new(&stratum_url, &worker, &password);
-        let dash2  = dash.clone();
-        tokio::spawn(async move { client.run(job_tx, sol_rx, dash2).await; });
+        let dash2 = dash.clone();
+        tokio::spawn(async move {
+            client.run(job_tx, sol_rx, dash2).await;
+        });
 
         mine_stratum(threads, frag_size, genome_activation, file_loader, l2_cfg, job_rx, sol_tx, dash).await;
         return;
@@ -310,14 +314,17 @@ async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
     let url = format!("grpc://{}", cfg.rpcserver);
     info!("Connecting to {url}");
     let rpc = Arc::new(GrpcClient::connect(url).await.expect("Failed to connect"));
-    info!("Connected — threads={} genome_activation={} genome_file={}",
-        cfg.threads, cfg.genome_pow_activation_daa_score, genome_path.as_deref().unwrap_or("(synthetic)"));
+    info!(
+        "Connected — threads={} genome_activation={} genome_file={}",
+        cfg.threads,
+        cfg.genome_pow_activation_daa_score,
+        genome_path.as_deref().unwrap_or("(synthetic)")
+    );
     dash.lock().unwrap().connected = true;
 
-    let pay_address: kaspa_rpc_core::RpcAddress =
-        Address::try_from(cfg.mining_address.as_str()).expect("Invalid --mining-address");
+    let pay_address: kaspa_rpc_core::RpcAddress = Address::try_from(cfg.mining_address.as_str()).expect("Invalid --mining-address");
     let state = Arc::new(MinerState::new(cfg));
-    let pool  = rayon::ThreadPoolBuilder::new().num_threads(state.cfg.threads).build().expect("rayon pool");
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(state.cfg.threads).build().expect("rayon pool");
 
     let mut total_hashes: u64 = 0;
     let mut report_timer = Instant::now();
@@ -325,15 +332,26 @@ async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
     loop {
         let resp = match rpc.get_block_template_call(None, GetBlockTemplateRequest::new(pay_address.clone(), vec![])).await {
             Ok(r) => r,
-            Err(e) => { warn!("get_block_template: {e}"); sleep(Duration::from_secs(1)).await; continue; }
+            Err(e) => {
+                warn!("get_block_template: {e}");
+                sleep(Duration::from_secs(1)).await;
+                continue;
+            }
         };
         let rpc_block: RpcRawBlock = resp.block;
-        if !resp.is_synced { warn!("Node not synced"); }
+        if !resp.is_synced {
+            warn!("Node not synced");
+        }
 
         let current_id = rpc_block.header.accepted_id_merkle_root;
         let already_seen = {
             let mut guard = state.template_id.lock().unwrap();
-            if *guard == Some(current_id) { true } else { *guard = Some(current_id); false }
+            if *guard == Some(current_id) {
+                true
+            } else {
+                *guard = Some(current_id);
+                false
+            }
         };
         if already_seen {
             sleep(Duration::from_millis(200)).await;
@@ -346,31 +364,27 @@ async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
         state.found.store(false, Ordering::Relaxed);
         {
             let mut s = dash.lock().unwrap();
-            s.daa_score     = header.daa_score;
-            s.bits          = header.bits;
+            s.daa_score = header.daa_score;
+            s.bits = header.bits;
             s.genome_active = genome_active;
-            let mode_str    = if genome_active { "Genome PoW" } else { "KHeavyHash" };
-            s.mode          = format!("CPU×{} · {mode_str}", state.cfg.threads);
+            let mode_str = if genome_active { "Genome PoW" } else { "KHeavyHash" };
+            s.mode = format!("CPU×{} · {mode_str}", state.cfg.threads);
             s.push_log(format!("New template daa={} bits={:#010x} genome={}", header.daa_score, header.bits, genome_active));
         }
         info!("New template daa={} bits={:#010x} genome={}", header.daa_score, header.bits, genome_active);
 
-        let batch     = state.cfg.nonce_batch;
+        let batch = state.cfg.nonce_batch;
         let frag_size = state.cfg.genome_fragment_size_bytes;
 
         // Pre-compute per-template constants once (not per-nonce).
         let pre_pow_hash = kaspa_consensus_core::hashing::header::hash_override_nonce_time(&header, 0, 0);
-        let target       = kaspa_math::Uint256::from_compact_target_bits(header.bits);
-        let epoch_seed   = header.epoch_seed;
+        let target = kaspa_math::Uint256::from_compact_target_bits(header.bits);
+        let epoch_seed = header.epoch_seed;
 
         // When a real packed dataset is available, use genome_mix_hash directly
         // (same algorithm as the GPU shader + node validator — no per-nonce unpack).
         // Fall back to SyntheticLoader + check_pow_with_fragment for devnet.
-        let packed_opt: Option<&[u8]> = if genome_active {
-            file_loader.as_ref().and_then(|fl| fl.packed_dataset())
-        } else {
-            None
-        };
+        let packed_opt: Option<&[u8]> = if genome_active { file_loader.as_ref().and_then(|fl| fl.packed_dataset()) } else { None };
         let synth_loader: Option<Arc<dyn GenomeDatasetLoader>> = if genome_active && packed_opt.is_none() {
             Some(Arc::new(CachedLoader::new(SyntheticLoader::new(frag_size, epoch_seed), 256)))
         } else {
@@ -379,7 +393,9 @@ async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
 
         let mut nonce_base: u64 = 0;
         let solution: Option<u64> = 'search: loop {
-            if state.template_generation.load(Ordering::Relaxed) != gen { break 'search None; }
+            if state.template_generation.load(Ordering::Relaxed) != gen {
+                break 'search None;
+            }
             let range_start = nonce_base;
             nonce_base = nonce_base.saturating_add(batch * state.cfg.threads as u64);
             let winning = pool.install(|| {
@@ -395,7 +411,9 @@ async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
                 })
             });
             total_hashes += batch * state.cfg.threads as u64;
-            if let Some(n) = winning { break 'search Some(n); }
+            if let Some(n) = winning {
+                break 'search Some(n);
+            }
             if report_timer.elapsed() >= Duration::from_secs(10) {
                 let elapsed = report_timer.elapsed().as_secs_f64();
                 let mhs = total_hashes as f64 / elapsed / 1_000_000.0;
@@ -413,10 +431,18 @@ async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
                     info!("Block submitted: {:?}", r.report);
                     let accepted = matches!(r.report, kaspa_rpc_core::SubmitBlockReport::Success);
                     let mut s = dash.lock().unwrap();
-                    if accepted { s.accepted += 1; s.push_log(format!("Block accepted  daa={}", header.daa_score)); }
-                    else        { s.rejected += 1; s.push_log(format!("Block rejected  {:?}", r.report)); }
+                    if accepted {
+                        s.accepted += 1;
+                        s.push_log(format!("Block accepted  daa={}", header.daa_score));
+                    } else {
+                        s.rejected += 1;
+                        s.push_log(format!("Block rejected  {:?}", r.report));
+                    }
                 }
-                Err(e) => { warn!("submit_block: {e}"); dash.lock().unwrap().push_log(format!("submit error: {e}")); }
+                Err(e) => {
+                    warn!("submit_block: {e}");
+                    dash.lock().unwrap().push_log(format!("submit error: {e}"));
+                }
             }
         }
     }
@@ -429,20 +455,17 @@ async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
 // Full nonce = (extranonce1 << 32) | extranonce2.
 
 async fn mine_stratum(
-    threads:           usize,
-    frag_size:         u32,
+    threads: usize,
+    frag_size: u32,
     genome_activation: u64,
-    file_loader:       Option<Arc<FileGenomeLoader>>,
-    l2_cfg:            Option<l2_worker::L2Config>,
-    mut job_rx:        mpsc::Receiver<StratumJob>,
-    sol_tx:            mpsc::Sender<StratumSolution>,
-    dash:              Arc<Mutex<DashStats>>,
+    file_loader: Option<Arc<FileGenomeLoader>>,
+    l2_cfg: Option<l2_worker::L2Config>,
+    mut job_rx: mpsc::Receiver<StratumJob>,
+    sol_tx: mpsc::Sender<StratumSolution>,
+    dash: Arc<Mutex<DashStats>>,
 ) {
     info!("Stratum CPU miner started — waiting for first job …");
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .expect("rayon pool");
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().expect("rayon pool");
 
     let batch: u64 = 50_000;
     let mut total_hashes: u64 = 0;
@@ -451,7 +474,10 @@ async fn mine_stratum(
     // Wait for first job
     let mut current_job: StratumJob = match job_rx.recv().await {
         Some(j) => j,
-        None    => { warn!("Stratum job channel closed before first job"); return; }
+        None => {
+            warn!("Stratum job channel closed before first job");
+            return;
+        }
     };
 
     // nonce_base persists across share submissions for the same job
@@ -466,7 +492,7 @@ async fn mine_stratum(
             match job_rx.try_recv() {
                 Ok(new_job) => {
                     if new_job.job_id != active_job_id || new_job.clean_jobs {
-                        nonce_base    = (new_job.extranonce1 as u64) << 32;
+                        nonce_base = (new_job.extranonce1 as u64) << 32;
                         active_job_id = new_job.job_id.clone();
                     }
                     // Spawn inline L2 worker if coordinator is configured
@@ -474,8 +500,8 @@ async fn mine_stratum(
                         let l2_job_id = l2_val["job_id"].as_str().unwrap_or("").to_owned();
                         if !l2_job_id.is_empty() && !processed_l2_jobs.contains(&l2_job_id) {
                             processed_l2_jobs.insert(l2_job_id.clone());
-                            let cfg2  = cfg.clone();
-                            let val2  = l2_val.clone();
+                            let cfg2 = cfg.clone();
+                            let val2 = l2_val.clone();
                             tokio::spawn(async move {
                                 l2_worker::run_l2_job(cfg2, val2).await;
                             });
@@ -489,22 +515,18 @@ async fn mine_stratum(
         }
 
         let genome_active = current_job.daa_score >= genome_activation;
-        let pre_pow_hash  = current_job.pre_pow_hash;
-        let epoch_seed    = current_job.epoch_seed;
-        let timestamp     = current_job.timestamp;
-        let bits          = current_job.bits;
-        let extranonce1   = current_job.extranonce1;
-        let job_id        = current_job.job_id.clone();
+        let pre_pow_hash = current_job.pre_pow_hash;
+        let epoch_seed = current_job.epoch_seed;
+        let timestamp = current_job.timestamp;
+        let bits = current_job.bits;
+        let extranonce1 = current_job.extranonce1;
+        let job_id = current_job.job_id.clone();
 
         let nonce_start: u64 = (extranonce1 as u64) << 32;
-        let nonce_max:   u64 = nonce_start + u32::MAX as u64;
+        let nonce_max: u64 = nonce_start + u32::MAX as u64;
         let target = kaspa_math::Uint256::from_compact_target_bits(bits);
 
-        let packed_opt: Option<&[u8]> = if genome_active {
-            file_loader.as_ref().and_then(|fl| fl.packed_dataset())
-        } else {
-            None
-        };
+        let packed_opt: Option<&[u8]> = if genome_active { file_loader.as_ref().and_then(|fl| fl.packed_dataset()) } else { None };
         let synth_loader: Option<Arc<dyn GenomeDatasetLoader>> = if genome_active && packed_opt.is_none() {
             Some(Arc::new(CachedLoader::new(SyntheticLoader::new(frag_size, epoch_seed), 256)))
         } else {
@@ -513,17 +535,19 @@ async fn mine_stratum(
 
         {
             let mut s = dash.lock().unwrap();
-            s.bits          = bits;
+            s.bits = bits;
             s.genome_active = genome_active;
-            s.connected     = true;
+            s.connected = true;
             let mode = if genome_active { "Genome PoW" } else { "KHeavyHash" };
             s.mode = format!("CPU×{threads} · {mode} · Pool");
         }
 
         // Advance nonce_base, wrapping within [nonce_start, nonce_max]
-        if nonce_base > nonce_max { nonce_base = nonce_start; }
+        if nonce_base > nonce_max {
+            nonce_base = nonce_start;
+        }
         let start = nonce_base;
-        let end   = (start + batch * threads as u64).min(nonce_max);
+        let end = (start + batch * threads as u64).min(nonce_max);
         nonce_base = end;
 
         let winning = pool.install(|| {
@@ -571,43 +595,37 @@ async fn mine_stratum(
     }
 }
 
-/// Construct a KHeavyHash PoW state for stratum mining.
-/// Uses public primitives from kaspa_pow — no consensus logic modified.
-#[inline]
-fn stratum_state(pre_pow_hash: kaspa_hashes::Hash, timestamp: u64, bits: u32) -> kaspa_pow::State {
-    kaspa_pow::State::from_parts(pre_pow_hash, timestamp, bits)
-}
-
-fn try_nonce_range_legacy_stratum(
-    pre_pow_hash: &kaspa_hashes::Hash,
-    timestamp:    u64,
-    bits:         u32,
-    start:        u64,
-    end:          u64,
-) -> Option<u64> {
-    let state = stratum_state(*pre_pow_hash, timestamp, bits);
+fn try_nonce_range_legacy_stratum(pre_pow_hash: &kaspa_hashes::Hash, timestamp: u64, bits: u32, start: u64, end: u64) -> Option<u64> {
+    let target = kaspa_math::Uint256::from_compact_target_bits(bits);
+    let matrix = kaspa_pow::matrix::Matrix::generate(*pre_pow_hash);
     for nonce in start..end {
-        let (valid, _) = state.check_pow(nonce);
-        if valid { return Some(nonce); }
+        let hash = kaspa_hashes::PowHash::new(*pre_pow_hash, timestamp).finalize_with_nonce(nonce);
+        let hash = matrix.heavy_hash(hash);
+        let pow = kaspa_math::Uint256::from_le_bytes(hash.as_bytes());
+        if pow <= target {
+            return Some(nonce);
+        }
     }
     None
 }
 
 fn try_nonce_range_genome_stratum(
     pre_pow_hash: &kaspa_hashes::Hash,
-    target:       &kaspa_math::Uint256,
-    epoch_seed:   &kaspa_hashes::Hash,
-    frag_size:    u32,
-    loader:       &dyn GenomeDatasetLoader,
-    start:        u64,
-    end:          u64,
+    target: &kaspa_math::Uint256,
+    epoch_seed: &kaspa_hashes::Hash,
+    frag_size: u32,
+    loader: &dyn GenomeDatasetLoader,
+    start: u64,
+    end: u64,
 ) -> Option<u64> {
     let state = GenomePowState::new(*pre_pow_hash, *target, *epoch_seed, frag_size);
     for nonce in start..end {
-        let idx      = fragment_index(epoch_seed, nonce, frag_size);
+        let idx = fragment_index(epoch_seed, nonce, frag_size);
         let fragment = loader.load_fragment(idx)?;
         let (valid, _, _) = state.check_pow_with_fragment(nonce, &fragment);
-        if valid { return Some(nonce); }
+        if valid {
+            return Some(nonce);
+        }
     }
     None
 }
@@ -617,8 +635,8 @@ fn try_nonce_range_genome_stratum(
 async fn cmd_suggest_params(m: &ArgMatches) {
     let rpcserver = m.get_one::<String>("rpcserver").cloned().unwrap_or_else(|| "localhost:16668".to_owned());
     let fitness_buffer = m.get_one::<u64>("fitness-buffer").copied().unwrap_or(1_000);
-    let pow_buffer     = m.get_one::<u64>("pow-buffer").copied().unwrap_or(200);
-    let epoch_len      = m.get_one::<u64>("epoch-len").copied().unwrap_or(200);
+    let pow_buffer = m.get_one::<u64>("pow-buffer").copied().unwrap_or(200);
+    let epoch_len = m.get_one::<u64>("epoch-len").copied().unwrap_or(200);
 
     let url = format!("grpc://{rpcserver}");
     let rpc = GrpcClient::connect(url).await.expect("Failed to connect");
@@ -629,7 +647,7 @@ async fn cmd_suggest_params(m: &ArgMatches) {
 
     let tip_daa = dag_info.virtual_daa_score;
     let fitness_activation = tip_daa + fitness_buffer;
-    let genome_activation  = fitness_activation + epoch_len + pow_buffer;
+    let genome_activation = fitness_activation + epoch_len + pow_buffer;
 
     println!();
     println!("// ── Current chain tip DAA score: {tip_daa} ──");
@@ -651,7 +669,7 @@ async fn cmd_suggest_params(m: &ArgMatches) {
 // ── compute-merkle-root ───────────────────────────────────────────────────────
 
 fn cmd_compute_merkle_root(m: &ArgMatches) {
-    let path          = m.get_one::<String>("genome-file").unwrap();
+    let path = m.get_one::<String>("genome-file").unwrap();
     let fragment_size = m.get_one::<u32>("fragment-size").copied().unwrap_or(1_048_576) as usize;
 
     eprintln!("Reading {path} with fragment_size={fragment_size} bytes ...");
@@ -668,7 +686,7 @@ fn cmd_compute_merkle_root(m: &ArgMatches) {
         .into_par_iter()
         .map(|idx| {
             let start = idx * fragment_size;
-            let end   = (start + fragment_size).min(data.len());
+            let end = (start + fragment_size).min(data.len());
             fragment_leaf_hash(idx as u64, &data[start..end])
         })
         .collect();
@@ -690,14 +708,14 @@ fn cmd_compute_merkle_root(m: &ArgMatches) {
 
 fn cmd_address_to_script(m: &ArgMatches) {
     let addr_str = m.get_one::<String>("address").unwrap();
-    let address  = Address::try_from(addr_str.as_str()).unwrap_or_else(|e| panic!("Invalid address: {e}"));
-    let spk      = pay_to_address_script(&address);
+    let address = Address::try_from(addr_str.as_str()).unwrap_or_else(|e| panic!("Invalid address: {e}"));
+    let spk = pay_to_address_script(&address);
 
     // Format: version(2B big-endian hex) || script bytes hex
     let version_bytes = spk.version.to_be_bytes();
-    let script_bytes  = spk.script();
-    let total_len     = (version_bytes.len() + script_bytes.len()) * 2;
-    let mut hex_buf   = vec![0u8; total_len];
+    let script_bytes = spk.script();
+    let total_len = (version_bytes.len() + script_bytes.len()) * 2;
+    let mut hex_buf = vec![0u8; total_len];
     faster_hex::hex_encode(&version_bytes, &mut hex_buf[..4]).expect("hex version");
     faster_hex::hex_encode(script_bytes, &mut hex_buf[4..]).expect("hex script");
     let hex_str = std::str::from_utf8(&hex_buf).unwrap();

@@ -15,20 +15,18 @@ use std::sync::Arc;
 async fn main() -> Result<()> {
     kaspa_core::log::init_logger(None, "info");
 
-    let m           = cli().get_matches();
-    let privkey     = m.get_one::<String>("private-key").unwrap().clone();
-    let inbox       = PathBuf::from(m.get_one::<String>("inbox").unwrap());
-    let work_root   = PathBuf::from(m.get_one::<String>("work-root").unwrap());
-    let node_addr   = m.get_one::<String>("node").unwrap().clone();
-    let poll_ms: u64 = m.get_one::<String>("poll-ms")
-        .and_then(|s| s.parse().ok()).unwrap_or(3_000);
-    let concurrency: usize = m.get_one::<String>("concurrency")
-        .and_then(|s| s.parse().ok()).unwrap_or(1);
+    let m = cli().get_matches();
+    let privkey = m.get_one::<String>("private-key").unwrap().clone();
+    let inbox = PathBuf::from(m.get_one::<String>("inbox").unwrap());
+    let work_root = PathBuf::from(m.get_one::<String>("work-root").unwrap());
+    let node_addr = m.get_one::<String>("node").unwrap().clone();
+    let poll_ms: u64 = m.get_one::<String>("poll-ms").and_then(|s| s.parse().ok()).unwrap_or(3_000);
+    let concurrency: usize = m.get_one::<String>("concurrency").and_then(|s| s.parse().ok()).unwrap_or(1);
     let submit = m.get_flag("submit");
+    let devnet = m.get_flag("devnet");
 
     // ── Keypair ───────────────────────────────────────────────────────────────
-    let keypair = BioProofKeypair::from_hex(&privkey)
-        .context("invalid --private-key (expected 64 hex chars)")?;
+    let keypair = BioProofKeypair::from_hex(&privkey).context("invalid --private-key (expected 64 hex chars)")?;
     let worker_pubkey = keypair.pubkey_hex();
     log::info!("Worker pubkey: {worker_pubkey}");
 
@@ -38,27 +36,23 @@ async fn main() -> Result<()> {
     log::info!("  CPUs:     {}", caps.cpu_count);
     log::info!("  RAM:      {} MiB", caps.ram_mib);
     log::info!("  GPUs:     {}", caps.gpus.len());
-    log::info!("  Backends: {}",
-        caps.backends.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", "));
-    log::info!("  JobTypes: {}",
-        caps.job_types.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", "));
+    log::info!("  Backends: {}", caps.backends.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", "));
+    log::info!("  JobTypes: {}", caps.job_types.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", "));
 
     // Optionally write capabilities JSON to work root for inspection.
     tokio::fs::create_dir_all(&work_root).await?;
-    tokio::fs::write(
-        work_root.join("capabilities.json"),
-        serde_json::to_vec_pretty(&caps)?,
-    ).await?;
+    tokio::fs::write(work_root.join("capabilities.json"), serde_json::to_vec_pretty(&caps)?).await?;
 
     // ── Start daemon loop ─────────────────────────────────────────────────────
     let cfg = Arc::new(job_loop::WorkerConfig {
-        job_inbox:   inbox,
+        job_inbox: inbox,
         work_root,
         privkey_hex: privkey,
-        api_url:     None,
+        api_url: None,
         node_addr,
         poll_ms,
         submit,
+        devnet,
     });
 
     job_loop::run(Arc::new(caps), cfg).await
@@ -96,4 +90,12 @@ fn cli() -> Command {
             .long("submit")
             .action(clap::ArgAction::SetTrue)
             .help("Anchor completed job results on-chain (default: dry-run)"))
+        .arg(Arg::new("devnet")
+            .long("devnet")
+            .action(clap::ArgAction::SetTrue)
+            .help("Use devnet address prefix and lower coinbase maturity"))
+        .arg(Arg::new("testnet")
+            .long("testnet")
+            .action(clap::ArgAction::SetTrue)
+            .help("Use testnet address prefix"))
 }
