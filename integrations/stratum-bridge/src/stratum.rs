@@ -73,6 +73,7 @@ enum ShareError {
     /// Exact (job_id, extranonce2) already seen.  (code 22)
     Duplicate,
     /// Hash does not meet share difficulty target. (code 23)
+    #[allow(dead_code)]
     LowDifficulty { hash: f64, target: f64 },
 }
 
@@ -139,6 +140,7 @@ pub async fn run_server(
 
 // ── Per-miner connection ──────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_miner(
     stream:        TcpStream,
     peer:          SocketAddr,

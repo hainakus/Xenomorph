@@ -51,9 +51,9 @@ impl StratumNotification {
     /// 5. timestamp       — 16-char hex (8 bytes): template timestamp in milliseconds
     /// 6. clean_jobs      — bool: true → abandon previous jobs
     /// 7. l2_job          — optional JSON object with themed L2 compute task, or null
-    ///                       Miners that do not support L2 safely ignore this field.
+    ///    Miners that do not support L2 safely ignore this field.
     /// 8. daa_score_hex   — 16-char hex: current DAA score; miners use this to determine
-    ///                       whether Genome PoW is active (daa_score >= activation).
+    ///    whether Genome PoW is active (daa_score >= activation).
     pub fn notify(
         job_id:       &str,
         pre_pow_hash: &str,

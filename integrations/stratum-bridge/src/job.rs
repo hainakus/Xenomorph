@@ -116,6 +116,7 @@ pub struct JobManager {
 }
 
 impl JobManager {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::with_activation(u64::MAX)
     }
