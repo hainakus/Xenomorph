@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use bioproof_core::{
     compute_proof, sign_manifest, AnchorPayload, ArtifactType, BioProofKeypair, Certificate,
     Manifest,
@@ -29,6 +29,12 @@ async fn main() -> Result<()> {
     let node_address = m.get_one::<String>("node").cloned();
     let dry_run      = !m.get_flag("submit");
     let out_path     = m.get_one::<String>("out").cloned();
+    let is_devnet    = m.get_flag("devnet");
+    let network_prefix = if is_devnet {
+        kaspa_addresses::Prefix::Devnet
+    } else {
+        kaspa_addresses::Prefix::Mainnet
+    };
 
     let artifact_type = ArtifactType::from_str(artifact_str).unwrap();
 
@@ -103,7 +109,7 @@ async fn main() -> Result<()> {
             .unwrap_or("grpc://localhost:36669");
 
         log::info!("Submitting anchor to {node_addr}…");
-        let txid = submit_anchor(node_addr, &op_return_bytes, privkey_hex).await?;
+        let txid = submit_anchor(node_addr, &op_return_bytes, privkey_hex, network_prefix, is_devnet).await?;
         log::info!("  txid = {txid}");
         cert.txid = Some(txid);
     }
@@ -128,9 +134,12 @@ async fn submit_anchor(
     node_addr:       &str,
     op_return_bytes: &[u8],
     privkey_hex:     &str,
+    prefix:          kaspa_addresses::Prefix,
+    is_devnet:       bool,
 ) -> Result<String> {
     use kaspa_grpc_client::GrpcClient;
     use std::sync::Arc;
+    use xenom_anchor_client::tx::{COINBASE_MATURITY, COINBASE_MATURITY_DEVNET};
 
     let url = if node_addr.starts_with("grpc://") {
         node_addr.to_owned()
@@ -143,14 +152,18 @@ async fn submit_anchor(
 
     log::info!(
         "Funding address: {}",
-        xenom_anchor_client::address_from_keypair(&keypair)
+        xenom_anchor_client::address_from_keypair(&keypair, prefix)
     );
+
+    let maturity = if is_devnet { COINBASE_MATURITY_DEVNET } else { COINBASE_MATURITY };
 
     xenom_anchor_client::submit_anchor(
         &rpc,
         &keypair,
         op_return_bytes,
         xenom_anchor_client::DEFAULT_FEE_PER_INPUT,
+        prefix,
+        maturity,
     ).await
 }
 
@@ -198,4 +211,8 @@ fn cli() -> Command {
         .arg(Arg::new("out")
             .short('o').long("out").value_name("PATH")
             .help("Write certificate JSON to file instead of stdout"))
+        .arg(Arg::new("devnet")
+            .long("devnet")
+            .action(clap::ArgAction::SetTrue)
+            .help("Use devnet address prefix and maturity"))
 }

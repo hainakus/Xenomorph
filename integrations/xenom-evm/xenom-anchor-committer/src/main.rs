@@ -1,3 +1,4 @@
+use xenom_anchor_client::tx::{COINBASE_MATURITY, COINBASE_MATURITY_DEVNET};
 use std::{
     path::Path,
     str::FromStr,
@@ -281,9 +282,9 @@ async fn main() -> Result<()> {
 
     let is_devnet = m.get_flag("devnet");
     let coinbase_maturity = if is_devnet {
-        xenom_anchor_client::COINBASE_MATURITY_DEVNET
+        COINBASE_MATURITY_DEVNET
     } else {
-        xenom_anchor_client::COINBASE_MATURITY
+        COINBASE_MATURITY
     };
 
     let privkey_hex = load_privkey_opt("COMMITTER_PRIVKEY", m.get_one::<String>("key-file").map(|s| s.as_str()));

@@ -189,12 +189,14 @@ async fn submit_anchor(node_addr: &str, payload_bytes: &[u8], privkey_hex: &str,
     use std::sync::Arc;
     use kaspa_grpc_client::GrpcClient;
 
+    use xenom_anchor_client::tx::{COINBASE_MATURITY, COINBASE_MATURITY_DEVNET, Prefix};
+
     let url = if node_addr.starts_with("grpc://") { node_addr.to_owned() } else { format!("grpc://{node_addr}") };
     let rpc = Arc::new(GrpcClient::connect(url).await.context("cannot connect to Xenom node")?);
     let keypair = xenom_anchor_client::keypair_from_hex(privkey_hex).context("invalid private key")?;
 
-    let prefix = if devnet { xenom_anchor_client::Prefix::Devnet } else { xenom_anchor_client::Prefix::Mainnet };
-    let maturity = if devnet { xenom_anchor_client::COINBASE_MATURITY_DEVNET } else { xenom_anchor_client::COINBASE_MATURITY };
+    let prefix = if devnet { Prefix::Devnet } else { Prefix::Mainnet };
+    let maturity = if devnet { COINBASE_MATURITY_DEVNET } else { COINBASE_MATURITY };
 
     let txid = xenom_anchor_client::submit_anchor(&rpc, &keypair, payload_bytes, xenom_anchor_client::DEFAULT_FEE_PER_INPUT, prefix, maturity)
         .await

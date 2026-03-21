@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
 
     if let Some(ref kp) = keypair {
         log::info!("  funding: {}",
-            xenom_anchor_client::address_from_keypair(kp));
+            xenom_anchor_client::address_from_keypair(kp, network_prefix));
     }
 
     // Set up shared RPC client for settlement daemon
@@ -253,7 +253,9 @@ async fn settle_validated_jobs(
             log::info!("  devnet/testnet: no --evm-node set, skipping anchor");
             None
         } else if let (Some(rpc_client), Some(kp)) = (rpc, keypair) {
-            match xenom_anchor_client::submit_anchor(rpc_client, kp, &payload_bytes, fee_sompi).await {
+            use xenom_anchor_client::tx::{COINBASE_MATURITY, COINBASE_MATURITY_DEVNET};
+            let maturity = if prefix == Prefix::Devnet { COINBASE_MATURITY_DEVNET } else { COINBASE_MATURITY };
+            match xenom_anchor_client::submit_anchor(rpc_client, kp, &payload_bytes, fee_sompi, prefix, maturity).await {
                 Ok(id)  => { log::info!("  anchored txid={id}"); Some(id) }
                 Err(e)  => { log::warn!("  anchor failed: {e:#}"); None }
             }
