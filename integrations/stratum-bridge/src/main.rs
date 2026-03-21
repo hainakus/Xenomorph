@@ -347,14 +347,15 @@ async fn main() -> Result<()> {
         });
     }
 
-    // ── Periodic stats logging ────────────────────────────────────────────────
     if stats_interval > 0 {
         let acct2 = accounting.clone();
         tokio::spawn(async move {
             let interval = Duration::from_secs(stats_interval);
             loop {
                 sleep(interval).await;
-                acct2.lock().await.log_stats();
+                // let guard = acct2.lock().await;
+                // let accounting = &*guard;
+                // accounting.log_stats();
             }
         });
     }
@@ -417,8 +418,18 @@ async fn main() -> Result<()> {
                 };
 
                 // Collect ALL confirmed pending blocks
+                let pending_info = acct3.lock().await.get_pending_info(current_daa, pcfg.confirm_depth);
+                info!("Payout check: current_daa={}, confirm_depth={}, pending_payouts={}", current_daa, pcfg.confirm_depth, pending_info.len());
+
+                // Debug pending
+                for (job_id, block_daa, confirmed) in &pending_info {
+                    info!("  Pending {}: block_daa={}, confirmed={}", job_id, block_daa, confirmed);
+                }
+
                 let confirmed = acct3.lock().await
                     .take_confirmed_payouts(current_daa, pcfg.confirm_depth);
+
+                info!("Confirmed blocks for payout: {}", confirmed.len());
 
                 if confirmed.is_empty() {
                     continue;

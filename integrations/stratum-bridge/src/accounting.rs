@@ -201,21 +201,12 @@ impl Accounting {
         self.pending.append(&mut pending_entries);
     }
 
-    /// Log a summary of current worker stats.
-    pub fn log_stats(&self) {
-        if self.workers.is_empty() {
-            info!("Pool stats: no miners connected");
-            return;
-        }
-        info!("Pool stats (PPLNS window={} shares):", self.shares.len());
-        let mut rows: Vec<(&String, &WorkerStats)> = self.workers.iter().collect();
-        rows.sort_by_key(|(w, _)| w.as_str());
-        for (worker, s) in rows {
-            info!(
-                "  {worker}  shares={} total_diff={:.2} blocks={}",
-                s.shares_submitted, s.total_diff, s.blocks_found
-            );
-        }
+    /// Get info about pending payouts for logging.
+    pub fn get_pending_info(&self, current_daa: u64, confirm_depth: u64) -> Vec<(String, u64, bool)> {
+        self.pending.iter().filter(|p| p.status == PayoutStatus::Pending).map(|p| {
+            let confirmed = current_daa.saturating_sub(p.block_daa_score) >= confirm_depth;
+            (p.job_id.clone(), p.block_daa_score, confirmed)
+        }).collect()
     }
 
     // ── Private ───────────────────────────────────────────────────────────────
