@@ -36,7 +36,8 @@ pub struct GpuStats {
 }
 
 pub struct DashStats {
-    pub rpcserver:     String,
+    pub endpoint:      String,
+    pub is_stratum:    bool,
     pub connected:     bool,
     pub mode:          String,
     pub daa_score:     u64,
@@ -52,9 +53,10 @@ pub struct DashStats {
 }
 
 impl DashStats {
-    pub fn new(rpcserver: String, mode: String, num_cpus: usize) -> Self {
+    pub fn new(endpoint: String, is_stratum: bool, mode: String, num_cpus: usize) -> Self {
         Self {
-            rpcserver,
+            endpoint,
+            is_stratum,
             connected: false,
             mode,
             daa_score: 0,
@@ -177,17 +179,18 @@ fn draw(f: &mut Frame, s: &DashStats) {
 // ── Header bar ───────────────────────────────────────────────────────────────
 
 fn render_header(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
+    let conn_label = if s.connected { "● Connected" } else { "○ Disconnected" };
     let conn_style = if s.connected {
         Style::default().fg(Color::Green)
     } else {
         Style::default().fg(Color::Red)
     };
-    let conn_label = if s.connected { "● Connected" } else { "○ Disconnected" };
-    let mode_color = if s.genome_active { Color::Cyan } else { Color::Yellow };
+    let mode_color = Color::Cyan;
+    let scheme = if s.is_stratum { " stratum://" } else { " grpc://" };
 
     let line = Line::from(vec![
-        Span::styled(" grpc://", Style::default().fg(Color::DarkGray)),
-        Span::styled(s.rpcserver.clone(), Style::default().fg(Color::White)),
+        Span::styled(scheme, Style::default().fg(Color::DarkGray)),
+        Span::styled(s.endpoint.clone(), Style::default().fg(Color::White)),
         Span::raw("  "),
         Span::styled(conn_label, conn_style),
         Span::raw("  │  DAA: "),

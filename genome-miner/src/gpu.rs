@@ -18,8 +18,6 @@ use kaspa_pow::{
         fragment_index, genome_mix_hash, GenomeDatasetLoader,
         GenomePowState, SyntheticLoader, GENOME_BASE_SIZE, MIX_CHUNK_BYTES,
     },
-    matrix::Matrix,
-    State as KHeavyState,
 };
 use kaspa_rpc_core::{
     api::rpc::RpcApi, model::message::GetBlockTemplateRequest, RpcRawBlock,
@@ -34,7 +32,6 @@ struct GpuContext {
     device:      wgpu::Device,
     queue:       wgpu::Queue,
     pipeline:    wgpu::ComputePipeline,   // Genome PoW
-    kh_pipeline: wgpu::ComputePipeline,   // KHeavyHash (pre-activation)
     bind_layout: wgpu::BindGroupLayout,   // shared: 3×storage bindings
 }
 
@@ -52,21 +49,11 @@ struct GpuWorker {
     #[allow(dead_code)]
     genome_buf: Arc<wgpu::Buffer>,
 
-    // KH: 64×64 matrix (~16 KB). Written once per new pre_pow_hash.
-    matrix_buf:        Arc<wgpu::Buffer>,
-    last_matrix_hash:  Option<kaspa_hashes::Hash>,
-
     // Genome PoW persistent resources
     g_params_buf:   wgpu::Buffer,   // 112 bytes
     g_output_buf:   wgpu::Buffer,   // 16 bytes  (STORAGE | COPY_SRC | COPY_DST)
     g_readback_buf: wgpu::Buffer,   // 16 bytes  (MAP_READ | COPY_DST)
     g_bind_group:   wgpu::BindGroup,
-
-    // KHeavyHash persistent resources
-    kh_params_buf:   wgpu::Buffer,  // 88 bytes
-    kh_output_buf:   wgpu::Buffer,  // 48 bytes  (STORAGE | COPY_SRC | COPY_DST)
-    kh_readback_buf: wgpu::Buffer,  // 48 bytes  (MAP_READ | COPY_DST)
-    kh_bind_group:   wgpu::BindGroup,
 }
 
 impl GpuWorker {
@@ -104,52 +91,15 @@ impl GpuWorker {
             ],
         });
 
-        // ── KHeavyHash buffers ──
-        let matrix_buf = Arc::new(dev.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("kh_matrix"),
-            size:  4096 * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        }));
-        let kh_params_buf = dev.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("kh_params"),
-            size:  88,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let kh_output_buf = dev.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("kh_output"),
-            size:  48,
-            usage: wgpu::BufferUsages::STORAGE
-                 | wgpu::BufferUsages::COPY_SRC
-                 | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let kh_readback_buf = dev.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("kh_readback"),
-            size:  48,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let kh_bind_group = dev.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("kh_bg"),
-            layout:  &ctx.bind_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: kh_params_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: matrix_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: kh_output_buf.as_entire_binding() },
-            ],
-        });
-
         Self {
             id,
             name,
             ctx,
             genome_buf,
-            matrix_buf,
-            last_matrix_hash: None,
-            g_params_buf, g_output_buf, g_readback_buf, g_bind_group,
-            kh_params_buf, kh_output_buf, kh_readback_buf, kh_bind_group,
+            g_params_buf,
+            g_output_buf,
+            g_readback_buf,
+            g_bind_group,
         }
     }
 }
@@ -333,12 +283,6 @@ impl GpuContext {
             source: wgpu::ShaderSource::Wgsl(shader_src.into()),
         });
 
-        let kh_shader_src = include_str!("kheavyhash4.wgsl");
-        let kh_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label:  Some("kheavyhash"),
-            source: wgpu::ShaderSource::Wgsl(kh_shader_src.into()),
-        });
-
         let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label:   Some("genome_pow_bgl"),
             entries: &[
@@ -393,16 +337,7 @@ impl GpuContext {
             cache: None,
         });
 
-        let kh_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label:       Some("kheavyhash_cp"),
-            layout:      Some(&pipeline_layout),
-            module:      &kh_shader,
-            entry_point: "main",
-            compilation_options: Default::default(),
-            cache: None,
-        });
-
-        Ok(Self { device, queue, pipeline, kh_pipeline, bind_layout })
+        Ok(Self { device, queue, pipeline, bind_layout })
     }
 
     #[allow(dead_code)]
@@ -424,30 +359,6 @@ fn synthetic_packed_genome(frag_size: u32) -> Vec<u8> {
 }
 
 // ── Param buffer builders ────────────────────────────────────────────────────
-
-/// KHeavyHash matrix → 4096×u32 LE bytes (~16 KB).
-fn build_matrix_bytes(pre_pow_hash: &kaspa_hashes::Hash) -> Vec<u8> {
-    let matrix = Matrix::generate(*pre_pow_hash);
-    let flat = matrix.to_flat_u32();
-    flat.iter().flat_map(|v| v.to_le_bytes()).collect()
-}
-
-/// 88-byte KHeavyHash params buffer.
-fn build_kheavy_params(
-    pre_pow_hash: &kaspa_hashes::Hash,
-    timestamp: u64,
-    target: &kaspa_math::Uint256,
-    nonce_base: u64,
-) -> [u8; 88] {
-    let mut buf = [0u8; 88];
-    buf[0..32].copy_from_slice(pre_pow_hash.as_ref());
-    buf[32..36].copy_from_slice(&(timestamp as u32).to_le_bytes());
-    buf[36..40].copy_from_slice(&((timestamp >> 32) as u32).to_le_bytes());
-    buf[40..72].copy_from_slice(&target.to_le_bytes());
-    buf[72..76].copy_from_slice(&(nonce_base as u32).to_le_bytes());
-    buf[76..80].copy_from_slice(&((nonce_base >> 32) as u32).to_le_bytes());
-    buf
-}
 
 /// 112-byte Genome PoW params buffer matching the WGSL Params struct.
 fn build_params_full(
@@ -504,45 +415,6 @@ async fn dispatch_genome(worker: &mut GpuWorker, params_data: &[u8; 112], batch_
     if found != 0 { Some((nonce_lo as u64) | ((nonce_hi as u64) << 32)) } else { None }
 }
 
-/// KHeavyHash dispatch using pre-allocated persistent buffers.
-/// Returns `Some((nonce, gpu_hash))` so the caller can CPU-verify.
-async fn dispatch_kheavy(worker: &mut GpuWorker, params_data: &[u8; 88], batch_size: u32) -> Option<(u64, [u32; 8])> {
-    let dev   = &worker.ctx.device;
-    let queue = &worker.ctx.queue;
-
-    queue.write_buffer(&worker.kh_params_buf, 0, params_data);
-
-    let mut encoder = dev.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    encoder.clear_buffer(&worker.kh_output_buf, 0, None);
-    {
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-        pass.set_pipeline(&worker.ctx.kh_pipeline);
-        pass.set_bind_group(0, &worker.kh_bind_group, &[]);
-        pass.dispatch_workgroups(batch_size.div_ceil(256), 1, 1);
-    }
-    encoder.copy_buffer_to_buffer(&worker.kh_output_buf, 0, &worker.kh_readback_buf, 0, 48);
-    queue.submit(once(encoder.finish()));
-
-    let slice = worker.kh_readback_buf.slice(..);
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    slice.map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
-    tokio::task::block_in_place(|| dev.poll(wgpu::Maintain::Wait));
-    rx.await.ok()?.ok()?;
-
-    let data     = slice.get_mapped_range();
-    let found    = u32::from_le_bytes(data[0..4].try_into().unwrap());
-    let nonce_lo = u32::from_le_bytes(data[4..8].try_into().unwrap());
-    let nonce_hi = u32::from_le_bytes(data[8..12].try_into().unwrap());
-    let mut gpu_hash = [0u32; 8];
-    for i in 0..8 {
-        gpu_hash[i] = u32::from_le_bytes(data[16 + i * 4..16 + i * 4 + 4].try_into().unwrap());
-    }
-    drop(data);
-    worker.kh_readback_buf.unmap();
-
-    if found != 0 { Some(((nonce_lo as u64) | ((nonce_hi as u64) << 32), gpu_hash)) } else { None }
-}
-
 // ── Per-GPU mining task (runs as an independent tokio::spawn) ─────────────────
 //
 // Each GPU owns its worker and independently dispatches batches, reading the
@@ -583,45 +455,12 @@ async fn gpu_mining_task(
             };
         }
 
-        let result: Option<u64> = if template.genome_active {
+        let result: Option<u64> = {
             let params = build_params_full(
                 &template.epoch_seed, &template.pre_pow_hash,
                 &template.target, nonce_base, template.num_mix_chunks,
             );
             dispatch_genome(&mut worker, &params, batch_size).await
-        } else {
-            if worker.last_matrix_hash != Some(template.pre_pow_hash) {
-                worker.ctx.queue.write_buffer(&worker.matrix_buf, 0, &build_matrix_bytes(&template.pre_pow_hash));
-                worker.last_matrix_hash = Some(template.pre_pow_hash);
-            }
-            let kh_params = build_kheavy_params(
-                &template.pre_pow_hash, template.timestamp, &template.target, nonce_base,
-            );
-            match dispatch_kheavy(&mut worker, &kh_params, batch_size).await {
-                Some((nonce, gpu_hash)) => {
-                    match &template.source {
-                        MiningSource::Node { header, .. } => {
-                            let state = KHeavyState::new(header);
-                            let (cpu_valid, cpu_pow) = state.check_pow(nonce);
-                            let cpu_bytes = cpu_pow.to_le_bytes();
-                            let mut cpu_hash = [0u32; 8];
-                            for k in 0..8 { cpu_hash[k] = u32::from_le_bytes(cpu_bytes[k*4..k*4+4].try_into().unwrap()); }
-                            if gpu_hash != cpu_hash {
-                                warn!("[GPU{}] KHeavyHash mismatch nonce={:#018x}", gpu_id, nonce);
-                            }
-                            if cpu_valid { Some(nonce) } else {
-                                warn!("[GPU{}] KHeavyHash false-positive nonce={:#018x} — skipping", gpu_id, nonce);
-                                None
-                            }
-                        }
-                        MiningSource::Stratum { .. } => {
-                            // No CPU-verify in stratum mode; bridge validates
-                            Some(nonce)
-                        }
-                    }
-                }
-                None => None,
-            }
         };
 
         hash_counter.fetch_add(batch_size as u64, Ordering::Relaxed);
@@ -642,7 +481,7 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
     let addr_str_opt: Option<String> = m.get_one::<String>("mining-address").cloned();
     let batch_size        = m.get_one::<u32>("batch-size").copied().unwrap_or(1 << 20);
     let frag_size         = m.get_one::<u32>("genome-fragment-size").copied().unwrap_or(1_048_576);
-    let genome_activation = crate::resolve_activation(m);
+    let genome_activation = 0; // activations resolved to always true
     let gpu_arg           = m.get_one::<String>("gpu").cloned().unwrap_or_else(|| "0".to_owned());
     let nonce_offset      = m.get_one::<u64>("nonce-offset").copied().unwrap_or(0);
     let list_gpus         = m.get_flag("list-gpus");
@@ -833,11 +672,10 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
                         });
                     }
                 }
-                let target      = kaspa_math::Uint256::from_compact_target_bits(job.bits);
-                let genome_active = job.daa_score >= genome_activation;
+                let target      = job.target;
                 let id          = job.pre_pow_hash;
-                let extranonce1 = job.extranonce1;
                 let job_id      = job.job_id.clone();
+                let extranonce1 = job.extranonce1;
                 let t = Arc::new(MiningTemplate {
                     id,
                     source: MiningSource::Stratum { job_id, extranonce1 },
@@ -847,7 +685,7 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
                     daa_score:      job.daa_score,
                     bits:           job.bits,
                     target,
-                    genome_active,
+                    genome_active:  true,
                     num_mix_chunks,
                 });
                 let changed = ttx.borrow().as_ref().map(|p| p.id) != Some(id);
@@ -884,7 +722,7 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
                         let block  = resp.block;
                         let id     = block.header.accepted_id_merkle_root;
                         let header: Header = (&block.header).into();
-                        let genome_active  = header.daa_score >= genome_activation;
+                        let genome_active  = true;
                         let pre_pow_hash = kaspa_consensus_core::hashing::header::hash_override_nonce_time(&header, 0, 0);
                         let target = kaspa_math::Uint256::from_compact_target_bits(header.bits);
                         let t = Arc::new(MiningTemplate {
@@ -899,7 +737,7 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
                             daa_score: header.daa_score,
                             bits: header.bits,
                             target,
-                            genome_active,
+                            genome_active: true,
                             num_mix_chunks,
                         });
                         let changed = template_tx.borrow().as_ref().map(|prev| prev.id) != Some(id);
@@ -911,7 +749,7 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
                                 s.bits          = t.bits;
                                 s.genome_active = t.genome_active;
                                 s.connected     = true;
-                                let mode = if t.genome_active { "Genome PoW" } else { "KHeavyHash" };
+                                let mode = "Genome PoW";
                                 s.mode = format!("GPU×{num_gpus} · {mode}");
                                 s.push_log(format!(
                                     "New template daa={} bits={:#010x} genome={}",
@@ -979,7 +817,7 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
                 .collect();
             let total_mhs: f64 = per_gpu.iter().sum();
             let mode = template_rx.borrow().as_ref()
-                .map(|t| if t.genome_active { "Genome" } else { "KHeavyHash" })
+                .map(|_| "Genome")
                 .unwrap_or("—");
             info!("GPU×{num_gpus} [{mode}] [{total_mhs:.2} MH/s]");
             {

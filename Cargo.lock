@@ -1044,6 +1044,7 @@ dependencies = [
  "serde_json",
  "sysinfo",
  "tokio",
+ "xenom-anchor-client",
 ]
 
 [[package]]

@@ -345,7 +345,7 @@ fn build_json(stats: &Arc<Mutex<DashStats>>, start: Instant) -> String {
     let fan:  Vec<u32> = s.gpus.iter().map(|g| g.fan).collect();
     let power: Vec<f64> = s.gpus.iter().map(|g| g.power).collect();
 
-    let algo = if s.genome_active { "genome-pow" } else { "kheavyhash" };
+    let algo = "genome-pow";
 
     let payload = HiveStats {
         hs,

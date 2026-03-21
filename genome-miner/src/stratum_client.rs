@@ -1,4 +1,5 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{anyhow, bail};
 use kaspa_core::{info, warn};
@@ -28,6 +29,8 @@ pub struct StratumJob {
     /// Template DAA score from param[7].  Used with --genome-activation-daa-score to
     /// select the correct PoW algorithm regardless of epoch_seed value.
     pub daa_score:    u64,
+    /// Calculated target based on difficulty or bits.
+    pub target:       kaspa_math::Uint256,
 }
 
 /// Solution to be submitted to the stratum bridge via `mining.submit`.
@@ -40,9 +43,10 @@ pub struct StratumSolution {
 
 pub struct StratumClient {
     /// `host:port` (scheme stripped)
-    pub addr:     String,
-    pub worker:   String,
-    pub password: String,
+    pub addr:       String,
+    pub worker:     String,
+    pub password:   String,
+    pub difficulty: Arc<Mutex<f64>>,
 }
 
 impl StratumClient {
@@ -52,7 +56,12 @@ impl StratumClient {
             .trim_start_matches("stratum+tcp://")
             .trim_start_matches("stratum://")
             .to_owned();
-        Self { addr, worker: worker.to_owned(), password: password.to_owned() }
+        Self {
+            addr,
+            worker: worker.to_owned(),
+            password: password.to_owned(),
+            difficulty: Arc::new(Mutex::new(1.0)),
+        }
     }
 
     /// Spawn-safe run loop — reconnects automatically on failure.
@@ -125,7 +134,8 @@ impl StratumClient {
                         match method {
                             "mining.notify" => {
                                 let en1 = extranonce1;
-                                if let Some(job) = parse_notify(&msg, en1) {
+                                let diff = *self.difficulty.lock().unwrap();
+                                if let Some(job) = parse_notify(&msg, en1, diff) {
                                     let log = format!(
                                         "Stratum job={} bits={:#010x} clean={}",
                                         job.job_id, job.bits, job.clean_jobs
@@ -148,6 +158,7 @@ impl StratumClient {
                             "mining.set_difficulty" => {
                                 if let Some(d) = msg["params"][0].as_f64() {
                                     info!("Stratum: pool difficulty={d}");
+                                    *self.difficulty.lock().unwrap() = d;
                                 }
                             }
                             other => {
@@ -226,7 +237,7 @@ impl StratumClient {
 
 // ── Parse helpers ─────────────────────────────────────────────────────────────
 
-fn parse_notify(msg: &serde_json::Value, extranonce1: u32) -> Option<StratumJob> {
+fn parse_notify(msg: &serde_json::Value, extranonce1: u32, difficulty: f64) -> Option<StratumJob> {
     let params = msg["params"].as_array()?;
     if params.len() < 5 {
         return None;
@@ -250,7 +261,48 @@ fn parse_notify(msg: &serde_json::Value, extranonce1: u32) -> Option<StratumJob>
         .and_then(|s| u64::from_str_radix(s, 16).ok())
         .unwrap_or(0);
 
-    Some(StratumJob { job_id, pre_pow_hash, bits, epoch_seed, timestamp, clean_jobs: clean, extranonce1, l2_job, daa_score })
+    let target = calculate_target(difficulty);
+
+    Some(StratumJob {
+        job_id,
+        pre_pow_hash,
+        bits,
+        epoch_seed,
+        timestamp,
+        clean_jobs: clean,
+        extranonce1,
+        l2_job,
+        daa_score,
+        target,
+    })
+}
+
+fn calculate_target(difficulty: f64) -> kaspa_math::Uint256 {
+    if difficulty <= 0.0 {
+        return kaspa_math::Uint256::MAX;
+    }
+
+    let (mantissa, exponent) = {
+        let bits = difficulty.recip().to_bits();
+        let exponent = ((bits >> 52) & 0x7FF) as i16;
+        let mantissa = bits & 0xF_FFFF_FFFF_FFFF;
+        if exponent == 0 {
+            (mantissa << 1, exponent - 1022 - 52)
+        } else {
+            (mantissa | 0x10_0000_0000_0000, exponent - 1023 - 52)
+        }
+    };
+
+    let new_mantissa = (mantissa as u128) * 0xffffu128;
+    let new_exponent = (208 + exponent) as i16;
+
+    if new_exponent < 0 {
+        return kaspa_math::Uint256::ZERO;
+    }
+
+    let mut res = kaspa_math::Uint256::from_u128(new_mantissa);
+    res = res.wrapping_shl(new_exponent as u32);
+    res
 }
 
 fn hex_to_hash32(hex: &str) -> Option<Hash> {
