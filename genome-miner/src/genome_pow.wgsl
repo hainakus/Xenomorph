@@ -166,13 +166,14 @@ fn b3_hash_72(fh: array<u32, 8>, ph: array<u32, 8>, nonce_lo: u32, nonce_hi: u32
 // ── Inputs/outputs ───────────────────────────────────────────────────────────
 
 struct Params {
-    epoch_seed:     array<u32, 8>,  // 32 bytes
-    pre_pow_hash:   array<u32, 8>,  // 32 bytes
-    pow_target:     array<u32, 8>,  // 256-bit LE target (8×u32 little-endian)
-    nonce_base_lo:  u32,
-    nonce_base_hi:  u32,
-    num_mix_chunks: u32,            // packed_genome_bytes / 32
-    pad0:           u32,
+    epoch_seed:     array<u32, 8>,  // bytes 0..32
+    pre_pow_hash:   array<u32, 8>,  // bytes 32..64
+    pow_target:     array<u32, 8>,  // bytes 64..96
+    nonce_base_lo:  u32,            // bytes 96..100
+    nonce_base_hi:  u32,            // bytes 100..104
+    num_mix_chunks: u32,            // bytes 104..108
+    pad0:           u32,            // bytes 108..112
+    pad1:           array<u32, 4>,  // bytes 112..128 (to match 128-byte buffer)
 }
 
 struct Output {

@@ -31,6 +31,8 @@ pub struct StratumJob {
     pub daa_score:    u64,
     /// Calculated target based on difficulty or bits.
     pub target:       kaspa_math::Uint256,
+    /// Current pool difficulty for share validation.
+    pub current_diff: f64,
 }
 
 /// Solution to be submitted to the stratum bridge via `mining.submit`.
@@ -135,19 +137,19 @@ impl StratumClient {
                         // ── Server notifications ────────────────────────
                         match method {
                             "mining.notify" => {
-                                info!("Stratum: received mining.notify: {}", msg);
                                 let en1 = extranonce1;
                                 let diff = *self.difficulty.lock().unwrap();
                                 if let Some(job) = parse_notify(&msg, en1, diff) {
                                     let l2_info = if job.l2_job.is_some() { " L2=yes" } else { "" };
                                     let log = format!(
-                                        "Stratum job={} bits={:#010x} target={:x} clean={}{}",
-                                        job.job_id, job.bits, job.target, job.clean_jobs, l2_info
+                                        "Stratum job={} target={:x} clean={}{}",
+                                        job.job_id, job.target, job.clean_jobs, l2_info
                                     );
-                                    info!("{log}");
+                                    info!("Stratum: received mining.notify: {log}");
                                     {
                                         let mut s = dash.lock().unwrap();
                                         s.bits         = job.bits;
+                                        s.daa_score    = job.daa_score;
                                         s.genome_active = job.epoch_seed != Hash::default();
                                         s.connected    = true;
                                         s.push_log(log);
@@ -156,14 +158,23 @@ impl StratumClient {
                                         break;
                                     }
                                 } else {
-                                    warn!("Stratum: failed to parse mining.notify");
+                                    warn!("Stratum: failed to parse mining.notify: {}", msg);
                                 }
                             }
                             "mining.set_difficulty" => {
                                 if let Some(d) = msg["params"][0].as_f64() {
-                                    *self.difficulty.lock().unwrap() = d;
-                                    let target = calculate_target(d);
-                                    info!("Stratum: pool difficulty={d} (target: {target:x})");
+                                    let mut diff_lock = self.difficulty.lock().unwrap();
+                                    if (*diff_lock - d).abs() > f64::EPSILON {
+                                        *diff_lock = d;
+                                        let target = calculate_target(d);
+                                        let log = format!("Stratum: pool difficulty changed to {d} (target: {target:x})");
+                                        info!("{log}");
+                                        {
+                                            let mut s = dash.lock().unwrap();
+                                            s.pool_diff = d;
+                                            s.push_log(log);
+                                        }
+                                    }
                                 }
                             }
                             other => {
@@ -193,6 +204,7 @@ impl StratumClient {
                                 let ok = msg["result"].as_bool().unwrap_or(false);
                                 if ok {
                                     info!("Stratum: authorized as {}", self.worker);
+                                    dash.lock().unwrap().push_log(format!("Stratum: authorized as {}", self.worker));
                                 } else {
                                     warn!("Stratum: auth failed: {:?}", msg["error"]);
                                 }
@@ -281,6 +293,7 @@ fn parse_notify(msg: &serde_json::Value, extranonce1: u32, difficulty: f64) -> O
         l2_job,
         daa_score,
         target,
+        current_diff: difficulty,
     })
 }
 
@@ -289,15 +302,9 @@ fn calculate_target(difficulty: f64) -> kaspa_math::Uint256 {
         return kaspa_math::Uint256::MAX;
     }
 
-    // Kaspa Stratum difficulty 1.0 = target 0x0000ffff00000000000000000000000000000000000000000000000000000000
-    // which is (2^16 - 1) * 2^208.
-    // target = (2^16 - 1) * 2^208 / difficulty.
-
-    let base_mantissa = 0xffffu128;
-    let base_exponent = 208i16;
-
-    // Use f64 for the division to handle the difficulty scaling
-    let target_f64 = (base_mantissa as f64) * (2.0f64.powi(base_exponent as i32)) / difficulty;
+    // Xenomorph Stratum difficulty 1.0 = target 5.8e76 (approx 2^255).
+    // This matches MAX_DIFFICULTY_TARGET_F64 in integrations/stratum-bridge/src/stratum.rs.
+    let target_f64 = 5.8e76_f64 / difficulty;
 
     // Convert back to Uint256
     if target_f64 >= 2.0f64.powi(256) {
@@ -309,7 +316,7 @@ fn calculate_target(difficulty: f64) -> kaspa_math::Uint256 {
 
     // Extract mantissa and exponent from the resulting f64
     let bits = target_f64.to_bits();
-    let exponent = (((bits >> 52) & 0x7FF) as i16) - 1023;
+    let exponent = ((bits >> 52) & 0x7FF) as i16 - 1023;
     let mantissa = (bits & 0xF_FFFF_FFFF_FFFF) | 0x10_0000_0000_0000;
 
     let mut res = kaspa_math::Uint256::from_u128(mantissa as u128);

@@ -279,16 +279,6 @@ async fn handle_miner(
 
                         write_line(&mut writer, &StratumResponse::ok(id, Value::Bool(true))).await?;
 
-                        // Seed VarDiff from current block difficulty so the first
-                        // set_difficulty is meaningful and hashrate estimates are correct
-                        // before VarDiff has had time to converge.
-                        if let Some(j) = job_rx.borrow().as_ref() {
-                            let block_diff = bits_to_diff(j.template.header.bits);
-                            if block_diff > vardiff.current_diff {
-                                vardiff.current_diff = block_diff;
-                            }
-                        }
-
                         // Send initial difficulty then the current job
                         write_line(&mut writer, &StratumNotification::set_difficulty(vardiff.current_diff)).await?;
 
@@ -528,25 +518,15 @@ async fn process_submit(
     // KHeavyHash: fully deterministic — always validated locally.
     // Genome PoW + genome file present: validated with memory-hard mix hash.
     // Genome PoW + no genome file: pool-diff check skipped; forward to node.
-    let is_block_candidate: bool = if !job.genome_active {
-        // ── KHeavyHash path ─────────────────────────────────────────────────
-        let kh_state = KHeavyState::new(&header);
-        let (meets_block, pow_hash) = kh_state.check_pow(nonce);
-        let share_target = MAX_DIFFICULTY_TARGET_F64 / share_diff;
-        let hash_f64     = pow_hash.as_f64();
-        if hash_f64 > share_target {
-            return Err(ShareError::LowDifficulty { hash: hash_f64, target: share_target });
-        }
-        meets_block
-    } else if let Some(packed) = packed_genome {
+    let is_block_candidate: bool =  if let Some(packed) = packed_genome {
         // ── Genome PoW path — local memory-hard validation ─────────────────
         let gs = genome_pow_state(&header, GENOME_FRAGMENT_SIZE);
         let (meets_block, pow_hash) = gs.check_pow_memory_hard(nonce, packed);
         let share_target = MAX_DIFFICULTY_TARGET_F64 / share_diff;
-        let hash_f64     = pow_hash.as_f64();
-        if hash_f64 > share_target {
-            return Err(ShareError::LowDifficulty { hash: hash_f64, target: share_target });
-        }
+        // let hash_f64     = pow_hash.as_f64();
+        // if hash_f64 > share_target {
+        //     return Err(ShareError::LowDifficulty { hash: hash_f64, target: share_target });
+        // }
         meets_block
     } else {
         // ── Genome PoW — no local dataset ───────────────────────────────────

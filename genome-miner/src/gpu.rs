@@ -50,7 +50,7 @@ struct GpuWorker {
     genome_buf: Arc<wgpu::Buffer>,
 
     // Genome PoW persistent resources
-    g_params_buf:   wgpu::Buffer,   // 112 bytes
+    g_params_buf:   wgpu::Buffer,   // 128 bytes
     g_output_buf:   wgpu::Buffer,   // 16 bytes  (STORAGE | COPY_SRC | COPY_DST)
     g_readback_buf: wgpu::Buffer,   // 16 bytes  (MAP_READ | COPY_DST)
     g_bind_group:   wgpu::BindGroup,
@@ -63,7 +63,7 @@ impl GpuWorker {
         // ── Genome PoW buffers ──
         let g_params_buf = dev.create_buffer(&wgpu::BufferDescriptor {
             label: Some("g_params"),
-            size:  112,
+            size:  128,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -360,15 +360,15 @@ fn synthetic_packed_genome(frag_size: u32) -> Vec<u8> {
 
 // ── Param buffer builders ────────────────────────────────────────────────────
 
-/// 112-byte Genome PoW params buffer matching the WGSL Params struct.
+/// 128-byte Genome PoW params buffer matching the WGSL Params struct.
 fn build_params_full(
     epoch_seed: &kaspa_hashes::Hash,
     pre_pow_hash: &kaspa_hashes::Hash,
     target: &kaspa_math::Uint256,
     nonce_base: u64,
     num_mix_chunks: u32,
-) -> [u8; 112] {
-    let mut buf = [0u8; 112];
+) -> [u8; 128] {
+    let mut buf = [0u8; 128];
     buf[0..32].copy_from_slice(epoch_seed.as_ref());
     buf[32..64].copy_from_slice(pre_pow_hash.as_ref());
     buf[64..96].copy_from_slice(&target.to_le_bytes());
@@ -382,7 +382,7 @@ fn build_params_full(
 
 /// Genome PoW dispatch using pre-allocated persistent buffers.
 /// Hot path: write_buffer (params) + clear_buffer (output) + encode + submit + poll.
-async fn dispatch_genome(worker: &mut GpuWorker, params_data: &[u8; 112], batch_size: u32) -> Option<u64> {
+async fn dispatch_genome(worker: &mut GpuWorker, params_data: &[u8; 128], batch_size: u32) -> Option<u64> {
     let dev   = &worker.ctx.device;
     let queue = &worker.ctx.queue;
 
@@ -481,7 +481,7 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
     let addr_str_opt: Option<String> = m.get_one::<String>("mining-address").cloned();
     let batch_size        = m.get_one::<u32>("batch-size").copied().unwrap_or(1 << 20);
     let frag_size         = m.get_one::<u32>("genome-fragment-size").copied().unwrap_or(1_048_576);
-    let genome_activation = 0; // activations resolved to always true
+    let _genome_activation = 0; // activations resolved to always true
     let gpu_arg           = m.get_one::<String>("gpu").cloned().unwrap_or_else(|| "0".to_owned());
     let nonce_offset      = m.get_one::<u64>("nonce-offset").copied().unwrap_or(0);
     let list_gpus         = m.get_flag("list-gpus");
@@ -722,7 +722,7 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
                         let block  = resp.block;
                         let id     = block.header.accepted_id_merkle_root;
                         let header: Header = (&block.header).into();
-                        let genome_active  = true;
+                        let _genome_active  = true;
                         let pre_pow_hash = kaspa_consensus_core::hashing::header::hash_override_nonce_time(&header, 0, 0);
                         let target = kaspa_math::Uint256::from_compact_target_bits(header.bits);
                         let t = Arc::new(MiningTemplate {

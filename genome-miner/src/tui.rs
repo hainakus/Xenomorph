@@ -42,6 +42,7 @@ pub struct DashStats {
     pub mode:          String,
     pub daa_score:     u64,
     pub bits:          u32,
+    pub pool_diff:     f64,
     pub genome_active: bool,
     pub total_mhs:     f64,
     pub accepted:      u64,
@@ -61,6 +62,7 @@ impl DashStats {
             mode,
             daa_score: 0,
             bits: 0,
+            pool_diff: 1.0,
             genome_active: false,
             total_mhs: 0.0,
             accepted: 0,
@@ -221,7 +223,11 @@ fn render_header(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
 // ── Performance stats ────────────────────────────────────────────────────────
 
 fn render_perf(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
-    let diff = format_difficulty(s.bits);
+    let diff = if s.is_stratum {
+        format_pool_difficulty(s.pool_diff)
+    } else {
+        format_difficulty(s.bits)
+    };
     let mhs  = fmt_mhs(s.total_mhs);
 
     let line1 = Line::from(vec![
@@ -419,6 +425,10 @@ pub fn format_difficulty(bits: u32) -> String {
     let exp = (bits >> 24) as i32;
     let diff_log2 = (256 - 8 * exp).max(0) as f64;
     let diff = 2f64.powf(diff_log2);
+    format_pool_difficulty(diff)
+}
+
+pub fn format_pool_difficulty(diff: f64) -> String {
     if diff >= 1e18 {
         format!("{:.2} EH", diff / 1e18)
     } else if diff >= 1e15 {
@@ -429,7 +439,9 @@ pub fn format_difficulty(bits: u32) -> String {
         format!("{:.2} GH", diff / 1e9)
     } else if diff >= 1e6 {
         format!("{:.2} MH", diff / 1e6)
+    } else if diff >= 1e3 {
+        format!("{:.2} KH", diff / 1e3)
     } else {
-        format!("{:.0} H", diff)
+        format!("{:.2} H", diff)
     }
 }

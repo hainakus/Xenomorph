@@ -70,7 +70,7 @@ fn cli() -> Command {
             .help("Minimum share difficulty"))
         .arg(Arg::new("vardiff-max")
             .long("vardiff-max").value_name("FLOAT")
-            .default_value("1000000").value_parser(clap::value_parser!(f64))
+            .default_value("100000000000").value_parser(clap::value_parser!(f64))
             .help("Maximum share difficulty"))
         .arg(Arg::new("vardiff-target-spm")
             .long("vardiff-target-spm").value_name("FLOAT")

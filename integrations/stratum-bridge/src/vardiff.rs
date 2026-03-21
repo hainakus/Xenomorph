@@ -25,7 +25,7 @@ impl Default for VarDiffConfig {
         Self {
             initial_diff:          1.0,
             min_diff:              0.1,
-            max_diff:              1_000_000.0,
+            max_diff:              1_000_000_000_000_000.0,
             target_shares_per_min: 20.0,
             retarget_secs:         60,
             hysteresis:            0.10,
