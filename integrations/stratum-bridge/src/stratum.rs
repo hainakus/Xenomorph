@@ -19,7 +19,7 @@ use tokio::{
 };
 
 use kaspa_consensus_core::header::Header;
-use kaspa_pow::{genome_pow_state, State as KHeavyState};
+use kaspa_pow::genome_pow_state;
 
 /// Fragment size used for Genome PoW validation (must match consensus params).
 const GENOME_FRAGMENT_SIZE: u32 = 1_048_576;
@@ -521,8 +521,8 @@ async fn process_submit(
     let is_block_candidate: bool =  if let Some(packed) = packed_genome {
         // ── Genome PoW path — local memory-hard validation ─────────────────
         let gs = genome_pow_state(&header, GENOME_FRAGMENT_SIZE);
-        let (meets_block, pow_hash) = gs.check_pow_memory_hard(nonce, packed);
-        let share_target = MAX_DIFFICULTY_TARGET_F64 / share_diff;
+        let (meets_block, _pow_hash) = gs.check_pow_memory_hard(nonce, packed);
+        let _share_target = MAX_DIFFICULTY_TARGET_F64 / share_diff;
         // let hash_f64     = pow_hash.as_f64();
         // if hash_f64 > share_target {
         //     return Err(ShareError::LowDifficulty { hash: hash_f64, target: share_target });

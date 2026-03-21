@@ -348,7 +348,7 @@ async fn main() -> Result<()> {
     }
 
     if stats_interval > 0 {
-        let acct2 = accounting.clone();
+        let _acct2 = accounting.clone();
         tokio::spawn(async move {
             let interval = Duration::from_secs(stats_interval);
             loop {

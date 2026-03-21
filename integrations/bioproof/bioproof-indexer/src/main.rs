@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use bioproof_core::{AnchorPayload, APP_ID};
+use bioproof_core::AnchorPayload;
 use clap::{Arg, Command};
 use kaspa_grpc_client::GrpcClient;
 use kaspa_rpc_core::api::rpc::RpcApi;

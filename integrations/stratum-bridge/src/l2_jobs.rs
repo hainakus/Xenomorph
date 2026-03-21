@@ -116,7 +116,7 @@ async fn fetch_next_job(
     // Use a deterministic fragment index based on the job_id so all miners
     // receive the same fragment number for the same job.
     let fragment = u64::from_be_bytes(
-        hex::decode(&format!("{:016x}", job_id.len()))
+        hex::decode(format!("{:016x}", job_id.len()))
             .unwrap_or_default()
             .try_into()
             .unwrap_or([0u8; 8])
