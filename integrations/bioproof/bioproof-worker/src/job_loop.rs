@@ -18,6 +18,7 @@ pub struct WorkerConfig {
     /// Worker private key (hex) for signing manifests.
     pub privkey_hex: String,
     /// bioproof-api base URL for result submission (optional).
+    #[allow(dead_code)]
     pub api_url: Option<String>,
     /// Xenom node gRPC address for on-chain anchoring.
     pub node_addr: String,
