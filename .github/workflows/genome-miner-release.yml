@@ -115,7 +115,7 @@ jobs:
               set -e
               apt-get update -qq
               DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-                curl ca-certificates build-essential pkg-config \
+                curl ca-certificates build-essential pkg-config libssl-dev \
                 protobuf-compiler libvulkan-dev
               curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
                 sh -s -- -y --default-toolchain stable --no-modify-path
