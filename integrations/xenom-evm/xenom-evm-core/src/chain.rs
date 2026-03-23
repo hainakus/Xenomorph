@@ -352,7 +352,9 @@ impl EvmChain {
         // Create checkpoint periodically (every 32 blocks) to avoid rapid UTXO exhaustion.
         // Checkpoints aggregate multiple blocks' anchors into one L1 commitment.
         const CHECKPOINT_PERIOD: u64 = 32;
-        let should_checkpoint = block % CHECKPOINT_PERIOD == 0 || !anchors_snapshot.is_empty();
+        let should_checkpoint = block % CHECKPOINT_PERIOD == 0
+            || !anchors_snapshot.is_empty()
+            || !included_hashes.is_empty();
 
         if should_checkpoint {
             let checkpoint = L1CheckpointV1 {
