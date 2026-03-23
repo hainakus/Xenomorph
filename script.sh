@@ -13,7 +13,11 @@ echo ""
 read -r -p "BIN path [./target/release]: " BIN
 BIN="${BIN:-./target/release}"
 
-read -r -p "Private Key (L2 worker/settlement): " PRIVKEY
+echo "--- L2 Settlement / Validator Key ---"
+echo "  Required for genetics-l2-settlement and genetics-l2-validator."
+echo "  The genome-miner L2 worker generates its own identity automatically"
+echo "  (saved to ~/.rusty-xenom/l2-worker.key on first run — no key needed here)."
+read -r -p "Settlement/Validator Private Key: " PRIVKEY
 echo ""
 
 read -r -p "Mining Address: " MINING_ADDR
@@ -47,8 +51,12 @@ export COORDINATOR
 # Export private key as env vars — never pass as CLI args (ps aux / /proc/$PID/cmdline exposure)
 export SETTLEMENT_PRIVKEY="$PRIVKEY"
 export VALIDATOR_PRIVKEY="$PRIVKEY"
-export L2_PRIVKEY="$PRIVKEY"
-export WORKER_PRIVKEY="$PRIVKEY"   # genetics-l2-worker standalone L2 worker
+# Same key used by coordinator for result encryption and validator/settlement for decryption.
+# Miner only receives the derived PUBLIC key via GET /pubkey — never the private key.
+export COORDINATOR_PRIVKEY="$PRIVKEY"
+# genetics-l2-worker standalone daemon uses the same key
+export WORKER_PRIVKEY="$PRIVKEY"
+# Note: genome-miner L2 worker identity is auto-generated at ~/.rusty-xenom/l2-worker.key
 export COMMITTER_PRIVKEY="${ANCHOR_KEY:-}" # xenom-anchor-committer L2→L1 checkpoint commits
 unset PRIVKEY ANCHOR_KEY  # clear originals after mapping to named vars
 
@@ -183,6 +191,18 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
+# Clear stale log files from previous sessions to avoid confusion
+rm -f /tmp/xenom-logs/xenom-mainnet.log
+
+echo "=== Stopping any leftover devnet processes from previous runs ==="
+for _bin in xenom xenom-stratum-bridge genetics-l2-coordinator genetics-l2-fetcher \
+            genetics-l2-validator genetics-l2-settlement genetics-l2-worker \
+            genome-miner xenom-evm-node xenom-anchor-committer; do
+  pkill -f "$_bin" 2>/dev/null || true
+done
+sleep 2
+echo ""
+
 echo "=== Building ==="
 cargo build --release \
   -p xenom \
@@ -300,6 +320,8 @@ sleep 2
 echo "=== Starting genetics-l2-settlement ==="
 "$BIN/genetics-l2-settlement" \
   --coordinator "$COORDINATOR" \
+  --node "grpc://$NODE_RPC" \
+  --devnet \
   --evm-node http://127.0.0.1:8545 \
   --submit \
   --poll-ms 15000 \
@@ -329,7 +351,7 @@ if [ "$GPU_AVAILABLE" -eq 1 ]; then
   echo "=== Starting genome-miner gpu (wgpu Vulkan/CUDA PoW + L2 GPU inline) ==="
   "$BIN/genome-miner" gpu \
     --devnet \
-    --mining-address "$MINING_ADDR" \
+    --mining-address "xenomdev:qzmts8jk6enm0alnp02tfrm5xa4qzlxnjjsxa56pj2n950kcn4jygtawvy7e8" \
     --stratum stratum+tcp://127.0.0.1:5555 \
     --no-tui \
     --l2-coordinator "$COORDINATOR" \
@@ -339,7 +361,7 @@ else
   echo "=== Starting genome-miner mine (PoW CPU + L2 inline) ==="
   "$BIN/genome-miner" mine \
     --devnet \
-    --mining-address "$MINING_ADDR" \
+    --mining-address "xenomdev:qzmts8jk6enm0alnp02tfrm5xa4qzlxnjjsxa56pj2n950kcn4jygtawvy7e8" \
     --stratum stratum+tcp://127.0.0.1:5555 \
     --no-tui \
     --l2-coordinator "$COORDINATOR" \
@@ -393,6 +415,10 @@ echo ""
 echo "Encryption:   ACTIVE"
 echo "  ✓ Output files encrypted: /tmp/genome-miner-l2/{job_id}/output/*.enc"
 echo "  ✓ Payloads encrypted with coordinator pubkey"
+echo ""
+echo "Worker Identity (auto-generated):"
+echo "  ~/.rusty-xenom/l2-worker.key  (created on first miner run — back this up)"
+echo "  pubkey logged at miner startup: tail -f /tmp/xenom-logs/miner.log | grep pubkey"
 echo ""
 echo "Logs (miner): tail -f /tmp/xenom-logs/miner.log"
 echo "Logs (L2):    tail -f /tmp/xenom-logs/l2-worker.log"

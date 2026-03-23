@@ -267,25 +267,22 @@ async fn cmd_mine(m: &ArgMatches, dash: Arc<Mutex<DashStats>>) {
         let worker = m.get_one::<String>("stratum-worker").cloned().unwrap_or_else(|| mining_addr.clone());
         let password = m.get_one::<String>("stratum-password").cloned().unwrap_or_else(|| "x".to_owned());
 
-        let l2_cfg = match (
-            m.get_one::<String>("l2-coordinator").cloned(),
-            load_l2_privkey(m.get_one::<String>("l2-key-file").map(|s| s.as_str())),
-        ) {
-            (Some(url), Some(key)) => {
-                let use_gpu = m.get_flag("l2-gpu");
-                let perch_script = m.get_one::<String>("l2-perch-script").map(std::path::PathBuf::from);
-                match l2_worker::L2Config::new(url, key, use_gpu, perch_script) {
-                    Ok(c) => {
-                        info!("L2 inline worker enabled — coordinator={}", c.coordinator_url);
-                        Some(c)
-                    }
-                    Err(e) => {
-                        warn!("L2 config error: {e} — L2 disabled");
-                        None
-                    }
+        let l2_cfg = if let Some(url) = m.get_one::<String>("l2-coordinator").cloned() {
+            let key     = load_l2_privkey(m.get_one::<String>("l2-key-file").map(|s| s.as_str()));
+            let use_gpu = m.get_flag("l2-gpu");
+            let perch_script = m.get_one::<String>("l2-perch-script").map(std::path::PathBuf::from);
+            match l2_worker::L2Config::new(url, key, use_gpu, perch_script) {
+                Ok(c) => {
+                    info!("L2 inline worker enabled — coordinator={} pubkey={}", c.coordinator_url, c.pubkey_hex);
+                    Some(c)
+                }
+                Err(e) => {
+                    warn!("L2 config error: {e} — L2 disabled");
+                    None
                 }
             }
-            _ => None,
+        } else {
+            None
         };
 
         let (job_tx, job_rx) = mpsc::channel::<StratumJob>(8);

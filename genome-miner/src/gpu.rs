@@ -490,19 +490,16 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
         if default.exists() { Some(default.to_string_lossy().into_owned()) } else { None }
     });
 
-    let l2_cfg: Option<crate::l2_worker::L2Config> = match (
-        m.get_one::<String>("l2-coordinator").cloned(),
-        crate::load_l2_privkey(m.get_one::<String>("l2-key-file").map(|s| s.as_str())),
-    ) {
-        (Some(url), Some(key)) => {
-            let use_gpu     = m.get_flag("l2-gpu");
-            let perch_script = m.get_one::<String>("l2-perch-script").map(std::path::PathBuf::from);
-            match crate::l2_worker::L2Config::new(url, key, use_gpu, perch_script) {
-                Ok(c)  => { info!("L2 inline worker enabled — coordinator={}", c.coordinator_url); Some(c) }
-                Err(e) => { warn!("L2 config error: {e} — L2 disabled"); None }
-            }
+    let l2_cfg: Option<crate::l2_worker::L2Config> = if let Some(url) = m.get_one::<String>("l2-coordinator").cloned() {
+        let key      = crate::load_l2_privkey(m.get_one::<String>("l2-key-file").map(|s| s.as_str()));
+        let use_gpu  = m.get_flag("l2-gpu");
+        let perch_script = m.get_one::<String>("l2-perch-script").map(std::path::PathBuf::from);
+        match crate::l2_worker::L2Config::new(url, key, use_gpu, perch_script) {
+            Ok(c)  => { info!("L2 inline worker enabled — coordinator={} pubkey={}", c.coordinator_url, c.pubkey_hex); Some(c) }
+            Err(e) => { warn!("L2 config error: {e} — L2 disabled"); None }
         }
-        _ => None,
+    } else {
+        None
     };
 
     // Enumerate eligible adapters

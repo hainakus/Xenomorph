@@ -80,6 +80,11 @@ CREATE TABLE IF NOT EXISTS payouts (
     txid            TEXT,
     paid_at         INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS config (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 "#;
 
 // ── Schema migration (adds columns missing from pre-spec DBs) ────────────────
@@ -310,6 +315,8 @@ async fn get_job(
 #[derive(Deserialize)]
 struct ClaimBody {
     worker_pubkey: String,
+    /// Optional backend hint (e.g. "gpu", "efficientnet") to select the right script variant.
+    backend: Option<String>,
 }
 
 async fn claim_job(
@@ -317,7 +324,22 @@ async fn claim_job(
     Path(job_id): Path<String>,
     Json(body): Json<ClaimBody>,
 ) -> impl IntoResponse {
+    use sqlx::Row;
     let now = now_secs() as i64;
+
+    // Fetch the job's algorithm before claiming so we can embed the script.
+    let algorithm: String = match sqlx::query(
+        "SELECT algorithm FROM jobs WHERE job_id = ?1 AND status = 'open'",
+    )
+    .bind(&job_id)
+    .fetch_optional(&s.pool)
+    .await
+    {
+        Ok(Some(r)) => r.get("algorithm"),
+        Ok(None) => return (StatusCode::CONFLICT, Json(serde_json::json!({ "error": "job not available" }))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+    };
+
     let res = sqlx::query(
         "UPDATE jobs SET status='claimed', claimed_by=?1, claimed_at=?2
          WHERE job_id=?3 AND status='open'",
@@ -329,8 +351,25 @@ async fn claim_job(
     .await;
 
     match res {
-        Ok(r) if r.rows_affected() > 0 =>
-            (StatusCode::OK, Json(serde_json::json!({ "claimed": true, "job_id": job_id }))).into_response(),
+        Ok(r) if r.rows_affected() > 0 => {
+            let (script_name, req_name) = resolve_script_names(&algorithm, body.backend.as_deref());
+            let script = tokio::fs::read_to_string(s.scripts_dir.join(&script_name)).await.ok();
+            let requirements = tokio::fs::read_to_string(s.scripts_dir.join(&req_name)).await.ok();
+
+            let mut resp = serde_json::json!({
+                "claimed":           true,
+                "job_id":            job_id,
+                "script_name":       script_name,
+                "requirements_name": req_name,
+            });
+            if let Some(src) = script {
+                resp["script"] = serde_json::Value::String(src);
+            }
+            if let Some(req) = requirements {
+                resp["requirements"] = serde_json::Value::String(req);
+            }
+            (StatusCode::OK, Json(resp)).into_response()
+        }
         Ok(_) =>
             (StatusCode::CONFLICT, Json(serde_json::json!({ "error": "job not available" }))).into_response(),
         Err(e) =>
@@ -864,6 +903,26 @@ fn build_router(state: Arc<AppState>) -> Router {
 
 // ── Inference script serving ─────────────────────────────────────────────────
 
+/// Resolve `(script_filename, requirements_filename)` from algorithm name + optional backend hint.
+/// This single source of truth is used by both the `/scripts/` endpoints and `claim_job`.
+fn resolve_script_names(algorithm: &str, backend: Option<&str>) -> (String, String) {
+    match backend {
+        Some("gpu")          => ("birdclef_gpu_infer.py".into(),   "requirements-birdclef_gpu.txt".into()),
+        Some("efficientnet") => ("efficientnet_infer.py".into(),   "requirements-efficientnet.txt".into()),
+        Some("yamnet")       => ("yamnet_infer.py".into(),          "requirements-yamnet.txt".into()),
+        Some("genome")       => ("genome_annotate.py".into(),       "requirements-genome.txt".into()),
+        _ => match algorithm {
+            "acoustic_classification" | "birdclef" =>
+                ("yamnet_infer.py".into(), "requirements-yamnet.txt".into()),
+            "variant_calling" | "cancer_genomics" | "genome_assembly"
+            | "metagenomics"  | "annotation" =>
+                ("genome_annotate.py".into(), "requirements-genome.txt".into()),
+            other =>
+                (format!("{other}.py"), format!("requirements-{other}.txt")),
+        },
+    }
+}
+
 /// GET /scripts/:task?backend=yamnet|efficientnet
 /// Returns the Python inference script for the given task.
 ///
@@ -883,19 +942,8 @@ async fn get_inference_script(
     Path(task): Path<String>,
     Query(q): Query<ScriptQuery>,
 ) -> impl IntoResponse {
-    let script_name = match q.backend.as_deref() {
-        Some("gpu")          => "birdclef_gpu_infer.py",
-        Some("efficientnet") => "efficientnet_infer.py",
-        Some("yamnet")       => "yamnet_infer.py",
-        Some("genome")       => "genome_annotate.py",
-        _ => match task.as_str() {
-            "acoustic_classification" | "birdclef" => "yamnet_infer.py",
-            "variant_calling" | "cancer_genomics" | "genome_assembly"
-            | "metagenomics"  | "annotation"        => "genome_annotate.py",
-            other => return serve_script_file(&s.scripts_dir, &format!("{other}.py")).await,
-        },
-    };
-    serve_script_file(&s.scripts_dir, script_name).await
+    let (script_name, _) = resolve_script_names(&task, q.backend.as_deref());
+    serve_script_file(&s.scripts_dir, &script_name).await
 }
 
 /// GET /scripts/:task/requirements?backend=yamnet|efficientnet
@@ -905,19 +953,8 @@ async fn get_script_requirements(
     Path(task): Path<String>,
     Query(q): Query<ScriptQuery>,
 ) -> impl IntoResponse {
-    let req_name = match q.backend.as_deref() {
-        Some("gpu")          => "requirements-birdclef_gpu.txt",
-        Some("efficientnet") => "requirements-efficientnet.txt",
-        Some("yamnet")       => "requirements-yamnet.txt",
-        Some("genome")       => "requirements-genome.txt",
-        _ => match task.as_str() {
-            "acoustic_classification" | "birdclef" => "requirements-yamnet.txt",
-            "variant_calling" | "cancer_genomics" | "genome_assembly"
-            | "metagenomics"  | "annotation"        => "requirements-genome.txt",
-            other => return serve_script_file(&s.scripts_dir, &format!("requirements-{other}.txt")).await,
-        },
-    };
-    serve_script_file(&s.scripts_dir, req_name).await
+    let (_, req_name) = resolve_script_names(&task, q.backend.as_deref());
+    serve_script_file(&s.scripts_dir, &req_name).await
 }
 
 async fn serve_script_file(scripts_dir: &std::path::Path, filename: &str) -> axum::response::Response {
@@ -1176,39 +1213,90 @@ async fn count_audio_files_recursive(dir: &std::path::Path) -> usize {
 // ── Keypair management ────────────────────────────────────────────────────────
 
 /// Load or generate coordinator's secp256k1 keypair for result encryption.
-/// Keypair is stored in {db_path}.key file.
-fn load_or_generate_keypair(db_path: &str) -> Result<(String, String)> {
+///
+/// Primary storage: `config` table in the SQLite DB (key="coordinator_privkey").
+/// This guarantees the keypair is always co-located with encrypted results — no
+/// more drift when the DB is recreated or moved.
+///
+/// Fallback / migration: loads from `{db_path}.key` if the DB has no entry, then
+/// persists it into the DB so future starts use the DB copy.
+///
+/// The `.key` file is also kept in sync as a human-readable backup.
+async fn load_or_generate_keypair(pool: &SqlitePool, db_path: &str) -> Result<(String, String)> {
     use secp256k1::{PublicKey, Secp256k1, SecretKey};
-    
-    let key_file = format!("{db_path}.key");
-    let secp = Secp256k1::new();
+    use sqlx::Row;
 
-    // Try to load existing keypair
-    if let Ok(privkey_hex) = std::fs::read_to_string(&key_file) {
-        let privkey_hex = privkey_hex.trim().to_string();
-        if let Ok(privkey_bytes) = hex::decode(&privkey_hex) {
-            if let Ok(secret_key) = SecretKey::from_slice(&privkey_bytes) {
-                let public_key = PublicKey::from_secret_key(&secp, &secret_key);
-                let pubkey_hex = hex::encode(public_key.serialize());
-                log::info!("Loaded existing coordinator keypair from {key_file}");
+    let secp     = Secp256k1::new();
+    let key_file = format!("{db_path}.key");
+
+    // 0. User-controlled key via $COORDINATOR_PRIVKEY env var (highest priority).
+    //    Allows sharing the same keypair across coordinator / validator / settlement
+    //    without auto-generating a separate key.
+    if let Ok(env_hex) = std::env::var("COORDINATOR_PRIVKEY") {
+        let env_hex = env_hex.trim().to_owned();
+        if let Ok(bytes) = hex::decode(&env_hex) {
+            if let Ok(sk) = SecretKey::from_slice(&bytes) {
+                let pubkey_hex = hex::encode(PublicKey::from_secret_key(&secp, &sk).serialize());
+                log::info!("Coordinator keypair loaded from $COORDINATOR_PRIVKEY");
+                // Persist into DB so validator/decrypt subcommand can also use it
+                sqlx::query("INSERT OR REPLACE INTO config (key, value) VALUES ('coordinator_privkey', ?)")
+                    .bind(&env_hex)
+                    .execute(pool).await.ok();
+                let _ = std::fs::write(&key_file, &env_hex);
+                return Ok((env_hex, pubkey_hex));
+            }
+        }
+        log::warn!("$COORDINATOR_PRIVKEY is set but invalid — falling back to stored keypair");
+    }
+
+    // 1. Try loading from DB (primary — always in sync with results)
+    if let Ok(row) = sqlx::query("SELECT value FROM config WHERE key = 'coordinator_privkey'")
+        .fetch_one(pool).await
+    {
+        let privkey_hex: String = row.get("value");
+        let privkey_hex = privkey_hex.trim().to_owned();
+        if let Ok(bytes) = hex::decode(&privkey_hex) {
+            if let Ok(sk) = SecretKey::from_slice(&bytes) {
+                let pubkey_hex = hex::encode(PublicKey::from_secret_key(&secp, &sk).serialize());
+                log::info!("Coordinator keypair loaded from DB");
+                // Keep .key file in sync
+                let _ = std::fs::write(&key_file, &privkey_hex);
                 return Ok((privkey_hex, pubkey_hex));
             }
         }
     }
 
-    // Generate new keypair
-    let secret_key = SecretKey::new(&mut secp256k1::rand::thread_rng());
-    let public_key = PublicKey::from_secret_key(&secp, &secret_key);
-    
-    let privkey_hex = hex::encode(secret_key.secret_bytes());
-    let pubkey_hex = hex::encode(public_key.serialize());
+    // 2. Migration: load from .key file if present, persist into DB
+    if let Ok(privkey_hex) = std::fs::read_to_string(&key_file) {
+        let privkey_hex = privkey_hex.trim().to_owned();
+        if let Ok(bytes) = hex::decode(&privkey_hex) {
+            if let Ok(sk) = SecretKey::from_slice(&bytes) {
+                let pubkey_hex = hex::encode(PublicKey::from_secret_key(&secp, &sk).serialize());
+                sqlx::query("INSERT OR REPLACE INTO config (key, value) VALUES ('coordinator_privkey', ?)")
+                    .bind(&privkey_hex)
+                    .execute(pool).await.ok();
+                log::info!("Coordinator keypair migrated from {key_file} into DB");
+                return Ok((privkey_hex, pubkey_hex));
+            }
+        }
+    }
 
-    // Save private key to file
+    // 3. Generate fresh keypair, persist into DB and .key file
+    let sk         = SecretKey::new(&mut secp256k1::rand::thread_rng());
+    let pk         = PublicKey::from_secret_key(&secp, &sk);
+    let privkey_hex = hex::encode(sk.secret_bytes());
+    let pubkey_hex  = hex::encode(pk.serialize());
+
+    sqlx::query("INSERT OR REPLACE INTO config (key, value) VALUES ('coordinator_privkey', ?)")
+        .bind(&privkey_hex)
+        .execute(pool).await
+        .context("Failed to persist coordinator keypair in DB")?;
+
     std::fs::write(&key_file, &privkey_hex)
-        .context(format!("Failed to write keypair to {key_file}"))?;
-    
-    log::info!("Generated new coordinator keypair, saved to {key_file}");
-    log::warn!("IMPORTANT: Backup {key_file} - it's required to decrypt L2 results!");
+        .context(format!("Failed to write keypair backup to {key_file}"))?;
+
+    log::info!("Generated new coordinator keypair — stored in DB + {key_file}");
+    log::warn!("Backup {key_file} — needed to decrypt results if DB is lost!");
 
     Ok((privkey_hex, pubkey_hex))
 }
@@ -1240,7 +1328,7 @@ async fn main() -> Result<()> {
     log::info!("Database: {db_path}");
 
     // Generate or load coordinator keypair for result encryption
-    let (coordinator_privkey, coordinator_pubkey) = load_or_generate_keypair(db_path.as_str())?;
+    let (coordinator_privkey, coordinator_pubkey) = load_or_generate_keypair(&pool, db_path.as_str()).await?;
     log::info!("Coordinator pubkey: {coordinator_pubkey}");
 
     // Find scripts directory: --scripts-dir flag, next to binary, or ./scripts/
@@ -1310,14 +1398,14 @@ async fn main() -> Result<()> {
 
 async fn decrypt_result(db_path: &str, result_id: &str) -> Result<()> {
     use genetics_l2_core::JobResult;
-    
-    // Load coordinator private key
-    let (coordinator_privkey, _) = load_or_generate_keypair(db_path)?;
-    
-    // Connect to database
+
+    // Connect to database first (keypair lives in the DB)
     let pool = SqlitePool::connect(&format!("sqlite:{db_path}?mode=rwc"))
         .await
         .context("open SQLite")?;
+
+    // Load coordinator private key
+    let (coordinator_privkey, _) = load_or_generate_keypair(&pool, db_path).await?;
     
     // Fetch result from database
     let row = sqlx::query(

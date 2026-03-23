@@ -17,15 +17,55 @@ pub struct L2Config {
 }
 
 impl L2Config {
-    pub fn new(coordinator_url: String, privkey_hex: String, use_gpu: bool,
+    /// Create an L2Config.
+    /// `privkey_hex` is optional — if `None`, a per-machine keypair is auto-generated
+    /// and persisted to `~/.rusty-xenom/l2-worker.key` so each miner has a stable
+    /// identity without requiring sensitive key distribution.
+    pub fn new(coordinator_url: String, privkey_hex: Option<String>, use_gpu: bool,
                perch_script: Option<PathBuf>) -> Result<Self> {
+        let privkey_hex = match privkey_hex {
+            Some(k) if !k.trim().is_empty() => k.trim().to_owned(),
+            _ => load_or_generate_worker_key()?,
+        };
         let keypair = BioProofKeypair::from_hex(&privkey_hex)
-            .context("invalid --l2-private-key")?;
+            .context("invalid L2 worker key")?;
         let pubkey_hex = keypair.pubkey_hex();
         let work_root  = std::env::temp_dir().join("genome-miner-l2");
         let perch_script = perch_script.or_else(find_perch_script);
         Ok(Self { coordinator_url, privkey_hex, pubkey_hex, work_root, use_gpu, perch_script })
     }
+}
+
+/// Load or generate a persistent secp256k1 worker keypair.
+/// Stored at `~/.rusty-xenom/l2-worker.key` (hex-encoded private key).
+fn load_or_generate_worker_key() -> Result<String> {
+    let key_path = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".rusty-xenom")
+        .join("l2-worker.key");
+
+    // Try loading existing key
+    if let Ok(hex) = std::fs::read_to_string(&key_path) {
+        let hex = hex.trim().to_owned();
+        if hex.len() == 64 {
+            info!("L2: loaded worker identity from {}", key_path.display());
+            return Ok(hex);
+        }
+    }
+
+    // Generate new keypair via bioproof-core (no extra dep needed)
+    let keypair = bioproof_core::BioProofKeypair::generate();
+    let hex = keypair.privkey_hex();
+
+    if let Some(parent) = key_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::write(&key_path, &hex)
+        .with_context(|| format!("Cannot save worker key to {}", key_path.display()))?;
+
+    info!("L2: generated new worker identity → {}", key_path.display());
+    warn!("L2: worker public key will be used as payment identity — back up {}", key_path.display());
+    Ok(hex)
 }
 
 /// Search for a local inference script fallback (used when coordinator is unreachable).
@@ -80,18 +120,23 @@ async fn execute(
 ) -> Result<()> {
     let http = reqwest::Client::new();
 
-    // ── 1. Claim ──────────────────────────────────────────────────────────────
-    let claim = http
+    // ── 1. Claim — coordinator returns script + requirements inline ─────────────
+    let backend = task_backend(task);
+    let claim_resp = http
         .post(format!("{}/jobs/{job_id}/claim", cfg.coordinator_url))
-        .json(&serde_json::json!({ "worker_pubkey": cfg.pubkey_hex }))
+        .json(&serde_json::json!({ "worker_pubkey": cfg.pubkey_hex, "backend": backend }))
         .send().await.context("POST /claim")?;
 
-    if !claim.status().is_success() {
-        let s = claim.status();
-        let b = claim.text().await.unwrap_or_default();
+    if !claim_resp.status().is_success() {
+        let s = claim_resp.status();
+        let b = claim_resp.text().await.unwrap_or_default();
         anyhow::bail!("claim {job_id} → {s}: {b}");
     }
-    info!("L2: claimed {job_id}");
+    let claim_body: serde_json::Value = claim_resp.json().await.unwrap_or(serde_json::Value::Null);
+    let inline_script       = claim_body["script"].as_str().map(str::to_owned);
+    let inline_requirements = claim_body["requirements"].as_str().map(str::to_owned);
+    info!("L2: claimed {job_id} (script_inline={} req_inline={})",
+        inline_script.is_some(), inline_requirements.is_some());
 
     // ── 1.5. Fetch full job manifest (dataset_root + determinism fields) ──────────
     let job_manifest: serde_json::Value = match http
@@ -137,16 +182,33 @@ async fn execute(
         serde_json::to_vec_pretty(&manifest_record).unwrap_or_default(),
     ).await.ok();
 
-    // ── 3. Fetch inference script + install requirements from coordinator ────────
+    // ── 3. Install requirements + resolve inference script ──────────────────────
     let python = detect_python().await;
-    fetch_and_install_requirements(&http, &cfg.coordinator_url, task, &python).await;
 
-    let fetched_script = fetch_inference_script(&http, &cfg.coordinator_url, task, &work_dir).await;
-    if let Some(ref s) = fetched_script {
-        info!("L2: inference script fetched from coordinator: {}", s.display());
+    // Use inline requirements from claim response; fall back to separate GET only if absent.
+    install_requirements_content(
+        &inline_requirements,
+        &http, &cfg.coordinator_url, task, &python,
+    ).await;
+
+    // Use inline script from claim response; fall back to separate GET or local file.
+    let fetched_script = if let Some(src) = inline_script {
+        let dest = work_dir.join("inference.py");
+        if tokio::fs::write(&dest, src.as_bytes()).await.is_ok() {
+            info!("L2: inference script from claim response saved to {}", dest.display());
+            Some(dest)
+        } else {
+            None
+        }
     } else {
-        warn!("L2: could not fetch inference script from coordinator — using local fallback");
-    }
+        let s = fetch_inference_script(&http, &cfg.coordinator_url, task, &work_dir).await;
+        if let Some(ref p) = s {
+            info!("L2: inference script fetched from coordinator: {}", p.display());
+        } else {
+            warn!("L2: could not fetch inference script from coordinator — using local fallback");
+        }
+        s
+    };
     let effective_script = fetched_script.as_ref().or(cfg.perch_script.as_ref()).cloned();
 
     // ── 4. Download dataset from coordinator cache ─────────────────────────────────────
@@ -324,25 +386,30 @@ async fn fetch_coordinator_pubkey(http: &reqwest::Client, coordinator_url: &str)
 
 // ── Task dispatcher ───────────────────────────────────────────────────────────
 
-/// Fetch requirements.txt from coordinator and pip-install if changed (hash-cached).
-/// Cache marker: /tmp/genome-miner-l2/pip-{hash}.installed
-async fn fetch_and_install_requirements(
+/// Install pip requirements from inline content (from claim response) or fall back to a
+/// separate `GET /scripts/:task/requirements` request. Hash-cached to avoid redundant installs.
+async fn install_requirements_content(
+    inline: &Option<String>,
     http: &reqwest::Client,
     coordinator_url: &str,
     task: &str,
     python: &str,
 ) {
-    let backend = task_backend(task);
-    let url = format!("{coordinator_url}/scripts/{task}/requirements?backend={backend}");
-
-    let content = match http.get(&url).send().await {
-        Ok(r) if r.status().is_success() => match r.text().await {
-            Ok(t) if !t.trim().is_empty() => t,
-            _ => return,
-        },
-        _ => {
-            warn!("L2: could not fetch requirements.txt from coordinator");
-            return;
+    let content: String = if let Some(c) = inline.as_deref() {
+        if c.trim().is_empty() { return; }
+        c.to_owned()
+    } else {
+        let backend = task_backend(task);
+        let url = format!("{coordinator_url}/scripts/{task}/requirements?backend={backend}");
+        match http.get(&url).send().await {
+            Ok(r) if r.status().is_success() => match r.text().await {
+                Ok(t) if !t.trim().is_empty() => t,
+                _ => return,
+            },
+            _ => {
+                warn!("L2: could not fetch requirements.txt from coordinator");
+                return;
+            }
         }
     };
 
@@ -1089,8 +1156,8 @@ async fn build_predictions_csv(output_dir: &Path, mean_score: f64) -> String {
             );
         }
     }
-    // Fallback: minimal CSV
-    format!("row_id,score\nresult,{mean_score:.6}\n")
+    // Fallback: minimal genomics-style CSV (score,{val} is recognised by partial_recompute)
+    format!("metric,value\nreference,GRCh38\nscore,{mean_score:.6}\n")
 }
 
 async fn collect_audio(dir: &Path) -> Vec<PathBuf> {

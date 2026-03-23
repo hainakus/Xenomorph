@@ -349,23 +349,30 @@ impl EvmChain {
 
         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
 
-        let checkpoint = L1CheckpointV1 {
-            version: CHECKPOINT_VERSION_V1,
-            chain_id: self.chain_id,
-            block_number: block,
-            timestamp_ms: now_ms,
-            state_root,
-            receipts_root: receipts_root(&included_receipts),
-            tx_root: tx_root(&included_hashes),
-            anchor_root: anchor_root(&anchors_snapshot),
-            genetics_settlement_root: genetics_settlement_root(&anchors_snapshot),
-            reserved: 0,
-        };
+        // Create checkpoint periodically (every 32 blocks) to avoid rapid UTXO exhaustion.
+        // Checkpoints aggregate multiple blocks' anchors into one L1 commitment.
+        const CHECKPOINT_PERIOD: u64 = 32;
+        let should_checkpoint = block % CHECKPOINT_PERIOD == 0 || !anchors_snapshot.is_empty();
 
-        if let Err(e) = self.backend.persist_checkpoint(&checkpoint) {
-            log::warn!("checkpoint persistence failed ({}): {e}", self.backend.name());
+        if should_checkpoint {
+            let checkpoint = L1CheckpointV1 {
+                version: CHECKPOINT_VERSION_V1,
+                chain_id: self.chain_id,
+                block_number: block,
+                timestamp_ms: now_ms,
+                state_root,
+                receipts_root: receipts_root(&included_receipts),
+                tx_root: tx_root(&included_hashes),
+                anchor_root: anchor_root(&anchors_snapshot),
+                genetics_settlement_root: genetics_settlement_root(&anchors_snapshot),
+                reserved: 0,
+            };
+
+            if let Err(e) = self.backend.persist_checkpoint(&checkpoint) {
+                log::warn!("checkpoint persistence failed ({}): {e}", self.backend.name());
+            }
+            *self.latest_checkpoint.lock() = Some(checkpoint);
         }
-        *self.latest_checkpoint.lock() = Some(checkpoint);
 
         (block, state_root)
     }
