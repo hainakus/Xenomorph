@@ -22,16 +22,39 @@ async fn main() -> Result<()> {
 
     let m           = cli().get_matches();
 
+    // ── show-addr shortcut ────────────────────────────────────────────────────
+    if m.get_flag("show-addr") {
+        use kaspa_addresses::Prefix;
+        let privkey = load_privkey("WORKER_PRIVKEY", m.get_one::<String>("key-file").map(|s| s.as_str()))
+            .context("private key required: set $WORKER_PRIVKEY or use --key-file")?;
+        let secp    = secp256k1::Secp256k1::new();
+        let secret  = secp256k1::SecretKey::from_slice(&hex::decode(privkey.trim())?)
+            .context("invalid private key")?;
+        let public  = secp256k1::PublicKey::from_secret_key(&secp, &secret);
+        let keypair = xenom_anchor_client::keypair_from_hex(privkey.trim())?;
+        println!("Private key:        {}", privkey.trim());
+        println!("Public  key:        {}", hex::encode(public.serialize()));
+        println!("xenom: (mainnet):   {}", xenom_anchor_client::address_from_keypair(&keypair, Prefix::Mainnet));
+        println!("xenomdev: (devnet): {}", xenom_anchor_client::address_from_keypair(&keypair, Prefix::Devnet));
+        return Ok(());
+    }
+
     // ── keygen shortcut ───────────────────────────────────────────────────────
     if m.get_flag("gen-key") {
+        use kaspa_addresses::Prefix;
         use secp256k1::Secp256k1;
         let secp = Secp256k1::new();
         let mut rng = secp256k1::rand::thread_rng();
         let (secret_key, public_key) = secp.generate_keypair(&mut rng);
         let privkey_hex = hex::encode(secret_key.secret_bytes());
         let pubkey_hex  = hex::encode(public_key.serialize()); // 33-byte compressed
-        println!("Private key (--private-key): {privkey_hex}");
-        println!("Public  key (worker pubkey): {pubkey_hex}");
+        let keypair     = xenom_anchor_client::keypair_from_hex(&privkey_hex)?;
+        let addr_main   = xenom_anchor_client::address_from_keypair(&keypair, Prefix::Mainnet);
+        let addr_dev    = xenom_anchor_client::address_from_keypair(&keypair, Prefix::Devnet);
+        println!("Private key:        {privkey_hex}");
+        println!("Public  key:        {pubkey_hex}");
+        println!("xenom: (mainnet):   {addr_main}");
+        println!("xenomdev: (devnet): {addr_dev}");
         return Ok(());
     }
 
@@ -497,6 +520,10 @@ fn cli() -> Command {
             .long("gen-key")
             .action(ArgAction::SetTrue)
             .help("Generate a fresh secp256k1 keypair and exit"))
+        .arg(Arg::new("show-addr")
+            .long("show-addr")
+            .action(ArgAction::SetTrue)
+            .help("Derive xenom: addresses from existing key ($WORKER_PRIVKEY or --key-file) and exit"))
         .arg(Arg::new("key-file")
             .short('k').long("key-file").value_name("PATH")
             .help("Path to file containing the secp256k1 private key (64 hex chars). Alternatively set $WORKER_PRIVKEY."))
