@@ -118,10 +118,13 @@ fn load_l2_privkey(key_file: Option<&str>) -> Option<String> {
         }
     }
     if let Some(path) = key_file {
-        if let Ok(hex) = std::fs::read_to_string(path) {
-            let hex = hex.trim().to_string();
-            if !hex.is_empty() {
-                return Some(hex);
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            // Accept a file that is either a raw 64-hex key or the formatted
+            // output of `genome-miner keygen` — extract the first 64-char hex token.
+            for word in contents.split_whitespace() {
+                if word.len() == 64 && word.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Some(word.to_string());
+                }
             }
         }
     }
