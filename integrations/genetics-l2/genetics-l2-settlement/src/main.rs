@@ -62,7 +62,22 @@ async fn main() -> Result<()> {
         .context("invalid private key (expected 64 hex chars)")?;
 
     if let Some(ref kp) = keypair {
-        log::info!("  funding: {}",
+        log::info!("  anchor funding: {}",
+            xenom_anchor_client::address_from_keypair(kp, network_prefix));
+    }
+
+    // Separate keypair for miner reward payments — avoids competing with the
+    // anchor-committer for the same UTXO pool. Falls back to main keypair.
+    let payment_privkey_hex: Option<String> = load_privkey_opt("SETTLEMENT_PAYMENT_PRIVKEY", None);
+    let payment_keypair: Option<secp256k1::Keypair> = payment_privkey_hex
+        .as_deref()
+        .map(xenom_anchor_client::keypair_from_hex)
+        .transpose()
+        .context("invalid SETTLEMENT_PAYMENT_PRIVKEY (expected 64 hex chars)")?;
+    // Effective payment keypair: dedicated if set, else fall back to anchor keypair
+    let effective_payment_keypair: Option<secp256k1::Keypair> = payment_keypair.or_else(|| keypair.clone());
+    if let Some(ref kp) = effective_payment_keypair {
+        log::info!("  payment funding: {}",
             xenom_anchor_client::address_from_keypair(kp, network_prefix));
     }
 
@@ -90,10 +105,17 @@ async fn main() -> Result<()> {
     let http = reqwest::Client::new();
 
     loop {
-        match settle_validated_jobs(&http, &coordinator, rpc.as_ref(), keypair.as_ref(), fee_sompi, dry_run, network_prefix, evm_node.as_deref(), quorum, score_tolerance).await {
+        match settle_validated_jobs(&http, &coordinator, rpc.as_ref(), keypair.as_ref(), effective_payment_keypair.as_ref(), fee_sompi, dry_run, network_prefix, evm_node.as_deref(), quorum, score_tolerance).await {
             Ok(n) if n > 0 => log::info!("Settled {n} job(s)"),
             Ok(_)          => {}
             Err(e)         => log::warn!("Settlement cycle error: {e:#}"),
+        }
+        if !dry_run {
+            match retry_pending_payouts(&http, &coordinator, rpc.as_ref(), effective_payment_keypair.as_ref(), fee_sompi, network_prefix).await {
+                Ok(n) if n > 0 => log::info!("Retried {n} pending payout(s)"),
+                Ok(_)          => {}
+                Err(e)         => log::warn!("Payout retry error: {e:#}"),
+            }
         }
         sleep(Duration::from_millis(poll_ms)).await;
     }
@@ -118,16 +140,17 @@ fn load_privkey_opt(env_var: &str, key_file: Option<&str>) -> Option<String> {
 // ── Settlement logic ──────────────────────────────────────────────────────────
 
 async fn settle_validated_jobs(
-    http:            &reqwest::Client,
-    coordinator:     &str,
-    rpc:             Option<&std::sync::Arc<kaspa_grpc_client::GrpcClient>>,
-    keypair:         Option<&secp256k1::Keypair>,
-    fee_sompi:       u64,
-    dry_run:         bool,
-    prefix:          Prefix,
-    evm_node:        Option<&str>,
-    quorum:          usize,
-    score_tolerance: f64,
+    http:             &reqwest::Client,
+    coordinator:      &str,
+    rpc:              Option<&std::sync::Arc<kaspa_grpc_client::GrpcClient>>,
+    keypair:          Option<&secp256k1::Keypair>,
+    payment_keypair:  Option<&secp256k1::Keypair>,
+    fee_sompi:        u64,
+    dry_run:          bool,
+    prefix:           Prefix,
+    evm_node:         Option<&str>,
+    quorum:           usize,
+    score_tolerance:  f64,
 ) -> Result<usize> {
     // Fetch validated (not yet settled) jobs
     let resp = http
@@ -279,7 +302,7 @@ async fn settle_validated_jobs(
         // ── Pay winner in xenom ───────────────────────────────────────────────
         let payment_txid: Option<String> = if !dry_run && scored_sompi > 0 {
             if let Some(ref addr) = winner_xenom_address {
-                if let (Some(rpc_client), Some(kp)) = (rpc, keypair) {
+                if let (Some(rpc_client), Some(kp)) = (rpc, payment_keypair) {
                     use xenom_anchor_client::tx::{COINBASE_MATURITY, COINBASE_MATURITY_DEVNET};
                     let maturity = if prefix == Prefix::Devnet { COINBASE_MATURITY_DEVNET } else { COINBASE_MATURITY };
                     match xenom_anchor_client::tx::send_payment(rpc_client, kp, addr, scored_sompi, fee_sompi, prefix, maturity).await {
@@ -287,7 +310,7 @@ async fn settle_validated_jobs(
                         Err(e)  => { log::warn!("  payment failed: {e:#} — payout recorded but not sent"); None }
                     }
                 } else {
-                    log::warn!("  no RPC/keypair configured — cannot send L2 payment");
+                    log::warn!("  no RPC/payment-keypair configured — cannot send L2 payment");
                     None
                 }
             } else {
@@ -328,6 +351,56 @@ async fn settle_validated_jobs(
         count += 1;
     }
 
+    Ok(count)
+}
+
+// ── Retry unpaid payouts ──────────────────────────────────────────────────────
+
+async fn retry_pending_payouts(
+    http:       &reqwest::Client,
+    coordinator: &str,
+    rpc:        Option<&std::sync::Arc<kaspa_grpc_client::GrpcClient>>,
+    keypair:    Option<&secp256k1::Keypair>,
+    fee_sompi:  u64,
+    prefix:     kaspa_addresses::Prefix,
+) -> Result<usize> {
+    let (Some(rpc_client), Some(kp)) = (rpc, keypair) else { return Ok(0) };
+
+    let resp = http
+        .get(format!("{coordinator}/payouts?unpaid=true"))
+        .send().await.context("GET /payouts?unpaid=true")?;
+    let body: serde_json::Value = resp.json().await.context("parse unpaid payouts")?;
+    let payouts = body["payouts"].as_array().cloned().unwrap_or_default();
+
+    let mut count = 0;
+    for p in &payouts {
+        let payout_id   = p["payout_id"].as_str().unwrap_or("").to_owned();
+        let amount      = p["amount_sompi"].as_i64().unwrap_or(0) as u64;
+        let addr        = match p["xenom_address"].as_str() {
+            Some(a) if !a.is_empty() => a.to_owned(),
+            _ => {
+                log::debug!("Pending payout {payout_id}: no xenom_address — skipping");
+                continue;
+            }
+        };
+
+        if amount == 0 || payout_id.is_empty() { continue; }
+
+        use xenom_anchor_client::tx::{COINBASE_MATURITY, COINBASE_MATURITY_DEVNET};
+        let maturity = if prefix == kaspa_addresses::Prefix::Devnet { COINBASE_MATURITY_DEVNET } else { COINBASE_MATURITY };
+        match xenom_anchor_client::tx::send_payment(rpc_client, kp, &addr, amount, fee_sompi, prefix, maturity).await {
+            Ok(txid) => {
+                log::info!("Retry payout {payout_id}: sent {amount} sompi → {addr} txid={txid}");
+                let now = genetics_l2_core::now_secs() as i64;
+                let _ = http
+                    .patch(format!("{coordinator}/payouts/{payout_id}"))
+                    .json(&serde_json::json!({ "txid": txid, "paid_at": now }))
+                    .send().await;
+                count += 1;
+            }
+            Err(e) => log::warn!("Retry payout {payout_id} failed: {e:#}"),
+        }
+    }
     Ok(count)
 }
 

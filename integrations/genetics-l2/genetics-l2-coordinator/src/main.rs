@@ -774,31 +774,34 @@ async fn submit_validation(
     }
 }
 
-// GET /payouts?worker=<pubkey>
+// GET /payouts?worker=<pubkey>&unpaid=true
 #[derive(Deserialize)]
 struct PayoutsQuery {
     worker: Option<String>,
+    unpaid: Option<bool>,
 }
 
 async fn list_payouts(
     State(s): State<Arc<AppState>>,
     Query(q): Query<PayoutsQuery>,
 ) -> impl IntoResponse {
-    let rows = if let Some(w) = &q.worker {
-        sqlx::query(
+    let rows = match (&q.worker, q.unpaid.unwrap_or(false)) {
+        (Some(w), true) => sqlx::query(
+            "SELECT payout_id, job_id, worker_pubkey, xenom_address, amount_sompi, txid, paid_at
+             FROM payouts WHERE worker_pubkey = ?1 AND txid IS NULL ORDER BY rowid ASC LIMIT 100",
+        ).bind(w).fetch_all(&s.pool).await,
+        (Some(w), false) => sqlx::query(
             "SELECT payout_id, job_id, worker_pubkey, xenom_address, amount_sompi, txid, paid_at
              FROM payouts WHERE worker_pubkey = ?1 ORDER BY paid_at DESC LIMIT 100",
-        )
-        .bind(w)
-        .fetch_all(&s.pool)
-        .await
-    } else {
-        sqlx::query(
+        ).bind(w).fetch_all(&s.pool).await,
+        (None, true) => sqlx::query(
+            "SELECT payout_id, job_id, worker_pubkey, xenom_address, amount_sompi, txid, paid_at
+             FROM payouts WHERE txid IS NULL ORDER BY rowid ASC LIMIT 100",
+        ).fetch_all(&s.pool).await,
+        (None, false) => sqlx::query(
             "SELECT payout_id, job_id, worker_pubkey, xenom_address, amount_sompi, txid, paid_at
              FROM payouts ORDER BY paid_at DESC LIMIT 100",
-        )
-        .fetch_all(&s.pool)
-        .await
+        ).fetch_all(&s.pool).await,
     };
 
     match rows {

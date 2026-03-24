@@ -22,7 +22,7 @@ services:
       - -c
       - |
         xenom \
-          --datadir /data \
+          --appdir /data \
           --utxoindex \
           --rpclisten 0.0.0.0:36669 \
           --listen 0.0.0.0:26666 \
@@ -34,7 +34,7 @@ services:
       - ./data/xenom:/data
       - ./logs:/logs
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "36669"]
+      test: ["CMD", "nc", "-z", "localhost", "36679"]
       interval: 15s
       timeout: 5s
       retries: 12
@@ -212,6 +212,7 @@ services:
           >> /logs/settlement.log 2>&1
     environment:
       SETTLEMENT_PRIVKEY: ${VALIDATOR_PRIVKEY}
+      SETTLEMENT_PAYMENT_PRIVKEY: ${SETTLEMENT_PAYMENT_PRIVKEY}
     volumes:
       - ./logs:/logs
     depends_on:
