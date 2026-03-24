@@ -1,24 +1,280 @@
+# Xenomorph Mainnet Stack — Full Docker Compose
+#
+# All state persisted via bind mounts to ./data/ on the host.
+# Logs written to ./logs/<service>.log on the host.
+#
+# Quick start:
+#   cp .env.example .env && nano .env   # fill in private keys
+#   docker compose build                # ~20-30 min first time (RocksDB)
+#   docker compose up -d
+
 services:
-  xenom-node-1:
-    build: .
-    container_name: xenom-node-1
-    ports:
-      - "16118:26666"  # P2P port
-      - "17118:16668"  # RPC port
-    command: ["--rpclisten=0.0.0.0:16668", "--listen=0.0.0.0:26666", "--utxoindex"]
 
-  xenom-node-2:
-    build: .
-    container_name: xenom-node-2
+  # ── 1. Xenom L1 Node ──────────────────────────────────────────────────────
+  xenom-node:
+    build:
+      context: .
+      target: runtime
+    image: xenomorph:latest
+    container_name: xenom-node
+    command:
+      - sh
+      - -c
+      - |
+        xenom \
+          --datadir /data \
+          --utxoindex \
+          --rpclisten 0.0.0.0:36669 \
+          --listen 0.0.0.0:26666 \
+          >> /logs/xenom.log 2>&1
     ports:
-      - "16119:26666"
-      - "17119:16668"
-    command: ["--rpclisten=0.0.0.0:16668", "--listen=0.0.0.0:26666", "--utxoindex"]
+      - "26667:26666"   # P2P
+      - "36679:36669"   # gRPC (used by all internal services)
+    volumes:
+      - ./data/xenom:/data
+      - ./logs:/logs
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "36669"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
 
-  xenom-node-3:
-    build: .
-    container_name: xenom-node-3
+  # ── 2. Genetics L2 Coordinator ────────────────────────────────────────────
+  coordinator:
+    image: xenomorph:latest
+    container_name: xenom-coordinator
+    command:
+      - sh
+      - -c
+      - |
+        genetics-l2-coordinator \
+          --db-path /data/genetics-l2.db \
+          --listen 0.0.0.0:8091 \
+          --scripts-dir /scripts \
+          --datasets-dir /data/datasets \
+          >> /logs/coordinator.log 2>&1
+    environment:
+      COORDINATOR_PRIVKEY: ${VALIDATOR_PRIVKEY}
     ports:
-      - "16122:26666"
-      - "17123:16668"
-    command: ["--rpclisten=0.0.0.0:16668", "--listen=0.0.0.0:26666", "--utxoindex", "--addpeer=89.155.26.12:26666", "--addpeer=84.247.131.3:26666", "--addpeer=194.233.66.230:26666", "--addpeer=213.199.56.32:26666", "--addpeer=45.90.123.219:26666", "--addpeer=45.90.123.88:26666", "--addpeer=4.228.58.100:26666", "--addpeer=172.214.141.215:26666"]
+      - "8091:8091"
+    volumes:
+      - ./data/coordinator:/data          # genetics-l2.db + datasets/ + genetics-l2.db.key
+      - ./scripts:/scripts:ro
+      - ./logs:/logs
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "8091"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── 3. Xenom EVM Node (DAA-tied L2) ───────────────────────────────────────
+  evm-node:
+    image: xenomorph:latest
+    container_name: xenom-evm-node
+    command:
+      - sh
+      - -c
+      - |
+        xenom-evm-node \
+          --chain-id $EVM_CHAIN_ID \
+          --rpc-addr 0.0.0.0:8545 \
+          --state-dir /data \
+          --l1-node xenom-node:36669 \
+          >> /logs/evm-node.log 2>&1
+    environment:
+      EVM_CHAIN_ID: ${EVM_CHAIN_ID:-7777}
+    ports:
+      - "8545:8545"
+    volumes:
+      - ./data/evm-state:/data
+      - ./logs:/logs
+    depends_on:
+      xenom-node:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - -sf
+        - -X
+        - POST
+        - -H
+        - "Content-Type: application/json"
+        - --data
+        - '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+        - http://localhost:8545
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
+  # ── 4. Stratum Bridge (mining pool + L2 job dispatch) ─────────────────────
+  stratum-bridge:
+    image: xenomorph:latest
+    container_name: xenom-stratum-bridge
+    command:
+      - sh
+      - -c
+      - |
+        xenom-stratum-bridge \
+          --mining-address $MINING_ADDR \
+          --rpcserver xenom-node:36669 \
+          --listen 0.0.0.0:5555 \
+          --api-listen 0.0.0.0:1445 \
+          --db-path /data/pool.db \
+          --genome-file /genome/grch38.xenom \
+          --pool-private-key $POOL_PRIVKEY \
+          --l2-coordinator http://genes.xenom.space:8091 \
+          --l2-theme genetics \
+          >> /logs/stratum-bridge.log 2>&1
+    environment:
+      MINING_ADDR: ${MINING_ADDR}
+      POOL_PRIVKEY: ${POOL_PRIVKEY}
+    ports:
+      - "5555:5555"   # Stratum miners connect here
+      - "127.0.0.1:1445:1445"  # Pool dashboard — proxied by nginx on host
+    volumes:
+      - ./data/pool:/data
+      - ./genome:/genome:ro        # host path: ./genome/grch38.xenom (739 MB)
+      - ./logs:/logs
+    depends_on:
+      xenom-node:
+        condition: service_healthy
+      coordinator:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── 5. L2 Fetcher (seeds jobs from NIH/SRA/GDC/ClinVar/IGSR) ─────────────
+  fetcher:
+    image: xenomorph:latest
+    container_name: xenom-fetcher
+    command:
+      - sh
+      - -c
+      - |
+        genetics-l2-fetcher \
+          --coordinator http://coordinator:8091 \
+          --sra --igsr --gnomad --gdc --clinvar \
+          >> /logs/fetcher.log 2>&1
+    volumes:
+      - ./logs:/logs
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── 6. L2 Validator ───────────────────────────────────────────────────────
+  # Reads coordinator key file from coordinator's data dir (read-only mount)
+  validator:
+    image: xenomorph:latest
+    container_name: xenom-validator
+    command:
+      - sh
+      - -c
+      - |
+        genetics-l2-validator \
+          --coordinator http://coordinator:8091 \
+          --coordinator-key-file /coordinator-data/genetics-l2.db.key \
+          --poll-ms 10000 \
+          --score-tolerance 0.05 \
+          >> /logs/validator.log 2>&1
+    environment:
+      VALIDATOR_PRIVKEY: ${VALIDATOR_PRIVKEY}
+    volumes:
+      - ./data/coordinator:/coordinator-data:ro   # shares key file with coordinator
+      - ./logs:/logs
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── 7. L2 Settlement (validates results → anchors on EVM L2) ──────────────
+  settlement:
+    image: xenomorph:latest
+    container_name: xenom-settlement
+    command:
+      - sh
+      - -c
+      - |
+        genetics-l2-settlement \
+          --coordinator http://coordinator:8091 \
+          --node grpc://xenom-node:36669 \
+          --evm-node http://evm-node:8545 \
+          --quorum 1 \
+          --score-tolerance 0.05 \
+          --poll-ms 15000 \
+          --submit \
+          >> /logs/settlement.log 2>&1
+    environment:
+      SETTLEMENT_PRIVKEY: ${VALIDATOR_PRIVKEY}
+    volumes:
+      - ./logs:/logs
+    depends_on:
+      coordinator:
+        condition: service_healthy
+      evm-node:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── 8. Anchor Committer (EVM checkpoints → Xenom L1) ─────────────────────
+  # Funding address must hold mainnet XENOM to submit anchor transactions.
+  anchor-committer:
+    image: xenomorph:latest
+    container_name: xenom-anchor-committer
+    command:
+      - sh
+      - -c
+      - |
+        xenom-anchor-committer \
+          --evm-node http://evm-node:8545 \
+          --node xenom-node:36669 \
+          --state-dir /data \
+          --poll-ms 10000 \
+          --submit \
+          >> /logs/anchor-committer.log 2>&1
+    environment:
+      COMMITTER_PRIVKEY: ${COMMITTER_PRIVKEY}
+    volumes:
+      - ./data/anchor-state:/data
+      - ./logs:/logs
+    depends_on:
+      xenom-node:
+        condition: service_healthy
+      evm-node:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── 9. L2 Worker (processes genetics jobs) ────────────────────────────────
+  worker:
+    image: xenomorph:latest
+    container_name: xenom-worker
+    command:
+      - sh
+      - -c
+      - |
+        genetics-l2-worker \
+          --coordinator http://coordinator:8091 \
+          --work-root /data \
+          --poll-ms 60000 \
+          --xenom-address ${WORKER_MINING_ADDR} \
+          >> /logs/l2-worker.log 2>&1
+    environment:
+      WORKER_PRIVKEY: ${VALIDATOR_PRIVKEY}
+      XENOM_ADDRESS: ${WORKER_MINING_ADDR}
+    volumes:
+      - ./data/l2-work:/data
+      - ./logs:/logs
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  default:
+    name: xenomorph-mainnet
+    driver: bridge

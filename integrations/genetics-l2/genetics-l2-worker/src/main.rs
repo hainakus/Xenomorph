@@ -14,6 +14,7 @@ struct WorkerConfig {
     privkey_hex:     String,
     worker_pubkey:   String,
     poll_ms:         u64,
+    xenom_address:   Option<String>,
 }
 
 #[tokio::main]
@@ -64,6 +65,8 @@ async fn main() -> Result<()> {
     let work_root   = PathBuf::from(m.get_one::<String>("work-root").unwrap());
     let poll_ms: u64 = m.get_one::<String>("poll-ms")
         .and_then(|s| s.parse().ok()).unwrap_or(5_000);
+    let xenom_address: Option<String> = m.get_one::<String>("xenom-address").cloned()
+        .or_else(|| std::env::var("XENOM_ADDRESS").ok().filter(|s| !s.is_empty()));
 
     let keypair = BioProofKeypair::from_hex(&privkey)
         .context("invalid --private-key")?;
@@ -73,6 +76,9 @@ async fn main() -> Result<()> {
     log::info!("  pubkey:      {worker_pubkey}");
     log::info!("  coordinator: {coordinator}");
     log::info!("  work_root:   {}", work_root.display());
+    if let Some(ref a) = xenom_address {
+        log::info!("  xenom addr:  {a}");
+    }
 
     tokio::fs::create_dir_all(&work_root).await?;
 
@@ -83,6 +89,7 @@ async fn main() -> Result<()> {
         privkey_hex:     privkey,
         worker_pubkey,
         poll_ms,
+        xenom_address,
     };
 
     run_loop(&http, &cfg).await
@@ -207,6 +214,7 @@ async fn try_claim_and_execute(
         result_id:    result_id.clone(),
         job_id:       job.job_id.clone(),
         worker_pubkey: cfg.worker_pubkey.clone(),
+        xenom_address: cfg.xenom_address.clone(),
         result_root:  result_root.clone(),
         score,
         trace_hash:              Some(trace_hash),
@@ -539,4 +547,7 @@ fn cli() -> Command {
             .long("poll-ms").value_name("MS")
             .default_value("5000")
             .help("Coordinator poll interval in milliseconds"))
+        .arg(Arg::new("xenom-address")
+            .long("xenom-address").value_name("ADDR")
+            .help("Xenom address for receiving L2 job rewards (e.g. xenom:q...). Alternatively set $XENOM_ADDRESS."))
 }
