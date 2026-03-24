@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS results (
     weights_hash           TEXT,
     submission_bundle_hash TEXT,
     worker_sig             TEXT    NOT NULL,
+    xenom_address          TEXT,
     encrypted_payload      TEXT,
     ephemeral_pubkey       TEXT,
     submitted_at           INTEGER NOT NULL,
@@ -76,6 +77,7 @@ CREATE TABLE IF NOT EXISTS payouts (
     payout_id       TEXT    PRIMARY KEY,
     job_id          TEXT    NOT NULL,
     worker_pubkey   TEXT    NOT NULL,
+    xenom_address   TEXT,
     amount_sompi    INTEGER NOT NULL,
     txid            TEXT,
     paid_at         INTEGER
@@ -90,7 +92,7 @@ CREATE TABLE IF NOT EXISTS config (
 // ── Schema migration (adds columns missing from pre-spec DBs) ────────────────
 
 async fn migrate_schema(pool: &SqlitePool) {
-    let new_cols = [
+    let jobs_cols = [
         ("pipeline",          "TEXT"),
         ("pipeline_hash",     "TEXT"),
         ("reference_genome",  "TEXT"),
@@ -100,10 +102,16 @@ async fn migrate_schema(pool: &SqlitePool) {
         ("deadline",          "INTEGER"),
         ("dataset_category",  "TEXT"),
     ];
-    for (col, ty) in new_cols {
+    for (col, ty) in jobs_cols {
         let _ = sqlx::query(&format!("ALTER TABLE jobs ADD COLUMN {col} {ty}"))
             .execute(pool)
             .await;
+    }
+    for col in ["xenom_address"] {
+        let _ = sqlx::query(&format!("ALTER TABLE results ADD COLUMN {col} TEXT"))
+            .execute(pool).await;
+        let _ = sqlx::query(&format!("ALTER TABLE payouts ADD COLUMN {col} TEXT"))
+            .execute(pool).await;
     }
 }
 
@@ -417,8 +425,8 @@ async fn submit_result(
         "INSERT OR IGNORE INTO results
          (result_id, job_id, worker_pubkey, result_root, score,
           trace_hash, notebook_or_repo_hash, container_hash, weights_hash,
-          submission_bundle_hash, worker_sig, encrypted_payload, ephemeral_pubkey, submitted_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+          submission_bundle_hash, worker_sig, xenom_address, encrypted_payload, ephemeral_pubkey, submitted_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
     )
     .bind(&result.result_id)
     .bind(&result.job_id)
@@ -431,6 +439,7 @@ async fn submit_result(
     .bind(&result.weights_hash)
     .bind(&result.submission_bundle_hash)
     .bind(&result.worker_sig)
+    .bind(&result.xenom_address)
     .bind(&result.encrypted_payload)
     .bind(&result.ephemeral_pubkey)
     .bind(now)
@@ -460,7 +469,7 @@ async fn get_results(
     Path(job_id): Path<String>,
 ) -> impl IntoResponse {
     let rows = sqlx::query(
-        "SELECT r.result_id, r.worker_pubkey, r.result_root, r.score, r.submitted_at, r.verdict,
+        "SELECT r.result_id, r.worker_pubkey, r.xenom_address, r.result_root, r.score, r.submitted_at, r.verdict,
                 r.notebook_or_repo_hash, r.container_hash, r.weights_hash,
                 r.submission_bundle_hash, r.encrypted_payload, r.ephemeral_pubkey,
                 vr.recomputed_score
@@ -482,6 +491,7 @@ async fn get_results(
                 serde_json::json!({
                     "result_id":              r.get::<String, _>("result_id"),
                     "worker_pubkey":          r.get::<String, _>("worker_pubkey"),
+                    "xenom_address":          r.get::<Option<String>, _>("xenom_address"),
                     "result_root":            r.get::<String, _>("result_root"),
                     "score":                  recomputed_score.unwrap_or(submitted_score),
                     "submitted_score":        submitted_score,
@@ -776,7 +786,7 @@ async fn list_payouts(
 ) -> impl IntoResponse {
     let rows = if let Some(w) = &q.worker {
         sqlx::query(
-            "SELECT payout_id, job_id, worker_pubkey, amount_sompi, txid, paid_at
+            "SELECT payout_id, job_id, worker_pubkey, xenom_address, amount_sompi, txid, paid_at
              FROM payouts WHERE worker_pubkey = ?1 ORDER BY paid_at DESC LIMIT 100",
         )
         .bind(w)
@@ -784,7 +794,7 @@ async fn list_payouts(
         .await
     } else {
         sqlx::query(
-            "SELECT payout_id, job_id, worker_pubkey, amount_sompi, txid, paid_at
+            "SELECT payout_id, job_id, worker_pubkey, xenom_address, amount_sompi, txid, paid_at
              FROM payouts ORDER BY paid_at DESC LIMIT 100",
         )
         .fetch_all(&s.pool)
@@ -798,6 +808,7 @@ async fn list_payouts(
                 "payout_id":    r.get::<String, _>("payout_id"),
                 "job_id":       r.get::<String, _>("job_id"),
                 "worker_pubkey":r.get::<String, _>("worker_pubkey"),
+                "xenom_address":r.get::<Option<String>, _>("xenom_address"),
                 "amount_sompi": r.get::<i64, _>("amount_sompi"),
                 "txid":         r.get::<Option<String>, _>("txid"),
                 "paid_at":      r.get::<Option<i64>, _>("paid_at"),
@@ -815,12 +826,13 @@ async fn create_payout(
 ) -> impl IntoResponse {
     let res = sqlx::query(
         "INSERT OR IGNORE INTO payouts
-         (payout_id, job_id, worker_pubkey, amount_sompi, txid, paid_at)
-         VALUES (?1,?2,?3,?4,?5,?6)",
+         (payout_id, job_id, worker_pubkey, xenom_address, amount_sompi, txid, paid_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7)",
     )
     .bind(&payout.payout_id)
     .bind(&payout.job_id)
     .bind(&payout.worker_pubkey)
+    .bind(&payout.xenom_address)
     .bind(payout.amount_sompi as i64)
     .bind(&payout.txid)
     .bind(payout.paid_at.map(|t| t as i64))

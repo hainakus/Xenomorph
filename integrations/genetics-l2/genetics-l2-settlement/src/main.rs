@@ -213,6 +213,7 @@ async fn settle_validated_jobs(
             valid_results.len()
         );
         let winner_pubkey          = winner["worker_pubkey"].as_str().unwrap_or("").to_owned();
+        let winner_xenom_address   = winner["xenom_address"].as_str().map(str::to_owned);
         let notebook_or_repo_hash  = winner["notebook_or_repo_hash"].as_str().map(str::to_owned);
         let container_hash         = winner["container_hash"].as_str().map(str::to_owned);
         let weights_hash           = winner["weights_hash"].as_str().map(str::to_owned);
@@ -275,14 +276,37 @@ async fn settle_validated_jobs(
         };
         log::info!("  score-based reward: {reward_sompi} × {best_score:.4} = {scored_sompi} sompi");
 
+        // ── Pay winner in xenom ───────────────────────────────────────────────
+        let payment_txid: Option<String> = if !dry_run && scored_sompi > 0 {
+            if let Some(ref addr) = winner_xenom_address {
+                if let (Some(rpc_client), Some(kp)) = (rpc, keypair) {
+                    use xenom_anchor_client::tx::{COINBASE_MATURITY, COINBASE_MATURITY_DEVNET};
+                    let maturity = if prefix == Prefix::Devnet { COINBASE_MATURITY_DEVNET } else { COINBASE_MATURITY };
+                    match xenom_anchor_client::tx::send_payment(rpc_client, kp, addr, scored_sompi, fee_sompi, prefix, maturity).await {
+                        Ok(id)  => { log::info!("  payment txid={id} → {addr} {scored_sompi} sompi"); Some(id) }
+                        Err(e)  => { log::warn!("  payment failed: {e:#} — payout recorded but not sent"); None }
+                    }
+                } else {
+                    log::warn!("  no RPC/keypair configured — cannot send L2 payment");
+                    None
+                }
+            } else {
+                log::warn!("  winner has no xenom_address — payout tracked in coordinator DB only");
+                None
+            }
+        } else {
+            None
+        };
+
         // ── Register payout with coordinator ─────────────────────────────────
         let payout = Payout {
             payout_id:     Uuid::new_v4().to_string(),
             job_id:        job_id.clone(),
             worker_pubkey: winner_pubkey.clone(),
+            xenom_address: winner_xenom_address.clone(),
             amount_sompi:  scored_sompi,
-            txid:          txid.clone(),
-            paid_at:       txid.as_ref().map(|_| now_secs()),
+            txid:          payment_txid.clone().or_else(|| txid.clone()),
+            paid_at:       payment_txid.as_ref().map(|_| now_secs()),
         };
 
         let payout_resp = http

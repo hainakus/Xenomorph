@@ -296,6 +296,9 @@ pub struct JobResult {
     pub weights_hash:           Option<String>,
     /// BLAKE3 hash of the submission bundle (ZIP) sent to AIcrowd/DrivenData.
     pub submission_bundle_hash: Option<String>,
+    /// Xenom address for receiving L2 job rewards (e.g. xenom:q...).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub xenom_address:  Option<String>,
     /// Worker's secp256k1 signature over `result_root`.
     pub worker_sig:     String,
     /// Encrypted result payload (ChaCha20-Poly1305 encrypted with coordinator's public key).
@@ -405,6 +408,9 @@ pub struct Payout {
     pub payout_id:    String,
     pub job_id:       String,
     pub worker_pubkey: String,
+    /// Xenom address to send funds to. If absent the payout is tracked but not auto-sent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub xenom_address: Option<String>,
     pub amount_sompi: u64,
     pub txid:         Option<String>,
     pub paid_at:      Option<u64>,

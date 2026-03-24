@@ -159,6 +159,112 @@ pub async fn submit_anchor(
     Ok(tx_id.to_string())
 }
 
+/// Build, sign and submit a payment transaction sending `amount_sompi` to `recipient`.
+///
+/// Returns the transaction ID on success.  Errors if funded UTXOs are insufficient.
+pub async fn send_payment(
+    rpc:               &Arc<GrpcClient>,
+    keypair:           &Keypair,
+    recipient:         &str,
+    amount_sompi:      u64,
+    fee_per_input:     u64,
+    prefix:            Prefix,
+    coinbase_maturity: u64,
+) -> Result<String> {
+    let (pubkey, _) = keypair.x_only_public_key();
+    let sender_addr  = Address::new(prefix, Version::PubKey, &pubkey.serialize());
+    let rpc_sender: RpcAddress = sender_addr.clone();
+
+    let recipient_addr = Address::try_from(recipient)
+        .with_context(|| format!("invalid recipient address: {recipient}"))?;
+
+    let current_daa = rpc.get_block_dag_info().await.context("get_block_dag_info")?.virtual_daa_score;
+
+    let mempool_spent: std::collections::HashSet<(kaspa_hashes::Hash, u32)> = rpc
+        .get_mempool_entries_by_addresses(vec![rpc_sender.clone()], false, false)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .flat_map(|e| e.sending)
+        .flat_map(|entry| entry.transaction.inputs)
+        .map(|i| (i.previous_outpoint.transaction_id, i.previous_outpoint.index))
+        .collect();
+
+    let utxo_entries: Vec<_> = rpc
+        .get_utxos_by_addresses(vec![rpc_sender.clone()])
+        .await
+        .context("get_utxos_by_addresses")?
+        .into_iter()
+        .filter(|e| !e.utxo_entry.is_coinbase || current_daa.saturating_sub(e.utxo_entry.block_daa_score) >= coinbase_maturity)
+        .filter(|e| !mempool_spent.contains(&(e.outpoint.transaction_id, e.outpoint.index)))
+        .collect();
+
+    if utxo_entries.is_empty() {
+        anyhow::bail!("No mature UTXOs for payment sender {rpc_sender}");
+    }
+
+    let n_inputs = utxo_entries.len() as u64;
+    let total_in: u64 = utxo_entries.iter().map(|e| e.utxo_entry.amount).sum();
+    let fee = fee_per_input * n_inputs;
+
+    if total_in < amount_sompi + fee {
+        anyhow::bail!(
+            "Insufficient funds: total={total_in} required={}+{fee}={} sompi",
+            amount_sompi, amount_sompi + fee
+        );
+    }
+
+    let change = total_in - amount_sompi - fee;
+
+    let tx_inputs: Vec<TransactionInput> = utxo_entries.iter().map(|e| TransactionInput {
+        previous_outpoint: TransactionOutpoint {
+            transaction_id: e.outpoint.transaction_id,
+            index: e.outpoint.index,
+        },
+        signature_script: vec![],
+        sequence: 0,
+        sig_op_count: 1,
+    }).collect();
+
+    let mut tx_outputs = vec![
+        TransactionOutput { value: amount_sompi, script_public_key: pay_to_address_script(&recipient_addr) },
+    ];
+    if change > 0 {
+        tx_outputs.push(TransactionOutput { value: change, script_public_key: pay_to_address_script(&rpc_sender) });
+    }
+
+    let tx = Transaction::new(0, tx_inputs, tx_outputs, 0, SUBNETWORK_ID_NATIVE, 0, vec![]);
+
+    let utxo_for_signing: Vec<UtxoEntry> = utxo_entries.iter().map(|e| UtxoEntry {
+        amount: e.utxo_entry.amount,
+        script_public_key: e.utxo_entry.script_public_key.clone(),
+        block_daa_score: e.utxo_entry.block_daa_score,
+        is_coinbase: e.utxo_entry.is_coinbase,
+    }).collect();
+
+    let mut mutable_tx = MutableTransaction::with_entries(tx, utxo_for_signing);
+    let mut reused_values = SigHashReusedValues::new();
+    let n = mutable_tx.tx.inputs.len();
+
+    for i in 0..n {
+        let sig_hash = calc_schnorr_signature_hash(&mutable_tx.as_verifiable(), i, SIG_HASH_ALL, &mut reused_values);
+        let msg = Message::from_digest_slice(sig_hash.as_bytes().as_slice()).context("secp256k1 message")?;
+        let sig = keypair.sign_schnorr(msg);
+        let mut sig_script = Vec::with_capacity(66);
+        sig_script.push(0x41u8);
+        sig_script.extend_from_slice(sig.as_ref());
+        sig_script.push(SIG_HASH_ALL.to_u8());
+        mutable_tx.tx.inputs[i].signature_script = sig_script;
+    }
+
+    let rpc_tx = consensus_tx_to_rpc(mutable_tx.tx);
+    let tx_id = rpc.submit_transaction(rpc_tx, false).await.context("submit_transaction")?;
+    log::info!(
+        "Payment tx submitted: {tx_id}  to={recipient}  amount={amount_sompi}  fee={fee}  change={change}"
+    );
+    Ok(tx_id.to_string())
+}
+
 // ── Keypair helper ────────────────────────────────────────────────────────────
 
 /// Parse a 64-char hex secp256k1 private key into a `Keypair`.

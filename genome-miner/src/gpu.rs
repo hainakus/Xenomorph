@@ -196,12 +196,33 @@ fn maybe_set_nvidia_vulkan_icd() {
 }
 
 /// Returns all eligible mining adapters sorted by preference (discrete > integrated).
-/// Excludes: software renderers (llvmpipe/lavapipe/softpipe) and Intel integrated GPUs
-/// (UHD 600/700) whose max_storage_buffer_binding_size is too small for the 739 MB genome.
+/// Excludes: software renderers (llvmpipe/lavapipe/softpipe) and any adapter whose
+/// max_storage_buffer_binding_size is too small for the ~750 MB packed genome.
+///
+/// Backend selection (in priority order):
+///   1. WGPU_BACKEND env var (vulkan / dx12 / metal)
+///   2. On Windows: Vulkan only (avoids DX12/FXC HLSL compiler bugs with AMD GPUs)
+///   3. Everywhere else: Metal + Vulkan + DX12
 pub async fn enumerate_mining_adapters() -> Vec<wgpu::Adapter> {
     maybe_set_nvidia_vulkan_icd();
-    const INTEL_VENDOR_ID: u32 = 0x8086;
-    let all_backends = wgpu::Backends::METAL | wgpu::Backends::VULKAN | wgpu::Backends::DX12;
+    // Packed genome: GENOME_BASE_SIZE bases × 2-bit = ~750 MB minimum storage binding.
+    const GENOME_MIN_BINDING_BYTES: u32 = 700_000_000;
+
+    // Windows defaults to Vulkan to avoid DX12/FXC shader compiler bugs (AMD RX 7xxx).
+    // Override via WGPU_BACKEND=dx12 if DX12 is explicitly needed.
+    #[cfg(target_os = "windows")]
+    let default_backends = wgpu::Backends::VULKAN;
+    #[cfg(not(target_os = "windows"))]
+    let default_backends = wgpu::Backends::METAL | wgpu::Backends::VULKAN | wgpu::Backends::DX12;
+
+    let env_backend = std::env::var("WGPU_BACKEND").unwrap_or_default().to_lowercase();
+    let all_backends = match env_backend.as_str() {
+        "vulkan" => wgpu::Backends::VULKAN,
+        "dx12"   => wgpu::Backends::DX12,
+        "metal"  => wgpu::Backends::METAL,
+        _        => default_backends,
+    };
+
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: all_backends,
         ..Default::default()
@@ -219,10 +240,15 @@ pub async fn enumerate_mining_adapters() -> Vec<wgpu::Adapter> {
             {
                 return false;
             }
-            if info.vendor == INTEL_VENDOR_ID
-                && info.device_type == wgpu::DeviceType::IntegratedGpu
-            {
-                warn!("Skipping Intel integrated GPU '{}' (binding size too small for 739 MB genome)", info.name);
+            let lim = a.limits();
+            if lim.max_storage_buffer_binding_size < GENOME_MIN_BINDING_BYTES {
+                warn!(
+                    "Skipping '{}' [{:?}]: max_storage_buffer_binding_size {} MB < {} MB needed for genome",
+                    info.name,
+                    info.backend,
+                    lim.max_storage_buffer_binding_size / 1_048_576,
+                    GENOME_MIN_BINDING_BYTES / 1_048_576,
+                );
                 return false;
             }
             true
@@ -494,7 +520,8 @@ pub async fn cmd_gpu(m: &ArgMatches, dash: std::sync::Arc<std::sync::Mutex<DashS
         let key      = crate::load_l2_privkey(m.get_one::<String>("l2-key-file").map(|s| s.as_str()));
         let use_gpu  = m.get_flag("l2-gpu");
         let perch_script = m.get_one::<String>("l2-perch-script").map(std::path::PathBuf::from);
-        match crate::l2_worker::L2Config::new(url, key, use_gpu, perch_script) {
+        let xenom_addr = m.get_one::<String>("mining-address").cloned();
+        match crate::l2_worker::L2Config::new(url, key, use_gpu, perch_script, xenom_addr) {
             Ok(c)  => { info!("L2 inline worker enabled — coordinator={} pubkey={}", c.coordinator_url, c.pubkey_hex); Some(c) }
             Err(e) => { warn!("L2 config error: {e} — L2 disabled"); None }
         }

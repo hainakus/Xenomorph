@@ -14,6 +14,8 @@ pub struct L2Config {
     pub work_root:       PathBuf,
     pub use_gpu:         bool,
     pub perch_script:    Option<PathBuf>,
+    /// Xenom mining address for receiving L2 job rewards.
+    pub xenom_address:   Option<String>,
 }
 
 impl L2Config {
@@ -22,7 +24,7 @@ impl L2Config {
     /// and persisted to `~/.rusty-xenom/l2-worker.key` so each miner has a stable
     /// identity without requiring sensitive key distribution.
     pub fn new(coordinator_url: String, privkey_hex: Option<String>, use_gpu: bool,
-               perch_script: Option<PathBuf>) -> Result<Self> {
+               perch_script: Option<PathBuf>, xenom_address: Option<String>) -> Result<Self> {
         let privkey_hex = match privkey_hex {
             Some(k) if !k.trim().is_empty() => k.trim().to_owned(),
             _ => load_or_generate_worker_key()?,
@@ -32,7 +34,7 @@ impl L2Config {
         let pubkey_hex = keypair.pubkey_hex();
         let work_root  = std::env::temp_dir().join("genome-miner-l2");
         let perch_script = perch_script.or_else(find_perch_script);
-        Ok(Self { coordinator_url, privkey_hex, pubkey_hex, work_root, use_gpu, perch_script })
+        Ok(Self { coordinator_url, privkey_hex, pubkey_hex, work_root, use_gpu, perch_script, xenom_address })
     }
 }
 
@@ -319,6 +321,7 @@ async fn execute(
         result_id:              result_id.clone(),
         job_id:                 job_id.to_owned(),
         worker_pubkey:          cfg.pubkey_hex.clone(),
+        xenom_address:          cfg.xenom_address.clone(),
         result_root:            result_root.clone(),
         score,
         trace_hash:             Some(trace_hash.clone()),
