@@ -1,0 +1,57 @@
+# ─── Stage 1: Build ────────────────────────────────────────────────────────────
+FROM rust:1.85 AS builder
+
+LABEL stage="builder"
+
+ENV RUSTUP_TOOLCHAIN=1.85.1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    protobuf-compiler \
+    libprotobuf-dev \
+    clang \
+    libclang-dev \
+    libssl-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+COPY . .
+
+RUN if grep -q "<<<<<<" Cargo.lock 2>/dev/null; then \
+        echo "Removing conflicted Cargo.lock — cargo will regenerate it"; \
+        rm -f Cargo.lock; \
+    fi
+
+RUN cargo fetch
+RUN cargo update -p js-sys --precise 0.3.70
+RUN find /usr/local/cargo/registry -path "*/workflow-node-0.18.0/src/child_process.rs" \
+    -exec sed -i 's/PartialEq, Eq/PartialEq/' {} \;
+
+RUN cargo build --release -p xenom
+
+# ─── Stage 2: Runtime ──────────────────────────────────────────────────────────
+FROM debian:trixie-slim
+
+LABEL authors="hainakus"
+LABEL description="Xenom full node daemon (built from source)"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl3 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/xenom /usr/local/bin/xenom
+
+# P2P port
+EXPOSE 26666
+# gRPC RPC port
+EXPOSE 16668
+# Borsh RPC port
+EXPOSE 17110
+
+VOLUME ["/root/.rusty-xenom"]
+
+ENTRYPOINT ["/usr/local/bin/xenom"]

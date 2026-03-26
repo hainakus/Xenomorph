@@ -1,0 +1,35 @@
+[Unit]
+Description=Xenom Node
+After=docker.service
+Requires=docker.service
+
+[Service]
+TimeoutStartSec=30
+Restart=always
+RestartSec=10
+ExecStartPre=-/usr/bin/docker network create xenom 2>/dev/null || true
+ExecStartPre=-/usr/bin/docker stop xenom-node
+ExecStartPre=-/usr/bin/docker rm xenom-node
+ExecStart=/usr/bin/docker run \
+  --name xenom-node \
+  --network xenom \
+  -p 26666:26666 \
+  -p 16668:16668 \
+  -p 17110:17110 \
+  -v xenom-data:/root/.rusty-xenom \
+  iotapi322/xenom-node:v1 \
+  --utxoindex \
+  --rpclisten=0.0.0.0:16668 \
+  --listen=0.0.0.0:26666 \
+  --rpclisten-borsh=0.0.0.0:17110 \
+  --addpeer=89.155.26.12:26666 \
+  --addpeer=84.247.131.3:26666 \
+  --addpeer=194.233.66.230:26666 \
+  --addpeer=213.199.56.32:26666 \
+  --addpeer=213.199.56.32:26666 \
+  --addpeer=45.90.123.219:26666 \
+  --addpeer=45.90.123.88:26666
+ExecStop=/usr/bin/docker stop xenom-node
+
+[Install]
+WantedBy=multi-user.target
