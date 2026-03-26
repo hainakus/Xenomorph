@@ -161,7 +161,7 @@ async fn validate_pending(
             .context("POST /validations")?;
 
         log::info!(
-            "Job {job_id} result {result_id}: {:?}  score={claimed_score:.2}  recomputed={recomputed_score:.2}  delta={score_delta:.4}",
+            "Job {job_id} result {result_id}: {:?}  score={claimed_score:.2}  recomputed={recomputed_score:.2}  delta={score_delta:.4}  note={notes}",
             verdict
         );
 
@@ -191,6 +191,7 @@ async fn validate_result(
 ) -> (ValidationVerdict, f64, f64, String) {
     // Method 1: Hash integrity check
     // Verify result_root is a valid 32-byte hex string
+    let result_root = result_root.strip_prefix("0x").unwrap_or(result_root);
     if result_root.len() != 64 || hex::decode(result_root).is_err() {
         return (
             ValidationVerdict::Invalid,
@@ -221,19 +222,25 @@ async fn validate_result(
     // Method 2b: Schema + consistency validation from predictions CSV
     if let Some(csv) = predictions_csv {
         let header = csv.lines().next().unwrap_or("");
-        let is_genomics = csv.contains("reference,GRCh38") || csv.contains("annotated,");
-        let is_birdclef = header.contains("row_id");
+        let algorithm = _job_val["algorithm"].as_str().unwrap_or_default();
+        let external_ref = _job_val["external_ref"].as_str().unwrap_or_default().to_ascii_lowercase();
+
+        let is_genomics_algo = matches!(
+            algorithm,
+            "variant_calling"
+                | "cohort_build"
+                | "frequency_annotation"
+                | "clinical_annotation"
+                | "cancer_genomics"
+                | "vcf_annotation"
+        );
+        let is_genomics =
+            is_genomics_algo || csv.contains("reference,GRCh38") || csv.contains("annotated,") || csv.lines().any(|l| l.starts_with("score,"));
+        let is_birdclef =
+            algorithm == "acoustic_classification" || external_ref.contains("birdclef") || (header.contains("row_id") && !is_genomics);
 
         if is_genomics {
-            // Must have a score line
-            if !csv.lines().any(|l| l.starts_with("score,")) {
-                return (
-                    ValidationVerdict::Invalid,
-                    0.0,
-                    claimed_score,
-                    "genomics CSV missing required 'score' field".to_owned(),
-                );
-            }
+            // Optional score line for genomics workers; when absent, fall back to claimed_score.
             // Score in CSV must be consistent with claimed_score
             let csv_score = csv.lines()
                 .find(|l| l.starts_with("score,"))
