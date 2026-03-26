@@ -1,0 +1,52 @@
+# ─── Stage 1: Build ────────────────────────────────────────────────────────────
+FROM rust:latest AS builder
+
+LABEL stage="builder"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    protobuf-compiler \
+    libprotobuf-dev \
+    clang \
+    libclang-dev \
+    libssl-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+COPY . .
+RUN if grep -q "<<<<<<" Cargo.lock 2>/dev/null; then \
+        echo "Removing conflicted Cargo.lock — cargo will regenerate it"; \
+        rm -f Cargo.lock; \
+    fi
+
+# workflow-node-0.18.0 pulls in js-sys 0.3.91 where Array became generic Array<T>,
+# breaking type inference in kaspa-rpc-core which was written against js-sys 0.3.70.
+# Also, workflow-node-0.18.0 erroneously derives Eq on a struct containing
+# wasm_bindgen::JsValue (which only implements PartialEq). Both are patched below.
+RUN cargo fetch
+RUN cargo update -p js-sys --precise 0.3.70
+RUN find /usr/local/cargo/registry -path "*/workflow-node-0.18.0/src/child_process.rs" \
+    -exec sed -i 's/PartialEq, Eq/PartialEq/' {} \;
+
+RUN cargo build --release -p xenom-wallet
+
+# ─── Stage 2: Runtime ──────────────────────────────────────────────────────────
+FROM debian:trixie-slim
+
+LABEL authors="hainakus"
+LABEL description="Xenom wallet CLI (built from source)"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl3 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/xenom-wallet /usr/local/bin/xenom-wallet
+
+# Wallet stores keys and transaction history under ~/.xenom
+VOLUME ["/root/.xenom"]
+
+ENTRYPOINT ["/usr/local/bin/xenom-wallet"]
