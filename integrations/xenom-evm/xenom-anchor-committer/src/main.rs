@@ -313,7 +313,7 @@ async fn main() -> Result<()> {
     let db = CommitterDb::open(Path::new(&state_dir)).context("open committer DB")?;
     let http = reqwest::Client::new();
 
-    let rpc: Option<Arc<kaspa_grpc_client::GrpcClient>> = if !dry_run {
+    let mut rpc: Option<Arc<kaspa_grpc_client::GrpcClient>> = if !dry_run {
         let client = kaspa_grpc_client::GrpcClient::connect(node_url.clone()).await.context("connect to L1 node")?;
         log::info!("  connected to L1 node: {node_url}");
         Some(Arc::new(client))
@@ -328,7 +328,21 @@ async fn main() -> Result<()> {
         match commit_cycle(&http, &evm_url, rpc.as_ref(), keypair.as_ref(), fee_sompi, network_prefix, coinbase_maturity, &db, dry_run, &mut pending_txid).await {
             Ok(true) => {}
             Ok(false) => {}
-            Err(e) => log::warn!("commit cycle error: {e:#}"),
+            Err(e) => {
+                log::warn!("commit cycle error: {e:#}");
+                if !dry_run && e.to_string().contains("Not connected to server") {
+                    log::warn!("L1 gRPC disconnected; attempting reconnect to {node_url}");
+                    match kaspa_grpc_client::GrpcClient::connect(node_url.clone()).await {
+                        Ok(client) => {
+                            rpc = Some(Arc::new(client));
+                            log::info!("reconnected to L1 node: {node_url}");
+                        }
+                        Err(reconnect_err) => {
+                            log::warn!("L1 reconnect failed: {reconnect_err:#}");
+                        }
+                    }
+                }
+            }
         }
 
         tokio::select! {

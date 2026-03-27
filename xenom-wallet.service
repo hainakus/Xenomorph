@@ -1,0 +1,30 @@
+[Unit]
+Description=Xenom Wallet Daemon
+After=docker.service xenom-node.service
+Requires=docker.service
+Wants=xenom-node.service
+
+[Service]
+TimeoutStartSec=30
+Restart=on-failure
+RestartSec=10
+StandardInput=tty-force
+StandardOutput=tty
+TTYPath=/dev/tty3
+TTYReset=yes
+TTYVHangup=yes
+
+ExecStartPre=-/usr/bin/docker stop xenom-wallet
+ExecStartPre=-/usr/bin/docker rm xenom-wallet
+ExecStart=/usr/bin/docker run \
+  --name xenom-wallet \
+  --network xenom \
+  -p 36670:36670 \
+  -v xenom-wallet-data:/root/.xenom \
+  --interactive \
+  --tty \
+  iotapi322/xenom-wallet:v1
+ExecStop=/usr/bin/docker stop xenom-wallet
+
+[Install]
+WantedBy=multi-user.target

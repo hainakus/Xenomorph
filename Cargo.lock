@@ -2921,6 +2921,7 @@ dependencies = [
  "clap 4.5.16",
  "genetics-l2-core",
  "hex",
+ "kaspa-addresses",
  "kaspa-core",
  "log",
  "reqwest",
@@ -2929,6 +2930,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "uuid 1.10.0",
+ "xenom-anchor-client",
 ]
 
 [[package]]

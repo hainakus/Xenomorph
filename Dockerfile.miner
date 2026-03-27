@@ -1,0 +1,54 @@
+FROM nvidia/cuda:12.6.1-base-ubuntu24.04
+
+LABEL authors="hainakus"
+LABEL description="Xenom Genome Miner - GPU miner for the Xenom network (Genome PoW)"
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV GENOME_DIR=/root/.rusty-xenom
+ENV MINER_VERSION=v.1.0.1-stratum
+ENV MINER_ARCHIVE=genome-miner-linux-x86_64.tar.gz
+ENV MINER_URL=https://github.com/hainakus/Xenomorph/releases/download/${MINER_VERSION}/${MINER_ARCHIVE}
+ENV GENOME_URL=https://github.com/hainakus/Xenomorph/releases/download/genome-grch38-v0/grch38.xenom
+
+# Tell the NVIDIA container toolkit to inject all driver capabilities (compute + graphics/Vulkan)
+ENV NVIDIA_DRIVER_CAPABILITIES=all
+ENV NVIDIA_VISIBLE_DEVICES=all
+
+# DRIVER_VERSION must match the host NVIDIA driver (e.g. 550)
+ARG DRIVER_VERSION=550
+
+# Install Vulkan loader + NVIDIA GL/Vulkan ICD + Xvfb (virtual display for headless Vulkan)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget \
+    ca-certificates \
+    libvulkan1 \
+    libnvidia-gl-${DRIVER_VERSION} \
+    xvfb \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download and install the miner binary
+RUN wget -q "${MINER_URL}" -O /tmp/${MINER_ARCHIVE} \
+    && tar -xzf /tmp/${MINER_ARCHIVE} -C /tmp/ \
+    && mv /tmp/genome-miner-linux-x86_64/genome-miner /usr/local/bin/genome-miner \
+    && chmod +x /usr/local/bin/genome-miner \
+    && rm -rf /tmp/${MINER_ARCHIVE} /tmp/genome-miner-linux-x86_64
+
+# Create genome directory
+RUN mkdir -p ${GENOME_DIR}
+
+WORKDIR /root
+
+# Entrypoint script that handles genome download on first run and accepts env-var config
+COPY docker-miner-entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# WALLET: your Xenom address (required)
+# STRATUM: pool stratum URL (default: stratum+tcp://xenom.space:1444)
+# WORKER: worker name suffix (default: hostname)
+# GPU: GPU selector (default: all)
+ENV WALLET=""
+ENV STRATUM="stratum+tcp://xenom.space:1444"
+ENV WORKER=""
+ENV GPU="all"
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
