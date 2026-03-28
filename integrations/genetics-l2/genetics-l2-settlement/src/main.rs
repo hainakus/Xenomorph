@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
         .transpose()
         .context("invalid SETTLEMENT_PAYMENT_PRIVKEY (expected 64 hex chars)")?;
     // Effective payment keypair: dedicated if set, else fall back to anchor keypair
-    let effective_payment_keypair: Option<secp256k1::Keypair> = payment_keypair.or_else(|| keypair);
+    let effective_payment_keypair: Option<secp256k1::Keypair> = payment_keypair.or(keypair);
     if let Some(ref kp) = effective_payment_keypair {
         log::info!("  payment funding: {}",
             xenom_anchor_client::address_from_keypair(kp, network_prefix));
@@ -301,15 +301,31 @@ async fn settle_validated_jobs(
         log::info!("  score-based reward: {reward_sompi} × {best_score:.4} = {scored_sompi} sompi");
 
         // ── Pay winner in xenom ───────────────────────────────────────────────
+        const PAYMENT_MAX_ATTEMPTS: u32 = 3;
+        const PAYMENT_RETRY_DELAY_MS: u64 = 2_000;
         let payment_txid: Option<String> = if !dry_run && scored_sompi > 0 {
             if let Some(ref addr) = winner_xenom_address {
                 if let (Some(rpc_client), Some(kp)) = (rpc, payment_keypair) {
                     use xenom_anchor_client::tx::{COINBASE_MATURITY, COINBASE_MATURITY_DEVNET};
                     let maturity = if prefix == Prefix::Devnet { COINBASE_MATURITY_DEVNET } else { COINBASE_MATURITY };
-                    match xenom_anchor_client::tx::send_payment(rpc_client, kp, addr, scored_sompi, fee_sompi, prefix, maturity).await {
-                        Ok(id)  => { log::info!("  payment txid={id} → {addr} {scored_sompi} sompi"); Some(id) }
-                        Err(e)  => { log::warn!("  payment failed: {e:#} — payout recorded but not sent"); None }
+                    let mut paid_id: Option<String> = None;
+                    for attempt in 1..=PAYMENT_MAX_ATTEMPTS {
+                        match xenom_anchor_client::tx::send_payment(rpc_client, kp, addr, scored_sompi, fee_sompi, prefix, maturity).await {
+                            Ok(id) => {
+                                log::info!("  payment txid={id} → {addr} {scored_sompi} sompi");
+                                paid_id = Some(id);
+                                break;
+                            }
+                            Err(e) if attempt < PAYMENT_MAX_ATTEMPTS => {
+                                log::warn!("  payment attempt {attempt}/{PAYMENT_MAX_ATTEMPTS} failed: {e:#} — retrying in {PAYMENT_RETRY_DELAY_MS}ms");
+                                sleep(Duration::from_millis(PAYMENT_RETRY_DELAY_MS)).await;
+                            }
+                            Err(e) => {
+                                log::warn!("  payment failed after {PAYMENT_MAX_ATTEMPTS} attempts: {e:#} — payout recorded for later retry");
+                            }
+                        }
                     }
+                    paid_id
                 } else {
                     log::warn!("  no RPC/payment-keypair configured — cannot send L2 payment");
                     None
@@ -389,17 +405,32 @@ async fn retry_pending_payouts(
 
         use xenom_anchor_client::tx::{COINBASE_MATURITY, COINBASE_MATURITY_DEVNET};
         let maturity = if prefix == kaspa_addresses::Prefix::Devnet { COINBASE_MATURITY_DEVNET } else { COINBASE_MATURITY };
-        match xenom_anchor_client::tx::send_payment(rpc_client, kp, &addr, amount, fee_sompi, prefix, maturity).await {
-            Ok(txid) => {
-                log::info!("Retry payout {payout_id}: sent {amount} sompi → {addr} txid={txid}");
-                let now = genetics_l2_core::now_secs() as i64;
-                let _ = http
-                    .patch(format!("{coordinator}/payouts/{payout_id}"))
-                    .json(&serde_json::json!({ "txid": txid, "paid_at": now }))
-                    .send().await;
-                count += 1;
+        const RETRY_MAX_ATTEMPTS: u32 = 3;
+        const RETRY_DELAY_MS: u64 = 2_000;
+        let mut sent_txid: Option<String> = None;
+        for attempt in 1..=RETRY_MAX_ATTEMPTS {
+            match xenom_anchor_client::tx::send_payment(rpc_client, kp, &addr, amount, fee_sompi, prefix, maturity).await {
+                Ok(txid) => {
+                    log::info!("Retry payout {payout_id}: sent {amount} sompi → {addr} txid={txid}");
+                    sent_txid = Some(txid);
+                    break;
+                }
+                Err(e) if attempt < RETRY_MAX_ATTEMPTS => {
+                    log::warn!("Retry payout {payout_id} attempt {attempt}/{RETRY_MAX_ATTEMPTS} failed: {e:#} — retrying in {RETRY_DELAY_MS}ms");
+                    sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+                }
+                Err(e) => {
+                    log::warn!("Retry payout {payout_id} failed after {RETRY_MAX_ATTEMPTS} attempts: {e:#}");
+                }
             }
-            Err(e) => log::warn!("Retry payout {payout_id} failed: {e:#}"),
+        }
+        if let Some(txid) = sent_txid {
+            let now = genetics_l2_core::now_secs() as i64;
+            let _ = http
+                .patch(format!("{coordinator}/payouts/{payout_id}"))
+                .json(&serde_json::json!({ "txid": txid, "paid_at": now }))
+                .send().await;
+            count += 1;
         }
     }
     Ok(count)
