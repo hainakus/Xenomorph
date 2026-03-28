@@ -290,8 +290,9 @@ async fn settle_validated_jobs(
         };
 
         // ── Score-based reward: amount = reward_sompi × score (0.0..1.0) ─────
-        // Minimum floor of 1_000 sompi for any valid non-zero score.
-        const MIN_SOMPI: u64 = 1_000;
+        // Xenomorph storage_mass ≈ 10^12 / amount; node limit = 100_000
+        // → minimum payment must exceed 10_000_000 sompi (use 11_000_000 for margin).
+        const MIN_SOMPI: u64 = 11_000_000;
         let scored_sompi: u64 = if best_score > 0.0 {
             let raw = (reward_sompi as f64 * best_score.clamp(0.0, 1.0)).round() as u64;
             raw.max(MIN_SOMPI)
@@ -401,7 +402,13 @@ async fn retry_pending_payouts(
             }
         };
 
+        // Xenomorph storage_mass ≈ 10^12 / amount — must stay under 100_000.
+        const MIN_RETRY_SOMPI: u64 = 11_000_000;
         if amount == 0 || payout_id.is_empty() { continue; }
+        if amount < MIN_RETRY_SOMPI {
+            log::warn!("Retry payout {payout_id}: amount {amount} sompi below minimum {MIN_RETRY_SOMPI} — skipping");
+            continue;
+        }
 
         use xenom_anchor_client::tx::{COINBASE_MATURITY, COINBASE_MATURITY_DEVNET};
         let maturity = if prefix == kaspa_addresses::Prefix::Devnet { COINBASE_MATURITY_DEVNET } else { COINBASE_MATURITY };
@@ -495,8 +502,8 @@ fn cli() -> Command {
             .help("Path to file containing the secp256k1 private key (64 hex chars). Alternatively set $SETTLEMENT_PRIVKEY. Required with --submit."))
         .arg(Arg::new("fee-sompi")
             .long("fee-sompi").value_name("N")
-            .default_value("2000")
-            .help("Relay fee per input in sompi (default: 2000)"))
+            .default_value("5000")
+            .help("Relay fee per input in sompi (default: 5000)"))
         .arg(Arg::new("devnet")
             .long("devnet")
             .action(clap::ArgAction::SetTrue)
