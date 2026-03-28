@@ -75,7 +75,7 @@ async fn main() -> Result<()> {
         .transpose()
         .context("invalid SETTLEMENT_PAYMENT_PRIVKEY (expected 64 hex chars)")?;
     // Effective payment keypair: dedicated if set, else fall back to anchor keypair
-    let effective_payment_keypair: Option<secp256k1::Keypair> = payment_keypair.or_else(|| keypair.clone());
+    let effective_payment_keypair: Option<secp256k1::Keypair> = payment_keypair.or_else(|| keypair);
     if let Some(ref kp) = effective_payment_keypair {
         log::info!("  payment funding: {}",
             xenom_anchor_client::address_from_keypair(kp, network_prefix));
@@ -139,6 +139,7 @@ fn load_privkey_opt(env_var: &str, key_file: Option<&str>) -> Option<String> {
 
 // ── Settlement logic ──────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn settle_validated_jobs(
     http:             &reqwest::Client,
     coordinator:      &str,
