@@ -32,6 +32,7 @@ pub struct StratumJob {
     /// Calculated target based on difficulty or bits.
     pub target:       kaspa_math::Uint256,
     /// Current pool difficulty for share validation.
+    #[allow(dead_code)]
     pub current_diff: f64,
 }
 

@@ -111,7 +111,7 @@ impl GpuWorker {
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum MiningSource {
     /// Direct node connection: solution submitted via gRPC submit_block.
-    Node { rpc_block: Arc<RpcRawBlock>, header: Header },
+    Node { rpc_block: Arc<RpcRawBlock>, #[allow(dead_code)] header: Header },
     /// Stratum pool: solution submitted as mining.submit extranonce2.
     Stratum { job_id: String, extranonce1: u32 },
 }
