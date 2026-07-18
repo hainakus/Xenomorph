@@ -28,9 +28,7 @@ pub async fn cast_vote(
     match state.governance.vote(id, req.support).await {
         Ok(tx_hash) => {
             info!("Cast vote on proposal {} via gateway", id);
-            Ok(Json(VoteResponse {
-                tx_hash: format!("{:#x}", tx_hash),
-            }))
+            Ok(Json(VoteResponse { tx_hash: format!("{:#x}", tx_hash) }))
         }
         Err(e) => {
             error!("Failed to vote on proposal {}: {}", id, e);
@@ -45,17 +43,11 @@ pub struct ExecuteResponse {
     pub activated: bool,
 }
 
-pub async fn execute_proposal(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<u64>,
-) -> Result<Json<ExecuteResponse>, StatusCode> {
+pub async fn execute_proposal(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> Result<Json<ExecuteResponse>, StatusCode> {
     match state.governance.execute(id).await {
         Ok(tx_hash) => {
             info!("Executed proposal {} via gateway", id);
-            Ok(Json(ExecuteResponse {
-                tx_hash: format!("{:#x}", tx_hash),
-                activated: true,
-            }))
+            Ok(Json(ExecuteResponse { tx_hash: format!("{:#x}", tx_hash), activated: true }))
         }
         Err(e) => {
             error!("Failed to execute proposal {}: {}", id, e);

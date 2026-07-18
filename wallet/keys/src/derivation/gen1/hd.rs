@@ -508,7 +508,8 @@ mod tests {
         assert!(hd_wallet.is_ok(), "Could not parse key");
         let hd_wallet = hd_wallet.unwrap();
 
-        let receive_addresses = gen1_receive_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
+        let receive_addresses =
+            gen1_receive_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
         let change_addresses = gen1_change_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
 
         for index in 0..20 {
@@ -590,7 +591,8 @@ mod tests {
             .collect::<Vec<String>>();
         println!("receive addresses: {addresses_receive:#?}");
         println!("change addresses: {addresses_change:#?}");
-        let receive_addresses = gen1_receive_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
+        let receive_addresses =
+            gen1_receive_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
         let change_addresses = gen1_change_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
         for index in 0..20 {
             assert_eq!(receive_addresses[index], addresses_receive[index], "receive address at {index} failed");

@@ -1,21 +1,14 @@
 #![allow(dead_code)]
 
 use anyhow::Result;
+use seed_node::model::manager::ModelManager;
+use seed_node::rpc::client::XenomorphRpcClient;
+use seed_node::serving::inference::InferenceService;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tonic::transport::Server;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
-
-mod consensus;
-mod governance;
-mod model;
-mod rpc;
-mod serving;
-
-use model::manager::ModelManager;
-use rpc::client::XenomorphRpcClient;
-use serving::inference::InferenceService;
 
 #[tokio::main]
 async fn main() -> Result<()> {

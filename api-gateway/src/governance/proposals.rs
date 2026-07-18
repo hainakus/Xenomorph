@@ -48,15 +48,8 @@ pub async fn list_proposals(
     match state.governance.list_proposals(query.active_only).await {
         Ok(mut proposals) => {
             let total_count = proposals.len();
-            proposals = proposals
-                .into_iter()
-                .skip(query.offset)
-                .take(query.limit)
-                .collect();
-            Ok(Json(ProposalsResponse {
-                proposals,
-                total_count,
-            }))
+            proposals = proposals.into_iter().skip(query.offset).take(query.limit).collect();
+            Ok(Json(ProposalsResponse { proposals, total_count }))
         }
         Err(e) => {
             error!("Failed to list proposals: {}", e);
@@ -65,10 +58,7 @@ pub async fn list_proposals(
     }
 }
 
-pub async fn get_proposal(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<u64>,
-) -> Result<Json<ProposalResponse>, StatusCode> {
+pub async fn get_proposal(State(state): State<Arc<AppState>>, Path(id): Path<u64>) -> Result<Json<ProposalResponse>, StatusCode> {
     match state.governance.get_proposal(id).await {
         Ok(proposal) => Ok(Json(ProposalResponse { proposal })),
         Err(e) => {
@@ -93,8 +83,7 @@ pub async fn create_proposal(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateProposalRequest>,
 ) -> Result<Json<CreateProposalResponse>, StatusCode> {
-    let checkpoint = hex::decode(req.genesis_checkpoint.trim_start_matches("0x"))
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let checkpoint = hex::decode(req.genesis_checkpoint.trim_start_matches("0x")).map_err(|_| StatusCode::BAD_REQUEST)?;
     if checkpoint.len() != 32 {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -115,10 +104,7 @@ pub async fn create_proposal(
     match state.governance.propose_model(governance_req).await {
         Ok((tx_hash, proposal_id)) => {
             info!("Created proposal {} via gateway", proposal_id);
-            Ok(Json(CreateProposalResponse {
-                proposal_id,
-                tx_hash: format!("{:#x}", tx_hash),
-            }))
+            Ok(Json(CreateProposalResponse { proposal_id, tx_hash: format!("{:#x}", tx_hash) }))
         }
         Err(e) => {
             error!("Failed to create proposal: {}", e);
@@ -133,9 +119,7 @@ pub struct ActiveModelsResponse {
     pub total_count: usize,
 }
 
-pub async fn list_active_models(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<ActiveModelsResponse>, StatusCode> {
+pub async fn list_active_models(State(state): State<Arc<AppState>>) -> Result<Json<ActiveModelsResponse>, StatusCode> {
     match state.governance.list_active_models().await {
         Ok(models) => {
             let total_count = models.len();

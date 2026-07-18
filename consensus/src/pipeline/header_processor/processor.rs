@@ -217,10 +217,7 @@ impl HeaderProcessor {
 
     /// Attaches a genome dataset loader so that validation uses real GRCh38 fragments.
     /// Call this after construction when the loader is available.
-    pub fn with_genome_loader(
-        mut self,
-        loader: std::sync::Arc<dyn kaspa_pow::genome_pow::GenomeDatasetLoader>,
-    ) -> Self {
+    pub fn with_genome_loader(mut self, loader: std::sync::Arc<dyn kaspa_pow::genome_pow::GenomeDatasetLoader>) -> Self {
         self.genome_dataset_loader = Some(loader);
         self
     }

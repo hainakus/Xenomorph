@@ -4,7 +4,7 @@ use rand_chacha::ChaCha8Rng;
 use std::time::Instant;
 
 use crate::rpc::messages::TrainingBatch;
-use crate::trainer::{DeviceInfo, DeviceType, TrainingResult, Trainer};
+use crate::trainer::{DeviceInfo, DeviceType, Trainer, TrainingResult};
 
 const MOCK_LOSS_START: f64 = 2.5;
 const MOCK_LOSS_IMPROVEMENT_MIN: f64 = 0.01;
@@ -39,8 +39,7 @@ impl Trainer for MockTrainer {
         let seed_hash = hasher.finalize();
 
         let mut rng = ChaCha8Rng::from_seed(*seed_hash.as_bytes());
-        let improvement = MOCK_LOSS_IMPROVEMENT_MIN
-            + rng.gen::<f64>() * (MOCK_LOSS_IMPROVEMENT_MAX - MOCK_LOSS_IMPROVEMENT_MIN);
+        let improvement = MOCK_LOSS_IMPROVEMENT_MIN + rng.gen::<f64>() * (MOCK_LOSS_IMPROVEMENT_MAX - MOCK_LOSS_IMPROVEMENT_MIN);
 
         let loss_before = MOCK_LOSS_START + rng.gen::<f64>() * 0.2;
         let loss_after = (loss_before - improvement).max(0.0);
@@ -63,10 +62,6 @@ impl Trainer for MockTrainer {
     }
 
     fn device_info(&self) -> DeviceInfo {
-        DeviceInfo {
-            device_type: DeviceType::Mock,
-            name: "Mock CPU trainer".to_string(),
-            threads: 1,
-        }
+        DeviceInfo { device_type: DeviceType::Mock, name: "Mock CPU trainer".to_string(), threads: 1 }
     }
 }

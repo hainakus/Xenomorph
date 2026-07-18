@@ -327,9 +327,7 @@ impl From<NetworkId> for Params {
 }
 
 pub const MAINNET_PARAMS: Params = Params {
-    dns_seeders: &[
-        "dnsseeder.xenom.space"
-    ],
+    dns_seeders: &["dnsseeder.xenom.space"],
     net: NetworkId::new(NetworkType::Mainnet),
     genesis: GENESIS,
     ghostdag_k: LEGACY_DEFAULT_GHOSTDAG_K,
@@ -384,9 +382,9 @@ pub const MAINNET_PARAMS: Params = Params {
     //   fitness_coinbase_activation = tip + 100_000 blocks  ≈ +7 h  (miners upgrade window)
     //   genome_pow_activation       = fitness + epoch_len(200) + 200  ≈ +1.7 min after fitness
     fitness_coinbase_activation_daa_score: 21_370_401,
-    genome_pow_activation_daa_score:       21_370_801,
-    pq_activation_daa_score:               21_370_801,
-    pq_mandatory_daa_score:                u64::MAX,
+    genome_pow_activation_daa_score: 21_370_801,
+    pq_activation_daa_score: 21_370_801,
+    pq_mandatory_daa_score: u64::MAX,
     genome_merkle_root: "577126c448d24d132ba77436517a7db2203d6fce0cd81e2b84db39875d43ee80",
     genome_fragment_size_bytes: 1_048_576,
     epoch_len: 200,
@@ -475,9 +473,7 @@ pub const TESTNET_PARAMS: Params = Params {
 };
 
 pub const TESTNET11_PARAMS: Params = Params {
-    dns_seeders: &[
-
-    ],
+    dns_seeders: &[],
     net: NetworkId::with_suffix(NetworkType::Testnet, 11),
     genesis: TESTNET11_GENESIS,
     legacy_timestamp_deviation_tolerance: LEGACY_TIMESTAMP_DEVIATION_TOLERANCE,

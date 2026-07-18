@@ -185,8 +185,7 @@ where
 
         let mut public_key_bytes: [u8; KEY_SIZE + 1] = [0; KEY_SIZE + 1];
         reader.read_exact(&mut public_key_bytes)?;
-        let public_key = K::from_bytes(public_key_bytes)
-            .map_err(|_| std::io::Error::other("Invalid extended public key"))?;
+        let public_key = K::from_bytes(public_key_bytes).map_err(|_| std::io::Error::other("Invalid extended public key"))?;
         let attrs = ExtendedKeyAttrs::deserialize_reader(reader)?;
         Ok(Self { public_key, attrs })
     }

@@ -31,10 +31,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub async fn new(
-        payment_verifier: Arc<PaymentVerifier>,
-        governance: Arc<GovernanceClient>,
-    ) -> Result<Self> {
+    pub async fn new(payment_verifier: Arc<PaymentVerifier>, governance: Arc<GovernanceClient>) -> Result<Self> {
         // Initialize Redis client
         let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
 

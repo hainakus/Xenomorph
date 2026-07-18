@@ -5,9 +5,6 @@ use crate::{common::ProtocolError, dequeue_with_timeout, make_message};
 use crate::{IncomingRoute, KaspadMessagePayloadType, Router};
 use kaspa_core::debug;
 
-
-
-
 /// Implements the Kaspa peer-to-peer handshake protocol
 pub struct KaspadHandshake<'a> {
     router: &'a Router,

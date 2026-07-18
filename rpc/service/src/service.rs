@@ -393,22 +393,17 @@ NOTE: This error usually indicates an RPC conversion error between the node and 
             Devnet => true,
             Mainnet | Testnet => {
                 self.has_sufficient_peer_connectivity()
-                    && (self.config.is_nearly_synced(
-                        block_template.selected_parent_timestamp,
-                        block_template.selected_parent_daa_score,
-                    ) || (!self.flow_context.is_ibd_running() && self.flow_context.hub().has_peers()))
+                    && (self
+                        .config
+                        .is_nearly_synced(block_template.selected_parent_timestamp, block_template.selected_parent_daa_score)
+                        || (!self.flow_context.is_ibd_running() && self.flow_context.hub().has_peers()))
             }
             _ => {
-                self.config.is_nearly_synced(
-                    block_template.selected_parent_timestamp,
-                    block_template.selected_parent_daa_score,
-                ) || (!self.flow_context.is_ibd_running() && self.flow_context.hub().has_peers())
+                self.config.is_nearly_synced(block_template.selected_parent_timestamp, block_template.selected_parent_daa_score)
+                    || (!self.flow_context.is_ibd_running() && self.flow_context.hub().has_peers())
             }
         };
-        Ok(GetBlockTemplateResponse {
-            block: block_template.block.into(),
-            is_synced,
-        })
+        Ok(GetBlockTemplateResponse { block: block_template.block.into(), is_synced })
     }
 
     async fn get_current_block_color_call(

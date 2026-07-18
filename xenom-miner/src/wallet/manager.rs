@@ -1,7 +1,7 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use bip39::{Language, Mnemonic};
 use rand::RngCore;
-use secp256k1::{PublicKey, SecretKey, Message};
+use secp256k1::{Message, PublicKey, SecretKey};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,8 +26,7 @@ impl WalletManager {
         let mut entropy = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut entropy);
 
-        let mnemonic = Mnemonic::from_entropy_in(Language::English, &entropy)
-            .with_context(|| "Failed to generate BIP39 mnemonic")?;
+        let mnemonic = Mnemonic::from_entropy_in(Language::English, &entropy).with_context(|| "Failed to generate BIP39 mnemonic")?;
         let phrase = mnemonic.to_string();
 
         Self::from_mnemonic(data_dir, &phrase, password)
@@ -38,8 +37,7 @@ impl WalletManager {
         let wallet_path = wallet_path(data_dir);
 
         if wallet_path.exists() {
-            let encrypted = fs::read(&wallet_path)
-                .with_context(|| format!("Failed to read wallet at {:?}", wallet_path))?;
+            let encrypted = fs::read(&wallet_path).with_context(|| format!("Failed to read wallet at {:?}", wallet_path))?;
             let phrase = decrypt_with_password(&encrypted, password)
                 .with_context(|| "Failed to decrypt wallet (wrong password or corrupt data)")?;
             Self::from_mnemonic(data_dir, &phrase, password)
@@ -51,12 +49,10 @@ impl WalletManager {
 
     /// Restore a wallet from a BIP39 mnemonic phrase and persist it.
     pub fn from_mnemonic(data_dir: &Path, phrase: &str, password: &str) -> Result<Self> {
-        let mnemonic = Mnemonic::parse_in(Language::English, phrase)
-            .with_context(|| "Invalid BIP39 mnemonic phrase")?;
+        let mnemonic = Mnemonic::parse_in(Language::English, phrase).with_context(|| "Invalid BIP39 mnemonic phrase")?;
         let seed = mnemonic.to_seed("");
 
-        let secret_key = SecretKey::from_slice(&seed[..32])
-            .with_context(|| "Failed to derive secret key from seed")?;
+        let secret_key = SecretKey::from_slice(&seed[..32]).with_context(|| "Failed to derive secret key from seed")?;
         let public_key = PublicKey::from_secret_key_global(&secret_key);
         let address = derive_address(&public_key);
 
@@ -69,8 +65,7 @@ impl WalletManager {
     pub fn sign_block(&self, block: &mut TrainingBlock) -> Result<()> {
         let message = block_signing_message(block);
         let digest = Sha256::digest(&message);
-        let secp_message = Message::from_digest_slice(&digest)
-            .with_context(|| "Failed to build secp256k1 message")?;
+        let secp_message = Message::from_digest_slice(&digest).with_context(|| "Failed to build secp256k1 message")?;
         let signature = self.secret_key.sign_ecdsa(secp_message);
         block.signature = signature.serialize_compact();
         Ok(())
@@ -80,10 +75,8 @@ impl WalletManager {
     pub fn verify_signature(&self, block: &TrainingBlock) -> Result<bool> {
         let message = block_signing_message(block);
         let digest = Sha256::digest(&message);
-        let secp_message = Message::from_digest_slice(&digest)
-            .with_context(|| "Failed to build secp256k1 message")?;
-        let signature = secp256k1::ecdsa::Signature::from_compact(&block.signature)
-            .with_context(|| "Invalid compact signature")?;
+        let secp_message = Message::from_digest_slice(&digest).with_context(|| "Failed to build secp256k1 message")?;
+        let signature = secp256k1::ecdsa::Signature::from_compact(&block.signature).with_context(|| "Invalid compact signature")?;
         Ok(signature.verify(&secp_message, &self.public_key).is_ok())
     }
 
@@ -101,12 +94,10 @@ impl WalletManager {
     }
 
     fn save(&self, data_dir: &Path, password: &str, phrase: &str) -> Result<()> {
-        fs::create_dir_all(data_dir)
-            .with_context(|| format!("Failed to create wallet directory {:?}", data_dir))?;
+        fs::create_dir_all(data_dir).with_context(|| format!("Failed to create wallet directory {:?}", data_dir))?;
         let encrypted = encrypt_with_password(phrase.as_bytes(), password);
         let path = wallet_path(data_dir);
-        fs::write(&path, encrypted)
-            .with_context(|| format!("Failed to write wallet to {:?}", path))?;
+        fs::write(&path, encrypted).with_context(|| format!("Failed to write wallet to {:?}", path))?;
         info!("Saved encrypted wallet to {:?}", path);
         Ok(())
     }
@@ -178,8 +169,7 @@ fn decrypt_with_password(ciphertext: &[u8], password: &str) -> Result<String> {
         plaintext.push(byte ^ key_byte);
     }
 
-    String::from_utf8(plaintext)
-        .with_context(|| "Decrypted wallet is not valid UTF-8")
+    String::from_utf8(plaintext).with_context(|| "Decrypted wallet is not valid UTF-8")
 }
 
 #[cfg(test)]

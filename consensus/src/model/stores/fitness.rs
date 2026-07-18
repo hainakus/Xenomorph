@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use kaspa_consensus_core::BlockHasher;
-use kaspa_database::prelude::{BatchDbWriter, CachedDbAccess, CachePolicy, DirectDbWriter, StoreError, StoreResult, DB};
+use kaspa_database::prelude::{BatchDbWriter, CachePolicy, CachedDbAccess, DirectDbWriter, StoreError, StoreResult, DB};
 use kaspa_database::registry::DatabaseStorePrefixes;
 use kaspa_hashes::Hash;
 use kaspa_utils::mem_size::MemSizeEstimator;
@@ -37,10 +37,7 @@ pub struct DbFitnessStore {
 
 impl DbFitnessStore {
     pub fn new(db: Arc<DB>, cache_policy: CachePolicy) -> Self {
-        Self {
-            db: Arc::clone(&db),
-            access: CachedDbAccess::new(db, cache_policy, DatabaseStorePrefixes::BlockFitness.into()),
-        }
+        Self { db: Arc::clone(&db), access: CachedDbAccess::new(db, cache_policy, DatabaseStorePrefixes::BlockFitness.into()) }
     }
 
     pub fn clone_with_new_cache(&self, cache_policy: CachePolicy) -> Self {

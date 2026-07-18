@@ -1,5 +1,5 @@
-use std::{fs, io::Write, path::PathBuf, process::exit, sync::Arc, time::Duration};
 use futures_util::StreamExt;
+use std::{fs, io::Write, path::PathBuf, process::exit, sync::Arc, time::Duration};
 
 use async_channel::unbounded;
 use kaspa_consensus_core::{
@@ -234,8 +234,7 @@ pub fn create_core_with_runtime(runtime: &Runtime, args: &Args, fd_total_budget:
     //   3. Auto-discover ~/.rusty-xenom/grch38.xenom  (global default install location).
     //   4. Auto-download from GitHub Releases to ~/.rusty-xenom/grch38.xenom.
     //   5. None → falls back to SyntheticLoader (devnet/testing only — download failed).
-    const GENOME_RELEASE_URL: &str =
-        "https://github.com/hainakus/Xenomorph/releases/download/genome-grch38-v0/grch38.xenom";
+    const GENOME_RELEASE_URL: &str = "https://github.com/hainakus/Xenomorph/releases/download/genome-grch38-v0/grch38.xenom";
 
     let genome_file_path: Option<String> = if args.genome_file.is_some() {
         args.genome_file.clone()
@@ -247,15 +246,14 @@ pub fn create_core_with_runtime(runtime: &Runtime, args: &Args, fd_total_budget:
         // A real grch38.xenom is ~739 MB; anything under 1 MB is a corrupt/partial download.
         const GENOME_MIN_BYTES: u64 = 1_048_576;
 
-        let appdir_valid = appdir_candidate.exists()
-            && fs::metadata(&appdir_candidate).map(|m| m.len()).unwrap_or(0) >= GENOME_MIN_BYTES;
+        let appdir_valid =
+            appdir_candidate.exists() && fs::metadata(&appdir_candidate).map(|m| m.len()).unwrap_or(0) >= GENOME_MIN_BYTES;
 
         if appdir_valid {
             Some(appdir_candidate.to_string_lossy().into_owned())
         } else if let Some(ref global) = global_candidate {
             // Check if the global file exists AND is large enough to be valid.
-            let global_valid = global.exists()
-                && fs::metadata(global).map(|m| m.len()).unwrap_or(0) >= GENOME_MIN_BYTES;
+            let global_valid = global.exists() && fs::metadata(global).map(|m| m.len()).unwrap_or(0) >= GENOME_MIN_BYTES;
 
             if !global_valid && global.exists() {
                 // File is present but corrupt/truncated — remove it so we re-download below.
@@ -281,9 +279,7 @@ pub fn create_core_with_runtime(runtime: &Runtime, args: &Args, fd_total_budget:
                 //   • called before the main Tokio runtime (daemon startup) → create a one-shot rt
                 //   • called from within a Tokio runtime (tests, nested) → block_in_place
                 let dl_result = match tokio::runtime::Handle::try_current() {
-                    Ok(handle) => tokio::task::block_in_place(|| {
-                        handle.block_on(download_genome_file(GENOME_RELEASE_URL, global))
-                    }),
+                    Ok(handle) => tokio::task::block_in_place(|| handle.block_on(download_genome_file(GENOME_RELEASE_URL, global))),
                     Err(_) => tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
@@ -631,9 +627,7 @@ async fn download_genome_file(url: &str, dest: &PathBuf) -> Result<(), Box<dyn s
         fs::create_dir_all(parent)?;
     }
 
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()?;
+    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::limited(10)).build()?;
 
     let resp = client.get(url).send().await?.error_for_status()?;
     let total = resp.content_length().unwrap_or(0);
@@ -653,8 +647,7 @@ async fn download_genome_file(url: &str, dest: &PathBuf) -> Result<(), Box<dyn s
             let pct = downloaded * 100 / total;
             if pct >= last_pct + 10 {
                 last_pct = pct;
-                info!("Downloading grch38.xenom … {pct}% ({} / {} MB)",
-                    downloaded / 1_048_576, total / 1_048_576);
+                info!("Downloading grch38.xenom … {pct}% ({} / {} MB)", downloaded / 1_048_576, total / 1_048_576);
             }
         }
     }

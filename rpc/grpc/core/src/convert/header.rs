@@ -1,9 +1,9 @@
 use crate::protowire;
 use crate::{from, try_from};
 use kaspa_consensus_core::header::Header;
+use kaspa_muhash::Hash as Blake2Hash;
 use kaspa_rpc_core::{FromRpcHex, RpcError, RpcHash, RpcHashBlake2, RpcResult, ToRpcHex};
 use std::str::FromStr;
-use kaspa_muhash::Hash as Blake2Hash;
 
 // ----------------------------------------------------------------------------
 // rpc_core to protowire

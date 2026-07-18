@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 
 struct Share {
     worker: String,
-    diff:   f64,
+    diff: f64,
     #[allow(dead_code)]
-    at:     Instant,
+    at: Instant,
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -23,9 +23,9 @@ struct Share {
 pub struct WorkerStats {
     pub shares_submitted: u64,
     /// Sum of all share difficulties submitted.
-    pub total_diff:       f64,
-    pub blocks_found:     u64,
-    pub last_seen:        Option<Instant>,
+    pub total_diff: f64,
+    pub blocks_found: u64,
+    pub last_seen: Option<Instant>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -42,13 +42,13 @@ pub enum PayoutStatus {
 /// A single payout entry that is persisted to `--payout-file`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PendingPayout {
-    pub job_id:          String,
-    pub unix_secs:       u64,
+    pub job_id: String,
+    pub unix_secs: u64,
     /// DAA score of the mined block (used to determine confirmation depth).
     pub block_daa_score: u64,
     /// (worker_name, proportion 0..1).  Proportions sum to ~1.0.
-    pub proportions:     Vec<(String, f64)>,
-    pub status:          PayoutStatus,
+    pub proportions: Vec<(String, f64)>,
+    pub status: PayoutStatus,
 }
 
 // ── Accounting ────────────────────────────────────────────────────────────────
@@ -58,9 +58,9 @@ pub struct PendingPayout {
 /// Thread-safety: wrap in `tokio::sync::Mutex` before sharing.
 pub struct Accounting {
     window_size: usize,
-    shares:      VecDeque<Share>,
-    workers:     HashMap<String, WorkerStats>,
-    pending:     Vec<PendingPayout>,
+    shares: VecDeque<Share>,
+    workers: HashMap<String, WorkerStats>,
+    pending: Vec<PendingPayout>,
     payout_file: Option<PathBuf>,
 }
 
@@ -68,9 +68,9 @@ impl Accounting {
     pub fn new(window_size: usize, payout_file: Option<PathBuf>) -> Self {
         Self {
             window_size,
-            shares:      VecDeque::with_capacity(window_size.min(1024)),
-            workers:     HashMap::new(),
-            pending:     Vec::new(),
+            shares: VecDeque::with_capacity(window_size.min(1024)),
+            workers: HashMap::new(),
+            pending: Vec::new(),
             payout_file,
         }
     }
@@ -78,19 +78,15 @@ impl Accounting {
     /// Record a submitted share (called for every valid submission regardless
     /// of whether the node accepted it as a block).
     pub fn record_share(&mut self, worker: &str, diff: f64) {
-        self.shares.push_back(Share {
-            worker: worker.to_owned(),
-            diff,
-            at:     Instant::now(),
-        });
+        self.shares.push_back(Share { worker: worker.to_owned(), diff, at: Instant::now() });
         while self.shares.len() > self.window_size {
             self.shares.pop_front();
         }
 
         let e = self.workers.entry(worker.to_owned()).or_default();
         e.shares_submitted += 1;
-        e.total_diff       += diff;
-        e.last_seen        = Some(Instant::now());
+        e.total_diff += diff;
+        e.last_seen = Some(Instant::now());
     }
 
     /// Called when a block is accepted by the node.
@@ -109,16 +105,9 @@ impl Accounting {
         let mut proportions: Vec<(String, f64)> = prop_map.into_iter().collect();
         proportions.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let unix_secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or(Duration::ZERO)
-            .as_secs();
+        let unix_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO).as_secs();
 
-        info!(
-            "Block found! PPLNS window: {} shares  total_diff={:.2}",
-            self.shares.len(),
-            total_diff
-        );
+        info!("Block found! PPLNS window: {} shares  total_diff={:.2}", self.shares.len(), total_diff);
         for (worker, proportion) in &proportions {
             info!("  payout: {worker}  {:.4}%", proportion * 100.0);
             if let Some(e) = self.workers.get_mut(worker) {
@@ -127,11 +116,11 @@ impl Accounting {
         }
 
         let payout = PendingPayout {
-            job_id:          job_id.to_owned(),
+            job_id: job_id.to_owned(),
             unix_secs,
             block_daa_score: daa_score,
             proportions,
-            status:          PayoutStatus::Pending,
+            status: PayoutStatus::Pending,
         };
 
         self.pending.push(payout.clone());
@@ -150,17 +139,10 @@ impl Accounting {
     /// Returns payouts whose block has reached `confirm_depth` DAA-score steps
     /// behind the current virtual DAA score, and marks them as ready to pay.
     /// Caller should execute the payout and then call `mark_paid` / `mark_failed`.
-    pub fn take_confirmed_payouts(
-        &self,
-        current_daa_score: u64,
-        confirm_depth:     u64,
-    ) -> Vec<PendingPayout> {
+    pub fn take_confirmed_payouts(&self, current_daa_score: u64, confirm_depth: u64) -> Vec<PendingPayout> {
         self.pending
             .iter()
-            .filter(|p| {
-                p.status == PayoutStatus::Pending
-                    && current_daa_score.saturating_sub(p.block_daa_score) >= confirm_depth
-            })
+            .filter(|p| p.status == PayoutStatus::Pending && current_daa_score.saturating_sub(p.block_daa_score) >= confirm_depth)
             .cloned()
             .collect()
     }
@@ -185,10 +167,8 @@ impl Accounting {
     /// entries, and cap total in-memory size. Keeps all `Pending` entries.
     pub fn trim_old_payouts(&mut self, keep: usize) {
         // Partition into pending and resolved
-        let (mut pending_entries, mut resolved): (Vec<_>, Vec<_>) = self
-            .pending
-            .drain(..)
-            .partition(|p| p.status == PayoutStatus::Pending);
+        let (mut pending_entries, mut resolved): (Vec<_>, Vec<_>) =
+            self.pending.drain(..).partition(|p| p.status == PayoutStatus::Pending);
 
         // Keep only the most-recent `keep` resolved entries (they're in insertion order)
         if resolved.len() > keep {
@@ -211,10 +191,7 @@ impl Accounting {
         let mut rows: Vec<(&String, &WorkerStats)> = self.workers.iter().collect();
         rows.sort_by_key(|(w, _)| w.as_str());
         for (worker, s) in rows {
-            info!(
-                "  {worker}  shares={} total_diff={:.2} blocks={}",
-                s.shares_submitted, s.total_diff, s.blocks_found
-            );
+            info!("  {worker}  shares={} total_diff={:.2} blocks={}", s.shares_submitted, s.total_diff, s.blocks_found);
         }
     }
 

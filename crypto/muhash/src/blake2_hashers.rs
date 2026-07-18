@@ -105,7 +105,6 @@ impl<T: HasherBase> HasherExtensions for T {
     }
 }
 
-
 // Implemented manually in pow_hashers:
 //  struct PowHash => `cSHAKE256("ProofOfWorkHash")
 //  struct KHeavyHash => `cSHAKE256("HeavyHash")

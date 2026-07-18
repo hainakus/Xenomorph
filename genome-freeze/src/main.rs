@@ -170,11 +170,7 @@ fn main() {
     writer.write_all(&packed_genome).expect("write genome data");
     writer.flush().expect("flush");
 
-    println!(
-        "  Written {:.1} MB in {:.1}s",
-        (64 + total_packed_bytes) as f64 / 1_048_576.0,
-        t3.elapsed().as_secs_f64()
-    );
+    println!("  Written {:.1} MB in {:.1}s", (64 + total_packed_bytes) as f64 / 1_048_576.0, t3.elapsed().as_secs_f64());
 
     // ── Summary ───────────────────────────────────────────────────────────────
     println!("\n✓ Done in {:.1}s", t0.elapsed().as_secs_f64());
@@ -185,10 +181,7 @@ fn main() {
     println!("  Dataset version: {}", args.dataset_version);
     if !args.skip_merkle {
         let root_hex = merkle_root.iter().map(|b| format!("{b:02x}")).collect::<String>();
-        println!(
-            "  Merkle root:     {}",
-            root_hex
-        );
+        println!("  Merkle root:     {}", root_hex);
         println!("\n  Add to consensus Params:");
         println!("    genome_merkle_root: \"{}\"", root_hex);
         // Machine-readable line for CI extraction (grep GENOME_MERKLE_ROOT=)

@@ -5,8 +5,8 @@ use kaspa_consensus_core::{
     tx::{ScriptPublicKey, ScriptVec, Transaction, TransactionInput, TransactionOutpoint, TransactionOutput, UtxoEntry},
     utxo::utxo_collection::UtxoCollection,
 };
-use kaspa_muhash::Hash as Blake2Hash;
 use kaspa_hashes::{Hash, HASH_SIZE};
+use kaspa_muhash::Hash as Blake2Hash;
 use rand::{rngs::SmallRng, seq::SliceRandom, Rng};
 
 pub fn header_from_precomputed_hash(hash: Hash, parents: Vec<Hash>) -> Header {
@@ -44,10 +44,7 @@ pub fn generate_random_outpoint(rng: &mut SmallRng) -> TransactionOutpoint {
     TransactionOutpoint::new(generate_random_hash(rng), rng.gen::<u32>())
 }
 
-pub fn generate_random_utxo_from_script_public_key_pool(
-    rng: &mut SmallRng,
-    script_public_key_pool: &[ScriptPublicKey],
-) -> UtxoEntry {
+pub fn generate_random_utxo_from_script_public_key_pool(rng: &mut SmallRng, script_public_key_pool: &[ScriptPublicKey]) -> UtxoEntry {
     UtxoEntry::new(
         rng.gen_range(1..100_000), //we choose small amounts as to not overflow with large utxosets.
         script_public_key_pool.choose(rng).expect("expected_script_public key").clone(),

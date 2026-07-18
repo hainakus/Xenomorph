@@ -1,7 +1,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use kaspa_consensus_core::{header::Header, BlueWorkType};
-use kaspa_muhash::{Hash as Blake2Hash};
 use kaspa_hashes::Hash;
+use kaspa_muhash::Hash as Blake2Hash;
 use serde::{Deserialize, Serialize};
 use workflow_serializer::prelude::*;
 

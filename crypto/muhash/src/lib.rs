@@ -1,10 +1,10 @@
 // Make u3072 public if we're fuzzing
+pub mod blake2_hashers;
+mod pow_hashers;
 #[cfg(fuzzing)]
 pub mod u3072;
 #[cfg(not(fuzzing))]
 mod u3072;
-pub mod blake2_hashers;
-mod pow_hashers;
 
 use crate::u3072::U3072;
 use blake2_hashers::{Hasher, HasherBase, MuHashElementHash, MuHashFinalizeHash};
@@ -185,7 +185,6 @@ impl Default for MuHash {
         Self::new()
     }
 }
-
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use kaspa_utils::{
@@ -400,7 +399,6 @@ impl TryCastFromJs for Hash {
 }
 
 pub const ZERO_HASH: Hash = Hash([0; HASH_SIZE]);
-
 
 #[cfg(test)]
 mod tests {

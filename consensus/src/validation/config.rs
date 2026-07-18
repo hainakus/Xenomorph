@@ -30,16 +30,16 @@ const MAX_CHECKPOINT_INTERVAL: u64 = 10000;
 pub enum ConfigError {
     #[error("invalid sample size: {size} (must be between {min} and {max})")]
     InvalidSampleSize { size: usize, min: usize, max: usize },
-    
+
     #[error("invalid approval threshold: {threshold} (must be between {min} and {max})")]
     InvalidApprovalThreshold { threshold: f64, min: f64, max: f64 },
-    
+
     #[error("invalid timeout: {timeout}ms (must be between {min}ms and {max}ms)")]
     InvalidTimeout { timeout: u64, min: u64, max: u64 },
-    
+
     #[error("invalid checkpoint interval: {interval} (must be between {min} and {max})")]
     InvalidCheckpointInterval { interval: u64, min: u64, max: u64 },
-    
+
     #[error("configuration error: {0}")]
     ConfigError(String),
 }
@@ -52,22 +52,22 @@ pub enum ConfigError {
 pub struct ValidationParams {
     /// Number of validators to select for each block
     pub sample_size: usize,
-    
+
     /// Minimum stake required to be eligible for selection
     pub min_stake: u64,
-    
+
     /// Approval threshold for consensus (0.0 to 1.0)
     pub approval_threshold: f64,
-    
+
     /// Timeout for collecting signatures in milliseconds
     pub signature_timeout_ms: u64,
-    
+
     /// Interval for full checkpoint validation in blocks
     pub checkpoint_interval: u64,
-    
+
     /// Maximum number of validators in the selection pool
     pub max_validators: usize,
-    
+
     /// Minimum number of validators required
     pub min_validators: usize,
 }
@@ -98,13 +98,13 @@ impl ValidationParams {
         checkpoint_interval: u64,
     ) -> Result<Self, ConfigError> {
         let mut params = Self::new();
-        
+
         params.sample_size = sample_size;
         params.min_stake = min_stake;
         params.approval_threshold = approval_threshold;
         params.signature_timeout_ms = signature_timeout_ms;
         params.checkpoint_interval = checkpoint_interval;
-        
+
         params.validate()?;
         Ok(params)
     }
@@ -112,11 +112,7 @@ impl ValidationParams {
     /// Validate the configuration parameters
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.sample_size < MIN_SAMPLE_SIZE || self.sample_size > MAX_SAMPLE_SIZE {
-            return Err(ConfigError::InvalidSampleSize {
-                size: self.sample_size,
-                min: MIN_SAMPLE_SIZE,
-                max: MAX_SAMPLE_SIZE,
-            });
+            return Err(ConfigError::InvalidSampleSize { size: self.sample_size, min: MIN_SAMPLE_SIZE, max: MAX_SAMPLE_SIZE });
         }
 
         if self.approval_threshold < MIN_APPROVAL_THRESHOLD || self.approval_threshold > MAX_APPROVAL_THRESHOLD {
@@ -128,11 +124,7 @@ impl ValidationParams {
         }
 
         if self.signature_timeout_ms < MIN_TIMEOUT_MS || self.signature_timeout_ms > MAX_TIMEOUT_MS {
-            return Err(ConfigError::InvalidTimeout {
-                timeout: self.signature_timeout_ms,
-                min: MIN_TIMEOUT_MS,
-                max: MAX_TIMEOUT_MS,
-            });
+            return Err(ConfigError::InvalidTimeout { timeout: self.signature_timeout_ms, min: MIN_TIMEOUT_MS, max: MAX_TIMEOUT_MS });
         }
 
         if self.checkpoint_interval < MIN_CHECKPOINT_INTERVAL || self.checkpoint_interval > MAX_CHECKPOINT_INTERVAL {
@@ -144,15 +136,11 @@ impl ValidationParams {
         }
 
         if self.min_validators > self.max_validators {
-            return Err(ConfigError::ConfigError(
-                "min_validators cannot exceed max_validators".to_string()
-            ));
+            return Err(ConfigError::ConfigError("min_validators cannot exceed max_validators".to_string()));
         }
 
         if self.sample_size > self.max_validators {
-            return Err(ConfigError::ConfigError(
-                "sample_size cannot exceed max_validators".to_string()
-            ));
+            return Err(ConfigError::ConfigError("sample_size cannot exceed max_validators".to_string()));
         }
 
         Ok(())
@@ -372,7 +360,7 @@ mod tests {
         let params = ValidationParams::new();
         let serialized = serde_json::to_string(&params);
         assert!(serialized.is_ok());
-        
+
         let deserialized: Result<ValidationParams, _> = serde_json::from_str(&serialized.unwrap());
         assert!(deserialized.is_ok());
         assert_eq!(deserialized.unwrap(), params);

@@ -1,9 +1,9 @@
 use crate::{hashing, BlueWorkType};
 use borsh::{BorshDeserialize, BorshSerialize};
 use kaspa_hashes::Hash;
+use kaspa_muhash::Hash as Blake2Hash;
 use kaspa_utils::mem_size::MemSizeEstimator;
 use serde::{Deserialize, Serialize};
-use kaspa_muhash::Hash as Blake2Hash;
 /// @category Consensus
 #[derive(Clone, Debug, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 #[serde(rename_all = "camelCase")]

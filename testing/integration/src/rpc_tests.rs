@@ -94,10 +94,7 @@ async fn sanity_test() {
                     let response = rpc_client
                         .get_virtual_chain_from_block_call(
                             None,
-                            GetVirtualChainFromBlockRequest {
-                                start_hash: genesis_hash,
-                                include_accepted_transaction_ids: false,
-                            },
+                            GetVirtualChainFromBlockRequest { start_hash: genesis_hash, include_accepted_transaction_ids: false },
                         )
                         .await
                         .unwrap();
@@ -154,10 +151,7 @@ async fn sanity_test() {
                     let response = rpc_client
                         .get_virtual_chain_from_block_call(
                             None,
-                            GetVirtualChainFromBlockRequest {
-                                start_hash: genesis_hash,
-                                include_accepted_transaction_ids: false,
-                            },
+                            GetVirtualChainFromBlockRequest { start_hash: genesis_hash, include_accepted_transaction_ids: false },
                         )
                         .await
                         .unwrap();

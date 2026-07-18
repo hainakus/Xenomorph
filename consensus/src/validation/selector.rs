@@ -3,8 +3,8 @@
 //! This module implements cryptographically secure, stake-weighted validator selection
 //! using ChaCha20 RNG seeded from block hashes to ensure deterministic, verifiable selection.
 
-use rand_chacha::ChaCha20Rng;
 use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha20Rng;
 use thiserror::Error;
 
 // ============================================================================
@@ -22,16 +22,16 @@ const MIN_SAMPLE_SIZE: usize = 1;
 pub enum SelectionError {
     #[error("insufficient eligible validators: {eligible} < {required}")]
     InsufficientValidators { eligible: usize, required: usize },
-    
+
     #[error("total stake is zero, cannot perform weighted selection")]
     ZeroTotalStake,
-    
+
     #[error("sample size {size} exceeds maximum {max}")]
     SampleSizeTooLarge { size: usize, max: usize },
-    
+
     #[error("sample size {size} is below minimum {min}")]
     SampleSizeTooSmall { size: usize, min: usize },
-    
+
     #[error("no validators available for selection")]
     NoValidatorsAvailable,
 }
@@ -96,12 +96,7 @@ pub struct ValidatorSelector {
 impl ValidatorSelector {
     /// Create a new validator selector
     pub fn new(validators: Vec<ValidatorInfo>) -> Self {
-        Self {
-            validators,
-            min_stake: DEFAULT_MIN_STAKE,
-            min_validators: MIN_SAMPLE_SIZE,
-            max_validators: MAX_SAMPLE_SIZE,
-        }
+        Self { validators, min_stake: DEFAULT_MIN_STAKE, min_validators: MIN_SAMPLE_SIZE, max_validators: MAX_SAMPLE_SIZE }
     }
 
     /// Create a new validator selector with custom parameters
@@ -112,69 +107,41 @@ impl ValidatorSelector {
         max_validators: usize,
     ) -> Result<Self, SelectionError> {
         if min_validators > max_validators {
-            return Err(SelectionError::SampleSizeTooSmall {
-                size: min_validators,
-                min: max_validators,
-            });
-        }
-        
-        if max_validators > MAX_SAMPLE_SIZE {
-            return Err(SelectionError::SampleSizeTooLarge {
-                size: max_validators,
-                max: MAX_SAMPLE_SIZE,
-            });
+            return Err(SelectionError::SampleSizeTooSmall { size: min_validators, min: max_validators });
         }
 
-        Ok(Self {
-            validators,
-            min_stake,
-            min_validators,
-            max_validators,
-        })
+        if max_validators > MAX_SAMPLE_SIZE {
+            return Err(SelectionError::SampleSizeTooLarge { size: max_validators, max: MAX_SAMPLE_SIZE });
+        }
+
+        Ok(Self { validators, min_stake, min_validators, max_validators })
     }
 
     /// Select validators for a block
-    pub fn select_validators(
-        &self,
-        block_hash: [u8; 32],
-        sample_size: usize,
-    ) -> Result<ValidatorSelection, SelectionError> {
+    pub fn select_validators(&self, block_hash: [u8; 32], sample_size: usize) -> Result<ValidatorSelection, SelectionError> {
         // Validate sample size
         if sample_size < self.min_validators {
-            return Err(SelectionError::SampleSizeTooSmall {
-                size: sample_size,
-                min: self.min_validators,
-            });
+            return Err(SelectionError::SampleSizeTooSmall { size: sample_size, min: self.min_validators });
         }
-        
+
         if sample_size > self.max_validators {
-            return Err(SelectionError::SampleSizeTooLarge {
-                size: sample_size,
-                max: self.max_validators,
-            });
+            return Err(SelectionError::SampleSizeTooLarge { size: sample_size, max: self.max_validators });
         }
 
         // Filter validators by minimum stake
-        let eligible: Vec<ValidatorInfo> = self.validators
-            .iter()
-            .filter(|v| v.stake >= self.min_stake)
-            .cloned()
-            .collect();
+        let eligible: Vec<ValidatorInfo> = self.validators.iter().filter(|v| v.stake >= self.min_stake).cloned().collect();
 
         if eligible.is_empty() {
             return Err(SelectionError::NoValidatorsAvailable);
         }
 
         if eligible.len() < sample_size {
-            return Err(SelectionError::InsufficientValidators {
-                eligible: eligible.len(),
-                required: sample_size,
-            });
+            return Err(SelectionError::InsufficientValidators { eligible: eligible.len(), required: sample_size });
         }
 
         // Calculate total stake
         let total_stake: u64 = eligible.iter().map(|v| v.stake).sum();
-        
+
         if total_stake == 0 {
             return Err(SelectionError::ZeroTotalStake);
         }
@@ -188,12 +155,7 @@ impl ValidatorSelector {
         // Perform weighted sampling without replacement
         let selected = self.weighted_sample_without_replacement(&eligible, sample_size, &mut rng)?;
 
-        Ok(ValidatorSelection {
-            selected_validators: selected,
-            block_hash,
-            seed,
-            total_stake,
-        })
+        Ok(ValidatorSelection { selected_validators: selected, block_hash, seed, total_stake })
     }
 
     /// Weighted sampling without replacement using reservoir sampling
@@ -208,10 +170,7 @@ impl ValidatorSelector {
         }
 
         if k > candidates.len() {
-            return Err(SelectionError::InsufficientValidators {
-                eligible: candidates.len(),
-                required: k,
-            });
+            return Err(SelectionError::InsufficientValidators { eligible: candidates.len(), required: k });
         }
 
         let total_stake: u64 = candidates.iter().map(|c| c.stake).sum();
@@ -259,7 +218,7 @@ impl ValidatorSelector {
         let mut hasher = blake3::Hasher::new();
         hasher.update(block_hash);
         hasher.update(b"xenom-validator-selection-v1");
-        
+
         let hash = hasher.finalize();
         let mut seed = [0u8; 32];
         seed.copy_from_slice(hash.as_bytes());
@@ -273,10 +232,7 @@ impl ValidatorSelector {
 
     /// Get the number of eligible validators (above min stake)
     pub fn eligible_count(&self) -> usize {
-        self.validators
-            .iter()
-            .filter(|v| v.stake >= self.min_stake)
-            .count()
+        self.validators.iter().filter(|v| v.stake >= self.min_stake).count()
     }
 
     /// Add a validator
@@ -316,11 +272,7 @@ mod tests {
     use super::*;
 
     fn create_test_validator(id: u8, stake: u64) -> ValidatorInfo {
-        ValidatorInfo {
-            address: format!("validator_{}", id),
-            stake,
-            public_key: vec![id; 32],
-        }
+        ValidatorInfo { address: format!("validator_{}", id), stake, public_key: vec![id; 32] }
     }
 
     #[test]
@@ -353,7 +305,7 @@ mod tests {
 
         let mut selector = ValidatorSelector::new(validators);
         selector.min_stake = 5_000_000_000_000; // Set lower minimum for testing
-        
+
         let block_hash = [0u8; 32];
 
         let result = selector.select_validators(block_hash, 2);
@@ -366,22 +318,18 @@ mod tests {
 
     #[test]
     fn test_selection_with_min_stake() {
-        let validators = vec![
-            create_test_validator(1, 100),
-            create_test_validator(2, 2000),
-            create_test_validator(3, 3000),
-        ];
+        let validators = vec![create_test_validator(1, 100), create_test_validator(2, 2000), create_test_validator(3, 3000)];
 
         let mut selector = ValidatorSelector::new(validators);
         selector.min_stake = 500;
 
         let block_hash = [1u8; 32];
         let result = selector.select_validators(block_hash, 2);
-        
+
         assert!(result.is_ok());
         let selection = result.unwrap();
         assert_eq!(selection.selected_validators.len(), 2);
-        
+
         // Verify only validators with stake >= 500 are selected
         for validator in &selection.selected_validators {
             assert!(validator.stake >= 500);
@@ -390,13 +338,11 @@ mod tests {
 
     #[test]
     fn test_insufficient_validators() {
-        let validators = vec![
-            create_test_validator(1, 10_000_000_000_000),
-        ];
+        let validators = vec![create_test_validator(1, 10_000_000_000_000)];
 
         let mut selector = ValidatorSelector::new(validators);
         selector.min_stake = 5_000_000_000_000;
-        
+
         let block_hash = [2u8; 32];
 
         let result = selector.select_validators(block_hash, 5);
@@ -413,17 +359,14 @@ mod tests {
 
     #[test]
     fn test_no_validators_available() {
-        let validators = vec![
-            create_test_validator(1, 100),
-            create_test_validator(2, 200),
-        ];
+        let validators = vec![create_test_validator(1, 100), create_test_validator(2, 200)];
 
         let mut selector = ValidatorSelector::new(validators);
         selector.min_stake = 1000;
 
         let block_hash = [3u8; 32];
         let result = selector.select_validators(block_hash, 1);
-        
+
         assert!(result.is_err());
         match result {
             Err(SelectionError::NoValidatorsAvailable) => (),
@@ -441,7 +384,7 @@ mod tests {
 
         let mut selector = ValidatorSelector::new(validators);
         selector.min_stake = 5_000_000_000_000;
-        
+
         let block_hash = [42u8; 32];
 
         let result1 = selector.select_validators(block_hash, 2).unwrap();
@@ -461,7 +404,7 @@ mod tests {
 
         let mut selector = ValidatorSelector::new(validators);
         selector.min_stake = 5_000_000_000_000;
-        
+
         let hash1 = [1u8; 32];
         let hash2 = [2u8; 32];
 
@@ -474,10 +417,7 @@ mod tests {
 
     #[test]
     fn test_sample_size_validation() {
-        let validators = vec![
-            create_test_validator(1, 10_000_000_000_000),
-            create_test_validator(2, 20_000_000_000_000),
-        ];
+        let validators = vec![create_test_validator(1, 10_000_000_000_000), create_test_validator(2, 20_000_000_000_000)];
 
         let mut selector = ValidatorSelector::new(validators);
         selector.min_stake = 5_000_000_000_000;
@@ -511,10 +451,7 @@ mod tests {
 
     #[test]
     fn test_remove_validator() {
-        let validators = vec![
-            create_test_validator(1, 1000),
-            create_test_validator(2, 2000),
-        ];
+        let validators = vec![create_test_validator(1, 1000), create_test_validator(2, 2000)];
 
         let mut selector = ValidatorSelector::new(validators);
         assert_eq!(selector.validator_count(), 2);
@@ -531,18 +468,14 @@ mod tests {
 
         let updated = selector.update_stake("validator_1", 5000);
         assert!(updated);
-        
+
         let validator = selector.validators.first().unwrap();
         assert_eq!(validator.stake, 5000);
     }
 
     #[test]
     fn test_eligible_count() {
-        let validators = vec![
-            create_test_validator(1, 100),
-            create_test_validator(2, 2000),
-            create_test_validator(3, 3000),
-        ];
+        let validators = vec![create_test_validator(1, 100), create_test_validator(2, 2000), create_test_validator(3, 3000)];
 
         let mut selector = ValidatorSelector::new(validators);
         selector.min_stake = 500;

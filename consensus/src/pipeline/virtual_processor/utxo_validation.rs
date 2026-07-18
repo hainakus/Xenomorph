@@ -4,8 +4,8 @@ use crate::{
         BlockProcessResult,
         RuleError::{BadAcceptedIDMerkleRoot, BadCoinbaseTransaction, BadUTXOCommitment, InvalidTransactionsInUtxoContext},
     },
-    model::stores::{block_transactions::BlockTransactionsStoreReader, daa::DaaStoreReader, ghostdag::GhostdagData},
     model::stores::headers::HeaderStoreReader,
+    model::stores::{block_transactions::BlockTransactionsStoreReader, daa::DaaStoreReader, ghostdag::GhostdagData},
     processes::transaction_validator::{
         errors::{TxResult, TxRuleError},
         transaction_validator_populated::TxValidationFlags,
@@ -136,10 +136,7 @@ impl VirtualStateProcessor {
                 let v1 = self.coinbase_manager.deserialize_coinbase_payload(&txs[0].payload).unwrap();
                 (v1.miner_data.script_public_key, v1.subsidy)
             };
-            ctx.mergeset_rewards.insert(
-                merged_block,
-                BlockRewardData::new(subsidy, block_fee, miner_spk),
-            );
+            ctx.mergeset_rewards.insert(merged_block, BlockRewardData::new(subsidy, block_fee, miner_spk));
         }
 
         // Make sure accepted tx ids are sorted before building the merkle root

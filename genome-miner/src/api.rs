@@ -47,26 +47,26 @@ use crate::tui::DashStats;
 
 #[derive(Serialize)]
 struct HiveStats<'a> {
-    hs:       Vec<f64>,
+    hs: Vec<f64>,
     hs_units: &'static str,
-    temp:     Vec<u32>,
-    fan:      Vec<u32>,
-    power:    Vec<f64>,
+    temp: Vec<u32>,
+    fan: Vec<u32>,
+    power: Vec<f64>,
     accepted: u64,
     rejected: u64,
-    algo:     &'a str,
-    ver:      &'static str,
-    uptime:   u64,
-    ar:       [u64; 2],
+    algo: &'a str,
+    ver: &'static str,
+    uptime: u64,
+    ar: [u64; 2],
 }
 
 // ── Per-GPU hardware metrics ──────────────────────────────────────────────────
 
 #[derive(Clone, Default, Debug)]
 pub struct GpuHwStats {
-    pub temp:  u32,   // °C
-    pub fan:   u32,   // %
-    pub power: f64,   // W
+    pub temp: u32,  // °C
+    pub fan: u32,   // %
+    pub power: f64, // W
 }
 
 // ── NVIDIA via nvidia-smi ─────────────────────────────────────────────────────
@@ -75,10 +75,7 @@ pub struct GpuHwStats {
 /// Returns `None` if nvidia-smi is not installed or reports no GPUs.
 fn query_nvidia_smi(count: usize) -> Option<Vec<GpuHwStats>> {
     let output = std::process::Command::new("nvidia-smi")
-        .args([
-            "--query-gpu=index,temperature.gpu,fan.speed,power.draw",
-            "--format=csv,noheader,nounits",
-        ])
+        .args(["--query-gpu=index,temperature.gpu,fan.speed,power.draw", "--format=csv,noheader,nounits"])
         .output()
         .ok()?;
 
@@ -95,10 +92,10 @@ fn query_nvidia_smi(count: usize) -> Option<Vec<GpuHwStats>> {
             continue;
         }
         let idx: usize = parts[0].parse().unwrap_or(0);
-        let temp:  u32  = parts[1].parse().unwrap_or(0);
+        let temp: u32 = parts[1].parse().unwrap_or(0);
         // fan.speed may be "[N/A]" on headless/server GPUs — treat as 0
-        let fan:   u32  = parts[2].parse().unwrap_or(0);
-        let power: f64  = parts[3].parse().unwrap_or(0.0);
+        let fan: u32 = parts[2].parse().unwrap_or(0);
+        let power: f64 = parts[3].parse().unwrap_or(0.0);
         entries.push((idx, GpuHwStats { temp, fan, power }));
     }
 
@@ -121,10 +118,7 @@ fn query_nvidia_smi(count: usize) -> Option<Vec<GpuHwStats>> {
 /// Queries AMD GPUs via `rocm-smi --showtemp --showfan --showpower --csv`.
 /// CSV columns: device, Temperature (Sensor junction) (C), Fan speed (%), Power (W)
 fn query_rocm_smi(count: usize) -> Option<Vec<GpuHwStats>> {
-    let output = std::process::Command::new("rocm-smi")
-        .args(["--showtemp", "--showfan", "--showpower", "--csv"])
-        .output()
-        .ok()?;
+    let output = std::process::Command::new("rocm-smi").args(["--showtemp", "--showfan", "--showpower", "--csv"]).output().ok()?;
 
     if !output.status.success() {
         return None;
@@ -134,7 +128,8 @@ fn query_rocm_smi(count: usize) -> Option<Vec<GpuHwStats>> {
     let mut out: Vec<GpuHwStats> = (0..count).map(|_| GpuHwStats::default()).collect();
     let mut device_idx = 0usize;
 
-    for line in text.lines().skip(1) { // skip CSV header
+    for line in text.lines().skip(1) {
+        // skip CSV header
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -145,8 +140,8 @@ fn query_rocm_smi(count: usize) -> Option<Vec<GpuHwStats>> {
         }
         if device_idx < count {
             out[device_idx] = GpuHwStats {
-                temp:  parts[1].parse().unwrap_or(0),
-                fan:   parts[2].parse().unwrap_or(0),
+                temp: parts[1].parse().unwrap_or(0),
+                fan: parts[2].parse().unwrap_or(0),
                 power: parts[3].parse().unwrap_or(0.0),
             };
         }
@@ -174,7 +169,7 @@ fn query_sysfs_hwmon(count: usize) -> Option<Vec<GpuHwStats>> {
         .ok()?
         .flatten()
         .filter_map(|e| {
-            let p    = e.path();
+            let p = e.path();
             let name = fs::read_to_string(p.join("name")).unwrap_or_default();
             // Accept both amdgpu and generic "gpu" named hwmon entries
             let n = name.trim();
@@ -199,30 +194,18 @@ fn query_sysfs_hwmon(count: usize) -> Option<Vec<GpuHwStats>> {
         }
 
         // Temperature: temp1_input is in millidegrees Celsius
-        let temp_mc: u64 = fs::read_to_string(hw_path.join("temp1_input"))
-            .ok()
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0);
+        let temp_mc: u64 = fs::read_to_string(hw_path.join("temp1_input")).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
 
         // Fan: fan1_input (RPM) + fan1_max (max RPM) → percentage
-        let fan_rpm: u64 = fs::read_to_string(hw_path.join("fan1_input"))
-            .ok()
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0);
-        let fan_max: u64 = fs::read_to_string(hw_path.join("fan1_max"))
-            .ok()
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0);
+        let fan_rpm: u64 = fs::read_to_string(hw_path.join("fan1_input")).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+        let fan_max: u64 = fs::read_to_string(hw_path.join("fan1_max")).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
 
         // Power: power1_average is in microwatts
-        let power_uw: u64 = fs::read_to_string(hw_path.join("power1_average"))
-            .ok()
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0);
+        let power_uw: u64 = fs::read_to_string(hw_path.join("power1_average")).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
 
         out[i] = GpuHwStats {
-            temp:  (temp_mc / 1_000) as u32,
-            fan:   if fan_max > 0 { ((fan_rpm * 100) / fan_max) as u32 } else { 0 },
+            temp: (temp_mc / 1_000) as u32,
+            fan: if fan_max > 0 { ((fan_rpm * 100) / fan_max) as u32 } else { 0 },
             power: power_uw as f64 / 1_000_000.0,
         };
     }
@@ -257,9 +240,7 @@ pub async fn hw_poll_task(stats: Arc<Mutex<DashStats>>) {
     loop {
         sleep(Duration::from_secs(5)).await;
 
-        let count = {
-            stats.lock().unwrap().gpus.len()
-        };
+        let count = { stats.lock().unwrap().gpus.len() };
         if count == 0 {
             continue;
         }
@@ -269,8 +250,8 @@ pub async fn hw_poll_task(stats: Arc<Mutex<DashStats>>) {
         let mut s = stats.lock().unwrap();
         for (i, h) in hw.iter().enumerate() {
             if let Some(g) = s.gpus.get_mut(i) {
-                g.temp  = h.temp;
-                g.fan   = h.fan;
+                g.temp = h.temp;
+                g.fan = h.fan;
                 g.power = h.power;
             }
         }
@@ -284,14 +265,10 @@ pub async fn hw_poll_task(stats: Arc<Mutex<DashStats>>) {
 ///
 /// Configure in your HiveOS flight sheet as:
 ///   API endpoint: http://<rig-ip>:<port>/
-pub async fn run_api_server(
-    port:  u16,
-    stats: Arc<Mutex<DashStats>>,
-    start: Instant,
-) {
+pub async fn run_api_server(port: u16, stats: Arc<Mutex<DashStats>>, start: Instant) {
     let addr = format!("0.0.0.0:{port}");
     let listener = match TcpListener::bind(&addr).await {
-        Ok(l)  => l,
+        Ok(l) => l,
         Err(e) => {
             eprintln!("[api] Failed to bind {addr}: {e}");
             return;
@@ -303,12 +280,12 @@ pub async fn run_api_server(
 
     loop {
         let (mut stream, _peer) = match listener.accept().await {
-            Ok(c)  => c,
+            Ok(c) => c,
             Err(_) => continue,
         };
 
         let stats2 = stats.clone();
-        let start2  = start;
+        let start2 = start;
 
         tokio::spawn(async move {
             // Consume the HTTP request (we don't care about the path/method).
@@ -340,9 +317,9 @@ fn build_json(stats: &Arc<Mutex<DashStats>>, start: Instant) -> String {
     let s = stats.lock().unwrap();
 
     // H/s per GPU (miner stores MH/s internally)
-    let hs: Vec<f64>  = s.gpus.iter().map(|g| g.hashrate * 1_000_000.0).collect();
+    let hs: Vec<f64> = s.gpus.iter().map(|g| g.hashrate * 1_000_000.0).collect();
     let temp: Vec<u32> = s.gpus.iter().map(|g| g.temp).collect();
-    let fan:  Vec<u32> = s.gpus.iter().map(|g| g.fan).collect();
+    let fan: Vec<u32> = s.gpus.iter().map(|g| g.fan).collect();
     let power: Vec<f64> = s.gpus.iter().map(|g| g.power).collect();
 
     let algo = if s.genome_active { "genome-pow" } else { "kheavyhash" };
@@ -356,9 +333,9 @@ fn build_json(stats: &Arc<Mutex<DashStats>>, start: Instant) -> String {
         accepted: s.accepted,
         rejected: s.rejected,
         algo,
-        ver:    env!("CARGO_PKG_VERSION"),
+        ver: env!("CARGO_PKG_VERSION"),
         uptime: start.elapsed().as_secs(),
-        ar:     [s.accepted, s.rejected],
+        ar: [s.accepted, s.rejected],
     };
 
     serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_owned())

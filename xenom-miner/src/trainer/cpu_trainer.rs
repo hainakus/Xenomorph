@@ -5,7 +5,7 @@ use rand_chacha::ChaCha8Rng;
 use std::time::Instant;
 
 use crate::rpc::messages::TrainingBatch;
-use crate::trainer::{DeviceInfo, DeviceType, TrainingResult, Trainer};
+use crate::trainer::{DeviceInfo, DeviceType, Trainer, TrainingResult};
 
 const INPUT_DIM: usize = 64;
 const HIDDEN_DIM: usize = 32;
@@ -56,11 +56,7 @@ impl CpuTrainer {
         seed.copy_from_slice(&batch.base_checkpoint);
         let mut rng = ChaCha8Rng::from_seed(seed);
 
-        let indices = if batch.data_indices.is_empty() {
-            vec![batch.batch_id]
-        } else {
-            batch.data_indices.clone()
-        };
+        let indices = if batch.data_indices.is_empty() { vec![batch.batch_id] } else { batch.data_indices.clone() };
 
         let n = indices.len();
         let mut xs_data = Vec::with_capacity(n * INPUT_DIM);
@@ -72,22 +68,13 @@ impl CpuTrainer {
             ys_data.push(target);
         }
 
-        let xs = Tensor::from_vec(xs_data, (n, INPUT_DIM), &self.device)
-            .with_context(|| "Failed to create input tensor")?;
-        let ys = Tensor::from_vec(ys_data, (n, OUTPUT_DIM), &self.device)
-            .with_context(|| "Failed to create target tensor")?;
+        let xs = Tensor::from_vec(xs_data, (n, INPUT_DIM), &self.device).with_context(|| "Failed to create input tensor")?;
+        let ys = Tensor::from_vec(ys_data, (n, OUTPUT_DIM), &self.device).with_context(|| "Failed to create target tensor")?;
 
         Ok((xs, ys, rng))
     }
 
-    fn model_forward(
-        &self,
-        xs: &Tensor,
-        w1: &Tensor,
-        b1: &Tensor,
-        w2: &Tensor,
-        b2: &Tensor,
-    ) -> Result<Tensor> {
+    fn model_forward(&self, xs: &Tensor, w1: &Tensor, b1: &Tensor, w2: &Tensor, b2: &Tensor) -> Result<Tensor> {
         let hidden = xs.matmul(w1)?.broadcast_add(b1)?.relu()?;
         let logits = hidden.matmul(w2)?.broadcast_add(b2)?;
         Ok(logits)
@@ -174,11 +161,7 @@ impl Trainer for CpuTrainer {
     }
 
     fn device_info(&self) -> DeviceInfo {
-        DeviceInfo {
-            device_type: DeviceType::Cpu,
-            name: format!("Candle CPU ({} threads)", self.threads),
-            threads: self.threads,
-        }
+        DeviceInfo { device_type: DeviceType::Cpu, name: format!("Candle CPU ({} threads)", self.threads), threads: self.threads }
     }
 }
 

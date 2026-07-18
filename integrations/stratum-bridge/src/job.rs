@@ -21,7 +21,6 @@ pub struct Job {
     pub template: Arc<RpcRawBlock>,
 
     // Pre-computed stratum notify fields (all lowercase hex strings)
-
     /// `hash_override_nonce_time(header, 0, 0)` — the commitment the miner works against.
     pub pre_pow_hash_hex: String,
     /// Compact difficulty target from `header.bits`.
@@ -128,7 +127,9 @@ impl JobManager {
     /// `modify_coinbase_payload`, but we also reject any template where the fitness
     /// bytes look like corrupted data (valid genome fitness is at most 3000).
     fn coinbase_payload_valid(template: &RpcRawBlock) -> bool {
-        let Some(coinbase) = template.transactions.first() else { return false; };
+        let Some(coinbase) = template.transactions.first() else {
+            return false;
+        };
         let p = &coinbase.payload;
         // V1 minimum: blue_score(8) + subsidy(8) + spk_ver(2) + spk_len(1) = 19 bytes
         if p.len() < 19 {
@@ -148,9 +149,7 @@ impl JobManager {
             // genome_pow::compute_fitness returns values in [0, 3000].
             // Corrupted payloads (stripped fitness, version-string bytes in its place)
             // produce values like 892_415_536.  Reject anything implausibly large.
-            let fitness = u32::from_le_bytes(
-                p[19 + spk_len..19 + spk_len + 4].try_into().unwrap(),
-            );
+            let fitness = u32::from_le_bytes(p[19 + spk_len..19 + spk_len + 4].try_into().unwrap());
             if fitness > 100_000 {
                 return false;
             }

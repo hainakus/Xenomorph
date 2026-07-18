@@ -3,5 +3,5 @@
 pub mod miner;
 pub mod model_trainer;
 
-pub use miner::{TrainingMiner, TrainingMinerConfig, TrainingJobManager};
-pub use model_trainer::{ModelTrainer, TrainingBatch, TrainingResult, TrainingJobManager as AITrainingJobManager};
+pub use miner::{TrainingJobManager, TrainingMiner, TrainingMinerConfig};
+pub use model_trainer::{ModelTrainer, TrainingBatch, TrainingJobManager as AITrainingJobManager, TrainingResult};

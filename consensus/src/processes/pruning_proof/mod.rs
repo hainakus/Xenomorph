@@ -195,8 +195,7 @@ impl PruningProofManager {
             let loader_guard = self.genome_dataset_loader.lock();
             if let Some(loader) = loader_guard.as_ref() {
                 if let Some(packed) = loader.packed_dataset() {
-                    let pre_pow_hash =
-                        kaspa_consensus_core::hashing::header::hash_override_nonce_time(header, 0, 0);
+                    let pre_pow_hash = kaspa_consensus_core::hashing::header::hash_override_nonce_time(header, 0, 0);
                     kaspa_pow::genome_pow::genome_mix_hash(packed, &header.epoch_seed, header.nonce, &pre_pow_hash)
                 } else {
                     // Genome-activated block but packed dataset not yet loaded.
@@ -429,8 +428,8 @@ impl PruningProofManager {
 
     pub fn validate_pruning_point_proof(&self, proof: &PruningPointProof) -> PruningImportResult<()> {
         info!("PROOF {}", proof.len());
-        if proof.len() - 1 != self.max_block_level as usize  {
-            return Err(PruningImportError::ProofNotEnoughLevels(self.max_block_level as usize ));
+        if proof.len() - 1 != self.max_block_level as usize {
+            return Err(PruningImportError::ProofNotEnoughLevels(self.max_block_level as usize));
         }
         if proof[0].is_empty() {
             return Err(PruningImportError::PruningProofNotEnoughHeaders);

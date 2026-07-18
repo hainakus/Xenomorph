@@ -45,12 +45,7 @@ impl ZkProver {
     }
 
     /// Verify that a proof matches the provided public inputs and result.
-    pub fn verify_proof(
-        &self,
-        proof: &[u8],
-        result: &TrainingResult,
-        public_inputs: &PublicInputs,
-    ) -> bool {
+    pub fn verify_proof(&self, proof: &[u8], result: &TrainingResult, public_inputs: &PublicInputs) -> bool {
         if proof.len() != 1 + 32 + 32 {
             return false;
         }

@@ -308,10 +308,7 @@ async fn daemon_utxos_propagation_test() {
         assert!(uc.added.iter().all(|x| x.address.is_some() && *x.address.as_ref().unwrap() == user_address));
         assert_eq!(uc.removed.len() as u64, NUMBER_INPUTS);
         assert_eq!(uc.added.len() as u64, NUMBER_OUTPUTS);
-        assert_eq!(
-            uc.removed.iter().map(|x| x.utxo_entry.amount).sum::<u64>(),
-            total_input_amount
-        );
+        assert_eq!(uc.removed.iter().map(|x| x.utxo_entry.amount).sum::<u64>(), total_input_amount);
         assert_eq!(uc.added.iter().map(|x| x.utxo_entry.amount).sum::<u64>(), tx_amount);
     }
 

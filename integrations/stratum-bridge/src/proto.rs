@@ -50,14 +50,7 @@ impl StratumNotification {
     /// 4. epoch_seed      — 64-char hex (32 bytes): genome epoch seed
     /// 5. timestamp       — 16-char hex (8 bytes): template timestamp in milliseconds
     /// 6. clean_jobs      — bool: true → abandon previous jobs
-    pub fn notify(
-        job_id: &str,
-        pre_pow_hash: &str,
-        bits: &str,
-        epoch_seed: &str,
-        timestamp: &str,
-        clean_jobs: bool,
-    ) -> Self {
+    pub fn notify(job_id: &str, pre_pow_hash: &str, bits: &str, epoch_seed: &str, timestamp: &str, clean_jobs: bool) -> Self {
         Self {
             id: None,
             method: "mining.notify".into(),

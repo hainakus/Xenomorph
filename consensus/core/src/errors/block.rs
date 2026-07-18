@@ -8,8 +8,8 @@ use crate::{
 };
 use itertools::Itertools;
 use kaspa_hashes::Hash;
-use thiserror::Error;
 use kaspa_muhash::Hash as Blake2Hash;
+use thiserror::Error;
 
 #[derive(Clone, Debug)]
 pub struct VecDisplay<T: Display>(pub Vec<T>);

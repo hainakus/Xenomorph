@@ -52,7 +52,7 @@ use kaspa_database::create_temp_db;
 use kaspa_database::prelude::{CachePolicy, ConnBuilder};
 use kaspa_index_processor::service::IndexService;
 use kaspa_math::Uint256;
-use kaspa_muhash::{MuHash, Hash as Blake2Hash, EMPTY_MUHASH};
+use kaspa_muhash::{Hash as Blake2Hash, MuHash, EMPTY_MUHASH};
 use kaspa_notify::subscription::context::SubscriptionContext;
 use kaspa_txscript::caches::TxScriptCacheCounters;
 use kaspa_utxoindex::api::{UtxoIndexApi, UtxoIndexProxy};

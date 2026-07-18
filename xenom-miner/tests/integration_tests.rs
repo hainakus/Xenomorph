@@ -1,4 +1,4 @@
-use borsh::{BorshDeserialize, to_vec};
+use borsh::{to_vec, BorshDeserialize};
 use futures::{SinkExt, StreamExt};
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -8,10 +8,8 @@ use tokio_tungstenite::tungstenite::Message;
 
 use xenom_miner::block::BlockBuilder;
 use xenom_miner::prover::{PublicInputs, ZkProver};
+use xenom_miner::rpc::messages::{BlockHeader, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch, TrainingBlock, TrainingProof};
 use xenom_miner::rpc::XenomRpcClient;
-use xenom_miner::rpc::messages::{
-    BlockHeader, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch, TrainingBlock, TrainingProof,
-};
 use xenom_miner::trainer::{MockTrainer, Trainer};
 use xenom_miner::wallet::WalletManager;
 
@@ -31,24 +29,20 @@ async fn start_mock_server() -> u16 {
                 let envelope: RpcEnvelope = match RpcEnvelope::try_from_slice(&bytes) {
                     Ok(env) => env,
                     Err(_) => {
-                        let _ = ws.send(Message::Binary(
-                            to_vec(&RpcResponse::Error("bad request".to_string())).unwrap(),
-                        )).await;
+                        let _ = ws.send(Message::Binary(to_vec(&RpcResponse::Error("bad request".to_string())).unwrap())).await;
                         continue;
                     }
                 };
 
                 let response = match envelope.payload {
-                    RpcRequest::GetTrainingBatch { model_id } => {
-                        RpcResponse::TrainingBatch(Some(TrainingBatch {
-                            batch_id: 42,
-                            model_id,
-                            base_checkpoint: [1u8; 32],
-                            data_indices: vec![0, 1, 2, 3],
-                            target_improvement: 0.01,
-                            learning_rate: 0.01,
-                        }))
-                    }
+                    RpcRequest::GetTrainingBatch { model_id } => RpcResponse::TrainingBatch(Some(TrainingBatch {
+                        batch_id: 42,
+                        model_id,
+                        base_checkpoint: [1u8; 32],
+                        data_indices: vec![0, 1, 2, 3],
+                        target_improvement: 0.01,
+                        learning_rate: 0.01,
+                    })),
                     RpcRequest::SubmitBlock(_) => RpcResponse::BlockHash([7u8; 32]),
                     RpcRequest::Heartbeat => RpcResponse::Pong,
                     RpcRequest::GetBalance { .. } => RpcResponse::Balance(0),
@@ -74,16 +68,9 @@ async fn test_rpc_client_against_mock_server() {
     let url = format!("ws://127.0.0.1:{}", port);
 
     let mut client = XenomRpcClient::new(url);
-    timeout(TEST_TIMEOUT, client.connect())
-        .await
-        .expect("client connect timed out")
-        .expect("client connect failed");
+    timeout(TEST_TIMEOUT, client.connect()).await.expect("client connect timed out").expect("client connect failed");
 
-    let batch = client
-        .get_training_batch("dnabert2")
-        .await
-        .expect("get_training_batch failed")
-        .expect("server returned no batch");
+    let batch = client.get_training_batch("dnabert2").await.expect("get_training_batch failed").expect("server returned no batch");
     assert_eq!(batch.batch_id, 42);
     assert_eq!(batch.model_id, "dnabert2");
 
@@ -110,10 +97,7 @@ async fn test_rpc_client_against_mock_server() {
         signature: [0u8; 64],
     };
 
-    let hash = timeout(TEST_TIMEOUT, client.submit_block(block))
-        .await
-        .expect("submit_block timed out")
-        .expect("submit_block failed");
+    let hash = timeout(TEST_TIMEOUT, client.submit_block(block)).await.expect("submit_block timed out").expect("submit_block failed");
     assert_eq!(hash, [7u8; 32]);
 }
 

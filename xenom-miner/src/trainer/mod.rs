@@ -1,8 +1,8 @@
 pub mod cpu_trainer;
 pub mod mock_trainer;
 
-use anyhow::Result;
 use crate::rpc::messages::TrainingBatch;
+use anyhow::Result;
 
 pub use cpu_trainer::CpuTrainer;
 pub use mock_trainer::MockTrainer;

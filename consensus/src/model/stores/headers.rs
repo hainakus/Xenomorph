@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use kaspa_consensus_core::{header::Header, BlockHasher, BlockLevel};
 use kaspa_consensus_core::BlueWorkType;
+use kaspa_consensus_core::{header::Header, BlockHasher, BlockLevel};
 use kaspa_database::prelude::{BatchDbWriter, CachedDbAccess, DbKey};
 use kaspa_database::prelude::{CachePolicy, DB};
 use kaspa_database::prelude::{StoreError, StoreResult};
@@ -16,24 +16,24 @@ use serde::{Deserialize, Serialize};
 /// Field order must exactly match the old `Header` struct for bincode to work.
 #[derive(Deserialize)]
 struct HeaderV0 {
-    hash:                    Hash,
-    version:                 u16,
-    parents_by_level:        Vec<Vec<Hash>>,
-    hash_merkle_root:        Hash,
+    hash: Hash,
+    version: u16,
+    parents_by_level: Vec<Vec<Hash>>,
+    hash_merkle_root: Hash,
     accepted_id_merkle_root: Hash,
-    utxo_commitment:         Blake2Hash,
-    timestamp:               u64,
-    bits:                    u32,
-    nonce:                   u64,
-    daa_score:               u64,
-    blue_work:               BlueWorkType,
-    blue_score:              u64,
-    pruning_point:           Hash,
+    utxo_commitment: Blake2Hash,
+    timestamp: u64,
+    bits: u32,
+    nonce: u64,
+    daa_score: u64,
+    blue_work: BlueWorkType,
+    blue_score: u64,
+    pruning_point: Hash,
 }
 
 #[derive(Deserialize)]
 struct HeaderWithBlockLevelV0 {
-    header:      HeaderV0,
+    header: HeaderV0,
     block_level: BlockLevel,
 }
 
@@ -195,20 +195,20 @@ impl DbHeadersStore {
         let old: HeaderWithBlockLevelV0 = bincode::deserialize(&slice)?;
         let v0 = old.header;
         let header = Arc::new(Header {
-            hash:                    v0.hash,
-            version:                 v0.version,
-            parents_by_level:        v0.parents_by_level,
-            hash_merkle_root:        v0.hash_merkle_root,
+            hash: v0.hash,
+            version: v0.version,
+            parents_by_level: v0.parents_by_level,
+            hash_merkle_root: v0.hash_merkle_root,
             accepted_id_merkle_root: v0.accepted_id_merkle_root,
-            utxo_commitment:         v0.utxo_commitment,
-            timestamp:               v0.timestamp,
-            bits:                    v0.bits,
-            nonce:                   v0.nonce,
-            daa_score:               v0.daa_score,
-            blue_work:               v0.blue_work,
-            blue_score:              v0.blue_score,
-            epoch_seed:              Hash::default(),
-            pruning_point:           v0.pruning_point,
+            utxo_commitment: v0.utxo_commitment,
+            timestamp: v0.timestamp,
+            bits: v0.bits,
+            nonce: v0.nonce,
+            daa_score: v0.daa_score,
+            blue_work: v0.blue_work,
+            blue_score: v0.blue_score,
+            epoch_seed: Hash::default(),
+            pruning_point: v0.pruning_point,
         });
         let hwl = HeaderWithBlockLevel { header, block_level: old.block_level };
         // Lazy migration: rewrite in V1 format so this path is hit only once.

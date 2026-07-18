@@ -25,30 +25,30 @@ const LOG_DISPLAY: usize = 25;
 // ── Shared state ──────────────────────────────────────────────────────────────
 
 pub struct GpuStats {
-    pub id:       usize,
-    pub name:     String,
-    pub hashrate: f64,   // MH/s
+    pub id: usize,
+    pub name: String,
+    pub hashrate: f64, // MH/s
     pub accepted: u64,
     pub rejected: u64,
-    pub temp:     u32,   // °C  (0 = unknown)
-    pub fan:      u32,   // %   (0 = unknown)
-    pub power:    f64,   // W   (0 = unknown)
+    pub temp: u32,  // °C  (0 = unknown)
+    pub fan: u32,   // %   (0 = unknown)
+    pub power: f64, // W   (0 = unknown)
 }
 
 pub struct DashStats {
-    pub rpcserver:     String,
-    pub connected:     bool,
-    pub mode:          String,
-    pub daa_score:     u64,
-    pub bits:          u32,
+    pub rpcserver: String,
+    pub connected: bool,
+    pub mode: String,
+    pub daa_score: u64,
+    pub bits: u32,
     pub genome_active: bool,
-    pub total_mhs:     f64,
-    pub accepted:      u64,
-    pub rejected:      u64,
-    pub gpus:          Vec<GpuStats>,
-    pub num_cpus:      usize,
-    pub log:           VecDeque<String>,
-    start:             Instant,
+    pub total_mhs: f64,
+    pub accepted: u64,
+    pub rejected: u64,
+    pub gpus: Vec<GpuStats>,
+    pub num_cpus: usize,
+    pub log: VecDeque<String>,
+    start: Instant,
 }
 
 impl DashStats {
@@ -72,10 +72,7 @@ impl DashStats {
 
     pub fn push_log(&mut self, msg: impl Into<String>) {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
         let h = (secs / 3600) % 24;
         let m = (secs / 60) % 60;
         let s = secs % 60;
@@ -105,10 +102,12 @@ pub fn run_tui(stats: Arc<Mutex<DashStats>>) {
     if execute!(
         stdout,
         EnterAlternateScreen,
-        EnableMouseCapture,         // capture scroll so it can't show old content
-        Clear(ClearType::Purge),    // purge scrollback buffer
+        EnableMouseCapture,      // capture scroll so it can't show old content
+        Clear(ClearType::Purge), // purge scrollback buffer
         Clear(ClearType::All),
-    ).is_err() {
+    )
+    .is_err()
+    {
         let _ = disable_raw_mode();
         return;
     }
@@ -133,9 +132,10 @@ pub fn run_tui(stats: Arc<Mutex<DashStats>>) {
                 Ok(Event::Key(k)) => {
                     let quit = k.code == KeyCode::Char('q')
                         || k.code == KeyCode::Char('Q')
-                        || (k.code == KeyCode::Char('c')
-                            && k.modifiers.contains(KeyModifiers::CONTROL));
-                    if quit { break; }
+                        || (k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL));
+                    if quit {
+                        break;
+                    }
                 }
                 // Swallow all mouse events (scroll, click) — keep display locked
                 Ok(Event::Mouse(m)) => {
@@ -156,7 +156,7 @@ pub fn run_tui(stats: Arc<Mutex<DashStats>>) {
 
 fn draw(f: &mut Frame, s: &DashStats) {
     let worker_rows = if s.num_cpus > 0 { 1 } else { s.gpus.len().max(1) };
-    let workers_h   = (worker_rows + 4) as u16; // 2 borders + 1 header + data rows
+    let workers_h = (worker_rows + 4) as u16; // 2 borders + 1 header + data rows
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -177,11 +177,7 @@ fn draw(f: &mut Frame, s: &DashStats) {
 // ── Header bar ───────────────────────────────────────────────────────────────
 
 fn render_header(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
-    let conn_style = if s.connected {
-        Style::default().fg(Color::Green)
-    } else {
-        Style::default().fg(Color::Red)
-    };
+    let conn_style = if s.connected { Style::default().fg(Color::Green) } else { Style::default().fg(Color::Red) };
     let conn_label = if s.connected { "● Connected" } else { "○ Disconnected" };
     let mode_color = if s.genome_active { Color::Cyan } else { Color::Yellow };
 
@@ -191,10 +187,7 @@ fn render_header(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
         Span::raw("  "),
         Span::styled(conn_label, conn_style),
         Span::raw("  │  DAA: "),
-        Span::styled(
-            format!("{}", s.daa_score),
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(format!("{}", s.daa_score), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
         Span::raw("  │  Mode: "),
         Span::styled(s.mode.clone(), Style::default().fg(mode_color)),
         Span::raw("  │  Up: "),
@@ -203,12 +196,7 @@ fn render_header(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
     ]);
 
     let block = Block::default()
-        .title(Span::styled(
-            " ⛏  XENOM MINER ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ))
+        .title(Span::styled(" ⛏  XENOM MINER ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 
@@ -219,16 +207,11 @@ fn render_header(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
 
 fn render_perf(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
     let diff = format_difficulty(s.bits);
-    let mhs  = fmt_mhs(s.total_mhs);
+    let mhs = fmt_mhs(s.total_mhs);
 
     let line1 = Line::from(vec![
         Span::raw("  Hashrate: "),
-        Span::styled(
-            mhs,
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(mhs, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
         Span::raw("   Difficulty: "),
         Span::styled(diff, Style::default().fg(Color::Yellow)),
     ]);
@@ -236,20 +219,12 @@ fn render_perf(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
     let rej_color = if s.rejected > 0 { Color::Red } else { Color::DarkGray };
     let line2 = Line::from(vec![
         Span::raw("  Accepted: "),
-        Span::styled(
-            s.accepted.to_string(),
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(s.accepted.to_string(), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
         Span::raw("   Rejected: "),
         Span::styled(s.rejected.to_string(), Style::default().fg(rej_color)),
     ]);
 
-    let block = Block::default()
-        .title(" Performance ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Blue));
+    let block = Block::default().title(" Performance ").borders(Borders::ALL).border_style(Style::default().fg(Color::Blue));
 
     f.render_widget(Paragraph::new(vec![line1, line2]).block(block), area);
 }
@@ -257,15 +232,10 @@ fn render_perf(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
 // ── Workers table ────────────────────────────────────────────────────────────
 
 fn render_workers(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
-    let title = if s.num_cpus > 0 {
-        format!(" CPU Workers ({} threads) ", s.num_cpus)
-    } else {
-        format!(" GPU Workers ({}) ", s.gpus.len())
-    };
+    let title =
+        if s.num_cpus > 0 { format!(" CPU Workers ({} threads) ", s.num_cpus) } else { format!(" GPU Workers ({}) ", s.gpus.len()) };
 
-    let hdr_style = Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD);
+    let hdr_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 
     let header = Row::new(vec![
         Cell::from("#").style(hdr_style),
@@ -304,19 +274,15 @@ fn render_workers(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
         s.gpus
             .iter()
             .map(|g| {
-                let rej_sty = if g.rejected > 0 {
-                    Style::default().fg(Color::Red)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                };
-                let temp_str  = if g.temp  > 0 { format!("{} °C", g.temp)  } else { "—".into() };
-                let fan_str   = if g.fan   > 0 { format!("{}%",   g.fan)   } else { "—".into() };
+                let rej_sty = if g.rejected > 0 { Style::default().fg(Color::Red) } else { Style::default().fg(Color::DarkGray) };
+                let temp_str = if g.temp > 0 { format!("{} °C", g.temp) } else { "—".into() };
+                let fan_str = if g.fan > 0 { format!("{}%", g.fan) } else { "—".into() };
                 let power_str = if g.power > 0.0 { format!("{:.0}W", g.power) } else { "—".into() };
                 let temp_color = match g.temp {
-                    0        => Color::DarkGray,
-                    1..=69   => Color::Green,
-                    70..=84  => Color::Yellow,
-                    _        => Color::Red,
+                    0 => Color::DarkGray,
+                    1..=69 => Color::Green,
+                    70..=84 => Color::Yellow,
+                    _ => Color::Red,
                 };
                 Row::new(vec![
                     Cell::from(g.id.to_string()),
@@ -345,12 +311,7 @@ fn render_workers(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
 
     let table = Table::new(rows, widths)
         .header(header.bottom_margin(0))
-        .block(
-            Block::default()
-                .title(title)
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Blue)),
-        )
+        .block(Block::default().title(title).borders(Borders::ALL).border_style(Style::default().fg(Color::Blue)))
         .highlight_style(Style::default().add_modifier(Modifier::BOLD));
 
     f.render_stateful_widget(table, area, &mut TableState::default());
@@ -370,11 +331,7 @@ fn render_log(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
         .map(|l| {
             let style = if l.contains("Success") || l.contains("PASS") {
                 Style::default().fg(Color::Green)
-            } else if l.contains("Reject")
-                || l.contains("false-positive")
-                || l.contains("WARN")
-                || l.contains("error")
-            {
+            } else if l.contains("Reject") || l.contains("false-positive") || l.contains("WARN") || l.contains("error") {
                 Style::default().fg(Color::Red)
             } else if l.contains("template") || l.contains("daa=") {
                 Style::default().fg(Color::Cyan)
@@ -385,10 +342,7 @@ fn render_log(f: &mut Frame, area: ratatui::layout::Rect, s: &DashStats) {
         })
         .collect();
 
-    let block = Block::default()
-        .title(" Log   [q] quit ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Blue));
+    let block = Block::default().title(" Log   [q] quit ").borders(Borders::ALL).border_style(Style::default().fg(Color::Blue));
 
     f.render_widget(Paragraph::new(lines).block(block), area);
 }

@@ -16,18 +16,18 @@ use crate::tui::DashStats;
 
 /// Work unit received from the stratum bridge via `mining.notify`.
 pub struct StratumJob {
-    pub job_id:      String,
+    pub job_id: String,
     pub pre_pow_hash: Hash,
-    pub bits:        u32,
-    pub epoch_seed:  Hash,
-    pub timestamp:   u64,
-    pub clean_jobs:  bool,
+    pub bits: u32,
+    pub epoch_seed: Hash,
+    pub timestamp: u64,
+    pub clean_jobs: bool,
     pub extranonce1: u32,
 }
 
 /// Solution to be submitted to the stratum bridge via `mining.submit`.
 pub struct StratumSolution {
-    pub job_id:      String,
+    pub job_id: String,
     pub extranonce2: u32,
 }
 
@@ -35,18 +35,15 @@ pub struct StratumSolution {
 
 pub struct StratumClient {
     /// `host:port` (scheme stripped)
-    pub addr:     String,
-    pub worker:   String,
+    pub addr: String,
+    pub worker: String,
     pub password: String,
 }
 
 impl StratumClient {
     /// Build from a URL like `stratum+tcp://host:1444` or plain `host:1444`.
     pub fn new(url: &str, worker: &str, password: &str) -> Self {
-        let addr = url
-            .trim_start_matches("stratum+tcp://")
-            .trim_start_matches("stratum://")
-            .to_owned();
+        let addr = url.trim_start_matches("stratum+tcp://").trim_start_matches("stratum://").to_owned();
         Self { addr, worker: worker.to_owned(), password: password.to_owned() }
     }
 
@@ -56,9 +53,9 @@ impl StratumClient {
     /// * Reads solutions to submit from `sol_rx`
     pub async fn run(
         self,
-        job_tx:  mpsc::Sender<StratumJob>,
-        sol_rx:  mpsc::Receiver<StratumSolution>,
-        dash:    Arc<std::sync::Mutex<DashStats>>,
+        job_tx: mpsc::Sender<StratumJob>,
+        sol_rx: mpsc::Receiver<StratumSolution>,
+        dash: Arc<std::sync::Mutex<DashStats>>,
     ) {
         let mut sol_rx = sol_rx;
         loop {
@@ -75,9 +72,9 @@ impl StratumClient {
 
     async fn connect_once(
         &self,
-        job_tx:  &mpsc::Sender<StratumJob>,
-        sol_rx:  &mut mpsc::Receiver<StratumSolution>,
-        dash:    &Arc<std::sync::Mutex<DashStats>>,
+        job_tx: &mpsc::Sender<StratumJob>,
+        sol_rx: &mut mpsc::Receiver<StratumSolution>,
+        dash: &Arc<std::sync::Mutex<DashStats>>,
     ) -> anyhow::Result<()> {
         info!("Stratum: connecting to {}", self.addr);
         let stream = TcpStream::connect(&self.addr).await?;
@@ -229,17 +226,17 @@ fn parse_notify(msg: &serde_json::Value, extranonce1: u32) -> Option<StratumJob>
     if params.len() < 5 {
         return None;
     }
-    let job_id    = params[0].as_str()?.to_owned();
-    let pph_hex   = params[1].as_str()?;
-    let bits_hex  = params[2].as_str()?;
+    let job_id = params[0].as_str()?.to_owned();
+    let pph_hex = params[1].as_str()?;
+    let bits_hex = params[2].as_str()?;
     let eseed_hex = params[3].as_str()?;
-    let ts_hex    = params[4].as_str()?;
-    let clean     = params.get(5).and_then(|v| v.as_bool()).unwrap_or(false);
+    let ts_hex = params[4].as_str()?;
+    let clean = params.get(5).and_then(|v| v.as_bool()).unwrap_or(false);
 
     let pre_pow_hash = hex_to_hash32(pph_hex)?;
-    let bits         = u32::from_str_radix(bits_hex, 16).ok()?;
-    let epoch_seed   = hex_to_hash32(eseed_hex)?;
-    let timestamp    = u64::from_str_radix(ts_hex, 16).ok()?;
+    let bits = u32::from_str_radix(bits_hex, 16).ok()?;
+    let epoch_seed = hex_to_hash32(eseed_hex)?;
+    let timestamp = u64::from_str_radix(ts_hex, 16).ok()?;
 
     Some(StratumJob { job_id, pre_pow_hash, bits, epoch_seed, timestamp, clean_jobs: clean, extranonce1 })
 }

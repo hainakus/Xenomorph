@@ -41,17 +41,12 @@ impl MinerConfig {
         let path = config_path(data_dir);
 
         if path.exists() {
-            let bytes = std::fs::read(&path)
-                .with_context(|| format!("Failed to read config at {:?}", path))?;
-            let config: MinerConfig = serde_json::from_slice(&bytes)
-                .with_context(|| "Failed to parse config as JSON")?;
+            let bytes = std::fs::read(&path).with_context(|| format!("Failed to read config at {:?}", path))?;
+            let config: MinerConfig = serde_json::from_slice(&bytes).with_context(|| "Failed to parse config as JSON")?;
             info!("Loaded miner config from {:?}", path);
             Ok(config)
         } else {
-            let config = MinerConfig {
-                data_dir: data_dir.to_path_buf(),
-                ..MinerConfig::default()
-            };
+            let config = MinerConfig { data_dir: data_dir.to_path_buf(), ..MinerConfig::default() };
             config.save(data_dir)?;
             info!("Created new miner config at {:?}", path);
             Ok(config)
@@ -60,22 +55,17 @@ impl MinerConfig {
 
     /// Save configuration to disk.
     pub fn save(&self, data_dir: &Path) -> Result<()> {
-        std::fs::create_dir_all(data_dir)
-            .with_context(|| format!("Failed to create data directory {:?}", data_dir))?;
+        std::fs::create_dir_all(data_dir).with_context(|| format!("Failed to create data directory {:?}", data_dir))?;
         let path = config_path(data_dir);
-        let bytes = serde_json::to_vec_pretty(self)
-            .with_context(|| "Failed to serialize config")?;
-        std::fs::write(&path, bytes)
-            .with_context(|| format!("Failed to write config to {:?}", path))?;
+        let bytes = serde_json::to_vec_pretty(self).with_context(|| "Failed to serialize config")?;
+        std::fs::write(&path, bytes).with_context(|| format!("Failed to write config to {:?}", path))?;
         Ok(())
     }
 }
 
 /// Return the default data directory in the user's home folder.
 pub fn default_data_dir() -> PathBuf {
-    dirs::home_dir()
-        .map(|h| h.join(DEFAULT_DATA_DIR_NAME))
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_DATA_DIR_NAME))
+    dirs::home_dir().map(|h| h.join(DEFAULT_DATA_DIR_NAME)).unwrap_or_else(|| PathBuf::from(DEFAULT_DATA_DIR_NAME))
 }
 
 fn config_path(data_dir: &Path) -> PathBuf {

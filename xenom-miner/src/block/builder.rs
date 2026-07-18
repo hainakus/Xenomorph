@@ -14,11 +14,7 @@ pub struct BlockBuilder {
 
 impl BlockBuilder {
     pub fn new(miner_address: String) -> Self {
-        Self {
-            prev_block_hash: [0u8; 32],
-            block_number: 0,
-            miner_address,
-        }
+        Self { prev_block_hash: [0u8; 32], block_number: 0, miner_address }
     }
 
     /// Update the chain tip used for the next block.
@@ -28,12 +24,7 @@ impl BlockBuilder {
     }
 
     /// Build a `TrainingBlock` from a completed training result.
-    pub fn build_block(
-        &mut self,
-        result: &TrainingResult,
-        zk_proof: Vec<u8>,
-        difficulty: DifficultyTarget,
-    ) -> Result<TrainingBlock> {
+    pub fn build_block(&mut self, result: &TrainingResult, zk_proof: Vec<u8>, difficulty: DifficultyTarget) -> Result<TrainingBlock> {
         let training_proof = TrainingProof {
             base_checkpoint: result.base_checkpoint,
             loss_before: result.loss_before,
@@ -74,13 +65,7 @@ impl BlockBuilder {
             }
         }
 
-        Ok(TrainingBlock {
-            header,
-            training_proof,
-            miner_address: self.miner_address.clone(),
-            timestamp,
-            signature: [0u8; 64],
-        })
+        Ok(TrainingBlock { header, training_proof, miner_address: self.miner_address.clone(), timestamp, signature: [0u8; 64] })
     }
 
     pub fn current_block_number(&self) -> u64 {
@@ -116,7 +101,7 @@ fn hash_meets_difficulty(hash: &BlockHash, difficulty: &DifficultyTarget) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trainer::{Trainer, mock_trainer::MockTrainer};
+    use crate::trainer::{mock_trainer::MockTrainer, Trainer};
 
     #[test]
     fn test_block_builder() {

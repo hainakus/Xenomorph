@@ -45,33 +45,9 @@ pub struct ProposalSummary {
     pub executed: bool,
 }
 
-type ProposalRaw = (
-    String,
-    String,
-    String,
-    H256,
-    U256,
-    U256,
-    U256,
-    U256,
-    U256,
-    U256,
-    U256,
-    bool,
-);
+type ProposalRaw = (String, String, String, H256, U256, U256, U256, U256, U256, U256, U256, bool);
 
-type ModelRaw = (
-    String,
-    String,
-    String,
-    H256,
-    U256,
-    U256,
-    U256,
-    U256,
-    U256,
-    bool,
-);
+type ModelRaw = (String, String, String, H256, U256, U256, U256, U256, U256, bool);
 
 pub struct GovernanceClient {
     read_contract: Contract<Provider<Http>>,
@@ -79,42 +55,25 @@ pub struct GovernanceClient {
 }
 
 impl GovernanceClient {
-    pub fn new(
-        rpc_url: &str,
-        contract_address: Address,
-        operator_key_hex: Option<&str>,
-    ) -> Result<Self> {
-        let provider = Provider::<Http>::try_from(rpc_url)
-            .context("Invalid Ethereum RPC URL")?;
+    pub fn new(rpc_url: &str, contract_address: Address, operator_key_hex: Option<&str>) -> Result<Self> {
+        let provider = Provider::<Http>::try_from(rpc_url).context("Invalid Ethereum RPC URL")?;
 
         let abi = ethers::abi::Abi::load(&include_bytes!("../../abi/ModelGovernance.json")[..])
             .context("Failed to load ModelGovernance ABI")?;
         let base = BaseContract::from(abi);
 
-        let read_contract = Contract::new(
-            contract_address,
-            base.clone(),
-            Arc::new(provider.clone()),
-        );
+        let read_contract = Contract::new(contract_address, base.clone(), Arc::new(provider.clone()));
 
         let write_contract = operator_key_hex
             .and_then(decode_key)
             .map(|key| {
-                let wallet = LocalWallet::from_bytes(&key)
-                    .context("Invalid operator private key")?;
+                let wallet = LocalWallet::from_bytes(&key).context("Invalid operator private key")?;
                 let client = Arc::new(SignerMiddleware::new(provider.clone(), wallet));
-                Ok::<_, anyhow::Error>(Contract::new(
-                    contract_address,
-                    base.clone(),
-                    client,
-                ))
+                Ok::<_, anyhow::Error>(Contract::new(contract_address, base.clone(), client))
             })
             .transpose()?;
 
-        Ok(Self {
-            read_contract,
-            write_contract,
-        })
+        Ok(Self { read_contract, write_contract })
     }
 
     pub async fn list_active_models(&self) -> Result<Vec<ActiveModel>> {
@@ -129,11 +88,7 @@ impl GovernanceClient {
     }
 
     pub async fn get_model_data(&self, model_id: &str) -> Result<Option<ActiveModel>> {
-        let raw: ModelRaw = self
-            .read_contract
-            .method::<String, ModelRaw>("getModelData", model_id.to_string())?
-            .call()
-            .await?;
+        let raw: ModelRaw = self.read_contract.method::<String, ModelRaw>("getModelData", model_id.to_string())?.call().await?;
 
         if raw.8 == U256::zero() {
             // deprecationBlock == 0 but activationBlock can be 0 too before activation;
@@ -145,20 +100,11 @@ impl GovernanceClient {
     }
 
     pub async fn list_proposals(&self, active_only: bool) -> Result<Vec<ProposalSummary>> {
-        let count: U256 = self
-            .read_contract
-            .method::<(), U256>("proposalCount", ())?
-            .call()
-            .await?;
+        let count: U256 = self.read_contract.method::<(), U256>("proposalCount", ())?.call().await?;
 
         let mut proposals = Vec::new();
         for id in 0..count.as_u64() {
-            if let Ok(raw) = self
-                .read_contract
-                .method::<U256, ProposalRaw>("proposals", U256::from(id))?
-                .call()
-                .await
-            {
+            if let Ok(raw) = self.read_contract.method::<U256, ProposalRaw>("proposals", U256::from(id))?.call().await {
                 if !active_only || !raw.11 {
                     proposals.push(decode_proposal(id, raw));
                 }
@@ -169,40 +115,19 @@ impl GovernanceClient {
     }
 
     pub async fn get_proposal(&self, proposal_id: u64) -> Result<ProposalSummary> {
-        let raw: ProposalRaw = self
-            .read_contract
-            .method::<U256, ProposalRaw>("proposals", U256::from(proposal_id))?
-            .call()
-            .await?;
+        let raw: ProposalRaw = self.read_contract.method::<U256, ProposalRaw>("proposals", U256::from(proposal_id))?.call().await?;
 
         Ok(decode_proposal(proposal_id, raw))
     }
 
-    pub async fn propose_model(
-        &self,
-        req: ProposeModelRequest,
-    ) -> Result<(H256, u64)> {
-        let contract = self
-            .write_contract
-            .as_ref()
-            .context("Gateway not configured with GOVERNANCE_OPERATOR_KEY")?;
+    pub async fn propose_model(&self, req: ProposeModelRequest) -> Result<(H256, u64)> {
+        let contract = self.write_contract.as_ref().context("Gateway not configured with GOVERNANCE_OPERATOR_KEY")?;
 
-        let count_before: U256 = contract
-            .method::<(), U256>("proposalCount", ())?
-            .call()
-            .await?;
+        let count_before: U256 = contract.method::<(), U256>("proposalCount", ())?.call().await?;
 
         let genesis = H256::from(req.genesis_checkpoint);
 
-        let call = contract.method::<(
-            String,
-            String,
-            String,
-            H256,
-            U256,
-            U256,
-            U256,
-        ), ()>(
+        let call = contract.method::<(String, String, String, H256, U256, U256, U256), ()>(
             "proposeModel",
             (
                 req.model_id,
@@ -216,10 +141,8 @@ impl GovernanceClient {
         )?;
 
         let pending = call.send().await?;
-        let receipt = pending
-            .await
-            .context("proposeModel transaction failed")?
-            .context("proposeModel transaction dropped / no receipt")?;
+        let receipt =
+            pending.await.context("proposeModel transaction failed")?.context("proposeModel transaction dropped / no receipt")?;
         let tx_hash = receipt.transaction_hash;
         let proposal_id = count_before.as_u64();
 
@@ -227,31 +150,20 @@ impl GovernanceClient {
     }
 
     pub async fn vote(&self, proposal_id: u64, support: bool) -> Result<H256> {
-        let contract = self
-            .write_contract
-            .as_ref()
-            .context("Gateway not configured with GOVERNANCE_OPERATOR_KEY")?;
+        let contract = self.write_contract.as_ref().context("Gateway not configured with GOVERNANCE_OPERATOR_KEY")?;
 
-        let call = contract
-            .method::<(U256, bool), ()>("vote", (U256::from(proposal_id), support))?;
+        let call = contract.method::<(U256, bool), ()>("vote", (U256::from(proposal_id), support))?;
 
         let pending = call.send().await?;
-        let receipt = pending
-            .await
-            .context("vote transaction failed")?
-            .context("vote transaction dropped / no receipt")?;
+        let receipt = pending.await.context("vote transaction failed")?.context("vote transaction dropped / no receipt")?;
 
         Ok(receipt.transaction_hash)
     }
 
     pub async fn execute(&self, proposal_id: u64) -> Result<H256> {
-        let contract = self
-            .write_contract
-            .as_ref()
-            .context("Gateway not configured with GOVERNANCE_OPERATOR_KEY")?;
+        let contract = self.write_contract.as_ref().context("Gateway not configured with GOVERNANCE_OPERATOR_KEY")?;
 
-        let call = contract
-            .method::<U256, ()>("executeProposal", U256::from(proposal_id))?;
+        let call = contract.method::<U256, ()>("executeProposal", U256::from(proposal_id))?;
 
         let pending = call.send().await?;
         let receipt = pending

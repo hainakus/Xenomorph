@@ -26,7 +26,7 @@ const GENOME_FRAGMENT_SIZE: u32 = 1_048_576;
 
 use crate::{
     accounting::Accounting,
-    api::{ApiState, MinerApiEntry, update_miner_hashrate},
+    api::{update_miner_hashrate, ApiState, MinerApiEntry},
     db::Db,
     job::{Job, JobManager},
     proto::{StratumNotification, StratumRequest, StratumResponse},
@@ -42,10 +42,12 @@ const MAX_DIFFICULTY_TARGET_F64: f64 = 5.8e76_f64;
 /// `difficulty = MAX_DIFFICULTY_TARGET / target`  where
 /// `target = (bits & 0xFFFFFF) * 2^(8 * ((bits >> 24) - 3))`.
 fn bits_to_diff(bits: u32) -> f64 {
-    let exponent  = (bits >> 24) as i32;
-    let mantissa  = (bits & 0x00FF_FFFF) as f64;
-    let target    = mantissa * 2.0_f64.powi(8 * (exponent - 3));
-    if target <= 0.0 { return 1.0; }
+    let exponent = (bits >> 24) as i32;
+    let mantissa = (bits & 0x00FF_FFFF) as f64;
+    let target = mantissa * 2.0_f64.powi(8 * (exponent - 3));
+    if target <= 0.0 {
+        return 1.0;
+    }
     MAX_DIFFICULTY_TARGET_F64 / target
 }
 
@@ -77,11 +79,10 @@ enum ShareError {
 impl std::fmt::Display for ShareError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::BadFormat(s)             => write!(f, "bad format: {s}"),
-            Self::Stale(s)                 => write!(f, "stale job: {s}"),
-            Self::Duplicate                => write!(f, "duplicate share"),
-            Self::LowDifficulty{hash,target} =>
-                write!(f, "low difficulty  hash={hash:.2e} target={target:.2e}"),
+            Self::BadFormat(s) => write!(f, "bad format: {s}"),
+            Self::Stale(s) => write!(f, "stale job: {s}"),
+            Self::Duplicate => write!(f, "duplicate share"),
+            Self::LowDifficulty { hash, target } => write!(f, "low difficulty  hash={hash:.2e} target={target:.2e}"),
         }
     }
 }
@@ -89,14 +90,14 @@ impl std::fmt::Display for ShareError {
 // ── Public entry point ────────────────────────────────────────────────────────
 
 pub async fn run_server(
-    listen_addr:   SocketAddr,
-    job_rx:        watch::Receiver<Option<Arc<Job>>>,
-    job_mgr:       Arc<RwLock<JobManager>>,
-    rpc:           Arc<GrpcClient>,
-    vardiff_cfg:   VarDiffConfig,
-    accounting:    Arc<Mutex<Accounting>>,
-    api_state:     Option<ApiState>,
-    db:            Option<Arc<Db>>,
+    listen_addr: SocketAddr,
+    job_rx: watch::Receiver<Option<Arc<Job>>>,
+    job_mgr: Arc<RwLock<JobManager>>,
+    rpc: Arc<GrpcClient>,
+    vardiff_cfg: VarDiffConfig,
+    accounting: Arc<Mutex<Accounting>>,
+    api_state: Option<ApiState>,
+    db: Option<Arc<Db>>,
     packed_genome: Option<Arc<Vec<u8>>>,
 ) -> Result<()> {
     let listener = TcpListener::bind(listen_addr).await.context("bind stratum port")?;
@@ -111,13 +112,13 @@ pub async fn run_server(
         let (stream, peer) = listener.accept().await.context("accept")?;
         info!("Miner connected: {peer}");
 
-        let jrx    = job_rx.clone();
-        let jmgr   = job_mgr.clone();
-        let rpc2   = rpc.clone();
-        let vdcfg  = vardiff_cfg.clone();
-        let acct   = accounting.clone();
-        let api    = api_state.clone();
-        let db2    = db.clone();
+        let jrx = job_rx.clone();
+        let jmgr = job_mgr.clone();
+        let rpc2 = rpc.clone();
+        let vdcfg = vardiff_cfg.clone();
+        let acct = accounting.clone();
+        let api = api_state.clone();
+        let db2 = db.clone();
         let genome = packed_genome.clone();
 
         tokio::spawn(async move {
@@ -133,31 +134,31 @@ pub async fn run_server(
 // ── Per-miner connection ──────────────────────────────────────────────────────
 
 async fn handle_miner(
-    stream:        TcpStream,
-    peer:          SocketAddr,
-    mut job_rx:    watch::Receiver<Option<Arc<Job>>>,
-    job_mgr:       Arc<RwLock<JobManager>>,
-    rpc:           Arc<GrpcClient>,
-    vardiff_cfg:   VarDiffConfig,
-    accounting:    Arc<Mutex<Accounting>>,
-    api_state:     Option<ApiState>,
-    db:            Option<Arc<Db>>,
+    stream: TcpStream,
+    peer: SocketAddr,
+    mut job_rx: watch::Receiver<Option<Arc<Job>>>,
+    job_mgr: Arc<RwLock<JobManager>>,
+    rpc: Arc<GrpcClient>,
+    vardiff_cfg: VarDiffConfig,
+    accounting: Arc<Mutex<Accounting>>,
+    api_state: Option<ApiState>,
+    db: Option<Arc<Db>>,
     packed_genome: Option<Arc<Vec<u8>>>,
 ) -> Result<()> {
     // ── API: register connection ──────────────────────────────────────────────
     if let Some(ref api) = api_state {
         api.connected_count.fetch_add(1, Ordering::Relaxed);
     }
-    let extranonce1     = EXTRANONCE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let extranonce1 = EXTRANONCE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let extranonce1_hex = format!("{extranonce1:08x}");
     const EXTRANONCE2_SIZE: usize = 4;
 
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
 
-    let mut authorized   = false;
-    let mut worker_name  = String::from("unknown");
-    let mut vardiff      = VarDiff::new(vardiff_cfg);
+    let mut authorized = false;
+    let mut worker_name = String::from("unknown");
+    let mut vardiff = VarDiff::new(vardiff_cfg);
     // Per-miner duplicate tracker: cleared whenever a new job replaces the old one.
     let mut seen_shares: HashSet<(String, u32)> = HashSet::new();
 
@@ -470,20 +471,18 @@ async fn handle_miner(
 // ── submit processing ──────────────────────────────────────────────────
 
 async fn process_submit(
-    job_id:        &str,
-    en2_hex:       &str,
-    extranonce1:   u32,
-    rpc:           &Arc<GrpcClient>,
-    job_mgr:       &Arc<RwLock<JobManager>>,
-    seen_shares:   &mut HashSet<(String, u32)>,
-    share_diff:    f64,
+    job_id: &str,
+    en2_hex: &str,
+    extranonce1: u32,
+    rpc: &Arc<GrpcClient>,
+    job_mgr: &Arc<RwLock<JobManager>>,
+    seen_shares: &mut HashSet<(String, u32)>,
+    share_diff: f64,
     packed_genome: Option<&[u8]>,
 ) -> Result<(SubmitOutcome, u32), ShareError> {
     // ── 1. Format: extranonce2 must be exactly 8 hex chars (4 bytes) ──────
     if en2_hex.len() != 8 {
-        return Err(ShareError::BadFormat(
-            format!("extranonce2 must be 8 hex chars, got {}", en2_hex.len())
-        ));
+        return Err(ShareError::BadFormat(format!("extranonce2 must be 8 hex chars, got {}", en2_hex.len())));
     }
     let mut en2_bytes = [0u8; 4];
     faster_hex::hex_decode(en2_hex.as_bytes(), &mut en2_bytes)
@@ -496,11 +495,7 @@ async fn process_submit(
     let nonce: u64 = ((extranonce1 as u64) << 32) | (extranonce2 as u64);
 
     // ── 2. Stale: look up the job ──────────────────────────────────
-    let job = job_mgr
-        .read()
-        .await
-        .get(job_id)
-        .ok_or_else(|| ShareError::Stale(format!("unknown/stale job {job_id}")))?;
+    let job = job_mgr.read().await.get(job_id).ok_or_else(|| ShareError::Stale(format!("unknown/stale job {job_id}")))?;
 
     // ── 3. Duplicate: same (job_id, extranonce2) already seen by this miner ──
     if !seen_shares.insert((job_id.to_owned(), extranonce2)) {
@@ -525,7 +520,7 @@ async fn process_submit(
         let kh_state = KHeavyState::new(&header);
         let (meets_block, pow_hash) = kh_state.check_pow(nonce);
         let share_target = MAX_DIFFICULTY_TARGET_F64 / share_diff;
-        let hash_f64     = pow_hash.as_f64();
+        let hash_f64 = pow_hash.as_f64();
         if hash_f64 > share_target {
             return Err(ShareError::LowDifficulty { hash: hash_f64, target: share_target });
         }
@@ -535,7 +530,7 @@ async fn process_submit(
         let gs = genome_pow_state(&header, GENOME_FRAGMENT_SIZE);
         let (meets_block, pow_hash) = gs.check_pow_memory_hard(nonce, packed);
         let share_target = MAX_DIFFICULTY_TARGET_F64 / share_diff;
-        let hash_f64     = pow_hash.as_f64();
+        let hash_f64 = pow_hash.as_f64();
         if hash_f64 > share_target {
             return Err(ShareError::LowDifficulty { hash: hash_f64, target: share_target });
         }
@@ -544,9 +539,7 @@ async fn process_submit(
         // ── Genome PoW — no local dataset ───────────────────────────────────
         // Cannot validate the nonce locally: do NOT submit to the node and
         // do NOT award PPLNS credit.  Start bridge with --genome-file.
-        return Err(ShareError::BadFormat(
-            "genome pow active but --genome-file not loaded — share rejected".to_owned()
-        ));
+        return Err(ShareError::BadFormat("genome pow active but --genome-file not loaded — share rejected".to_owned()));
     };
 
     // ── 5. Only submit to node when the share meets the BLOCK target ───────
@@ -555,10 +548,7 @@ async fn process_submit(
     }
 
     let block = job.build_block(nonce);
-    let resp  = rpc
-        .submit_block(block, false)
-        .await
-        .map_err(|e| ShareError::BadFormat(format!("submit_block RPC: {e}")))?;
+    let resp = rpc.submit_block(block, false).await.map_err(|e| ShareError::BadFormat(format!("submit_block RPC: {e}")))?;
 
     if matches!(resp.report, SubmitBlockReport::Success) {
         let daa_score = job.template.header.daa_score.saturating_add(1);
@@ -581,16 +571,11 @@ async fn write_line<T: serde::Serialize>(writer: &mut OwnedWriteHalf, msg: &T) -
 }
 
 async fn send_notify(writer: &mut OwnedWriteHalf, job: &Job, clean: bool) -> Result<()> {
-    let notif = StratumNotification::notify(
-        &job.id, &job.pre_pow_hash_hex, &job.bits_hex,
-        &job.epoch_seed_hex, &job.timestamp_hex, clean,
-    );
+    let notif =
+        StratumNotification::notify(&job.id, &job.pre_pow_hash_hex, &job.bits_hex, &job.epoch_seed_hex, &job.timestamp_hex, clean);
     write_line(writer, &notif).await
 }
 
 fn str_param<'a>(params: &'a [Value], idx: usize, name: &str) -> Result<&'a str> {
-    params
-        .get(idx)
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow!("missing param '{name}' at index {idx}"))
+    params.get(idx).and_then(|v| v.as_str()).ok_or_else(|| anyhow!("missing param '{name}' at index {idx}"))
 }

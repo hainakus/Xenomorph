@@ -3,6 +3,7 @@ use crate::constants;
 use crate::errors::{BlockProcessResult, RuleError};
 use crate::model::services::reachability::ReachabilityService;
 use crate::model::stores::statuses::StatusesStoreReader;
+use blake3;
 use kaspa_consensus_core::blockhash::BlockHashExtensions;
 use kaspa_consensus_core::blockstatus::BlockStatus::StatusInvalid;
 use kaspa_consensus_core::header::Header;
@@ -10,7 +11,6 @@ use kaspa_consensus_core::BlockLevel;
 use kaspa_core::time::unix_now;
 use kaspa_database::prelude::StoreResultExtensions;
 use std::cmp::max;
-use blake3;
 
 impl HeaderProcessor {
     /// Validates the header in isolation including pow check against header declared bits.
@@ -111,12 +111,17 @@ impl HeaderProcessor {
             if !passed {
                 // Diagnostic: log enough detail to reproduce the failure offline.
                 let pre_with = kaspa_consensus_core::hashing::header::hash_override_nonce_time(header, 0, 0);
-                let pre_without = kaspa_consensus_core::hashing::header::hash_override_nonce_time_with_activation(header, 0, 0, u64::MAX);
+                let pre_without =
+                    kaspa_consensus_core::hashing::header::hash_override_nonce_time_with_activation(header, 0, 0, u64::MAX);
                 kaspa_core::warn!(
                     "InvalidPoW daa={} nonce={:#018x} epoch_seed={} bits={:#010x} \
                      pre_pow_with_epoch_seed={} pre_pow_without_epoch_seed={}",
-                    header.daa_score, header.nonce, header.epoch_seed,
-                    header.bits, pre_with, pre_without
+                    header.daa_score,
+                    header.nonce,
+                    header.epoch_seed,
+                    header.bits,
+                    pre_with,
+                    pre_without
                 );
                 return Err(RuleError::InvalidPoW);
             }
@@ -154,7 +159,11 @@ impl HeaderProcessor {
         let frag_idx = fragment_index(&header.epoch_seed, header.nonce, self.genome_fragment_size_bytes);
         let fragment = self.synthesize_fragment(frag_idx, &header.epoch_seed);
         let (passed, pow, _fitness) = state.check_pow_with_fragment(header.nonce, &fragment);
-        if passed { Ok(pow) } else { Err(RuleError::InvalidPoW) }
+        if passed {
+            Ok(pow)
+        } else {
+            Err(RuleError::InvalidPoW)
+        }
     }
 
     /// Produces a deterministic pseudo-fragment of `genome_fragment_size_bytes` bytes.

@@ -217,10 +217,7 @@ impl FileGenomeLoader {
             let computed_slice: &[u8] = computed.as_ref();
             let computed_bytes: [u8; 32] = computed_slice.try_into().unwrap();
             if computed_bytes != loader.header.merkle_root {
-                return Err(GenomeFileError::MerkleRootMismatch {
-                    expected: loader.header.merkle_root,
-                    computed: computed_bytes,
-                });
+                return Err(GenomeFileError::MerkleRootMismatch { expected: loader.header.merkle_root, computed: computed_bytes });
             }
         }
 

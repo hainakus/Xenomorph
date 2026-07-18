@@ -7,7 +7,14 @@ mod proto;
 mod stratum;
 mod vardiff;
 
-use std::{collections::HashSet, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{
+    collections::HashSet,
+    net::SocketAddr,
+    path::PathBuf,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Context, Result};
 use clap::{Arg, Command};
@@ -146,11 +153,7 @@ async fn main() -> Result<()> {
     // ── Key generator (--keygen) ───────────────────────────────────────────────
     if m.get_flag("keygen") {
         let (sk, pk) = secp256k1::generate_keypair(&mut secp256k1::rand::thread_rng());
-        let addr = Address::new(
-            Prefix::Mainnet,
-            Version::PubKey,
-            &pk.x_only_public_key().0.serialize(),
-        );
+        let addr = Address::new(Prefix::Mainnet, Version::PubKey, &pk.x_only_public_key().0.serialize());
         let addr_str = String::from(&addr);
         println!();
         println!("  Private key  : {}", sk.display_secret());
@@ -164,45 +167,42 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let rpcserver      = m.get_one::<String>("rpcserver").unwrap();
-    let listen_str     = m.get_one::<String>("listen").unwrap();
+    let rpcserver = m.get_one::<String>("rpcserver").unwrap();
+    let listen_str = m.get_one::<String>("listen").unwrap();
     let mining_address = m.get_one::<String>("mining-address").unwrap();
-    let poll_ms        = *m.get_one::<u64>("poll-interval-ms").unwrap();
+    let poll_ms = *m.get_one::<u64>("poll-interval-ms").unwrap();
 
     let vardiff_cfg = VarDiffConfig {
-        initial_diff:          *m.get_one::<f64>("vardiff-initial").unwrap(),
-        min_diff:              *m.get_one::<f64>("vardiff-min").unwrap(),
-        max_diff:              *m.get_one::<f64>("vardiff-max").unwrap(),
+        initial_diff: *m.get_one::<f64>("vardiff-initial").unwrap(),
+        min_diff: *m.get_one::<f64>("vardiff-min").unwrap(),
+        max_diff: *m.get_one::<f64>("vardiff-max").unwrap(),
         target_shares_per_min: *m.get_one::<f64>("vardiff-target-spm").unwrap(),
-        retarget_secs:         *m.get_one::<u64>("vardiff-retarget-secs").unwrap(),
+        retarget_secs: *m.get_one::<u64>("vardiff-retarget-secs").unwrap(),
         ..VarDiffConfig::default()
     };
 
-    let pplns_window       = *m.get_one::<usize>("pplns-window").unwrap();
-    let payout_file        = m.get_one::<String>("payout-file").map(PathBuf::from);
-    let stats_interval     = *m.get_one::<u64>("stats-interval-secs").unwrap();
-    let payout_check_secs  = *m.get_one::<u64>("payout-check-interval-secs").unwrap();
+    let pplns_window = *m.get_one::<usize>("pplns-window").unwrap();
+    let payout_file = m.get_one::<String>("payout-file").map(PathBuf::from);
+    let stats_interval = *m.get_one::<u64>("stats-interval-secs").unwrap();
+    let payout_check_secs = *m.get_one::<u64>("payout-check-interval-secs").unwrap();
 
     let payment_cfg = PaymentConfig {
-        confirm_depth:    *m.get_one::<u64>("confirm-depth").unwrap(),
+        confirm_depth: *m.get_one::<u64>("confirm-depth").unwrap(),
         min_payout_sompi: *m.get_one::<u64>("min-payout-sompi").unwrap(),
         pool_fee_percent: *m.get_one::<f64>("pool-fee-percent").unwrap(),
-        fee_per_output:   *m.get_one::<u64>("fee-per-output").unwrap(),
+        fee_per_output: *m.get_one::<u64>("fee-per-output").unwrap(),
     };
 
     // Parse optional pool private key for auto-payouts
-    let pool_keypair: Option<secp256k1::Keypair> = m
-        .get_one::<String>("pool-private-key")
-        .map(|hex| {
-            let secp   = secp256k1::Secp256k1::new();
-            let secret = secp256k1::SecretKey::from_str(hex)
-                .expect("--pool-private-key must be 64 hex chars (32 bytes)");
-            secp256k1::Keypair::from_secret_key(&secp, &secret)
-        });
+    let pool_keypair: Option<secp256k1::Keypair> = m.get_one::<String>("pool-private-key").map(|hex| {
+        let secp = secp256k1::Secp256k1::new();
+        let secret = secp256k1::SecretKey::from_str(hex).expect("--pool-private-key must be 64 hex chars (32 bytes)");
+        secp256k1::Keypair::from_secret_key(&secp, &secret)
+    });
 
     let api_listen_str = m.get_one::<String>("api-listen").unwrap();
-    let pool_name      = m.get_one::<String>("pool-name").unwrap().clone();
-    let db_path        = m.get_one::<String>("db-path").unwrap().clone();
+    let pool_name = m.get_one::<String>("pool-name").unwrap().clone();
+    let db_path = m.get_one::<String>("db-path").unwrap().clone();
 
     // ── Genome dataset (optional) ─────────────────────────────────────────────
     let packed_genome: Option<Arc<Vec<u8>>> = match m.get_one::<String>("genome-file") {
@@ -214,8 +214,7 @@ async fn main() -> Result<()> {
                     let packed: Option<Vec<u8>> = loader.packed_dataset().map(|b| b.to_vec());
                     let data = packed.map(Arc::new);
                     if let Some(ref v) = data {
-                        info!("Genome file '{}' loaded — {} MB packed data in memory",
-                            path, v.len() / 1_048_576);
+                        info!("Genome file '{}' loaded — {} MB packed data in memory", path, v.len() / 1_048_576);
                     }
                     data
                 }
@@ -225,14 +224,16 @@ async fn main() -> Result<()> {
         None => None,
     };
 
-    let pay_address: kaspa_rpc_core::RpcAddress =
-        Address::try_from(mining_address.as_str()).context("Invalid --mining-address")?;
+    let pay_address: kaspa_rpc_core::RpcAddress = Address::try_from(mining_address.as_str()).context("Invalid --mining-address")?;
     let listen_addr: SocketAddr = listen_str.parse().context("Invalid --listen address")?;
 
     info!(
         "VarDiff: init={} min={} max={} target={:.1} spm retarget={}s",
-        vardiff_cfg.initial_diff, vardiff_cfg.min_diff, vardiff_cfg.max_diff,
-        vardiff_cfg.target_shares_per_min, vardiff_cfg.retarget_secs
+        vardiff_cfg.initial_diff,
+        vardiff_cfg.min_diff,
+        vardiff_cfg.max_diff,
+        vardiff_cfg.target_shares_per_min,
+        vardiff_cfg.retarget_secs
     );
     info!("PPLNS window: {pplns_window} shares");
 
@@ -243,27 +244,22 @@ async fn main() -> Result<()> {
     info!("Connected to {url}");
 
     // ── Shared state ──────────────────────────────────────────────────────────
-    let job_mgr:    Arc<RwLock<JobManager>> = Arc::new(RwLock::new(JobManager::new()));
-    let accounting: Arc<Mutex<Accounting>>  = Arc::new(Mutex::new(
-        Accounting::new(pplns_window, payout_file),
-    ));
+    let job_mgr: Arc<RwLock<JobManager>> = Arc::new(RwLock::new(JobManager::new()));
+    let accounting: Arc<Mutex<Accounting>> = Arc::new(Mutex::new(Accounting::new(pplns_window, payout_file)));
     let (job_tx, job_rx) = watch::channel::<Option<Arc<job::Job>>>(None);
 
     // ── Node polling task ─────────────────────────────────────────────────────
     {
-        let rpc2     = rpc.clone();
-        let jmgr2    = job_mgr.clone();
-        let jtx2     = job_tx.clone();
-        let pay      = pay_address.clone();
+        let rpc2 = rpc.clone();
+        let jmgr2 = job_mgr.clone();
+        let jtx2 = job_tx.clone();
+        let pay = pay_address.clone();
         let poll_dur = Duration::from_millis(poll_ms);
 
         tokio::spawn(async move {
             info!("Block-template poller started (interval={poll_ms}ms)");
             loop {
-                match rpc2
-                    .get_block_template_call(None, GetBlockTemplateRequest::new(pay.clone(), vec![]))
-                    .await
-                {
+                match rpc2.get_block_template_call(None, GetBlockTemplateRequest::new(pay.clone(), vec![])).await {
                     Ok(resp) => {
                         if !resp.is_synced {
                             warn!("Node not synced — waiting…");
@@ -323,7 +319,7 @@ async fn main() -> Result<()> {
     if let Some(keypair) = pool_keypair {
         // ── UTXO consolidation sweep (every 15 s) ────────────────────────
         // Prevents mass-limit failures by keeping the UTXO set small.
-        let rpc_sweep  = rpc.clone();
+        let rpc_sweep = rpc.clone();
         let addr_sweep = pay_address.clone();
         tokio::spawn(async move {
             let interval = Duration::from_secs(15);
@@ -331,23 +327,22 @@ async fn main() -> Result<()> {
                 sleep(interval).await;
                 match payments::consolidate_utxos(&rpc_sweep, &addr_sweep, &keypair).await {
                     Ok(Some(tx_id)) => info!("UTXO sweep OK: {tx_id}"),
-                    Ok(None)        => {}
-                    Err(e)          => warn!("UTXO sweep skipped: {e}"),
+                    Ok(None) => {}
+                    Err(e) => warn!("UTXO sweep skipped: {e}"),
                 }
             }
         });
 
-        let rpc3           = rpc.clone();
-        let acct3          = accounting.clone();
-        let pay_addr       = pay_address.clone();
-        let pcfg           = payment_cfg.clone();
-        let db3            = database.clone();
+        let rpc3 = rpc.clone();
+        let acct3 = accounting.clone();
+        let pay_addr = pay_address.clone();
+        let pcfg = payment_cfg.clone();
+        let db3 = database.clone();
         let check_interval = Duration::from_secs(payout_check_secs.max(1));
 
         info!(
             "Auto-payout enabled (accumulated): confirm_depth={} min_payout={} sompi pool_fee={:.1}% check_interval={}s",
-            pcfg.confirm_depth, pcfg.min_payout_sompi, pcfg.pool_fee_percent,
-            payout_check_secs
+            pcfg.confirm_depth, pcfg.min_payout_sompi, pcfg.pool_fee_percent, payout_check_secs
         );
 
         tokio::spawn(async move {
@@ -356,12 +351,14 @@ async fn main() -> Result<()> {
 
                 let current_daa = match rpc3.get_block_dag_info().await {
                     Ok(info) => info.virtual_daa_score,
-                    Err(e)   => { warn!("get_block_dag_info: {e}"); continue; }
+                    Err(e) => {
+                        warn!("get_block_dag_info: {e}");
+                        continue;
+                    }
                 };
 
                 // Collect ALL confirmed pending blocks
-                let confirmed = acct3.lock().await
-                    .take_confirmed_payouts(current_daa, pcfg.confirm_depth);
+                let confirmed = acct3.lock().await.take_confirmed_payouts(current_daa, pcfg.confirm_depth);
 
                 if confirmed.is_empty() {
                     continue;
@@ -382,11 +379,12 @@ async fn main() -> Result<()> {
 
                 info!(
                     "Accumulated payout: {} confirmed block(s), {} unique miner(s), daa={}",
-                    confirmed.len(), merged.len(), current_daa
+                    confirmed.len(),
+                    merged.len(),
+                    current_daa
                 );
 
-                let now_secs = SystemTime::now()
-                    .duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+                let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
 
                 let mut spent_outpoints: HashSet<(RpcTransactionId, u32)> = HashSet::new();
                 match execute_payout(&rpc3, &pay_addr, &keypair, &merged, &pcfg, &mut spent_outpoints).await {
@@ -442,13 +440,7 @@ async fn main() -> Result<()> {
     // ── REST API server ──────────────────────────────────────────────────────
     let api_state: Option<ApiState> = if !api_listen_str.is_empty() {
         let api_addr: SocketAddr = api_listen_str.parse().context("Invalid --api-listen")?;
-        let state = ApiState::new(
-            accounting.clone(),
-            rpc.clone(),
-            pool_name,
-            database.clone(),
-            listen_str.clone(),
-        );
+        let state = ApiState::new(accounting.clone(), rpc.clone(), pool_name, database.clone(), listen_str.clone());
         let state2 = state.clone();
         tokio::spawn(async move {
             if let Err(e) = api::run_api_server(api_addr, state2).await {
@@ -464,13 +456,12 @@ async fn main() -> Result<()> {
     // ── Stale-miner cleanup (every 60 s) ────────────────────────────────────
     {
         const STALE_SECS: u64 = 300;
-        let db4         = database.clone();
-        let api4        = api_state.clone();
+        let db4 = database.clone();
+        let api4 = api_state.clone();
         tokio::spawn(async move {
             loop {
                 sleep(Duration::from_secs(60)).await;
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
                 let stale_before = (now.saturating_sub(STALE_SECS)) as i64;
 
                 // Persist zeroed hashrate / offline state to DB
@@ -486,11 +477,9 @@ async fn main() -> Result<()> {
                 if let Some(ref api) = api4 {
                     let mut miners = api.miners.lock().await;
                     for entry in miners.values_mut() {
-                        if entry.last_share_at > 0
-                            && now.saturating_sub(entry.last_share_at) > STALE_SECS
-                        {
+                        if entry.last_share_at > 0 && now.saturating_sub(entry.last_share_at) > STALE_SECS {
                             entry.hashrate_hps = 0.0;
-                            entry.connected    = false;
+                            entry.connected = false;
                         }
                     }
                 }
@@ -499,7 +488,8 @@ async fn main() -> Result<()> {
     }
 
     // ── Stratum TCP server (blocks forever) ─────────────────────────────────────
-    stratum::run_server(listen_addr, job_rx, job_mgr, rpc, vardiff_cfg, accounting, api_state, database.clone(), packed_genome).await?;
+    stratum::run_server(listen_addr, job_rx, job_mgr, rpc, vardiff_cfg, accounting, api_state, database.clone(), packed_genome)
+        .await?;
 
     Ok(())
 }

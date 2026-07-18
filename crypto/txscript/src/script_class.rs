@@ -80,9 +80,9 @@ impl ScriptClass {
     /// OP_DATA_32 <blake2b(pq_pubkey)[0..32]> OP_CHECKSIGPQ
     #[inline(always)]
     pub fn is_pay_to_pubkey_pq(script_public_key: &[u8]) -> bool {
-        (script_public_key.len() == 34) &&
-        (script_public_key[0] == opcodes::codes::OpData32) &&
-        (script_public_key[33] == opcodes::codes::OpCheckSigPQ)
+        (script_public_key.len() == 34)
+            && (script_public_key[0] == opcodes::codes::OpData32)
+            && (script_public_key[33] == opcodes::codes::OpCheckSigPQ)
     }
 
     /// Returns true if the script is in the standard

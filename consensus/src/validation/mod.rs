@@ -3,12 +3,14 @@
 //! This module implements the validator selection, ZK proof verification,
 //! and validation network protocol for the UsefulPoW system.
 
+pub mod config;
+pub mod network;
 pub mod selector;
 pub mod zk_verifier;
-pub mod network;
-pub mod config;
 
-pub use selector::{ValidatorSelector, ValidatorInfo, ValidatorSelection, ValidatorSelectionSimple, SelectionError};
-pub use zk_verifier::{ZKVerifier, VerificationResult, MockVerifier, ZKTrainingProof, VerificationMetadata};
-pub use network::{ValidationMessage, ValidationNetwork, SignatureAggregator, NetworkEvent, NetworkError, ValidationSignature, AggregatedSignature};
-pub use config::{ValidationParams, ConfigError as ValidationError};
+pub use config::{ConfigError as ValidationError, ValidationParams};
+pub use network::{
+    AggregatedSignature, NetworkError, NetworkEvent, SignatureAggregator, ValidationMessage, ValidationNetwork, ValidationSignature,
+};
+pub use selector::{SelectionError, ValidatorInfo, ValidatorSelection, ValidatorSelectionSimple, ValidatorSelector};
+pub use zk_verifier::{MockVerifier, VerificationMetadata, VerificationResult, ZKTrainingProof, ZKVerifier};

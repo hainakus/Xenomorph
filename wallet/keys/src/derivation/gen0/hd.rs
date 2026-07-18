@@ -918,7 +918,8 @@ mod tests {
         let hd_wallet = hd_wallet.unwrap();
         //let hd_wallet2 = hd_wallet2.unwrap();
 
-        let receive_addresses = gen0_receive_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
+        let receive_addresses =
+            gen0_receive_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
         let change_addresses = gen0_change_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
 
         //println!("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$");
@@ -960,7 +961,8 @@ mod tests {
             .collect::<Vec<String>>();
         println!("receive addresses: {addresses_receive:#?}");
         println!("change addresses: {addresses_change:#?}");
-        let receive_addresses = gen0_receive_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
+        let receive_addresses =
+            gen0_receive_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
         let change_addresses = gen0_change_addresses().iter().map(|s| Address::try_from(*s).unwrap().to_string()).collect::<Vec<_>>();
         for index in 0..20 {
             assert_eq!(receive_addresses[index], addresses_receive[index], "receive address at {index} failed");

@@ -1,17 +1,17 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 use xenom_miner::block::BlockBuilder;
 use xenom_miner::config::MinerConfig;
 use xenom_miner::prover::{PublicInputs, ZkProver};
-use xenom_miner::rpc::XenomRpcClient;
 use xenom_miner::rpc::messages::TrainingBatch;
+use xenom_miner::rpc::XenomRpcClient;
 use xenom_miner::trainer::{CpuTrainer, MockTrainer, Trainer};
 use xenom_miner::wallet::WalletManager;
 
@@ -61,19 +61,13 @@ struct Args {
 
 fn expand_tilde(path: &str) -> PathBuf {
     if let Some(stripped) = path.strip_prefix("~/") {
-        dirs::home_dir()
-            .map(|home| home.join(stripped))
-            .unwrap_or_else(|| PathBuf::from(path))
+        dirs::home_dir().map(|home| home.join(stripped)).unwrap_or_else(|| PathBuf::from(path))
     } else {
         PathBuf::from(path)
     }
 }
 
-async fn ensure_rpc_connection(
-    rpc_client: &mut Option<XenomRpcClient>,
-    rpc_url: &str,
-    dry_run: bool,
-) -> Result<()> {
+async fn ensure_rpc_connection(rpc_client: &mut Option<XenomRpcClient>, rpc_url: &str, dry_run: bool) -> Result<()> {
     if rpc_client.is_some() {
         return Ok(());
     }
@@ -104,10 +98,7 @@ async fn ensure_rpc_connection(
     }
 }
 
-async fn get_batch(
-    rpc_client: &mut Option<XenomRpcClient>,
-    model_id: &str,
-) -> Option<TrainingBatch> {
+async fn get_batch(rpc_client: &mut Option<XenomRpcClient>, model_id: &str) -> Option<TrainingBatch> {
     if let Some(client) = rpc_client.as_mut() {
         match client.get_training_batch(model_id).await {
             Ok(Some(batch)) => return Some(batch),
@@ -142,8 +133,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let data_dir = expand_tilde(&args.data_dir);
-    std::fs::create_dir_all(&data_dir)
-        .with_context(|| format!("Failed to create data directory {:?}", data_dir))?;
+    std::fs::create_dir_all(&data_dir).with_context(|| format!("Failed to create data directory {:?}", data_dir))?;
 
     let mut config = MinerConfig::load_or_create(&data_dir)?;
     if !args.wallet.is_empty() {
@@ -161,15 +151,9 @@ async fn main() -> Result<()> {
     config.data_dir = data_dir.clone();
     config.save(&data_dir)?;
 
-    let wallet = Arc::new(
-        WalletManager::load_or_create(&data_dir, &args.password)
-            .with_context(|| "Failed to load or create wallet")?
-    );
-    let miner_address = if config.wallet_address.is_empty() {
-        wallet.address().to_string()
-    } else {
-        config.wallet_address.clone()
-    };
+    let wallet =
+        Arc::new(WalletManager::load_or_create(&data_dir, &args.password).with_context(|| "Failed to load or create wallet")?);
+    let miner_address = if config.wallet_address.is_empty() { wallet.address().to_string() } else { config.wallet_address.clone() };
     info!("Miner address: {}", miner_address);
 
     let mut rpc_client: Option<XenomRpcClient> = None;
@@ -188,10 +172,7 @@ async fn main() -> Result<()> {
 
     let progress = ProgressBar::new_spinner();
     progress.set_style(
-        ProgressStyle::default_spinner()
-            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ")
-            .template("{spinner} {msg}")
-            .expect("valid spinner template"),
+        ProgressStyle::default_spinner().tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ").template("{spinner} {msg}").expect("valid spinner template"),
     );
 
     let shutdown = tokio::signal::ctrl_c();
@@ -202,10 +183,7 @@ async fn main() -> Result<()> {
     let mut block_number: u64 = 0;
 
     loop {
-        progress.set_message(format!(
-            "block {} | fetching batch | reward {}",
-            block_number, total_reward
-        ));
+        progress.set_message(format!("block {} | fetching batch | reward {}", block_number, total_reward));
 
         tokio::select! {
             biased;
@@ -299,10 +277,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    progress.finish_with_message(format!(
-        "Finished {} blocks ({} reward)",
-        block_number, total_reward
-    ));
+    progress.finish_with_message(format!("Finished {} blocks ({} reward)", block_number, total_reward));
     info!("Miner shut down gracefully");
     Ok(())
 }

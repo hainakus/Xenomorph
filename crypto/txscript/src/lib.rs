@@ -519,7 +519,10 @@ impl<'a, T: VerifiableTransaction> TxScriptEngine<'a, T> {
         sig: &[u8],
     ) -> Result<bool, TxScriptError> {
         #[cfg(target_arch = "wasm32")]
-        { let _ = (hash_type, pubkey_hash, pubkey_bytes, sig); return Err(TxScriptError::InvalidState("PQ sig verify not supported in wasm32".into())); }
+        {
+            let _ = (hash_type, pubkey_hash, pubkey_bytes, sig);
+            return Err(TxScriptError::InvalidState("PQ sig verify not supported in wasm32".into()));
+        }
         #[cfg(not(target_arch = "wasm32"))]
         match self.script_source {
             ScriptSource::TxInput { tx, id, .. } => {
@@ -527,8 +530,7 @@ impl<'a, T: VerifiableTransaction> TxScriptEngine<'a, T> {
                 if computed_hash.as_bytes() != pubkey_hash {
                     return Ok(false);
                 }
-                let pk = dilithium3::PublicKey::from_bytes(pubkey_bytes)
-                    .map_err(|_| TxScriptError::PubKeyFormat)?;
+                let pk = dilithium3::PublicKey::from_bytes(pubkey_bytes).map_err(|_| TxScriptError::PubKeyFormat)?;
                 let pq_sig = match dilithium3::DetachedSignature::from_bytes(sig) {
                     Ok(s) => s,
                     Err(_) => return Ok(false),

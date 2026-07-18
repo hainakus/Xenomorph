@@ -18,6 +18,7 @@ use crate::{
             block_transactions::{BlockTransactionsStoreReader, DbBlockTransactionsStore},
             daa::DbDaaStore,
             depth::{DbDepthStore, DepthStoreReader},
+            fitness::{BlockFitnessData, DbFitnessStore, FitnessStore, FitnessStoreReader},
             ghostdag::{DbGhostdagStore, GhostdagData, GhostdagStoreReader},
             headers::{DbHeadersStore, HeaderStoreReader},
             past_pruning_points::DbPastPruningPointsStore,
@@ -26,7 +27,6 @@ use crate::{
             reachability::DbReachabilityStore,
             relations::{DbRelationsStore, RelationsStoreReader},
             selected_chain::{DbSelectedChainStore, SelectedChainStore},
-            fitness::{BlockFitnessData, DbFitnessStore, FitnessStore, FitnessStoreReader},
             statuses::{DbStatusesStore, StatusesStore, StatusesStoreBatchExtensions, StatusesStoreReader},
             tips::{DbTipsStore, TipsStoreReader},
             utxo_diffs::{DbUtxoDiffsStore, UtxoDiffsStoreReader},
@@ -76,8 +76,8 @@ use kaspa_core::{debug, info, time::unix_now, trace, warn};
 use kaspa_database::prelude::{StoreError, StoreResultEmptyTuple, StoreResultExtensions};
 use kaspa_hashes::Hash;
 use kaspa_muhash::MuHash;
-use kaspa_pow::genome_pow::next_epoch_seed;
 use kaspa_notify::{events::EventType, notifier::Notify};
+use kaspa_pow::genome_pow::next_epoch_seed;
 
 use super::errors::{PruningImportError, PruningImportResult};
 use crossbeam_channel::{Receiver as CrossbeamReceiver, Sender as CrossbeamSender};
@@ -1042,12 +1042,8 @@ impl VirtualStateProcessor {
         if epoch_len == 0 {
             return Default::default();
         }
-        let parent_epoch_seed = self
-            .headers_store
-            .get_header(*selected_parent)
-            .unwrap_option()
-            .map(|h| h.epoch_seed)
-            .unwrap_or_default();
+        let parent_epoch_seed =
+            self.headers_store.get_header(*selected_parent).unwrap_option().map(|h| h.epoch_seed).unwrap_or_default();
         if daa_score % epoch_len == 0 && daa_score > 0 {
             let median_fitness = self.median_epoch_fitness(selected_parent, epoch_len);
             next_epoch_seed(median_fitness, &parent_epoch_seed)

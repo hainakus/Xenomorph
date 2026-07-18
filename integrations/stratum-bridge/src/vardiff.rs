@@ -23,12 +23,12 @@ pub struct VarDiffConfig {
 impl Default for VarDiffConfig {
     fn default() -> Self {
         Self {
-            initial_diff:          1.0,
-            min_diff:              0.1,
-            max_diff:              1_000_000.0,
+            initial_diff: 1.0,
+            min_diff: 0.1,
+            max_diff: 1_000_000.0,
             target_shares_per_min: 20.0,
-            retarget_secs:         60,
-            hysteresis:            0.10,
+            retarget_secs: 60,
+            hysteresis: 0.10,
         }
     }
 }
@@ -36,23 +36,17 @@ impl Default for VarDiffConfig {
 /// Per-miner variable-difficulty state machine.
 pub struct VarDiff {
     pub current_diff: f64,
-    cfg:              VarDiffConfig,
-    last_retarget:    Instant,
-    share_times:      VecDeque<Instant>,
-    window:           Duration,
+    cfg: VarDiffConfig,
+    last_retarget: Instant,
+    share_times: VecDeque<Instant>,
+    window: Duration,
 }
 
 impl VarDiff {
     pub fn new(cfg: VarDiffConfig) -> Self {
         let window = Duration::from_secs(cfg.retarget_secs * 2);
         let current_diff = cfg.initial_diff;
-        Self {
-            current_diff,
-            cfg,
-            last_retarget: Instant::now(),
-            share_times:   VecDeque::new(),
-            window,
-        }
+        Self { current_diff, cfg, last_retarget: Instant::now(), share_times: VecDeque::new(), window }
     }
 
     /// Record a new accepted share.
@@ -76,9 +70,7 @@ impl VarDiff {
         self.last_retarget = now;
 
         // Actual shares per minute over the rolling window
-        let actual_spm = self.share_times.len() as f64
-            / self.window.as_secs_f64()
-            * 60.0;
+        let actual_spm = self.share_times.len() as f64 / self.window.as_secs_f64() * 60.0;
 
         let ratio = if actual_spm > 0.0 {
             actual_spm / self.cfg.target_shares_per_min
@@ -86,12 +78,10 @@ impl VarDiff {
             0.5 // no shares in window → halve difficulty
         };
 
-        let new_diff = (self.current_diff * ratio)
-            .clamp(self.cfg.min_diff, self.cfg.max_diff);
+        let new_diff = (self.current_diff * ratio).clamp(self.cfg.min_diff, self.cfg.max_diff);
 
         // Hysteresis: skip tiny adjustments
-        let change = (new_diff - self.current_diff).abs()
-            / self.current_diff.max(f64::EPSILON);
+        let change = (new_diff - self.current_diff).abs() / self.current_diff.max(f64::EPSILON);
         if change < self.cfg.hysteresis {
             return None;
         }

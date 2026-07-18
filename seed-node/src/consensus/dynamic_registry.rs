@@ -35,23 +35,13 @@ pub struct DynamicModelRegistry {
 }
 
 impl DynamicModelRegistry {
-    pub async fn new(
-        contract_address: Address,
-        provider: Provider<Http>,
-        update_interval: u64,
-    ) -> Result<Self> {
-        let abi = Abi::load(&include_bytes!("../../abi/ModelGovernance.json")[..])
-            .context("Failed to load ModelGovernance ABI")?;
+    pub async fn new(contract_address: Address, provider: Provider<Http>, update_interval: u64) -> Result<Self> {
+        let abi = Abi::load(&include_bytes!("../../abi/ModelGovernance.json")[..]).context("Failed to load ModelGovernance ABI")?;
 
         let client = Arc::new(provider);
         let contract = Contract::new(contract_address, abi, client);
 
-        Ok(Self {
-            contract,
-            cache: Arc::new(RwLock::new(Vec::new())),
-            last_update: Arc::new(RwLock::new(0)),
-            update_interval,
-        })
+        Ok(Self { contract, cache: Arc::new(RwLock::new(Vec::new())), last_update: Arc::new(RwLock::new(0)), update_interval })
     }
 
     /// Update the cached model list if the update interval has passed.
@@ -69,10 +59,7 @@ impl DynamicModelRegistry {
 
             info!("Registry updated: {} active models", cache.len());
             for m in cache.iter() {
-                info!(
-                    "  - {}: {} Xenom/block, {}GB VRAM",
-                    m.model_id, m.reward_per_block, m.vram_required
-                );
+                info!("  - {}: {} Xenom/block, {}GB VRAM", m.model_id, m.reward_per_block, m.vram_required);
             }
         }
 
@@ -107,60 +94,30 @@ impl DynamicModelRegistry {
     /// Return the per-block reward for a model, if active.
     pub async fn get_reward(&self, model_id: &str) -> Option<u64> {
         let cache = self.cache.read().await;
-        cache
-            .iter()
-            .find(|m| m.model_id == model_id && m.active)
-            .map(|m| m.reward_per_block)
+        cache.iter().find(|m| m.model_id == model_id && m.active).map(|m| m.reward_per_block)
     }
 
     /// List all currently cached active models.
     pub async fn list_active_models(&self) -> Vec<ActiveModel> {
-        self.cache
-            .read()
-            .await
-            .iter()
-            .filter(|m| m.active)
-            .cloned()
-            .collect()
+        self.cache.read().await.iter().filter(|m| m.active).cloned().collect()
     }
 
     /// Verify that a miner has enough stake to train a given model.
     pub async fn can_mine_model(&self, model_id: &str, miner_stake: u64) -> bool {
         let cache = self.cache.read().await;
-        cache
-            .iter()
-            .find(|m| m.model_id == model_id && m.active)
-            .map(|m| miner_stake >= m.min_stake_to_train)
-            .unwrap_or(false)
+        cache.iter().find(|m| m.model_id == model_id && m.active).map(|m| miner_stake >= m.min_stake_to_train).unwrap_or(false)
     }
 
     /// Return true if the contract considers the model active at `block`.
     async fn query_model_active(&self, model_id: &str, block: u64) -> Result<bool> {
-        let result: bool = self
-            .contract
-            .method::<(String, U256), bool>(
-                "isModelActive",
-                (model_id.to_string(), U256::from(block)),
-            )?
-            .call()
-            .await?;
+        let result: bool =
+            self.contract.method::<(String, U256), bool>("isModelActive", (model_id.to_string(), U256::from(block)))?.call().await?;
         Ok(result)
     }
 
     /// Fetch active models from the contract and decode them into `ActiveModel`.
     async fn fetch_active_models(&self) -> Result<Vec<ActiveModel>> {
-        type RawModel = (
-            String,
-            String,
-            String,
-            H256,
-            U256,
-            U256,
-            U256,
-            U256,
-            U256,
-            bool,
-        );
+        type RawModel = (String, String, String, H256, U256, U256, U256, U256, U256, bool);
 
         let raw_models: Vec<RawModel> = self
             .contract
@@ -173,20 +130,7 @@ impl DynamicModelRegistry {
     }
 }
 
-fn decode_active_model(
-    raw: (
-        String,
-        String,
-        String,
-        H256,
-        U256,
-        U256,
-        U256,
-        U256,
-        U256,
-        bool,
-    ),
-) -> ActiveModel {
+fn decode_active_model(raw: (String, String, String, H256, U256, U256, U256, U256, U256, bool)) -> ActiveModel {
     let (
         model_id,
         hf_repo,
@@ -237,14 +181,9 @@ mod tests {
     fn test_can_mine_model() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let provider = Provider::<Http>::try_from("http://localhost:8545")
-                .expect("valid localhost URL");
+            let provider = Provider::<Http>::try_from("http://localhost:8545").expect("valid localhost URL");
             let registry = DynamicModelRegistry {
-                contract: Contract::new(
-                    Address::zero(),
-                    Abi::load(&b"[]"[..]).unwrap(),
-                    Arc::new(provider),
-                ),
+                contract: Contract::new(Address::zero(), Abi::load(&b"[]"[..]).unwrap(), Arc::new(provider)),
                 cache: Arc::new(RwLock::new(vec![sample_active_model()])),
                 last_update: Arc::new(RwLock::new(0)),
                 update_interval: 100,

@@ -3,8 +3,8 @@
 //! This module provides verification for zero-knowledge proofs of AI model training,
 //! ensuring that claimed training improvements are cryptographically verifiable.
 
-use thiserror::Error;
 use std::time::Instant;
+use thiserror::Error;
 
 // ============================================================================
 // CONSTANTS
@@ -20,28 +20,28 @@ const MIN_LOSS: f64 = 0.0;
 pub enum VerificationError {
     #[error("empty proof data")]
     EmptyProofData,
-    
+
     #[error("no loss improvement: before={before}, after={after}")]
     NoLossImprovement { before: f64, after: f64 },
-    
+
     #[error("invalid model hash (zero hash)")]
     InvalidModelHash,
-    
+
     #[error("invalid input hash (zero hash)")]
     InvalidInputHash,
-    
+
     #[error("invalid gradients hash (zero hash)")]
     InvalidGradientsHash,
-    
+
     #[error("invalid batch size: {size} (must be > 0 and <= 10000)")]
     InvalidBatchSize { size: u32 },
-    
+
     #[error("verification key mismatch")]
     InvalidVerificationKey,
-    
+
     #[error("proof verification failed: {0}")]
     ProofVerificationFailed(String),
-    
+
     #[error("timeout after {0}ms")]
     Timeout(u64),
 }
@@ -66,20 +66,12 @@ pub struct VerificationResult {
 impl VerificationResult {
     /// Create a successful verification result
     pub fn success(time_ms: u64) -> Self {
-        Self {
-            is_valid: true,
-            verification_time_ms: time_ms,
-            error_message: None,
-        }
+        Self { is_valid: true, verification_time_ms: time_ms, error_message: None }
     }
-    
+
     /// Create a failed verification result
     pub fn failure(time_ms: u64, error: impl Into<String>) -> Self {
-        Self {
-            is_valid: false,
-            verification_time_ms: time_ms,
-            error_message: Some(error.into()),
-        }
+        Self { is_valid: false, verification_time_ms: time_ms, error_message: Some(error.into()) }
     }
 }
 
@@ -135,7 +127,7 @@ pub struct PublicInputs {
 pub trait ZKVerifier: Send + Sync {
     /// Verify a training proof
     fn verify(&self, proof: &ZKTrainingProof) -> VerificationResult;
-    
+
     /// Get verification timeout in milliseconds
     fn timeout_ms(&self) -> u64;
 }
@@ -157,17 +149,17 @@ impl MockVerifier {
 impl ZKVerifier for MockVerifier {
     fn verify(&self, proof: &ZKTrainingProof) -> VerificationResult {
         let start = Instant::now();
-        
+
         // Perform structural validation
         let result = self.verify_proof_internal(proof);
         let elapsed = start.elapsed();
-        
+
         match result {
             Ok(_) => VerificationResult::success(elapsed.as_millis() as u64),
             Err(e) => VerificationResult::failure(elapsed.as_millis() as u64, e.to_string()),
         }
     }
-    
+
     fn timeout_ms(&self) -> u64 {
         self.timeout_ms
     }
@@ -213,7 +205,7 @@ impl MockVerifier {
 
         Ok(())
     }
-    
+
     fn compute_vk_hash(&self) -> Hash {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"mock-verification-key");
@@ -246,7 +238,7 @@ mod tests {
             result.copy_from_slice(hash.as_bytes());
             result
         };
-        
+
         ZKTrainingProof {
             core_proof: CoreTrainingProof {
                 model_id: "test_model".to_string(),
@@ -267,11 +259,7 @@ mod tests {
                 batch_indices: vec![0, 1, 2],
             },
             vk_hash,
-            verification_metadata: VerificationMetadata {
-                batch_size: 32,
-                nonce: 12345,
-                timestamp: 1000,
-            },
+            verification_metadata: VerificationMetadata { batch_size: 32, nonce: 12345, timestamp: 1000 },
         }
     }
 
@@ -279,7 +267,7 @@ mod tests {
     fn test_mock_verifier_valid_proof() {
         let verifier = MockVerifier::new(5000);
         let proof = create_test_proof(true);
-        
+
         let result = verifier.verify(&proof);
         assert!(result.is_valid);
         assert!(result.error_message.is_none());
@@ -289,7 +277,7 @@ mod tests {
     fn test_mock_verifier_invalid_proof_no_improvement() {
         let verifier = MockVerifier::new(5000);
         let proof = create_test_proof(false);
-        
+
         let result = verifier.verify(&proof);
         assert!(!result.is_valid);
         assert!(result.error_message.is_some());
@@ -300,7 +288,7 @@ mod tests {
         let verifier = MockVerifier::new(5000);
         let mut proof = create_test_proof(true);
         proof.core_proof.zk_proof.proof_data = vec![];
-        
+
         let result = verifier.verify(&proof);
         assert!(!result.is_valid);
     }
@@ -326,7 +314,7 @@ mod tests {
         let verifier = MockVerifier::new(5000);
         let mut proof = create_test_proof(true);
         proof.verification_metadata.batch_size = 0;
-        
+
         let result = verifier.verify(&proof);
         assert!(!result.is_valid);
     }
@@ -336,7 +324,7 @@ mod tests {
         let verifier = MockVerifier::new(5000);
         let mut proof = create_test_proof(true);
         proof.core_proof.zk_proof.public_inputs.model_hash = [0u8; 32];
-        
+
         let result = verifier.verify(&proof);
         assert!(!result.is_valid);
     }

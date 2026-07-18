@@ -71,8 +71,7 @@ pub mod consensus {
     pub const DIFFICULTY_WINDOW_SAMPLE_INTERVAL: u64 = 4;
 
     /// Size of the **sampled** difficulty window (independent of BPS)
-    pub const DIFFICULTY_SAMPLED_WINDOW_SIZE: u64 =
-        NEW_DIFFICULTY_WINDOW_DURATION.div_ceil(DIFFICULTY_WINDOW_SAMPLE_INTERVAL);
+    pub const DIFFICULTY_SAMPLED_WINDOW_SIZE: u64 = NEW_DIFFICULTY_WINDOW_DURATION.div_ceil(DIFFICULTY_WINDOW_SAMPLE_INTERVAL);
 
     //
     // ~~~~~~~~~~~~~~~~~~~ Finality & Pruning ~~~~~~~~~~~~~~~~~~~

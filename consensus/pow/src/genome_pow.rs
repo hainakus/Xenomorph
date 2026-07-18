@@ -338,11 +338,7 @@ impl GenomeMerkleProof {
         let mut current = fragment_leaf_hash(fragment_idx, fragment);
         let mut index = self.leaf_index;
         for sibling in &self.siblings {
-            current = if index & 1 == 0 {
-                merkle_node_hash(&current, sibling)
-            } else {
-                merkle_node_hash(sibling, &current)
-            };
+            current = if index & 1 == 0 { merkle_node_hash(&current, sibling) } else { merkle_node_hash(sibling, &current) };
             index >>= 1;
         }
         current == expected
@@ -658,9 +654,13 @@ mod tests {
         // All-same-byte seeds yield a==b==c → always (1000,1000,1000).
         // Use asymmetric byte patterns at positions 2,3,4 to get real variation.
         let mut ba = [0u8; 32];
-        ba[2] = 10; ba[3] = 150; ba[4] = 240;
+        ba[2] = 10;
+        ba[3] = 150;
+        ba[4] = 240;
         let mut bb = [0u8; 32];
-        bb[2] = 200; bb[3] = 50; bb[4] = 100;
+        bb[2] = 200;
+        bb[3] = 50;
+        bb[4] = 100;
         let wa = epoch_weights(&Hash::from_bytes(ba));
         let wb = epoch_weights(&Hash::from_bytes(bb));
         assert_ne!(wa, wb, "weights should differ for seeds with different byte patterns");

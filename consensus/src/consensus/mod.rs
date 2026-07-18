@@ -248,11 +248,7 @@ impl Consensus {
                     params.genome_merkle_root
                 );
             }
-            kaspa_core::info!(
-                "Genome PoW: loaded {genome_path} ({} fragments, root {}...)",
-                loader.num_fragments(),
-                &file_root[..12]
-            );
+            kaspa_core::info!("Genome PoW: loaded {genome_path} ({} fragments, root {}...)", loader.num_fragments(), &file_root[..12]);
             let loader = std::sync::Arc::new(loader);
             services.pruning_proof_manager.set_genome_loader(loader.clone());
             header_processor_base.with_genome_loader(loader)

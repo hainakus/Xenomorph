@@ -12,10 +12,10 @@ use crate::model::{
         reachability::ReachabilityStoreReader,
     },
 };
+use kaspa_core::warn;
 use kaspa_hashes::Hash;
 use kaspa_utils::option::OptionExtensions;
 use parking_lot::RwLock;
-use kaspa_core::warn;
 
 #[derive(Clone)]
 pub struct PruningPointManager<
@@ -134,8 +134,10 @@ impl<
         let sp_header_pp = match self.headers_store.get_header(ghostdag_data.selected_parent) {
             Ok(h) => h.pruning_point,
             Err(e) => {
-                warn!("expected_header_pruning_point: failed to read header for {}: {} (stale DB schema?); falling back to genesis",
-                      ghostdag_data.selected_parent, e);
+                warn!(
+                    "expected_header_pruning_point: failed to read header for {}: {} (stale DB schema?); falling back to genesis",
+                    ghostdag_data.selected_parent, e
+                );
                 return self.genesis_hash;
             }
         };
