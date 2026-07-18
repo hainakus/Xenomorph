@@ -30,6 +30,8 @@ smallvec.workspace = true
 sweep-bptree = "0.4.1"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+tch = { version = "0.10", optional = true } # PyTorch bindings for Rust
+ndarray = { version = "0.15", optional = true } # For tensor operations
 
 [dev-dependencies]
 kaspa-txscript.workspace = true
@@ -43,3 +45,6 @@ harness = false
 
 [lints]
 workspace = true
+
+[features]
+ai-training = ["tch", "ndarray"]

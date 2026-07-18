@@ -104,6 +104,18 @@ pub struct Params {
 
     pub epoch_len: u32,
 
+    /// UsefulPoW activation DAA score
+    pub useful_pow_activation_daa_score: u64,
+
+    /// Federated averaging interval (blocks between aggregations)
+    pub fedavg_interval: u64,
+
+    /// Minimum training improvement required
+    pub min_training_improvement: f64,
+
+    /// Maximum allowed loss after training
+    pub max_loss_after: f64,
+
     /// Fund script public key (hex string including the 2-byte version prefix)
     pub fund_script_public_key: &'static str,
 
@@ -386,6 +398,10 @@ pub const MAINNET_PARAMS: Params = Params {
     skip_proof_of_work: false,
     max_block_level: 225,
     pruning_proof_m: 1000,
+    useful_pow_activation_daa_score: u64::MAX, // Not yet activated
+    fedavg_interval: 1000,
+    min_training_improvement: 0.001,
+    max_loss_after: 1.0,
 };
 
 pub const TESTNET_PARAMS: Params = Params {
@@ -452,6 +468,10 @@ pub const TESTNET_PARAMS: Params = Params {
     skip_proof_of_work: false,
     max_block_level: 250,
     pruning_proof_m: 1000,
+    useful_pow_activation_daa_score: u64::MAX, // Not yet activated
+    fedavg_interval: 1000,
+    min_training_improvement: 0.001,
+    max_loss_after: 1.0,
 };
 
 pub const TESTNET11_PARAMS: Params = Params {
@@ -515,6 +535,10 @@ pub const TESTNET11_PARAMS: Params = Params {
 
     skip_proof_of_work: false,
     max_block_level: 250,
+    useful_pow_activation_daa_score: u64::MAX, // Not yet activated
+    fedavg_interval: 1000,
+    min_training_improvement: 0.001,
+    max_loss_after: 1.0,
 };
 
 pub const SIMNET_PARAMS: Params = Params {
@@ -578,6 +602,10 @@ pub const SIMNET_PARAMS: Params = Params {
 
     skip_proof_of_work: true, // For simnet only, PoW can be simulated by default
     max_block_level: 250,
+    useful_pow_activation_daa_score: u64::MAX, // Not yet activated
+    fedavg_interval: 1000,
+    min_training_improvement: 0.001,
+    max_loss_after: 1.0,
 };
 
 pub const DEVNET_PARAMS: Params = Params {
@@ -644,4 +672,8 @@ pub const DEVNET_PARAMS: Params = Params {
     skip_proof_of_work: false,
     max_block_level: 250,
     pruning_proof_m: 1000,
+    useful_pow_activation_daa_score: u64::MAX, // Not yet activated
+    fedavg_interval: 1000,
+    min_training_improvement: 0.001,
+    max_loss_after: 1.0,
 };

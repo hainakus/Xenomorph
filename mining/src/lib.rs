@@ -14,6 +14,7 @@ mod manager_tests;
 pub mod mempool;
 pub mod model;
 pub mod monitor;
+pub mod training;
 
 // Exposed for benchmarks
 pub use block_template::{policy::Policy, selector::RebalancingWeightedTransactionSelector};
