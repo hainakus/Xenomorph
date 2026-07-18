@@ -1,0 +1,20 @@
+[
+  {
+    "model_id": "dnabert2",
+    "hf_repo": "xenom/dnabert2",
+    "hf_revision": "main",
+    "genesis_checkpoint": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "vram_required": 8,
+    "reward_per_block": 10000000000,
+    "min_stake_to_train": 10000
+  },
+  {
+    "model_id": "evo2-7b",
+    "hf_repo": "arcinstitute/evo2_7b",
+    "hf_revision": "main",
+    "genesis_checkpoint": "0x0000000000000000000000000000000000000000000000000000000000000001",
+    "vram_required": 48,
+    "reward_per_block": 50000000000,
+    "min_stake_to_train": 50000
+  }
+]

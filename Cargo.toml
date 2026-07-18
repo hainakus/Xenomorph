@@ -62,6 +62,10 @@ members = [
     "metrics/core",
     "metrics/perf_monitor",
     "utils/alloc",
+    "seed-node",
+    "api-gateway",
+    "xenom-miner",
+    "tests",
 ]
 
 [workspace.package]
