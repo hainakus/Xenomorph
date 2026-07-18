@@ -8,6 +8,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 mod consensus;
+mod governance;
 mod model;
 mod rpc;
 mod serving;

@@ -1,0 +1,122 @@
+syntax = "proto3";
+
+package xenom.governance;
+
+option go_package = "xenom/ecosystem/proto/governance";
+
+// Governance service exposed by seed nodes / API gateway for model lifecycle
+// management. It mirrors the on-chain ModelGovernance.sol operations.
+service Governance {
+  // Create a new model proposal.
+  rpc ProposeModel (ProposeModelRequest) returns (ProposeModelResponse);
+
+  // Cast a stake-weighted vote on an open proposal.
+  rpc CastVote (CastVoteRequest) returns (CastVoteResponse);
+
+  // Execute an approved proposal, activating the model.
+  rpc ExecuteProposal (ExecuteProposalRequest) returns (ExecuteProposalResponse);
+
+  // List open or recently closed proposals.
+  rpc ListProposals (ListProposalsRequest) returns (ListProposalsResponse);
+
+  // List models currently active on-chain.
+  rpc ListActiveModels (ListActiveModelsRequest) returns (ListActiveModelsResponse);
+
+  // Return on-chain data for a specific model.
+  rpc GetModelData (GetModelDataRequest) returns (GetModelDataResponse);
+}
+
+message ProposeModelRequest {
+  string model_id = 1;
+  string hf_repo = 2;
+  string hf_revision = 3;
+  bytes genesis_checkpoint = 4;  // 32 bytes
+  uint64 vram_required = 5;      // GB
+  uint64 reward_per_block = 6;   // smallest unit of Xenom
+  uint64 min_stake_to_train = 7;
+  bytes proposer_signature = 8;  // optional signature proving ownership
+}
+
+message ProposeModelResponse {
+  uint64 proposal_id = 1;
+  string tx_hash = 2;
+}
+
+message CastVoteRequest {
+  uint64 proposal_id = 1;
+  bool support = 2;
+  bytes voter_signature = 3;
+}
+
+message CastVoteResponse {
+  string tx_hash = 1;
+}
+
+message ExecuteProposalRequest {
+  uint64 proposal_id = 1;
+  bytes executor_signature = 2;
+}
+
+message ExecuteProposalResponse {
+  string tx_hash = 1;
+  bool activated = 2;
+}
+
+message ListProposalsRequest {
+  bool active_only = 1;
+  uint32 limit = 2;
+  uint32 offset = 3;
+}
+
+message ListProposalsResponse {
+  repeated Proposal proposals = 1;
+  uint32 total_count = 2;
+}
+
+message Proposal {
+  uint64 proposal_id = 1;
+  string model_id = 2;
+  string hf_repo = 3;
+  string hf_revision = 4;
+  bytes genesis_checkpoint = 5;
+  uint64 vram_required = 6;
+  uint64 reward_per_block = 7;
+  uint64 min_stake_to_train = 8;
+  uint64 vote_start = 9;
+  uint64 vote_end = 10;
+  uint64 yes_votes = 11;
+  uint64 no_votes = 12;
+  bool executed = 13;
+}
+
+message ListActiveModelsRequest {
+  uint32 limit = 1;
+  uint32 offset = 2;
+}
+
+message ListActiveModelsResponse {
+  repeated ActiveModel models = 1;
+  uint32 total_count = 2;
+}
+
+message GetModelDataRequest {
+  string model_id = 1;
+}
+
+message GetModelDataResponse {
+  ActiveModel model = 1;
+  bool found = 2;
+}
+
+message ActiveModel {
+  string model_id = 1;
+  string hf_repo = 2;
+  string hf_revision = 3;
+  bytes genesis_checkpoint = 4;
+  uint64 vram_required = 5;
+  uint64 reward_per_block = 6;
+  uint64 min_stake_to_train = 7;
+  uint64 activation_block = 8;
+  uint64 deprecation_block = 9;
+  bool active = 10;
+}

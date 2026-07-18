@@ -95,6 +95,11 @@ impl WalletManager {
         &self.public_key
     }
 
+    /// Return the raw 32-byte secp256k1 secret key.
+    pub fn secret_bytes(&self) -> [u8; 32] {
+        self.secret_key.secret_bytes()
+    }
+
     fn save(&self, data_dir: &Path, password: &str, phrase: &str) -> Result<()> {
         fs::create_dir_all(data_dir)
             .with_context(|| format!("Failed to create wallet directory {:?}", data_dir))?;

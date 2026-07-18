@@ -162,7 +162,7 @@ impl ModelStorage {
 
     fn compute_key_hash(&self) -> Vec<u8> {
         let mut hasher = Sha256::new();
-        hasher.update(&self.encryption_key);
+        hasher.update(self.encryption_key);
         hasher.finalize().to_vec()
     }
 

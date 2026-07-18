@@ -24,6 +24,7 @@ tonic = "0.10"
 prost = "0.12"
 tokio-stream = "0.1"
 base64 = "0.21"
+hex = "0.4"
 rand = "0.8"
 
 [build-dependencies]

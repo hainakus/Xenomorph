@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::{
     http::StatusCode,
     response::Json,
@@ -14,12 +14,14 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+mod governance;
 mod handlers;
 mod payments;
 mod proto;
 mod seed_client;
 mod state;
 
+use governance::GovernanceClient;
 use payments::verifier::PaymentVerifier;
 use state::AppState;
 
@@ -30,7 +32,7 @@ async fn main() -> Result<()> {
 
     info!("Starting Xenomorph API Gateway");
 
-    // Initialize state
+    // Initialize payment verifier
     let payment_verifier = Arc::new(
         PaymentVerifier::new(
             std::env::var("USDT_CONTRACT_ADDRESS").unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string()),
@@ -39,7 +41,21 @@ async fn main() -> Result<()> {
         .await?,
     );
 
-    let state = Arc::new(AppState::new(payment_verifier).await?);
+    // Initialize on-chain governance client
+    let governance_contract = std::env::var("GOVERNANCE_CONTRACT_ADDRESS")
+        .unwrap_or_else(|_| "0x0000000000000000000000000000000000000000".to_string())
+        .parse()
+        .context("Invalid GOVERNANCE_CONTRACT_ADDRESS")?;
+    let governance_rpc = std::env::var("GOVERNANCE_RPC_URL")
+        .unwrap_or_else(|_| "https://polygon-mumbai.infura.io/v3/YOUR_KEY".to_string());
+    let governance_key = std::env::var("GOVERNANCE_OPERATOR_KEY").ok();
+    let governance = Arc::new(GovernanceClient::new(
+        &governance_rpc,
+        governance_contract,
+        governance_key.as_deref(),
+    )?);
+
+    let state = Arc::new(AppState::new(payment_verifier, governance).await?);
 
     // Build router
     let app = Router::new()
@@ -48,6 +64,13 @@ async fn main() -> Result<()> {
         .route("/predict/{model_id}", post(handlers::predict::predict))
         .route("/queries/{id}", get(handlers::predict::get_query_status))
         .route("/webhook/payment", post(handlers::predict::payment_webhook))
+        // Governance endpoints
+        .route("/governance/proposals", get(governance::proposals::list_proposals).post(governance::proposals::create_proposal))
+        .route("/governance/proposals/:id", get(governance::proposals::get_proposal))
+        .route("/governance/proposals/:id/vote", post(governance::voting::cast_vote))
+        .route("/governance/proposals/:id/execute", post(governance::voting::execute_proposal))
+        .route("/governance/models", get(governance::proposals::list_active_models))
+        .route("/governance/models/:id", get(governance::proposals::get_active_model))
         .route("/health", get(health_check))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
         .with_state(state);
