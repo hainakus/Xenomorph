@@ -48,7 +48,11 @@ pub struct XenomorphRpcClient {
 
 impl XenomorphRpcClient {
     pub async fn new(addr: &str) -> Result<Self> {
-        let socket_addr: SocketAddr = addr.parse().map_err(|e| anyhow!("Invalid address: {}", e))?;
+        let socket_addr = tokio::net::lookup_host(addr)
+            .await
+            .map_err(|e| anyhow!("Failed to resolve {}: {}", addr, e))?
+            .next()
+            .ok_or_else(|| anyhow!("No addresses found for {}", addr))?;
 
         Ok(Self { addr: socket_addr, codec: BorshCodec::new() })
     }
