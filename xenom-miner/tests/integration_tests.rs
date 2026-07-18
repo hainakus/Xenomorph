@@ -1,0 +1,154 @@
+use borsh::{BorshDeserialize, to_vec};
+use futures::{SinkExt, StreamExt};
+use std::time::Duration;
+use tokio::net::TcpListener;
+use tokio::time::timeout;
+use tokio_tungstenite::accept_async;
+use tokio_tungstenite::tungstenite::Message;
+
+use xenom_miner::block::BlockBuilder;
+use xenom_miner::prover::{PublicInputs, ZkProver};
+use xenom_miner::rpc::XenomRpcClient;
+use xenom_miner::rpc::messages::{
+    BlockHeader, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch, TrainingBlock, TrainingProof,
+};
+use xenom_miner::trainer::{MockTrainer, Trainer};
+use xenom_miner::wallet::WalletManager;
+
+const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Start a minimal mock Xenomorph node that speaks Borsh over WebSocket.
+async fn start_mock_server() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(stream).await.unwrap();
+
+        while let Some(Ok(msg)) = ws.next().await {
+            if let Message::Binary(bytes) = msg {
+                let envelope: RpcEnvelope = match RpcEnvelope::try_from_slice(&bytes) {
+                    Ok(env) => env,
+                    Err(_) => {
+                        let _ = ws.send(Message::Binary(
+                            to_vec(&RpcResponse::Error("bad request".to_string())).unwrap(),
+                        )).await;
+                        continue;
+                    }
+                };
+
+                let response = match envelope.payload {
+                    RpcRequest::GetTrainingBatch { model_id } => {
+                        RpcResponse::TrainingBatch(Some(TrainingBatch {
+                            batch_id: 42,
+                            model_id,
+                            base_checkpoint: [1u8; 32],
+                            data_indices: vec![0, 1, 2, 3],
+                            target_improvement: 0.01,
+                            learning_rate: 0.01,
+                        }))
+                    }
+                    RpcRequest::SubmitBlock(_) => RpcResponse::BlockHash([7u8; 32]),
+                    RpcRequest::Heartbeat => RpcResponse::Pong,
+                    RpcRequest::GetBalance { .. } => RpcResponse::Balance(0),
+                    RpcRequest::GetDifficulty => RpcResponse::Difficulty([0xff; 32]),
+                };
+
+                let payload = to_vec(&response).unwrap();
+                if ws.send(Message::Binary(payload)).await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    // Give the server a moment to start listening.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    port
+}
+
+#[tokio::test]
+async fn test_rpc_client_against_mock_server() {
+    let port = start_mock_server().await;
+    let url = format!("ws://127.0.0.1:{}", port);
+
+    let mut client = XenomRpcClient::new(url);
+    timeout(TEST_TIMEOUT, client.connect())
+        .await
+        .expect("client connect timed out")
+        .expect("client connect failed");
+
+    let batch = client
+        .get_training_batch("dnabert2")
+        .await
+        .expect("get_training_batch failed")
+        .expect("server returned no batch");
+    assert_eq!(batch.batch_id, 42);
+    assert_eq!(batch.model_id, "dnabert2");
+
+    let block = TrainingBlock {
+        header: BlockHeader {
+            prev_block_hash: [0u8; 32],
+            block_number: 1,
+            timestamp: 0,
+            merkle_root: [1u8; 32],
+            difficulty: [2u8; 32],
+            nonce: 0,
+        },
+        training_proof: TrainingProof {
+            base_checkpoint: [3u8; 32],
+            loss_before: 2.45,
+            loss_after: 2.41,
+            gradients_commitment: [4u8; 32],
+            zk_proof: vec![0u8; 32],
+            batch_indices: vec![0, 1, 2],
+            compute_time_ms: 100,
+        },
+        miner_address: "xnom:test".to_string(),
+        timestamp: 0,
+        signature: [0u8; 64],
+    };
+
+    let hash = timeout(TEST_TIMEOUT, client.submit_block(block))
+        .await
+        .expect("submit_block timed out")
+        .expect("submit_block failed");
+    assert_eq!(hash, [7u8; 32]);
+}
+
+#[tokio::test]
+async fn test_end_to_end_mining_pipeline() {
+    let tmp = tempfile::tempdir().unwrap();
+    let wallet = WalletManager::create_new(tmp.path(), "password").unwrap();
+
+    let batch = TrainingBatch {
+        batch_id: 1,
+        model_id: "dnabert2".to_string(),
+        base_checkpoint: [0u8; 32],
+        data_indices: vec![0, 1, 2, 3],
+        target_improvement: 0.01,
+        learning_rate: 0.01,
+    };
+
+    let trainer = MockTrainer::new();
+    let result = trainer.train(&batch).unwrap();
+    assert!(result.loss_after < result.loss_before);
+
+    let prover = ZkProver::new();
+    let public_inputs = PublicInputs {
+        model_id: batch.model_id.clone(),
+        batch_id: batch.batch_id,
+        loss_before: result.loss_before,
+        loss_after: result.loss_after,
+        gradients_commitment: result.gradients_commitment,
+        base_checkpoint: result.base_checkpoint,
+    };
+    let proof = prover.generate_proof(&result, &public_inputs).unwrap();
+    assert!(prover.verify_proof(&proof, &result, &public_inputs));
+
+    let mut builder = BlockBuilder::new(wallet.address().to_string());
+    let mut block = builder.build_block(&result, proof, [0u8; 32]).unwrap();
+    wallet.sign_block(&mut block).unwrap();
+    assert!(wallet.verify_signature(&block).unwrap());
+}

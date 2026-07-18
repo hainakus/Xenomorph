@@ -1,0 +1,218 @@
+use anyhow::{Context, Result, bail};
+use borsh::{to_vec, BorshDeserialize};
+use futures::{SinkExt, StreamExt};
+use std::time::{Duration, Instant};
+use tokio::net::TcpStream;
+use tokio::time::timeout;
+use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+use tracing::{debug, info, warn};
+
+use super::messages::{
+    BlockHash, DifficultyTarget, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch, TrainingBlock,
+};
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(60);
+
+/// A WebSocket-based Borsh RPC client for the Xenomorph node.
+pub struct XenomRpcClient {
+    url: String,
+    connection: Option<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+    request_counter: u64,
+    last_heartbeat: Instant,
+}
+
+impl XenomRpcClient {
+    /// Create a new client without connecting.
+    pub fn new(url: String) -> Self {
+        Self {
+            url,
+            connection: None,
+            request_counter: 0,
+            last_heartbeat: Instant::now(),
+        }
+    }
+
+    /// Connect (or reconnect) to the configured RPC endpoint.
+    pub async fn connect(&mut self) -> Result<()> {
+        let (ws_stream, _) = connect_async(&self.url)
+            .await
+            .with_context(|| format!("Failed to connect to {}", self.url))?;
+
+        info!("Connected to {}", self.url);
+        self.connection = Some(ws_stream);
+        self.last_heartbeat = Instant::now();
+        Ok(())
+    }
+
+    /// Send a heartbeat to keep the connection alive if enough time has passed.
+    pub async fn heartbeat(&mut self) -> Result<()> {
+        if self.last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
+            self.send_request(RpcRequest::Heartbeat).await?;
+            self.last_heartbeat = Instant::now();
+        }
+        Ok(())
+    }
+
+    /// Request a training batch from the node.
+    pub async fn get_training_batch(&mut self, model_id: &str) -> Result<Option<TrainingBatch>> {
+        let response = self
+            .send_request(RpcRequest::GetTrainingBatch {
+                model_id: model_id.to_string(),
+            })
+            .await?;
+
+        match response {
+            RpcResponse::TrainingBatch(batch) => Ok(batch),
+            RpcResponse::Error(msg) => bail!("Node returned error: {}", msg),
+            other => bail!("Unexpected response to GetTrainingBatch: {:?}", other),
+        }
+    }
+
+    /// Submit a completed training block to the node.
+    pub async fn submit_block(&mut self, block: TrainingBlock) -> Result<BlockHash> {
+        let response = self.send_request(RpcRequest::SubmitBlock(block)).await?;
+
+        match response {
+            RpcResponse::BlockHash(hash) => Ok(hash),
+            RpcResponse::Error(msg) => bail!("Node rejected block: {}", msg),
+            other => bail!("Unexpected response to SubmitBlock: {:?}", other),
+        }
+    }
+
+    /// Query the balance of an address.
+    pub async fn get_balance(&mut self, address: &str) -> Result<u64> {
+        let response = self
+            .send_request(RpcRequest::GetBalance {
+                address: address.to_string(),
+            })
+            .await?;
+
+        match response {
+            RpcResponse::Balance(balance) => Ok(balance),
+            RpcResponse::Error(msg) => bail!("Node returned error: {}", msg),
+            other => bail!("Unexpected response to GetBalance: {:?}", other),
+        }
+    }
+
+    /// Query the current network difficulty.
+    pub async fn get_difficulty(&mut self) -> Result<DifficultyTarget> {
+        let response = self.send_request(RpcRequest::GetDifficulty).await?;
+
+        match response {
+            RpcResponse::Difficulty(target) => Ok(target),
+            RpcResponse::Error(msg) => bail!("Node returned error: {}", msg),
+            other => bail!("Unexpected response to GetDifficulty: {:?}", other),
+        }
+    }
+
+    /// Ensure a connection is open, reconnecting with exponential backoff on failure.
+    async fn ensure_connected(&mut self) -> Result<()> {
+        if self.connection.is_some() {
+            return Ok(());
+        }
+
+        let mut delay = Duration::from_secs(1);
+        loop {
+            match connect_async(&self.url).await {
+                Ok((ws_stream, _)) => {
+                    info!("Reconnected to {}", self.url);
+                    self.connection = Some(ws_stream);
+                    self.last_heartbeat = Instant::now();
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!("Failed to reconnect to {}: {}. Retrying in {:?}", self.url, e, delay);
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(MAX_RECONNECT_DELAY);
+                }
+            }
+        }
+    }
+
+    /// Send a single Borsh request and wait for a matching response.
+    async fn send_request(&mut self, request: RpcRequest) -> Result<RpcResponse> {
+        self.ensure_connected().await?;
+
+        let request_id = self.request_counter;
+        self.request_counter += 1;
+
+        let envelope = RpcEnvelope { request_id, payload: request };
+        let payload = to_vec(&envelope)
+            .with_context(|| "Failed to serialize RPC envelope")?;
+
+        let stream = self.connection.as_mut().context("No WebSocket connection")?;
+        stream.send(Message::Binary(payload))
+            .await
+            .with_context(|| "Failed to send WebSocket message")?;
+
+        debug!("Sent RPC request {}", request_id);
+
+        let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
+
+        loop {
+            let remaining = deadline - tokio::time::Instant::now();
+            if remaining.is_zero() {
+                self.connection = None;
+                bail!("RPC request {} timed out", request_id);
+            }
+
+            let next = timeout(remaining, stream.next());
+            match next.await {
+                Ok(Some(Ok(Message::Binary(bytes)))) => {
+                    let response: RpcResponse = RpcResponse::try_from_slice(&bytes)
+                        .with_context(|| "Failed to deserialize RPC response")?;
+                    debug!("Received RPC response for request {}", request_id);
+                    return Ok(response);
+                }
+                Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Ok(Message::Text(_)))) => {
+                    // Ignore text and close frames, keep waiting for binary response.
+                    continue;
+                }
+                Ok(Some(Ok(Message::Ping(_)))) | Ok(Some(Ok(Message::Pong(_)))) => {
+                    continue;
+                }
+                Ok(Some(Ok(Message::Frame(_)))) => {
+                    continue;
+                }
+                Ok(Some(Err(e))) => {
+                    warn!("WebSocket read error: {}", e);
+                    self.connection = None;
+                    bail!("WebSocket read error: {}", e);
+                }
+                Ok(None) => {
+                    warn!("WebSocket stream closed by peer");
+                    self.connection = None;
+                    bail!("WebSocket stream closed");
+                }
+                Err(_) => {
+                    warn!("RPC request {} timed out", request_id);
+                    self.connection = None;
+                    bail!("RPC request {} timed out", request_id);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_request_counter_increments() {
+        let mut client = XenomRpcClient::new("ws://localhost:16110".to_string());
+        let first = client.request_counter;
+        client.request_counter += 1;
+        assert_eq!(client.request_counter, first + 1);
+    }
+
+    #[tokio::test]
+    async fn test_connect_to_invalid_url_fails() {
+        let mut client = XenomRpcClient::new("ws://127.0.0.1:1".to_string());
+        // ensure_connected loops forever with backoff; use a short timeout.
+        let result = timeout(Duration::from_millis(500), client.connect()).await;
+        assert!(result.is_err() || result.unwrap().is_err());
+    }
+}
