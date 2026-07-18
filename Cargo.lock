@@ -4732,6 +4732,7 @@ dependencies = [
 name = "kaspa-mining"
 version = "0.15.5"
 dependencies = [
+ "blake3",
  "cc",
  "criterion",
  "futures-util",
