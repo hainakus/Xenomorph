@@ -1,643 +1,181 @@
+# Xenomorph Ecosystem - Complete Implementation
 
-<h1>Xenomorph On UniVerse - based on Kaspa Rust</h1>
+Complete implementation of Xenomorph blockchain ecosystem with UsefulPoW, API Gateway, and Smart Contracts.
 
-* A new blockchain-based platform called xenom is being developed, which utilizes Kaspa as its underlying layer 1 infrastructure.
-* xenom will provide a number of benefits over traditional web development, including increased performance, security, and transparency.
-* The use case for xenom is centered around helping underdeveloped countries and organizations like Unicef by providing a more scalable, secure, and transparent platform for donations and aid distribution.
-* Smart contracts will be used to manage the donation process, ensuring that funds are used efficiently and transparently.
-* The xenom platform will also utilize Kaspa's distributed ledger technology to provide a more decentralized and secure system for managing aid resources.
-* In addition to its core use cases, xenom has the potential to improve the efficiency and effectiveness of various industries and sectors, including healthcare, education, and supply chain management.
-* The xenom platform will be open-source and free to use, providing an opportunity for anyone to contribute to the development and growth of the platform.
-
-Overall, xenom is a promising new blockchain-based platform that has the potential to revolutionize the way we think about web development and aid distribution. By leveraging Kaspa's underlying layer 1 infrastructure and utilizing smart contracts, xenom offers a more scalable, secure, and transparent
-platform for donations and aid distribution.
-
-
- 
-Welcome to the Rust-based implementation of the Kaspa full-node and its ancillary libraries. The contained node release serves as a drop-in replacement to the established <a href="https://github.com/kaspanet/kaspad">Golang node</a> and to date is the recommended node software for the Kaspa network, introducing developers to the possibilities of Rust in the Kaspa network's context.
-
-We invite developers and blockchain enthusiasts to collaborate, test, and optimize our Rust implementation. Each line of code here is an opportunity to contribute to the open-source blockchain movement, shaping a platform designed for scalability and speed without compromising on security and decentralization.
-
-Your feedback, contributions, and issue reports will be integral to evolving this codebase and continuing its maturity as a reliable node in the Kaspa network.
-
-The default branch of this repository is `master` and new contributions are constantly merged into it. For a stable branch corresponding to the latest stable release please pull and compile the `stable` branch. 
-
----
-
-## Genome PoW — Evolutionary Proof-of-Work Based on the Human Genome
-
-> **Blockchain + Genetics + Fitness Incentive + Adaptive Epoch**
-
-Xenom introduces a novel Proof-of-Work algorithm, **GenomePoW**, that anchors mining computations to the human reference genome (GRCh38). Instead of pure hash brute-force, miners must process a genomic fragment, apply deterministic mutations, score biological fitness, and then produce a valid final hash — creating a PoW that is both CPU/memory-hard and biologically meaningful.
-
-![Genome PoW Diagram](docs/genome_pow_diagram.png)
-
----
-
-### How It Works — 8 Steps
-
-#### 1. Genome Base (GRCh38)
-The dataset is the **human reference genome** (~3 billion bases), pre-segmented into **1 MB fragments**. This dataset is shared and verifiable by all nodes.
+## 📁 Structure
 
 ```
-Total bases : ~3,000,000,000
-Fragment size: 1 MB
+xenom-ecosystem/
+├── smart-contracts/          # Solidity smart contracts
+│   ├── InferencePayments.sol # USDT payment contract
+│   └── ModelRegistry.sol     # Model registry contract
+├── seed-node/               # Rust seed node with gRPC
+│   ├── src/
+│   │   ├── consensus/       # UsefulPoW and FedAvg
+│   │   ├── model/          # Model management
+│   │   ├── serving/        # gRPC inference service
+│   │   └── rpc/            # Borsh RPC client
+│   └── Cargo.toml
+├── api-gateway/             # Rust API Gateway
+│   ├── src/
+│   │   ├── handlers/       # HTTP handlers
+│   │   ├── payments/       # USDT verification
+│   │   └── state.rs        # Application state
+│   └── Cargo.toml
+└── proto/
+    └── inference.proto     # gRPC definitions
 ```
 
-#### 2. Selection of Fragment
-Each mining attempt selects a **deterministic fragment** derived from the current epoch seed and the miner's nonce:
+## 🚀 Deployment
 
-```
-fragment_index = blake3(epoch_seed ‖ nonce)
-```
+### Prerequisites
 
-The resulting fragment is a deterministic subsequence of the genome — every miner with the same nonce and epoch seed reads the same fragment.
+- Rust 1.70+
+- Node.js 18+
+- Solidity 0.8.20+
+- Redis server
+- Ethereum RPC endpoint (Polygon Mumbai for testnet)
 
-#### 3. Block Genome Generation
-Starting from the selected fragment base (`genome_0`), the algorithm applies **K rounds of deterministic mutations** over the epoch:
-
-```
-genome_0 = Fragment Base
-for i in 0..K(epoch):
-    apply mutation → genome_i
-```
-
-**Mutation types (deterministic, seeded by nonce):**
-| Mutation | Description |
-|---|---|
-| **Swap** | Swap two subsequences |
-| **Insert** | Insert a sub-fragment |
-| **Rotate** | Rotate a window |
-| **XOR** | XOR a region with a derived key |
-| **Shift** | Shift a segment left/right |
-
-#### 4. Light Fitness Scoring
-After mutation, the resulting genome sequence is scored for **biological fitness** using three metrics:
-
-| Metric | Description |
-|---|---|
-| **Entropy** | Shannon entropy of the base distribution |
-| **Cycles & Patterns** | Repeat and structural pattern density |
-| **GC Content** | Guanine + Cytosine ratio (target ~50%) |
-
-```
-fitness_value = compute_fitness(entropy, gc_content, complexity)
-                → score in [0, 3000]
-```
-
-#### 5. Final Hash (Validation)
-The mutated genome sequence, block header, and nonce are combined into the final hash:
-
-```
-final_hash = blake3(genome_i ‖ header ‖ nonce)
-```
-
-The block is **valid** if and only if:
-
-```
-final_hash < Target
-```
-
-If not, the miner increments the nonce and repeats from step 2.
-
-#### 6. Reward Incentive
-Miners are rewarded based on both finding a valid block **and** the fitness quality of their genome:
-
-```
-reward = base_reward × clamp(1 + (fitness / threshold)², 1.0, 2.0)
-```
-
-The coinbase payload also encodes:
-- **Output 1** → miner address
-- **Mutation type** used
-- **Memory size** consumed (2 MB – 32 MB, scales with epoch)
-
-Higher-quality genomic work earns up to **2× the base block reward**.
-
-#### 7. Epoch Update (every ~300 blocks / ~5 min)
-At each epoch boundary the network collectively updates the difficulty seed:
-
-```
-epoch_score = median(fitness of last N blocks)
-next_seed   = blake3(epoch_score ‖ prev_seed)
-```
-
-This makes the fragment selection for the **next epoch** dependent on the collective mining quality of the current epoch — the network adapts over time.
-
-#### 8. Next Block / Next Epoch
-The `next_seed` becomes the `epoch_seed` for the following epoch. Every node independently recomputes and verifies it from the chain history, requiring no trusted coordination.
-
----
-
-### Key Properties
-
-| Property | Value |
-|---|---|
-| **Dataset** | Human reference genome GRCh38 |
-| **Fragment size** | 1 MB (scales with epoch) |
-| **Hash function** | Blake3 |
-| **Mutation rounds** | K (adaptive per epoch) |
-| **Epoch length** | 300 blocks (~5 minutes) |
-| **Max reward multiplier** | 2× base reward |
-| **Memory requirement** | 2 MB – 32 MB |
-| **Activation** | `genome_pow_activation_daa_score` |
-
-### Activation
-
-GenomePoW is dormant until a configurable DAA score threshold (`genome_pow_activation_daa_score`) is reached. Prior to activation, Xenom uses **KHeavyHash (PyrinHashv2)**. After activation, all blocks must satisfy the Genome PoW rules — nodes running without the GRCh38 dataset fall back to synthetic fragment generation for validation.
-
----
-
-## Post-Quantum Cryptography (ML-DSA-65)
-
-Xenom replaces **secp256k1 ECDSA/Schnorr** with **ML-DSA-65** (CRYSTALS-Dilithium3, NIST FIPS 204), co-activated with the Genome PoW hard fork. This makes all new addresses quantum-resistant by default.
-
-### Algorithm
-
-| Property | Value |
-|---|---|
-| **Algorithm** | ML-DSA-65 (CRYSTALS-Dilithium3) |
-| **Public key size** | 1952 bytes |
-| **Signature size** | 3293 bytes |
-| **Address version** | `PubKeyPQ = 2` |
-| **Script opcode** | `OP_CHECKSIGPQ = 0xbe` |
-| **Script type** | P2PQKH (`OP_DATA_32 <blake2b(pubkey)[0..32]> OP_CHECKSIGPQ`) |
-| **Rust crate** | `pqcrypto-dilithium 0.5` |
-
-### Migration Timeline
-
-```
-pq_activation_daa_score = 21_370_801   (co-activated with Genome PoW)
-  │
-  ├─ PQ addresses become valid on-chain
-  ├─ Wallets can generate PubKeyPQ addresses: pq_keypair() + pq_address_from_pubkey()
-  └─ New outputs should use PubKeyPQ from this point forward
-
-  ════════════ GRACE PERIOD ════════════
-  │
-  │  Wallets call: account.pq_migrate(wallet_secret, pq_address, ...)
-  │  ├─ Signs spending tx with OLD secp256k1 key (still valid during grace period)
-  │  ├─ All outputs land on the PubKeyPQ address
-  │  └─ No special protocol change needed — works with existing transaction flow
-  │
-  ════════════════════════════════════════
-
-pq_mandatory_daa_score = u64::MAX      (dormant — set when grace period ends)
-  │
-  ├─ Consensus rejects any tx spending PubKey / PubKeyECDSA UTXOs
-  ├─ Error: TxRuleError::Secp256k1SpendNotAllowed(input_index)
-  └─ Un-migrated UTXOs become permanently unspendable
-```
-
-### Wallet Integration
-
-**Generate a PQ keypair and address:**
-```rust
-use kaspa_txscript::{pq_keypair, pq_address_from_pubkey};
-use kaspa_addresses::Prefix;
-
-let (sk_bytes, pk_bytes) = pq_keypair();                            // fresh ML-DSA-65 keypair
-let address = pq_address_from_pubkey(&pk_bytes, Prefix::Mainnet);  // PubKeyPQ address
-```
-
-**Migrate existing secp256k1 funds to PQ (call before `pq_mandatory_daa_score`):**
-```rust
-// account is any wallet Account (bip32, legacy, multisig)
-let (summary, tx_ids) = account
-    .pq_migrate(wallet_secret, payment_secret, pq_address, &abortable, None)
-    .await?;
-```
-This sweeps **all secp256k1 UTXOs** in the account to `pq_address` using the existing secp256k1 signing key. No new key material required for the sweep itself.
-
-**Build a sigScript when spending a P2PQKH output:**
-```rust
-use kaspa_txscript::build_pq_sigscript;
-use kaspa_consensus_core::hashing::sighash_type::SigHashType;
-use pqcrypto_dilithium::dilithium3;
-use pqcrypto_traits::sign::{SecretKey as _, DetachedSignature as _};
-
-let sk = dilithium3::SecretKey::from_bytes(&sk_bytes).unwrap();
-let mut sig = dilithium3::detached_sign(&sighash_bytes, &sk).as_bytes().to_vec();
-sig.push(SigHashType::All.to_u8());                 // append hash-type byte
-
-let sig_script = build_pq_sigscript(&sig, &pk_bytes);
-```
-
-### Activating the Mandatory Deadline
-
-When migration is deemed complete, update **one field** in `consensus/core/src/config/params.rs`:
-```rust
-// Example: enforce PQ ~6 months after activation (~8.3M blocks at 4 BPS)
-pq_mandatory_daa_score: 30_000_000,
-```
-No other code changes are required — `TransactionValidator` enforces the rule automatically.
-
----
-
-## Installation
-  <details>
-  <summary>Building on Linux</summary>
-  
-  1. Install general prerequisites
-
-      ```bash
-      sudo apt install curl git build-essential libssl-dev pkg-config 
-      ```
-
-  2. Install Protobuf (required for gRPC)
-  
-      ```bash
-      sudo apt install protobuf-compiler libprotobuf-dev #Required for gRPC
-      ```
-  3. Install the clang toolchain (required for RocksDB and WASM secp256k1 builds)
-
-      ```bash
-      sudo apt-get install clang-format clang-tidy \
-      clang-tools clang clangd libc++-dev \
-      libc++1 libc++abi-dev libc++abi1 \
-      libclang-dev libclang1 liblldb-dev \
-      libllvm-ocaml-dev libomp-dev libomp5 \
-      lld lldb llvm-dev llvm-runtime \
-      llvm python3-clang
-      ```
-  3. Install the [rust toolchain](https://rustup.rs/)
-     
-     If you already have rust installed, update it by running: `rustup update` 
-  4. Install wasm-pack
-      ```bash
-      cargo install wasm-pack
-      ```
-  4. Install wasm32 target
-      ```bash
-      rustup target add wasm32-unknown-unknown
-      ```      
-  5. Clone the repo
-      ```bash
-      git clone https://github.com/kaspanet/rusty-kaspa
-      cd rusty-kaspa
-      ```
-  </details>
-
-
-
-  <details>  
-  <summary>Building on Windows</summary>
-
-
-  1. [Install Git for Windows](https://gitforwindows.org/) or an alternative Git distribution.
-
-  2. Install [Protocol Buffers](https://github.com/protocolbuffers/protobuf/releases/download/v21.10/protoc-21.10-win64.zip) and add the `bin` directory to your `Path`
-
-  
-3. Install [LLVM-15.0.6-win64.exe](https://github.com/llvm/llvm-project/releases/download/llvmorg-15.0.6/LLVM-15.0.6-win64.exe)
-
-    Add the `bin` directory of the LLVM installation (`C:\Program Files\LLVM\bin`) to PATH
-    
-    set `LIBCLANG_PATH` environment variable to point to the `bin` directory as well
-
-    **IMPORTANT:** Due to C++ dependency configuration issues, LLVM `AR` installation on Windows may not function correctly when switching between WASM and native C++ code compilation (native `RocksDB+secp256k1` vs WASM32 builds of `secp256k1`). Unfortunately, manually setting `AR` environment variable also confuses C++ build toolchain (it should not be set for native but should be set for WASM32 targets). Currently, the best way to address this, is as follows: after installing LLVM on Windows, go to the target `bin` installation directory and copy or rename `LLVM_AR.exe` to `AR.exe`.
-  
-  4. Install the [rust toolchain](https://rustup.rs/)
-     
-     If you already have rust installed, update it by running: `rustup update` 
-  5. Install wasm-pack
-      ```bash
-      cargo install wasm-pack
-      ```
-  6. Install wasm32 target
-      ```bash
-      rustup target add wasm32-unknown-unknown
-      ```      
-  7. Clone the repo
-      ```bash
-      git clone https://github.com/kaspanet/rusty-kaspa
-      cd rusty-kaspa
-      ```
- </details>      
-
-
-  <details>  
-  <summary>Building on Mac OS</summary>
-
-
-  1. Install Protobuf (required for gRPC)
-      ```bash
-      brew install protobuf
-      ```
-  2. Install llvm. 
-  
-      The default XCode installation of `llvm` does not support WASM build targets.
-To build WASM on MacOS you need to install `llvm` from homebrew (at the time of writing, the llvm version for MacOS is 16.0.1).
-      ```bash
-      brew install llvm
-      ```
-
-      **NOTE:** Homebrew can use different keg installation locations depending on your configuration. For example:
-      - `/opt/homebrew/opt/llvm` -> `/opt/homebrew/Cellar/llvm/16.0.1`
-      - `/usr/local/Cellar/llvm/16.0.1`
-
-      To determine the installation location you can use `brew list llvm` command and then modify the paths below accordingly:
-      ```bash
-      % brew list llvm
-      /usr/local/Cellar/llvm/16.0.1/bin/FileCheck
-      /usr/local/Cellar/llvm/16.0.1/bin/UnicodeNameMappingGenerator
-      ...
-      ```
-      If you have `/opt/homebrew/Cellar`, then you should be able to use `/opt/homebrew/opt/llvm`.
-
-      Add the following to your `~/.zshrc` file:
-      ```bash
-      export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
-      export LDFLAGS="-L/opt/homebrew/opt/llvm/lib"
-      export CPPFLAGS="-I/opt/homebrew/opt/llvm/include"
-      export AR=/opt/homebrew/opt/llvm/bin/llvm-ar
-      ```
-
-      Reload the `~/.zshrc` file
-      ```bash
-      source ~/.zshrc
-      ```
-  3. Install the [rust toolchain](https://rustup.rs/)
-     
-     If you already have rust installed, update it by running: `rustup update` 
-  4. Install wasm-pack
-      ```bash
-      cargo install wasm-pack
-      ```
-  4. Install wasm32 target
-      ```bash
-      rustup target add wasm32-unknown-unknown
-      ```      
-  5. Clone the repo
-      ```bash
-      git clone https://github.com/kaspanet/rusty-kaspa
-      cd rusty-kaspa
-      ```
-
- </details>   
-
-  <details>
-
-  <summary>Building WASM32 SDK</summary>
-
-  Rust WebAssembly (WASM) refers to the use of the Rust programming language to write code that can be compiled into WebAssembly, a binary instruction format that runs in web browsers and NodeJs. This allows for easy development using JavaScript and TypeScript programming languages while retaining the benefits of Rust.
-
-  WASM SDK components can be built from sources by running:
-    - `./build-release` - build a full release package (includes both release and debug builds for web and nodejs targets)
-    - `./build-docs` - build TypeScript documentation
-    - `./build-web` - release web build
-    - `./build-web-dev` - development web build
-    - `./build-nodejs` - release nodejs build
-    - `./build-nodejs-dev` - development nodejs build
-
-  IMPORTANT: do not use `dev` builds in production. They are significantly larger, slower and include debug symbols.
-
-### Requirements
-
-  - NodeJs (v20+): https://nodejs.org/en
-  - TypeDoc: https://typedoc.org/
-
-### Builds & documentation
-
-  - Release builds: https://github.com/kaspanet/rusty-kaspa/releases
-  - Developer builds: https://kaspa.aspectron.org/nightly/downloads/
-  - Developer TypeScript documentation: https://kaspa.aspectron.org/docs/
-
-  </details>
-<details>
-
-<summary>
-Kaspa CLI + Wallet
-</summary>
-`kaspa-cli` crate provides cli-driven RPC interface to the node and a
-terminal interface to the Rusty Kaspa Wallet runtime. These wallets are
-compatible with WASM SDK Wallet API and Kaspa NG projects.
-
+### Smart Contracts
 
 ```bash
-cd cli
-cargo run --release
+cd smart-contracts
+
+# Install dependencies
+npm install
+
+# Compile contracts
+npx hardhat compile
+
+# Deploy to testnet
+npx hardhat run scripts/deploy.js --network mumbai
 ```
 
-</details>
-
-
-
-<details>
-
-<summary>
-Local Web Wallet
-</summary>
-
-Run an http server inside of `wallet/wasm/web` folder. If you don't have once, you can use the following:
+### Seed Node
 
 ```bash
-cd wallet/wasm/web
-cargo install basic-http-server
-basic-http-server
+cd seed-node
+
+# Build
+cargo build --release
+
+# Run
+./target/release/seed-node
+
+# Run tests
+cargo test
 ```
-The *basic-http-server* will serve on port 4000 by default, so open your web browser and load http://localhost:4000
 
-The framework is compatible with all major desktop and mobile browsers.
-
-
-</details>
-
-
-## Running the node
-
-  **Start a mainnet node**
-
-  ```bash
-  cargo run --release --bin xenom
-  # or with UTXO-index enabled (needed when using wallets)
-  cargo run --release --bin xenom -- --utxoindex
-  ```
-  **Start a testnet node**
-
-  ```bash
-cargo run --release --bin xenom -- --testnet
-  ```
-
-  **Testnet 11**
-  
-  For participation in the 10BPS test network (TN11), see the following detailed [guide](docs/testnet11.md).
-
-<details>
-
-  <summary>
-Using a configuration file
-  </summary>
-
-  ```bash
-cargo run --release --bin xenom -- --configfile /path/to/configfile.toml
-# or
-cargo run --release --bin xenom -- -C /path/to/configfile.toml
-  ```
-  - The config file should be a list of \<CLI argument\> = \<value\> separated by newlines. 
-  - Whitespace around the `=` is fine, `arg=value` and `arg = value` are both parsed correctly.
-  - Values with special characters like `.` or `=` will require quoting the value i.e \<CLI argument\> = "\<value\>".
-  - Arguments with multiple values should be surrounded with brackets like `addpeer = ["10.0.0.1", "1.2.3.4"]`.
-
-  For example:
-  ```
-testnet = true
-utxoindex = false
-disable-upnp = true
-perf-metrics = true
-appdir = "some-dir"
-netsuffix = 11
-addpeer = ["10.0.0.1", "1.2.3.4"]
-  ```
- Pass the `--help` flag to view all possible arguments
-
-  ```bash
-cargo run --release --bin xenom -- --help
-  ```
-</details>
-
-<details>
-
-  <summary>
-wRPC
-  </summary>
-
-  wRPC subsystem is disabled by default in `kaspad` and can be enabled via:
-
-
-  JSON protocol:
-  ```bash
-  --rpclisten-json = <interface:port>
-  # or use the defaults for current network
-  --rpclisten-json = default
-  ```
-
-  Borsh protocol:
-  ```bash
-  --rpclisten-borsh = <interface:port>
-  # or use the defaults for current network
-  --rpclisten-borsh = default
-  ```
-
-  **Sidenote:**
-
-  Rusty Kaspa integrates an optional wRPC
-  subsystem. wRPC is a high-performance, platform-neutral, Rust-centric, WebSocket-framed RPC 
-  implementation that can use [Borsh](https://borsh.io/) and JSON protocol encoding.
-
-  JSON protocol messaging 
-  is similar to JSON-RPC 1.0, but differs from the specification due to server-side 
-  notifications.
-
-  [Borsh](https://borsh.io/) encoding is meant for inter-process communication. When using [Borsh](https://borsh.io/)
-  both client and server should be built from the same codebase.  
-
-  JSON protocol is based on 
-  Kaspa data structures and is data-structure-version agnostic. You can connect to the
-  JSON endpoint using any WebSocket library. Built-in RPC clients for JavaScript and
-  TypeScript capable of running in web browsers and Node.js are available as a part of
-  the Kaspa WASM framework.
-
-</details>
-
-
-
-<details>
-
-
-## Benchmarking & Testing
-
-
-<details> 
-
-<summary>Simulation framework (Simpa)</summary>
-
-Logging in `kaspad` and `simpa` can be [filtered](https://docs.rs/env_logger/0.10.0/env_logger/#filtering-results) by either:
-
-The current codebase supports a full in-process network simulation, building an actual DAG over virtual time with virtual delay and benchmarking validation time (following the simulation generation). 
-
-To see the available commands
-```bash 
-cargo run --release --bin simpa -- --help
-``` 
-
-The following command will run a simulation to produce 1000 blocks with communication delay of 2 seconds and 8 BPS (blocks per second) while attempting to fill each block with up to 200 transactions.   
+### API Gateway
 
 ```bash
-cargo run --release --bin simpa -- -t=200 -d=2 -b=8 -n=1000
+cd api-gateway
+
+# Build
+cargo build --release
+
+# Set environment variables
+export USDT_CONTRACT_ADDRESS="0x..."
+export RPC_URL="https://polygon-mumbai.infura.io/v3/YOUR_KEY"
+export REDIS_URL="redis://127.0.0.1:6379"
+
+# Run
+./target/release/api-gateway
+
+# Run tests
+cargo test
 ```
 
-</details>
+## 🔧 Configuration
 
+### Environment Variables
 
+**API Gateway:**
+- `USDT_CONTRACT_ADDRESS`: Deployed InferencePayments contract address
+- `RPC_URL`: Ethereum RPC endpoint
+- `REDIS_URL`: Redis connection string
 
+**Seed Node:**
+- `XENOMORPH_RPC`: Xenomorph blockchain RPC address (default: 127.0.0.1:16110)
+- `MODEL_PATH`: Path to model storage (default: /data/models)
 
-<details> 
+## 📡 API Endpoints
 
-<summary>Heap Profiling</summary>
+### API Gateway (Port 3000)
 
-Heap-profiling in `kaspad` and `simpa` can be done by enabling `heap` feature and profile using the `--features` argument
+- `GET /models` - List available models
+- `GET /models/:id` - Get model information
+- `POST /predict/:model_id` - Make prediction (requires payment)
+- `GET /queries/:id` - Get query status
+- `POST /webhook/payment` - Payment webhook
+- `GET /health` - Health check
+
+### Seed Node (Port 50051)
+
+gRPC service implementing `xenom.inference.Inference`:
+- `Predict` - Make prediction
+- `Embed` - Generate embeddings
+- `GetModelInfo` - Get model information
+- `ListModels` - List available models
+- `HealthCheck` - Health check
+
+## 💰 Payment Flow
+
+1. Client initiates payment to InferencePayments contract
+2. Payment verified by API Gateway via ethers-rs
+3. Query forwarded to seed node
+4. Seed node processes inference
+5. Result returned to client
+6. Payment distributed: 70% seed, 20% training, 10% treasury
+
+## 🧪 Testing
 
 ```bash
-cargo run --bin xenom --profile heap --features=heap
+# Smart contracts
+cd smart-contracts
+npx hardhat test
+
+# Seed node
+cd seed-node
+cargo test
+
+# API Gateway
+cd api-gateway
+cargo test
 ```
 
-It will produce `{bin-name}-heap.json` file in the root of the workdir, that can be inspected by the [dhat-viewer](https://github.com/unofficial-mirror/valgrind/tree/master/dhat)
+## 🔐 Security
 
-</details>
+- All model storage encrypted with AES-256-GCM
+- gRPC communication uses TLS in production
+- Payment verification on-chain before serving queries
+- Rate limiting per wallet
+- ReentrancyGuard on all contract functions
 
+## 📊 Monitoring
 
-<details> 
+- Seed node health check: `GET http://localhost:50051/health`
+- API Gateway health check: `GET http://localhost:3000/health`
+- Redis monitoring for cache hit rates
+- Contract events for payment tracking
 
-<summary>Tests</summary>
+## 🚨 Troubleshooting
 
+**Seed node won't start:**
+- Check Xenomorph RPC connectivity
+- Verify model directory permissions
+- Check gRPC port availability
 
-**Run unit and most integration tests**
+**API Gateway payment verification fails:**
+- Verify USDT contract address
+- Check RPC endpoint connectivity
+- Ensure sufficient gas for contract calls
 
-```bash
-cd rusty-kaspa
-cargo test --release
-// or install nextest and run
-```
+**Model loading fails:**
+- Check model file integrity
+- Verify encryption key
+- Check storage permissions
 
+## 📝 License
 
-
-**Using nextest**
-
-```bash
-cd rusty-kaspa
-cargo nextest run --release
-```
-
-
-
-</details>
-
-
-<details> 
-
-<summary>Benchmarks</summary>
-
-```bash
-cd rusty-kaspa
-cargo bench
-```
-
-</details>
-
-<details> 
-
-<summary>Logging</summary>
-
-Logging in `kaspad` and `simpa` can be [filtered](https://docs.rs/env_logger/0.10.0/env_logger/#filtering-results) by either:
-
-1. Defining the environment variable `RUST_LOG`
-2. Adding the --loglevel argument like in the following example:
-
-    ```
-    (cargo run --bin kaspad -- --loglevel info,kaspa_rpc_core=trace,kaspa_grpc_core=trace,consensus=trace,kaspa_core=trace) 2>&1 | tee ~/rusty-kaspa.log
-    ```
-    In this command we set the `loglevel` to `INFO`.
-
-</details>
-
+MIT License - See LICENSE file for details

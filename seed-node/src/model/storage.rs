@@ -1,0 +1,207 @@
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
+use anyhow::Result;
+use rand::Rng;
+use sha2::{Digest, Sha256};
+use std::path::Path;
+use thiserror::Error;
+use tokio::fs;
+
+#[derive(Error, Debug)]
+pub enum StorageError {
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+
+    #[error("Encryption error: {0}")]
+    EncryptionError(String),
+
+    #[error("Decryption error: {0}")]
+    DecryptionError(String),
+
+    #[error("Invalid key")]
+    InvalidKey,
+
+    #[error("File not found: {0}")]
+    FileNotFound(String),
+}
+
+pub struct ModelStorage {
+    base_path: String,
+    encryption_key: [u8; 32],
+}
+
+impl ModelStorage {
+    pub fn new(base_path: String, encryption_key: [u8; 32]) -> Self {
+        Self { base_path, encryption_key }
+    }
+
+    pub async fn store_model(&self, model_id: &str, data: &[u8]) -> Result<String, StorageError> {
+        // Encrypt data
+        let encrypted = self.encrypt(data)?;
+
+        // Create directory if needed
+        let model_path = format!("{}/{}", self.base_path, model_id);
+        fs::create_dir_all(&model_path).await?;
+
+        // Store encrypted data
+        let file_path = format!("{}/{}.enc", model_path, model_id);
+        fs::write(&file_path, encrypted).await?;
+
+        // Store key hash for verification
+        let key_hash = self.compute_key_hash();
+        let key_path = format!("{}/{}.keyhash", model_path, model_id);
+        fs::write(&key_path, &key_hash).await?;
+
+        Ok(file_path)
+    }
+
+    pub async fn load_model(&self, model_id: &str) -> Result<Vec<u8>, StorageError> {
+        let file_path = format!("{}/{}/{}.enc", self.base_path, model_id, model_id);
+
+        if !Path::new(&file_path).exists() {
+            return Err(StorageError::FileNotFound(file_path));
+        }
+
+        let encrypted = fs::read(&file_path).await?;
+        self.decrypt(&encrypted)
+    }
+
+    pub async fn load_checkpoint(&self, model_id: &str, version: u32) -> Result<Vec<u8>, StorageError> {
+        let file_path = format!("{}/{}/checkpoint_{}.enc", self.base_path, model_id, version);
+
+        if !Path::new(&file_path).exists() {
+            return Err(StorageError::FileNotFound(file_path));
+        }
+
+        let encrypted = fs::read(&file_path).await?;
+        self.decrypt(&encrypted)
+    }
+
+    pub async fn store_checkpoint(&self, model_id: &str, version: u32, data: &[u8]) -> Result<String, StorageError> {
+        let encrypted = self.encrypt(data)?;
+
+        let model_path = format!("{}/{}", self.base_path, model_id);
+        fs::create_dir_all(&model_path).await?;
+
+        let file_path = format!("{}/checkpoint_{}.enc", model_path, version);
+        fs::write(&file_path, encrypted).await?;
+
+        Ok(file_path)
+    }
+
+    pub async fn list_checkpoints(&self, model_id: &str) -> Result<Vec<u32>, StorageError> {
+        let model_path = format!("{}/{}", self.base_path, model_id);
+
+        if !Path::new(&model_path).exists() {
+            return Ok(vec![]);
+        }
+
+        let mut entries = fs::read_dir(&model_path).await?;
+        let mut versions = Vec::new();
+
+        while let Some(entry) = entries.next_entry().await? {
+            let file_name = entry.file_name();
+            let name = file_name.to_string_lossy();
+
+            if name.starts_with("checkpoint_") && name.ends_with(".enc") {
+                // Extract version number
+                let version_str = name.strip_prefix("checkpoint_").and_then(|s| s.strip_suffix(".enc")).unwrap_or("0");
+
+                if let Ok(version) = version_str.parse::<u32>() {
+                    versions.push(version);
+                }
+            }
+        }
+
+        versions.sort();
+        Ok(versions)
+    }
+
+    pub async fn delete_model(&self, model_id: &str) -> Result<(), StorageError> {
+        let model_path = format!("{}/{}", self.base_path, model_id);
+
+        if Path::new(&model_path).exists() {
+            fs::remove_dir_all(&model_path).await?;
+        }
+
+        Ok(())
+    }
+
+    fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>, StorageError> {
+        let cipher = Aes256Gcm::new_from_slice(&self.encryption_key).map_err(|e| StorageError::EncryptionError(e.to_string()))?;
+
+        let mut rng = rand::thread_rng();
+        let nonce_bytes: [u8; 12] = rng.gen();
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        let ciphertext = cipher.encrypt(nonce, data).map_err(|e| StorageError::EncryptionError(e.to_string()))?;
+
+        // Prepend nonce to ciphertext
+        let mut result = nonce_bytes.to_vec();
+        result.extend_from_slice(&ciphertext);
+
+        Ok(result)
+    }
+
+    fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>, StorageError> {
+        if data.len() < 12 {
+            return Err(StorageError::DecryptionError("Data too short".to_string()));
+        }
+
+        let (nonce_bytes, ciphertext) = data.split_at(12);
+        let nonce = Nonce::from_slice(nonce_bytes);
+
+        let cipher = Aes256Gcm::new_from_slice(&self.encryption_key).map_err(|e| StorageError::DecryptionError(e.to_string()))?;
+
+        let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|e| StorageError::DecryptionError(e.to_string()))?;
+
+        Ok(plaintext)
+    }
+
+    fn compute_key_hash(&self) -> Vec<u8> {
+        let mut hasher = Sha256::new();
+        hasher.update(&self.encryption_key);
+        hasher.finalize().to_vec()
+    }
+
+    pub fn generate_key() -> [u8; 32] {
+        let mut key = [0u8; 32];
+        let mut rng = rand::thread_rng();
+        rng.fill(&mut key);
+        key
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_encryption_decryption() {
+        let key = ModelStorage::generate_key();
+        let storage = ModelStorage::new("/tmp/test_models".to_string(), key);
+
+        let data = b"test model data".to_vec();
+        let encrypted = storage.encrypt(&data).unwrap();
+        let decrypted = storage.decrypt(&encrypted).unwrap();
+
+        assert_eq!(data, decrypted);
+    }
+
+    #[tokio::test]
+    async fn test_store_load_model() {
+        let key = ModelStorage::generate_key();
+        let storage = ModelStorage::new("/tmp/test_models".to_string(), key);
+
+        let data = b"model weights".to_vec();
+        let _path = storage.store_model("test_model", &data).await.unwrap();
+
+        let loaded = storage.load_model("test_model").await.unwrap();
+        assert_eq!(data, loaded);
+
+        // Cleanup
+        let _ = storage.delete_model("test_model").await;
+    }
+}

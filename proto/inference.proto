@@ -1,0 +1,119 @@
+syntax = "proto3";
+
+package xenom.inference;
+
+option go_package = "xenom/ecosystem/proto/inference";
+
+// Inference service for AI model predictions
+service Inference {
+  // Make a prediction using a specific model
+  rpc Predict (PredictRequest) returns (PredictResponse);
+  
+  // Generate embeddings for input data
+  rpc Embed (EmbedRequest) returns (EmbedResponse);
+  
+  // Get model information
+  rpc GetModelInfo (ModelInfoRequest) returns (ModelInfoResponse);
+  
+  // List available models
+  rpc ListModels (ListModelsRequest) returns (ListModelsResponse);
+  
+  // Health check
+  rpc HealthCheck (HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// Predict request
+message PredictRequest {
+  string model_id = 1;
+  bytes input_data = 2;
+  string query_id = 3;
+  bytes encryption_key = 4;
+  map<string, string> metadata = 5;
+}
+
+// Predict response
+message PredictResponse {
+  bytes output_data = 1;
+  float confidence = 2;
+  bytes proof_of_service = 3;
+  string model_version = 4;
+  uint64 latency_ms = 5;
+  string seed_node_id = 6;
+  bytes signature = 7;
+}
+
+// Embed request
+message EmbedRequest {
+  string model_id = 1;
+  bytes input_data = 2;
+  string query_id = 3;
+  bytes encryption_key = 4;
+}
+
+// Embed response
+message EmbedResponse {
+  repeated float embeddings = 1;
+  uint32 dimension = 2;
+  bytes proof_of_service = 3;
+  string model_version = 4;
+  uint64 latency_ms = 5;
+  bytes signature = 6;
+}
+
+// Model info request
+message ModelInfoRequest {
+  string model_id = 1;
+}
+
+// Model info response
+message ModelInfoResponse {
+  string model_id = 1;
+  string name = 2;
+  string description = 3;
+  string version = 4;
+  string category = 5;
+  bytes model_hash = 6;
+  uint64 total_queries = 7;
+  bool active = 8;
+  bool verified = 9;
+  uint64 last_updated = 10;
+  map<string, string> metadata = 11;
+}
+
+// List models request
+message ListModelsRequest {
+  string category = 1;
+  bool active_only = 2;
+  uint32 limit = 3;
+  uint32 offset = 4;
+}
+
+// List models response
+message ListModelsResponse {
+  repeated ModelInfo models = 1;
+  uint32 total_count = 2;
+}
+
+// Model info (simplified for listing)
+message ModelInfo {
+  string model_id = 1;
+  string name = 2;
+  string version = 3;
+  string category = 4;
+  bool active = 5;
+  bool verified = 6;
+}
+
+// Health check request
+message HealthCheckRequest {
+  string service = 1;
+}
+
+// Health check response
+message HealthCheckResponse {
+  bool healthy = 1;
+  string version = 2;
+  uint64 uptime_seconds = 3;
+  map<string, string> metrics = 4;
+  repeated string services = 5;
+}
