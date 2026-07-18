@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Entrypoint wrapper for the xeno-miner container.
+
+set -euo pipefail
+
+ARGS=(
+    "--rpc_url=${XENO_MINER_RPC_URL:-ws://xeno-node:16110}"
+    "--model_id=${XENO_MINER_MODEL_ID:-dnabert2}"
+    "--threads=${XENO_MINER_THREADS:-4}"
+    "--data_dir=${XENO_MINER_DATA_DIR:-/root/.xenom-miner}"
+    "--password=${XENO_WALLET_PASSWORD:-devnet-password}"
+)
+
+if [[ "${XENO_MINER_MOCK_MODE:-true}" == "true" ]]; then
+    ARGS+=("--mock-mode")
+fi
+
+if [[ -n "${XENO_MINER_WALLET:-}" ]]; then
+    ARGS+=("--wallet=${XENO_MINER_WALLET}")
+fi
+
+exec /usr/local/bin/xenom-miner "${ARGS[@]}" "$@"

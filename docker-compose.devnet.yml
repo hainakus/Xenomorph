@@ -1,0 +1,94 @@
+services:
+  xeno-node:
+    image: "${XENO_REGISTRY:-}${XENO_NODE_IMAGE:-xeno-node}:${XENO_VERSION:-latest}"
+    container_name: xeno-node
+    build:
+      context: .
+      dockerfile: Dockerfile.xeno-node
+    ports:
+      - "${XENO_NODE_RPC_PORT:-16110}:${XENO_NODE_RPC_PORT:-16110}"
+      - "${XENO_NODE_P2P_PORT:-16111}:${XENO_NODE_P2P_PORT:-16111}"
+    volumes:
+      - "${XENO_DATA_DIR:-./devnet-data}/node:/data"
+    environment:
+      - RUST_LOG=${XENO_LOG_LEVEL:-info}
+      - XENO_NODE_RPC_PORT=${XENO_NODE_RPC_PORT:-16110}
+      - XENO_NODE_P2P_PORT=${XENO_NODE_P2P_PORT:-16111}
+      - XENO_NODE_EXTRA_ARGS=${XENO_NODE_EXTRA_ARGS:---devnet --utxoindex}
+      - XENO_NODE_ADDPEERS=${XENO_NODE_ADDPEERS:-}
+    networks:
+      - xeno-devnet
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 5 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/${XENO_NODE_RPC_PORT:-16110}'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  xeno-seed:
+    image: "${XENO_REGISTRY:-}${XENO_SEED_IMAGE:-xeno-seed}:${XENO_VERSION:-latest}"
+    container_name: xeno-seed
+    build:
+      context: .
+      dockerfile: Dockerfile.xeno-seed
+    ports:
+      - "${XENO_SEED_GRPC_PORT:-50051}:${XENO_SEED_GRPC_PORT:-50051}"
+    volumes:
+      - "${XENO_DATA_DIR:-./devnet-data}/models:/data/models"
+    environment:
+      - RUST_LOG=${XENO_LOG_LEVEL:-info}
+      - XENO_NODE_RPC=${XENO_SEED_NODE_RPC:-xeno-node:16110}
+      - XENO_GRPC_ADDR=0.0.0.0:${XENO_SEED_GRPC_PORT:-50051}
+      - XENO_MODELS_DIR=${XENO_MODELS_DIR:-/data/models}
+    networks:
+      - xeno-devnet
+    depends_on:
+      xeno-node:
+        condition: service_healthy
+
+  xeno-miner:
+    image: "${XENO_REGISTRY:-}${XENO_MINER_IMAGE:-xeno-miner}:${XENO_VERSION:-latest}"
+    container_name: xeno-miner
+    build:
+      context: .
+      dockerfile: Dockerfile.xeno-miner
+    volumes:
+      - "${XENO_DATA_DIR:-./devnet-data}/miner:/root/.xenom-miner"
+    environment:
+      - RUST_LOG=${XENO_LOG_LEVEL:-info}
+      - XENO_WALLET_PASSWORD=${XENO_WALLET_PASSWORD:-devnet-password}
+      - XENO_MINER_RPC_URL=ws://xeno-node:${XENO_NODE_RPC_PORT:-16110}
+      - XENO_MINER_MODEL_ID=${XENO_MINER_MODEL_ID:-dnabert2}
+      - XENO_MINER_THREADS=${XENO_MINER_THREADS:-4}
+      - XENO_MINER_DATA_DIR=/root/.xenom-miner
+      - XENO_MINER_MOCK_MODE=${XENO_MINER_MOCK_MODE:-true}
+      - XENO_MINER_EXTRA_ARGS=${XENO_MINER_EXTRA_ARGS:-}
+    networks:
+      - xeno-devnet
+    depends_on:
+      - xeno-seed
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 4G
+
+  anvil:
+    image: "${XENO_ANVIL_IMAGE:-ghcr.io/foundry-rs/foundry:stable}"
+    container_name: xeno-anvil
+    ports:
+      - "${XENO_ANVIL_PORT:-8545}:8545"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        exec anvil --host=0.0.0.0 --port=8545 --block-time=${XENO_BLOCK_TIME:-12} \
+          $([ -n "${XENO_FORK_URL:-}" ] && printf '%s' "--fork-url=${XENO_FORK_URL} ") \
+          $([ -n "${XENO_FOUNDRY_MNEMONIC:-}" ] && printf '%s' "--mnemonic='${XENO_FOUNDRY_MNEMONIC}' ")
+    networks:
+      - xeno-devnet
+    profiles:
+      - evm
+
+networks:
+  xeno-devnet:
+    driver: bridge

@@ -15,3 +15,8 @@ Servers.toml
 release
 package-sizes.js
 smart-contracts/build/
+dump.rdb
+devnet-data/
+*.log
+scripts/*.tar.gz
+
