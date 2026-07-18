@@ -4,7 +4,7 @@
 //! using PyTorch bindings (tch) for generating real training proofs.
 
 use kaspa_hashes::Hash;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "ai-training")]
 use tch::{nn, nn::Module, nn::OptimizerConfig, nn::VarStore, optim, Device, Kind, Tensor};
@@ -63,6 +63,7 @@ pub struct TrainingResult {
 }
 
 /// Model trainer for actual neural network training
+#[allow(dead_code)]
 pub struct ModelTrainer {
     input_size: usize,
     hidden_size: usize,
@@ -251,6 +252,7 @@ pub struct TrainingJobManager {
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 struct TrainingJob {
     job_id: String,
     model_id: String,
@@ -302,8 +304,6 @@ impl TrainingJobManager {
         self.active_jobs.retain(|_, job| job.start_time.elapsed() < timeout);
     }
 }
-
-use std::time::Duration;
 
 #[cfg(test)]
 mod tests {

@@ -20,6 +20,7 @@ kaspa-muhash.workspace = true
 kaspa-txscript.workspace = true
 kaspa-utils.workspace = true
 
+blake3.workspace = true
 futures-util.workspace = true
 itertools.workspace = true
 log.workspace = true

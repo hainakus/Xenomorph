@@ -20,6 +20,7 @@ pub struct TrainingMinerConfig {
 }
 
 /// Training miner for UsefulPoW
+#[allow(dead_code)]
 pub struct TrainingMiner {
     config: TrainingMinerConfig,
     model_trainer: Option<Arc<ModelTrainer>>,
@@ -52,7 +53,7 @@ impl TrainingMiner {
     /// 3. Perform training iteration
     /// 4. Generate ZK proof of computation
     /// 5. Return training proof for block header
-    pub fn mine_block(&self, header_template: &Header) -> Option<TrainingProof> {
+    pub fn mine_block(&self, _header_template: &Header) -> Option<TrainingProof> {
         let base_checkpoint = self.config.current_checkpoint;
 
         // Generate training data (in production, this would load actual data)
@@ -110,7 +111,7 @@ impl TrainingMiner {
     }
 
     /// Perform training iteration
-    fn perform_training(&self, batch: &TrainingBatch, checkpoint: &Hash) -> TrainingResult {
+    fn perform_training(&self, batch: &TrainingBatch, _checkpoint: &Hash) -> TrainingResult {
         // Implementation for training iteration:
         // 1. Load model weights from checkpoint
         // 2. Forward pass to compute loss
@@ -188,7 +189,7 @@ impl TrainingMiner {
     /// Generate ZK proof
     fn generate_zk_proof(
         &self,
-        base_checkpoint: &Hash,
+        _base_checkpoint: &Hash,
         loss_before: f64,
         loss_after: f64,
         training_result: &TrainingResult,
@@ -221,7 +222,7 @@ impl TrainingMiner {
 
         let mut hasher = blake3::Hasher::new();
         hasher.update(self.config.model_id.0.as_bytes());
-        hasher.update(self.config.current_checkpoint.as_bytes());
+        hasher.update(&self.config.current_checkpoint.as_bytes());
         Hash::from_bytes(*hasher.finalize().as_bytes())
     }
 
@@ -239,7 +240,7 @@ impl TrainingMiner {
     }
 
     /// Select batch indices for training
-    fn select_batch_indices(&self, batch: &TrainingBatch) -> Vec<u64> {
+    fn select_batch_indices(&self, _batch: &TrainingBatch) -> Vec<u64> {
         // Implementation for batch selection:
         // 1. Select random indices from dataset
         // 2. Ensure diversity (not always same indices)
@@ -249,7 +250,7 @@ impl TrainingMiner {
         // In production, this would select from the actual dataset
         // For now, we'll select random indices as a placeholder
 
-        use rand::seq::SliceRandom;
+        use rand::Rng;
         let total_indices = 10000; // Assume dataset has 10k samples
         let mut rng = rand::thread_rng();
 
