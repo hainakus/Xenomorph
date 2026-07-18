@@ -11,10 +11,11 @@ readonly USAGE="Usage: $(basename "$0") [OPTIONS]
 
 Options:
   --no-cache            Build without cache
-  --registry <url>        Prefix image names with registry (e.g. ghcr.io/xenom/)
+  --registry <url>      Prefix image names with registry (e.g. ghcr.io/xenom/)
   --parallel            Build images in parallel
-  --local               Use pre-built local binaries instead of building
-  --target <target>     Rust target for local build (default: native)
+  --local               Build binaries locally and copy into images
+  --docker-build        Build binaries inside Docker (useful on macOS/WSL)
+  --target <target>     Rust target for local build
   --skip-anvil          Do not pull the anvil image
   -q, --quiet           Minimal output
   -v, --verbose         Debug output
@@ -24,7 +25,8 @@ Options:
 NO_CACHE=""
 REGISTRY=""
 PARALLEL=0
-LOCAL=1
+LOCAL=0
+DOCKER_BUILD=0
 RUST_TARGET=""
 SKIP_ANVIL=0
 
@@ -34,6 +36,7 @@ while [[ $# -gt 0 ]]; do
         --registry) REGISTRY="$2"; shift 2 ;;
         --parallel) PARALLEL=1; shift ;;
         --local) LOCAL=1; shift ;;
+        --docker-build) DOCKER_BUILD=1; shift ;;
         --target) RUST_TARGET="$2"; shift 2 ;;
         --skip-anvil) SKIP_ANVIL=1; shift ;;
         -q|--quiet) XENO_QUIET=1; shift ;;
@@ -55,6 +58,48 @@ cd "$REPO_ROOT"
 VERSION="${XENO_VERSION:-0.1.0}"
 TAGS=()
 
+# -----------------------------------------------------------------------------
+# Auto-select build method
+# -----------------------------------------------------------------------------
+OS="$(detect_os)"
+ARCH="$(uname -m)"
+
+if [[ "$LOCAL" == "1" && "$DOCKER_BUILD" == "1" ]]; then
+    err "--local and --docker-build are mutually exclusive"
+    exit 1
+fi
+
+if [[ "$LOCAL" == "0" && "$DOCKER_BUILD" == "0" ]]; then
+    if [[ "$OS" == "linux" ]]; then
+        LOCAL=1
+        qlog "Linux detected; using local build (use --docker-build to build inside Docker)"
+    else
+        DOCKER_BUILD=1
+        warn "Non-Linux host ($OS $ARCH) detected; using Docker build to produce Linux binaries"
+    fi
+fi
+
+if [[ "$LOCAL" == "1" ]]; then
+    require_command cargo
+    if [[ -z "$RUST_TARGET" ]]; then
+        if [[ "$OS" == "macos" ]]; then
+            if [[ "$ARCH" == "arm64" ]] && rustup target list --installed 2>/dev/null | grep -q "aarch64-unknown-linux-gnu"; then
+                RUST_TARGET="aarch64-unknown-linux-gnu"
+            elif rustup target list --installed 2>/dev/null | grep -q "x86_64-unknown-linux-gnu"; then
+                RUST_TARGET="x86_64-unknown-linux-gnu"
+            else
+                err "On macOS you need a Linux cross-compilation target or use --docker-build"
+                err "Install with: rustup target add aarch64-unknown-linux-gnu"
+                err "And a suitable cross-linker (e.g. cargo-zigbuild)"
+                exit 1
+            fi
+        fi
+    fi
+fi
+
+# -----------------------------------------------------------------------------
+# Build helpers
+# -----------------------------------------------------------------------------
 build_image() {
     local name="$1"
     local dockerfile="$2"
@@ -77,7 +122,7 @@ build_image() {
     start_time="$(date +%s)"
 
     local build_args=()
-    if [[ "$LOCAL" == "1" ]]; then
+    if [[ "$DOCKER_BUILD" == "0" ]]; then
         if [[ ! -f "$binary" ]]; then
             err "Local binary not found: $binary"
             return 1
@@ -100,19 +145,6 @@ build_image() {
 # Local Rust build
 # -----------------------------------------------------------------------------
 if [[ "$LOCAL" == "1" ]]; then
-    require_command cargo
-    OS="$(detect_os)"
-    if [[ "$OS" == "macos" && -z "$RUST_TARGET" ]]; then
-        if rustup target list --installed 2>/dev/null | grep -q "x86_64-unknown-linux-gnu"; then
-            RUST_TARGET="x86_64-unknown-linux-gnu"
-            warn "macOS detected; using target $RUST_TARGET for Linux containers"
-        else
-            warn "macOS detected without x86_64-unknown-linux-gnu target; Docker image may not run in Linux container"
-            warn "Install with: rustup target add x86_64-unknown-linux-gnu"
-            warn "Or use a Linux/WSL host. Continuing with native target at your own risk."
-        fi
-    fi
-
     CARGO_ARGS=()
     if [[ -n "$RUST_TARGET" ]]; then
         CARGO_ARGS+=("--target" "$RUST_TARGET")
@@ -134,7 +166,11 @@ fi
 # -----------------------------------------------------------------------------
 # Docker build
 # -----------------------------------------------------------------------------
-IMAGES=("xeno-node:Dockerfile.xeno-node:$BIN_PREFIX/xenom" "xeno-seed:Dockerfile.xeno-seed:$BIN_PREFIX/seed-node" "xeno-miner:Dockerfile.xeno-miner:$BIN_PREFIX/xenom-miner")
+if [[ "$DOCKER_BUILD" == "1" ]]; then
+    IMAGES=("xeno-node:Dockerfile.xeno-node.build:target/release/xenom" "xeno-seed:Dockerfile.xeno-seed.build:target/release/seed-node" "xeno-miner:Dockerfile.xeno-miner.build:target/release/xenom-miner")
+else
+    IMAGES=("xeno-node:Dockerfile.xeno-node:$BIN_PREFIX/xenom" "xeno-seed:Dockerfile.xeno-seed:$BIN_PREFIX/seed-node" "xeno-miner:Dockerfile.xeno-miner:$BIN_PREFIX/xenom-miner")
+fi
 
 if [[ "$PARALLEL" == "1" ]]; then
     pids=()

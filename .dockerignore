@@ -1,0 +1,17 @@
+target
+.git
+.github
+*.md
+Dockerfile*
+docker-compose*
+.env
+.env.example
+scripts/*.tar.gz
+scripts/*.log
+reports
+logs
+devnet-data
+dump.rdb
+.DS_Store
+.vscode
+.idea

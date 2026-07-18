@@ -76,5 +76,7 @@ make clean    # cleanup-devnet.sh
 ## Notes
 
 - The first build downloads/copies a Rust toolchain and compiles `xenom`, `seed-node`, and `xenom-miner`; this may take several minutes.
-- On macOS, binaries are built for the Linux container target when `x86_64-unknown-linux-gnu` is installed; otherwise build inside the Docker image.
+- On Linux, `build-devnet.sh` compiles binaries locally and copies them into images.
+- On macOS / non-Linux hosts, `build-devnet.sh` defaults to `--docker-build` and compiles the binaries inside the Docker image (slower, but no cross-toolchain needed).
+- Use `./scripts/build-devnet.sh --local --target aarch64-unknown-linux-gnu` to cross-compile on Apple Silicon if you have a suitable linker.
 - `--mock-mode` is enabled by default for fast devnet testing; disable only on GPU/CPU-capable hosts.

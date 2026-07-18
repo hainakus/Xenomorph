@@ -1,0 +1,31 @@
+FROM rust:1.81-bookworm AS builder
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        protobuf-compiler \
+        clang \
+        libclang-dev \
+        libssl-dev \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY . .
+RUN cargo build --release -p seed-node
+
+FROM ubuntu:22.04
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/seed-node /usr/local/bin/seed-node
+RUN chmod +x /usr/local/bin/seed-node
+
+ENV XENO_NODE_RPC=127.0.0.1:16110
+ENV XENO_GRPC_ADDR=0.0.0.0:50051
+ENV XENO_MODELS_DIR=/data/models
+
+EXPOSE 50051
+
+ENTRYPOINT ["/usr/local/bin/seed-node"]
