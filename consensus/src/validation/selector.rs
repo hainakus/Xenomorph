@@ -3,7 +3,6 @@
 //! This module implements cryptographically secure, stake-weighted validator selection
 //! using ChaCha20 RNG seeded from block hashes to ensure deterministic, verifiable selection.
 
-use kaspa_hashes::Hash;
 use rand_chacha::ChaCha20Rng;
 use rand::{Rng, SeedableRng};
 use thiserror::Error;
@@ -58,7 +57,7 @@ pub struct ValidatorInfo {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidatorSelection {
     pub selected_validators: Vec<ValidatorInfo>,
-    pub block_hash: Hash,
+    pub block_hash: [u8; 32],
     pub seed: [u8; 32],
     pub total_stake: u64,
 }
@@ -67,7 +66,7 @@ pub struct ValidatorSelection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidatorSelectionSimple {
     pub selected_validators: Vec<String>,
-    pub block_hash: Hash,
+    pub block_hash: [u8; 32],
     pub seed: [u8; 32],
     pub total_stake: u64,
 }
@@ -137,7 +136,7 @@ impl ValidatorSelector {
     /// Select validators for a block
     pub fn select_validators(
         &self,
-        block_hash: Hash,
+        block_hash: [u8; 32],
         sample_size: usize,
     ) -> Result<ValidatorSelection, SelectionError> {
         // Validate sample size
@@ -156,9 +155,10 @@ impl ValidatorSelector {
         }
 
         // Filter validators by minimum stake
-        let eligible: Vec<&ValidatorInfo> = self.validators
+        let eligible: Vec<ValidatorInfo> = self.validators
             .iter()
             .filter(|v| v.stake >= self.min_stake)
+            .cloned()
             .collect();
 
         if eligible.is_empty() {
@@ -189,7 +189,7 @@ impl ValidatorSelector {
         let selected = self.weighted_sample_without_replacement(&eligible, sample_size, &mut rng)?;
 
         Ok(ValidatorSelection {
-            selected_validators: selected.into_iter().cloned().collect(),
+            selected_validators: selected,
             block_hash,
             seed,
             total_stake,
@@ -199,10 +199,10 @@ impl ValidatorSelector {
     /// Weighted sampling without replacement using reservoir sampling
     fn weighted_sample_without_replacement(
         &self,
-        candidates: &[&ValidatorInfo],
+        candidates: &[ValidatorInfo],
         k: usize,
         rng: &mut ChaCha20Rng,
-    ) -> Result<Vec<&ValidatorInfo>, SelectionError> {
+    ) -> Result<Vec<ValidatorInfo>, SelectionError> {
         if k == 0 {
             return Ok(Vec::new());
         }
@@ -221,8 +221,8 @@ impl ValidatorSelector {
         }
 
         // Use weighted reservoir sampling
-        let mut selected: Vec<&ValidatorInfo> = Vec::with_capacity(k);
-        let mut remaining: Vec<&ValidatorInfo> = candidates.to_vec();
+        let mut selected: Vec<ValidatorInfo> = Vec::with_capacity(k);
+        let mut remaining: Vec<ValidatorInfo> = candidates.to_vec();
         let mut remaining_stake = total_stake;
 
         for _ in 0..k {
@@ -239,7 +239,7 @@ impl ValidatorSelector {
                 cumulative = cumulative.saturating_add(candidate.stake);
                 if cumulative > target {
                     chosen_idx = idx;
-                    selected.push(candidate);
+                    selected.push(candidate.clone());
                     remaining_stake = remaining_stake.saturating_sub(candidate.stake);
                     break;
                 }
@@ -255,9 +255,9 @@ impl ValidatorSelector {
     }
 
     /// Derive RNG seed from block hash
-    fn derive_seed(&self, block_hash: &Hash) -> [u8; 32] {
+    fn derive_seed(&self, block_hash: &[u8; 32]) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(block_hash.as_bytes());
+        hasher.update(block_hash);
         hasher.update(b"xenom-validator-selection-v1");
         
         let hash = hasher.finalize();
@@ -346,20 +346,22 @@ mod tests {
     #[test]
     fn test_basic_selection() {
         let validators = vec![
-            create_test_validator(1, 1000),
-            create_test_validator(2, 2000),
-            create_test_validator(3, 3000),
+            create_test_validator(1, 10_000_000_000_000),
+            create_test_validator(2, 20_000_000_000_000),
+            create_test_validator(3, 30_000_000_000_000),
         ];
 
-        let selector = ValidatorSelector::new(validators);
-        let block_hash = Hash::from_bytes([0u8; 32]);
+        let mut selector = ValidatorSelector::new(validators);
+        selector.min_stake = 5_000_000_000_000; // Set lower minimum for testing
+        
+        let block_hash = [0u8; 32];
 
         let result = selector.select_validators(block_hash, 2);
         assert!(result.is_ok());
 
         let selection = result.unwrap();
         assert_eq!(selection.selected_validators.len(), 2);
-        assert_eq!(selection.total_stake, 6000);
+        assert_eq!(selection.total_stake, 60_000_000_000_000);
     }
 
     #[test]
@@ -373,7 +375,7 @@ mod tests {
         let mut selector = ValidatorSelector::new(validators);
         selector.min_stake = 500;
 
-        let block_hash = Hash::from_bytes([1u8; 32]);
+        let block_hash = [1u8; 32];
         let result = selector.select_validators(block_hash, 2);
         
         assert!(result.is_ok());
@@ -389,11 +391,13 @@ mod tests {
     #[test]
     fn test_insufficient_validators() {
         let validators = vec![
-            create_test_validator(1, 1000),
+            create_test_validator(1, 10_000_000_000_000),
         ];
 
-        let selector = ValidatorSelector::new(validators);
-        let block_hash = Hash::from_bytes([2u8; 32]);
+        let mut selector = ValidatorSelector::new(validators);
+        selector.min_stake = 5_000_000_000_000;
+        
+        let block_hash = [2u8; 32];
 
         let result = selector.select_validators(block_hash, 5);
         assert!(result.is_err());
@@ -417,7 +421,7 @@ mod tests {
         let mut selector = ValidatorSelector::new(validators);
         selector.min_stake = 1000;
 
-        let block_hash = Hash::from_bytes([3u8; 32]);
+        let block_hash = [3u8; 32];
         let result = selector.select_validators(block_hash, 1);
         
         assert!(result.is_err());
@@ -430,13 +434,15 @@ mod tests {
     #[test]
     fn test_determinism() {
         let validators = vec![
-            create_test_validator(1, 1000),
-            create_test_validator(2, 2000),
-            create_test_validator(3, 3000),
+            create_test_validator(1, 10_000_000_000_000),
+            create_test_validator(2, 20_000_000_000_000),
+            create_test_validator(3, 30_000_000_000_000),
         ];
 
-        let selector = ValidatorSelector::new(validators);
-        let block_hash = Hash::from_bytes([42u8; 32]);
+        let mut selector = ValidatorSelector::new(validators);
+        selector.min_stake = 5_000_000_000_000;
+        
+        let block_hash = [42u8; 32];
 
         let result1 = selector.select_validators(block_hash, 2).unwrap();
         let result2 = selector.select_validators(block_hash, 2).unwrap();
@@ -448,14 +454,16 @@ mod tests {
     #[test]
     fn test_different_hashes_different_selections() {
         let validators = vec![
-            create_test_validator(1, 1000),
-            create_test_validator(2, 2000),
-            create_test_validator(3, 3000),
+            create_test_validator(1, 10_000_000_000_000),
+            create_test_validator(2, 20_000_000_000_000),
+            create_test_validator(3, 30_000_000_000_000),
         ];
 
-        let selector = ValidatorSelector::new(validators);
-        let hash1 = Hash::from_bytes([1u8; 32]);
-        let hash2 = Hash::from_bytes([2u8; 32]);
+        let mut selector = ValidatorSelector::new(validators);
+        selector.min_stake = 5_000_000_000_000;
+        
+        let hash1 = [1u8; 32];
+        let hash2 = [2u8; 32];
 
         let result1 = selector.select_validators(hash1, 2).unwrap();
         let result2 = selector.select_validators(hash2, 2).unwrap();
@@ -467,15 +475,16 @@ mod tests {
     #[test]
     fn test_sample_size_validation() {
         let validators = vec![
-            create_test_validator(1, 1000),
-            create_test_validator(2, 2000),
+            create_test_validator(1, 10_000_000_000_000),
+            create_test_validator(2, 20_000_000_000_000),
         ];
 
-        let selector = ValidatorSelector::new(validators);
-        let block_hash = Hash::from_bytes([4u8; 32]);
+        let mut selector = ValidatorSelector::new(validators);
+        selector.min_stake = 5_000_000_000_000;
+        let block_hash = [4u8; 32];
 
-        // Sample size too large
-        let result = selector.select_validators(block_hash, 100);
+        // Sample size too large (101 > max_validators 100)
+        let result = selector.select_validators(block_hash, 101);
         assert!(result.is_err());
         match result {
             Err(SelectionError::SampleSizeTooLarge { .. }) => (),
@@ -545,19 +554,20 @@ mod tests {
     fn test_weighted_distribution() {
         // Test that higher stake validators are selected more often
         let validators = vec![
-            create_test_validator(1, 100),    // Low stake
-            create_test_validator(2, 10000), // High stake
-            create_test_validator(3, 100),    // Low stake
+            create_test_validator(1, 10_000_000_000),    // Low stake
+            create_test_validator(2, 1_000_000_000_000), // High stake
+            create_test_validator(3, 10_000_000_000),    // Low stake
         ];
 
-        let selector = ValidatorSelector::new(validators);
-        let block_hash = Hash::from_bytes([5u8; 32]);
+        let mut selector = ValidatorSelector::new(validators);
+        selector.min_stake = 5_000_000_000;
+        let _block_hash = [5u8; 32];
 
         let mut counts = std::collections::HashMap::new();
         let iterations = 100;
 
         for i in 0..iterations {
-            let hash = Hash::from_bytes([i as u8; 32]);
+            let hash = [i as u8; 32];
             if let Ok(selection) = selector.select_validators(hash, 1) {
                 let validator = &selection.selected_validators[0];
                 *counts.entry(validator.address.clone()).or_insert(0) += 1;

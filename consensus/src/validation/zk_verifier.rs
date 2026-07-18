@@ -3,7 +3,6 @@
 //! This module provides verification for zero-knowledge proofs of AI model training,
 //! ensuring that claimed training improvements are cryptographically verifiable.
 
-use kaspa_hashes::Hash;
 use thiserror::Error;
 use std::time::Instant;
 
@@ -51,16 +50,37 @@ pub enum VerificationError {
 // TYPES
 // ============================================================================
 pub type ModelId = String;
+pub type Hash = [u8; 32];
 
 // ============================================================================
 // STRUCTS
 // ============================================================================
 /// Verification result with metadata
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct VerificationResult {
     pub is_valid: bool,
     pub verification_time_ms: u64,
     pub error_message: Option<String>,
+}
+
+impl VerificationResult {
+    /// Create a successful verification result
+    pub fn success(time_ms: u64) -> Self {
+        Self {
+            is_valid: true,
+            verification_time_ms: time_ms,
+            error_message: None,
+        }
+    }
+    
+    /// Create a failed verification result
+    pub fn failure(time_ms: u64, error: impl Into<String>) -> Self {
+        Self {
+            is_valid: false,
+            verification_time_ms: time_ms,
+            error_message: Some(error.into()),
+        }
+    }
 }
 
 /// Metadata about the verification
@@ -82,7 +102,7 @@ pub struct ZKTrainingProof {
 /// Core training proof data
 #[derive(Clone, Debug)]
 pub struct CoreTrainingProof {
-    pub model_id: ModelId,
+    pub model_id: String,
     pub base_checkpoint: Hash,
     pub loss_before: f64,
     pub loss_after: f64,
@@ -123,36 +143,6 @@ pub trait ZKVerifier: Send + Sync {
 // ============================================================================
 // IMPLEMENTATIONS
 // ============================================================================
-impl VerificationResult {
-    /// Create a successful verification result
-    pub fn success(time_ms: u64) -> Self {
-        Self {
-            is_valid: true,
-            verification_time_ms: time_ms,
-            error_message: None,
-        }
-    }
-    
-    /// Create a failed verification result
-    pub fn failure(time_ms: u64, error: impl Into<String>) -> Self {
-        Self {
-            is_valid: false,
-            verification_time_ms: time_ms,
-            error_message: Some(error.into()),
-        }
-    }
-}
-
-impl Default for VerificationResult {
-    fn default() -> Self {
-        Self {
-            is_valid: false,
-            verification_time_ms: 0,
-            error_message: None,
-        }
-    }
-}
-
 /// Mock verifier for testing
 pub struct MockVerifier {
     timeout_ms: u64,
@@ -174,7 +164,7 @@ impl ZKVerifier for MockVerifier {
         
         match result {
             Ok(_) => VerificationResult::success(elapsed.as_millis() as u64),
-            Err(e) => VerificationResult::failure(elapsed.as_millis() as u64, e),
+            Err(e) => VerificationResult::failure(elapsed.as_millis() as u64, e.to_string()),
         }
     }
     
@@ -199,13 +189,13 @@ impl MockVerifier {
         }
 
         // Check hash validity (non-zero)
-        if proof.core_proof.zk_proof.public_inputs.model_hash == Hash::from_bytes([0u8; 32]) {
+        if proof.core_proof.zk_proof.public_inputs.model_hash == [0u8; 32] {
             return Err(VerificationError::InvalidModelHash);
         }
-        if proof.core_proof.zk_proof.public_inputs.input_hash == Hash::from_bytes([0u8; 32]) {
+        if proof.core_proof.zk_proof.public_inputs.input_hash == [0u8; 32] {
             return Err(VerificationError::InvalidInputHash);
         }
-        if proof.core_proof.zk_proof.public_inputs.output_gradients_hash == Hash::from_bytes([0u8; 32]) {
+        if proof.core_proof.zk_proof.public_inputs.output_gradients_hash == [0u8; 32] {
             return Err(VerificationError::InvalidGradientsHash);
         }
 
@@ -227,7 +217,10 @@ impl MockVerifier {
     fn compute_vk_hash(&self) -> Hash {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"mock-verification-key");
-        Hash::from_bytes(*hasher.finalize().as_bytes())
+        let hash = hasher.finalize();
+        let mut result = [0u8; 32];
+        result.copy_from_slice(hash.as_bytes());
+        result
     }
 }
 
@@ -245,26 +238,35 @@ mod tests {
     use super::*;
 
     fn create_test_proof(is_valid: bool) -> ZKTrainingProof {
+        let vk_hash = {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"mock-verification-key");
+            let hash = hasher.finalize();
+            let mut result = [0u8; 32];
+            result.copy_from_slice(hash.as_bytes());
+            result
+        };
+        
         ZKTrainingProof {
             core_proof: CoreTrainingProof {
-                model_id: ModelId("test_model".to_string()),
-                base_checkpoint: Hash::from_bytes([1u8; 32]),
+                model_id: "test_model".to_string(),
+                base_checkpoint: [1u8; 32],
                 loss_before: 0.5,
                 loss_after: if is_valid { 0.4 } else { 0.5 },
-                gradients_commitment: Hash::from_bytes([2u8; 32]),
+                gradients_commitment: [2u8; 32],
                 zk_proof: ZKProof {
                     proof_data: vec![1, 2, 3, 4],
                     public_inputs: PublicInputs {
-                        model_hash: Hash::from_bytes([3u8; 32]),
-                        input_hash: Hash::from_bytes([4u8; 32]),
-                        output_gradients_hash: Hash::from_bytes([5u8; 32]),
+                        model_hash: [3u8; 32],
+                        input_hash: [4u8; 32],
+                        output_gradients_hash: [5u8; 32],
                         loss_before: 0.5,
                         loss_after: if is_valid { 0.4 } else { 0.5 },
                     },
                 },
                 batch_indices: vec![0, 1, 2],
             },
-            vk_hash: Hash::from_bytes([6u8; 32]),
+            vk_hash,
             verification_metadata: VerificationMetadata {
                 batch_size: 32,
                 nonce: 12345,
@@ -333,7 +335,7 @@ mod tests {
     fn test_zero_model_hash() {
         let verifier = MockVerifier::new(5000);
         let mut proof = create_test_proof(true);
-        proof.core_proof.zk_proof.public_inputs.model_hash = Hash::from_bytes([0u8; 32]);
+        proof.core_proof.zk_proof.public_inputs.model_hash = [0u8; 32];
         
         let result = verifier.verify(&proof);
         assert!(!result.is_valid);

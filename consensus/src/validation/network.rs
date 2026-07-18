@@ -3,7 +3,6 @@
 //! This module implements the P2P message protocol for validators to coordinate
 //! on validation, including signature aggregation and consensus mechanisms.
 
-use kaspa_hashes::Hash;
 use thiserror::Error;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -52,25 +51,25 @@ pub enum NetworkError {
 pub enum ValidationMessage {
     /// Request for validation
     ValidationRequest {
-        block_hash: Hash,
+        block_hash: [u8; 32],
     },
     
     /// Response with validation result
     ValidationResponse {
-        block_hash: Hash,
+        block_hash: [u8; 32],
         validator: String,
         result: VerificationResult,
     },
     
     /// Challenge for suspected invalid block
     SelectionChallenge {
-        block_hash: Hash,
+        block_hash: [u8; 32],
         challenge_data: Vec<u8>,
     },
     
     /// Broadcast of aggregated signature
     AggregatedSignatureBroadcast {
-        block_hash: Hash,
+        block_hash: [u8; 32],
         aggregated_signature: AggregatedSignature,
     },
 }
@@ -79,16 +78,16 @@ pub enum ValidationMessage {
 #[derive(Clone, Debug)]
 pub enum NetworkEvent {
     /// Validation requested
-    ValidationRequested { block_hash: Hash },
+    ValidationRequested { block_hash: [u8; 32] },
     
     /// Validation response received
     ValidationResponseReceived { validator: String, result: VerificationResult },
     
     /// Challenge received
-    ChallengeReceived { block_hash: Hash },
+    ChallengeReceived { block_hash: [u8; 32] },
     
     /// Aggregated signature received
-    AggregatedSignatureReceived { block_hash: Hash },
+    AggregatedSignatureReceived { block_hash: [u8; 32] },
     
     /// Not selected for validation
     NotSelectedForValidation,
@@ -116,7 +115,7 @@ pub struct ValidationSignature {
 #[derive(Clone, Debug)]
 pub struct AggregatedSignature {
     pub signatures: Vec<ValidationSignature>,
-    pub block_hash: Hash,
+    pub block_hash: [u8; 32],
     pub approval_count: usize,
     pub rejection_count: usize,
 }
@@ -191,7 +190,7 @@ impl SignatureAggregator {
 
         Ok(AggregatedSignature {
             signatures,
-            block_hash: Hash::from_bytes([0u8; 32]), // Would be set from context
+            block_hash: [0u8; 32], // Would be set from context
             approval_count,
             rejection_count,
         })
@@ -209,7 +208,7 @@ impl ValidationNetwork {
 
     pub fn process_message(&self, message: ValidationMessage) -> Result<NetworkEvent, NetworkError> {
         match message {
-            ValidationMessage::ValidationRequest { block_hash, .. } => {
+            ValidationMessage::ValidationRequest { block_hash } => {
                 Ok(NetworkEvent::ValidationRequested { block_hash })
             }
             ValidationMessage::ValidationResponse { validator, result, .. } => {
@@ -307,7 +306,7 @@ mod tests {
 
     #[test]
     fn test_aggregate_insufficient_signatures() {
-        let aggregator = SignatureAggregator::new(5, 5000);
+        let mut aggregator = SignatureAggregator::new(5, 5000);
         
         for i in 0..3 {
             aggregator.add_signature(format!("validator{}", i), vec![i as u8; 32]);
