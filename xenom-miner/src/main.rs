@@ -15,8 +15,8 @@ use xenom_miner::rpc::XenomRpcClient;
 use xenom_miner::trainer::{CpuTrainer, MockTrainer, Trainer};
 use xenom_miner::wallet::WalletManager;
 
-const DEFAULT_RPC_URL: &str = "ws://localhost:16110";
-const DEFAULT_MODEL_ID: &str = "dnabert2";
+const DEFAULT_RPC_URL: &str = "ws://xeno-seed:17110";
+const DEFAULT_MODEL_ID: &str = "multimolecule/dnabert2";
 const DEFAULT_THREADS: usize = 4;
 const DEFAULT_DATA_DIR: &str = "~/.xenom-miner";
 const BLOCK_REWARD: u64 = 100;

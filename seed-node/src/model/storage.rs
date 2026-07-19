@@ -37,28 +37,43 @@ impl ModelStorage {
         Self { base_path, encryption_key }
     }
 
+    /// Sanitize a model identifier so it is safe to use in filesystem paths.
+    /// Replaces path separators and other special characters with underscores.
+    fn sanitize_id(model_id: &str) -> String {
+        model_id
+            .chars()
+            .map(|c| if c == '/' || c == '\\' || c == ':' || c == ' ' || c == '\0' { '_' } else { c })
+            .collect()
+    }
+
+    fn model_path(&self, model_id: &str) -> String {
+        let safe_id = Self::sanitize_id(model_id);
+        format!("{}/{}", self.base_path, safe_id)
+    }
+
     pub async fn store_model(&self, model_id: &str, data: &[u8]) -> Result<String, StorageError> {
         // Encrypt data
         let encrypted = self.encrypt(data)?;
 
         // Create directory if needed
-        let model_path = format!("{}/{}", self.base_path, model_id);
+        let model_path = self.model_path(model_id);
         fs::create_dir_all(&model_path).await?;
 
         // Store encrypted data
-        let file_path = format!("{}/{}.enc", model_path, model_id);
+        let file_path = format!("{}/model.enc", model_path);
         fs::write(&file_path, encrypted).await?;
 
         // Store key hash for verification
         let key_hash = self.compute_key_hash();
-        let key_path = format!("{}/{}.keyhash", model_path, model_id);
+        let key_path = format!("{}/model.keyhash", model_path);
         fs::write(&key_path, &key_hash).await?;
 
         Ok(file_path)
     }
 
     pub async fn load_model(&self, model_id: &str) -> Result<Vec<u8>, StorageError> {
-        let file_path = format!("{}/{}/{}.enc", self.base_path, model_id, model_id);
+        let model_path = self.model_path(model_id);
+        let file_path = format!("{}/model.enc", model_path);
 
         if !Path::new(&file_path).exists() {
             return Err(StorageError::FileNotFound(file_path));
@@ -69,7 +84,8 @@ impl ModelStorage {
     }
 
     pub async fn load_checkpoint(&self, model_id: &str, version: u32) -> Result<Vec<u8>, StorageError> {
-        let file_path = format!("{}/{}/checkpoint_{}.enc", self.base_path, model_id, version);
+        let model_path = self.model_path(model_id);
+        let file_path = format!("{}/checkpoint_{}.enc", model_path, version);
 
         if !Path::new(&file_path).exists() {
             return Err(StorageError::FileNotFound(file_path));
@@ -82,7 +98,7 @@ impl ModelStorage {
     pub async fn store_checkpoint(&self, model_id: &str, version: u32, data: &[u8]) -> Result<String, StorageError> {
         let encrypted = self.encrypt(data)?;
 
-        let model_path = format!("{}/{}", self.base_path, model_id);
+        let model_path = self.model_path(model_id);
         fs::create_dir_all(&model_path).await?;
 
         let file_path = format!("{}/checkpoint_{}.enc", model_path, version);
@@ -92,7 +108,7 @@ impl ModelStorage {
     }
 
     pub async fn list_checkpoints(&self, model_id: &str) -> Result<Vec<u32>, StorageError> {
-        let model_path = format!("{}/{}", self.base_path, model_id);
+        let model_path = self.model_path(model_id);
 
         if !Path::new(&model_path).exists() {
             return Ok(vec![]);
@@ -120,7 +136,7 @@ impl ModelStorage {
     }
 
     pub async fn delete_model(&self, model_id: &str) -> Result<(), StorageError> {
-        let model_path = format!("{}/{}", self.base_path, model_id);
+        let model_path = self.model_path(model_id);
 
         if Path::new(&model_path).exists() {
             fs::remove_dir_all(&model_path).await?;

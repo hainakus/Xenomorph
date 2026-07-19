@@ -4,8 +4,8 @@
 set -euo pipefail
 
 ARGS=(
-    "--rpc-url=${XENO_MINER_RPC_URL:-ws://xeno-node:16110}"
-    "--model-id=${XENO_MINER_MODEL_ID:-dnabert2}"
+    "--rpc-url=${XENO_MINER_RPC_URL:-ws://xeno-seed:17110}"
+    "--model-id=${XENO_MINER_MODEL_ID:-multimolecule/dnabert2}"
     "--threads=${XENO_MINER_THREADS:-4}"
     "--data-dir=${XENO_MINER_DATA_DIR:-/root/.xenom-miner}"
     "--password=${XENO_WALLET_PASSWORD:-devnet-password}"
