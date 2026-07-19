@@ -43,6 +43,32 @@ cargo test --test integration
 - Tests spawn isolated Anvil devnets and mock WebSocket seed nodes; each test sets up and tears down its own environment.
 - `hex_to_bytes32` in `tests/integration/fixtures.rs` converts arbitrary strings to `bytes32`: valid hex is decoded, short ASCII strings are left-padded, and long inputs are hashed with Keccak-256.
 
+## Miner (`xenom-miner`)
+
+### Build & test
+
+```bash
+cargo build -p xenom-miner
+cargo test -p xenom-miner -p seed-node
+```
+
+### CLI trainer selection
+
+- `--trainer mock` — fast CPU-less mock trainer (default for devnet).
+- `--trainer cpu` — legacy Candle MLP trainer.
+- `--trainer dnabert2` — real DNABERT-2 training; requires a seed-node that serves `GetModelCheckpoint`.
+- `--mock-mode` / `--mock` are hidden aliases for `--trainer=mock`.
+
+Examples:
+
+```bash
+# Devnet (mock)
+./target/debug/xenom-miner --rpc-url ws://xeno-seed:17110 --trainer mock --dry-run
+
+# Real DNABERT-2 training
+./target/debug/xenom-miner --rpc-url ws://xeno-seed:17110 --trainer dnabert2
+```
+
 ## Devnet Deployment Scripts
 
 - Location: `scripts/`

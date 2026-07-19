@@ -60,7 +60,7 @@ Key variables:
 - `XENO_SEED_GRPC_PORT` — seed gRPC port
 - `XENO_MINER_RPC_PORT` — seed WebSocket port used by miners (default 17110)
 - `XENO_ANVIL_PORT` — local EVM devnet port
-- `XENO_MINER_MOCK_MODE` — `true` uses fast CPU-less training
+- `XENO_MINER_TRAINER` — trainer backend for the miner: `mock` (default, fast CPU-less), `cpu` (legacy MLP trainer), or `dnabert2` (real DNABERT-2 training from seed-node checkpoint)
 - `XENO_STRESS_MINERS` / `XENO_STRESS_DURATION` — stress defaults
 
 ## Makefile Targets
@@ -80,4 +80,4 @@ make clean    # cleanup-devnet.sh
 - On Linux, `build-devnet.sh` compiles binaries locally and copies them into images.
 - On macOS / non-Linux hosts, `build-devnet.sh` defaults to `--docker-build` and compiles the binaries inside the Docker image (slower, but no cross-toolchain needed).
 - Use `./scripts/build-devnet.sh --local --target aarch64-unknown-linux-gnu` to cross-compile on Apple Silicon if you have a suitable linker.
-- `--mock-mode` is enabled by default for fast devnet testing; disable only on GPU/CPU-capable hosts.
+- `--trainer=mock` is enabled by default for fast devnet testing; use `--trainer=dnabert2` on CPU/GPU-capable hosts to run real DNABERT-2 training against a seed-node checkpoint. `--mock-mode` is still accepted as a hidden alias for `--trainer=mock`.

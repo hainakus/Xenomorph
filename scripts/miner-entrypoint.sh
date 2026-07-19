@@ -11,7 +11,10 @@ ARGS=(
     "--password=${XENO_WALLET_PASSWORD:-devnet-password}"
 )
 
-if [[ "${XENO_MINER_MOCK_MODE:-true}" == "true" ]]; then
+ARGS+=("--trainer=${XENO_MINER_TRAINER:-mock}")
+
+# Deprecated: --mock-mode is still accepted as a hidden alias for --trainer=mock.
+if [[ "${XENO_MINER_MOCK_MODE:-false}" == "true" ]]; then
     ARGS+=("--mock-mode")
 fi
 

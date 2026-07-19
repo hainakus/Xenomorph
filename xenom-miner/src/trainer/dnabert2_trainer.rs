@@ -17,6 +17,7 @@ pub struct DnaBert2Trainer {
     generator: MlmBatchGenerator,
     device: Device,
     model_id: String,
+    threads: usize,
 }
 
 impl DnaBert2Trainer {
@@ -27,12 +28,13 @@ impl DnaBert2Trainer {
         tokenizer: DnaTokenizer,
         device: Device,
         model_id: String,
+        threads: usize,
     ) -> Result<Self> {
         let (model, varmap) = DnaBert2ForMaskedLM::load_for_training(config.clone(), weights, DType::F32, &device)
             .context("Failed to load DNABERT-2 model for training")?;
         let seq_len = config.max_position_embeddings.min(512);
         let generator = MlmBatchGenerator::new(tokenizer, seq_len);
-        Ok(Self { model, varmap, generator, device, model_id })
+        Ok(Self { model, varmap, generator, device, model_id, threads })
     }
 
     fn build_tensors(&self, batch: &MlmBatch) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
@@ -152,7 +154,7 @@ impl Trainer for DnaBert2Trainer {
         DeviceInfo {
             device_type: DeviceType::Cpu,
             name: "DNABERT-2 CPU trainer".to_string(),
-            threads: 1,
+            threads: self.threads,
         }
     }
 }
@@ -268,7 +270,7 @@ mod tests {
     fn test_dna_bert2_trainer_runs_and_improves() {
         let (config, weights) = build_tiny_safetensors();
         let tokenizer = build_tiny_tokenizer();
-        let trainer = DnaBert2Trainer::new(config, weights, tokenizer, Device::Cpu, "dnabert2".to_string()).unwrap();
+        let trainer = DnaBert2Trainer::new(config, weights, tokenizer, Device::Cpu, "dnabert2".to_string(), 2).unwrap();
 
         let result = trainer.train(&dummy_batch()).unwrap();
 

@@ -7,12 +7,17 @@ use std::time::{Duration, Instant};
 use tokio::time::timeout;
 use tracing::{error, info, warn};
 
+use candle_core::Device;
+
 use xenom_miner::block::BlockBuilder;
 use xenom_miner::config::MinerConfig;
+use xenom_miner::model::DnaBert2Config;
+use xenom_miner::model_client::{fetch_model_checkpoint, ModelBundle};
 use xenom_miner::prover::{PublicInputs, ZkProver};
 use xenom_miner::rpc::messages::TrainingBatch;
 use xenom_miner::rpc::XenomRpcClient;
-use xenom_miner::trainer::{CpuTrainer, MockTrainer, Trainer};
+use xenom_miner::tokenizer::DnaTokenizer;
+use xenom_miner::trainer::{CpuTrainer, DnaBert2Trainer, MockTrainer, Trainer};
 use xenom_miner::wallet::WalletManager;
 
 const DEFAULT_RPC_URL: &str = "ws://xeno-seed:17110";
@@ -42,8 +47,12 @@ struct Args {
     #[arg(long, default_value_t = DEFAULT_THREADS)]
     threads: usize,
 
-    /// Use the fast mock trainer instead of real Candle training.
-    #[arg(long = "mock-mode", visible_alias = "mock")]
+    /// Trainer backend to use: mock, cpu, or dnabert2.
+    #[arg(long, value_parser = ["mock", "cpu", "dnabert2"], default_value = "mock")]
+    trainer: String,
+
+    /// Deprecated alias for --trainer=mock.
+    #[arg(long = "mock-mode", visible_alias = "mock", hide = true)]
     mock: bool,
 
     /// Do not submit mined blocks; useful for local testing.
@@ -126,6 +135,31 @@ fn make_local_batch(model_id: &str, block_number: u64) -> TrainingBatch {
     }
 }
 
+async fn load_trainer(
+    rpc_client: &mut Option<XenomRpcClient>,
+    model_id: &str,
+    threads: usize,
+    dry_run: bool,
+) -> Result<Arc<dyn Trainer>> {
+    if dry_run && rpc_client.is_none() {
+        warn!("Dry-run without RPC connection; falling back to mock trainer");
+        return Ok(Arc::new(MockTrainer::new()));
+    }
+
+    let client = rpc_client.as_mut().context("No RPC connection to fetch model checkpoint")?;
+    let ModelBundle { model_id, config, tokenizer, weights, .. } =
+        fetch_model_checkpoint(client, model_id).await.context("Failed to fetch model checkpoint from seed-node")?;
+
+    let config = DnaBert2Config::from_bytes(&config).context("Failed to parse DNABERT-2 config")?;
+    let tokenizer = DnaTokenizer::from_bytes(&tokenizer).context("Failed to parse tokenizer")?;
+    let model_id_for_log = model_id.clone();
+    let trainer =
+        DnaBert2Trainer::new(config, weights, tokenizer, Device::Cpu, model_id, threads)
+            .context("Failed to initialize DNABERT-2 trainer")?;
+    info!("Loaded DNABERT-2 model checkpoint for {}", model_id_for_log);
+    Ok(Arc::new(trainer))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -145,8 +179,9 @@ async fn main() -> Result<()> {
     if !args.model_id.is_empty() {
         config.model_id = args.model_id.clone();
     }
+    let trainer_kind = if args.mock { "mock".to_string() } else { args.trainer };
     config.threads = args.threads;
-    config.mock_mode = args.mock;
+    config.mock_mode = trainer_kind == "mock";
     config.dry_run = args.dry_run;
     config.data_dir = data_dir.clone();
     config.save(&data_dir)?;
@@ -159,12 +194,20 @@ async fn main() -> Result<()> {
     let mut rpc_client: Option<XenomRpcClient> = None;
     ensure_rpc_connection(&mut rpc_client, &config.rpc_url, config.dry_run).await?;
 
-    let trainer: Arc<dyn Trainer> = if config.mock_mode {
-        info!("Using mock trainer");
-        Arc::new(MockTrainer::new())
-    } else {
-        info!("Using Candle CPU trainer with {} threads", config.threads);
-        Arc::new(CpuTrainer::new(config.threads)?)
+    let trainer: Arc<dyn Trainer> = match trainer_kind.as_str() {
+        "mock" => {
+            info!("Using mock trainer");
+            Arc::new(MockTrainer::new())
+        }
+        "cpu" => {
+            info!("Using legacy Candle CPU trainer");
+            Arc::new(CpuTrainer::new(config.threads)?)
+        }
+        "dnabert2" => {
+            info!("Using DNABERT-2 trainer");
+            load_trainer(&mut rpc_client, &config.model_id, config.threads, config.dry_run).await?
+        }
+        other => bail!("Unknown trainer: {}. Use mock, cpu, or dnabert2.", other),
     };
 
     let prover = ZkProver::new();
