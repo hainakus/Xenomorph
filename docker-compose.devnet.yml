@@ -50,7 +50,9 @@ services:
       xeno-node:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "timeout 5 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/${XENO_MINER_RPC_PORT:-17110}'"]
+      # Use the gRPC port for the readiness probe. Probing the WebSocket port
+      # with a plain TCP connect causes "Handshake not finished" warnings.
+      test: ["CMD-SHELL", "timeout 5 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/${XENO_SEED_GRPC_PORT:-50051}'"]
       interval: 10s
       timeout: 5s
       retries: 5
