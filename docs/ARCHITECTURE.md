@@ -29,6 +29,16 @@ The devnet is composed of several Rust binaries and a set of deployment scripts.
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
+## Architecture constraints
+
+The devnet follows these ownership rules:
+
+- **Only `seed-node` downloads models from Hugging Face.**
+- **Only `seed-node` stores model weights**, encrypted with AES-256-GCM under `XENO_MODELS_DIR`.
+- **`xenom-miner` does not download from Hugging Face and does not persist model weights.** It may, however, request the checkpoint from `seed-node` and hold it in memory while training.
+- **Only `xenom-miner` trains.**
+- **`xenom-node` validates proofs and reaches consensus;** it does not hold or train models.
+
 ## 2. Core binaries and crates
 
 ### `xenom` — full node

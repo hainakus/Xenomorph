@@ -6,12 +6,13 @@ PRD: `docs/PRD-DNABERT2-CANDLE.md`
 
 ## What to build
 
-Add a `--trainer` CLI argument to `xenom-miner` with values `mock` (default for devnet), `cpu`, and `dnabert2`. Wire the main loop to instantiate the correct trainer. Also update the seed-node `GetTrainingBatch` WebSocket handler so it returns the real `weights_hash` from the downloaded model as `base_checkpoint` once the model is available. While the model is still downloading, it may return zeros for backward compatibility.
+Add a `--trainer` CLI argument to `xenom-miner` with values `mock` (default for devnet), `cpu`, and `dnabert2`. Wire the main loop to instantiate the correct trainer. Also update the seed-node WebSocket server to support `GetModelCheckpoint { model_id }` returning the raw checkpoint bytes (decrypted from encrypted storage) and make `GetTrainingBatch` return the real `weights_hash` as `base_checkpoint` once the model is available. While the model is still downloading, it may return zeros for backward compatibility.
 
 ## Acceptance criteria
 
 - [ ] `--trainer=dnabert2` starts the real DNABERT-2 trainer.
 - [ ] Default devnet remains `mock` so low-resource hosts keep working.
+- [ ] Seed-node responds to `GetModelCheckpoint` with the decrypted checkpoint bytes.
 - [ ] Seed-node returns non-zero `base_checkpoint` after the model download completes.
 - [ ] `AGENTS.md` and `README-SCRIPTS.md` document the new flag.
 

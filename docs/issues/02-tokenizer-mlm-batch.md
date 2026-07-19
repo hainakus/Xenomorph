@@ -6,7 +6,7 @@ PRD: `docs/PRD-DNABERT2-CANDLE.md`
 
 ## What to build
 
-Build a tokenizer module that loads the downloaded `tokenizer.json` using the `tokenizers` crate and exposes `encode(text) -> Vec<u32>` and `decode(ids) -> String`. Then build a synthetic DNA batch generator: it creates random `A/T/C/G` sequences, encodes them, masks 15% of the tokens with the `[MASK]` id, and returns input tensors (`input_ids`, `token_type_ids`, `attention_mask`, `labels`). This generator will feed the real training step in a later slice.
+Build a tokenizer module that loads `tokenizer.json` from an in-memory `ModelCheckpoint` (fetched from seed-node) using the `tokenizers` crate and exposes `encode(text) -> Vec<u32>` and `decode(ids) -> String`. Then build a synthetic DNA batch generator: it creates random `A/T/C/G` sequences, encodes them, masks 15% of the tokens with the `[MASK]` id, and returns input tensors (`input_ids`, `token_type_ids`, `attention_mask`, `labels`). This generator will feed the real training step in a later slice.
 
 ## Acceptance criteria
 

@@ -4,7 +4,7 @@
 
 O devnet actual do Xenomorph AI corre o miner em `--mock-mode` por defeito. O `model_id` é `multimolecule/dnabert2`, mas o miner não carrega nem treina os pesos reais do modelo. Para que o devnet seja um PoW útil de verdade, o miner deve ser capaz de:
 
-1. Descarregar o modelo `multimolecule/dnabert2` e o respetivo tokenizer do Hugging Face.
+1. Obter o modelo `multimolecule/dnabert2` do seed-node (que o descarrega do Hugging Face), carregando os pesos em memória sem persistir localmente.
 2. Carregar os pesos `safetensors` numa implementação Rust nativa (Candle).
 3. Executar um passo de treino Masked Language Modeling (MLM) num batch de sequências de DNA.
 4. Submeter a prova de treino (`gradients_commitment`, `loss_before`, `loss_after`) para a seed-node.
@@ -13,11 +13,11 @@ O devnet actual do Xenomorph AI corre o miner em `--mock-mode` por defeito. O `m
 
 Criar um novo backend de treino `DnaBert2Trainer` no `xenom-miner` que implemente o trait `Trainer` existente. Este backend carrega o DNABERT-2 em memória, gera/usa batches de tokens MLM, corre um `forward + backward` com `candle`, e produz um `TrainingResult` compatível com o protocolo actual.
 
-A seed-node continua a servir `TrainingBatch`es, mas o batch pode ser enriquecido com informação sobre o modelo e índices de dados. O próprio miner descarrega os ficheiros do Hugging Face localmente (`data_dir/models/<model_id>`) e reutiliza-os entre blocos.
+A seed-node é a única entidade que descarrega o modelo do Hugging Face e o armazena de forma encriptada. O miner pede o checkpoint ao seed-node (via WebSocket), carrega os pesos em memória (sem persistir no disco) e treina. O `TrainingBatch` continua a conter apenas `model_id`, `base_checkpoint`, `data_indices`, `target_improvement` e `learning_rate`.
 
 ## User Stories
 
-1. Como miner do devnet, quero que o `xenom-miner` descarregue automaticamente o `multimolecule/dnabert2` na primeira corrida, para não ter de o fazer manualmente.
+1. Como miner do devnet, quero que o `xenom-miner` obtenha automaticamente o checkpoint do `multimolecule/dnabert2` a partir do seed-node, para não ter de o descarregar directamente do Hugging Face.
 2. Como miner, quero escolher o backend de treino (`mock`, `cpu`, `dnabert2`) via CLI, para poder alternar entre validação rápida e treino real.
 3. Como miner, quero que o `dnabert2` carregue os seus pesos do `model.safetensors`, para não depender de PyTorch.
 4. Como miner, quero tokenizar sequências de DNA com o tokenizer BPE do DNABERT-2, para que as entradas sejam compatíveis com o modelo.
@@ -38,8 +38,8 @@ Risco: a API do `candle` mudou entre 0.3 e 0.8. O `CpuTrainer` e `MockTrainer` e
 
 ### 2. Módulos novos no `xenom-miner`
 
-- `src/model_hub.rs` — interface para descarregar `config.json`, `tokenizer.json` e `model.safetensors` do Hugging Face. Usa `reqwest` e guarda em `data_dir/models/<safe_model_id>`.
-- `src/tokenizer.rs` — wrapper em torno do crate `tokenizers` para carregar `tokenizer.json` e fornecer `encode(text) -> Vec<u32>`.
+- `src/model_client.rs` — pede o checkpoint/modelo ao seed-node (via nova mensagem WebSocket `GetModelCheckpoint`) e mantém os bytes em memória. Não descarrega do Hugging Face nem persiste pesos no disco.
+- `src/tokenizer.rs` — wrapper em torno do crate `tokenizers` para carregar `tokenizer.json` a partir do `ModelCheckpoint` recebido e fornecer `encode(text) -> Vec<u32>`.
 - `src/models/dnabert2/` — implementação do `DnaBert2Model` e `DnaBert2ForMaskedLM` em Candle.
   - `config.rs` — parse do `config.json` do DNABERT-2.
   - `model.rs` — embeddings, encoder, ALiBi attention, pooler, MLM head.
@@ -60,7 +60,7 @@ ALiBi: em vez de position embeddings, a attention score recebe uma bias matrix `
 
 ### 4. Training step
 
-1. Descarregar/carregar modelo e tokenizer.
+1. Pedir o checkpoint ao seed-node (`GetModelCheckpoint`) e carregar o `config.json`, `tokenizer.json` e `model.safetensors` em memória.
 2. Criar batch: `batch_size` sequências de `seq_len` tokens, com 15% dos tokens mascarados (token 4 = `[MASK]`) e `labels` com os tokens originais.
 3. Forward: `DnaBert2ForMaskedLM::forward(input_ids, token_type_ids, attention_mask)` -> logits `[batch, seq_len, vocab_size]`.
 4. Calcular cross-entropy loss apenas sobre os tokens mascarados -> `loss_before`.
@@ -70,7 +70,7 @@ ALiBi: em vez de position embeddings, a attention score recebe uma bias matrix `
 
 ### 5. Batch data flow
 
-O `TrainingBatch` actual contém `base_checkpoint` (32 bytes) e `data_indices: Vec<u64>`. O `DnaBert2Trainer` usa `data_indices` como seed para gerar as sequências sintéticas de DNA desse batch. O `base_checkpoint` é o hash dos pesos do modelo; o miner pode comparar com o `weights_hash` local.
+O `TrainingBatch` actual contém `base_checkpoint` (32 bytes) e `data_indices: Vec<u64>`. O `DnaBert2Trainer` usa `data_indices` como seed para gerar as sequências sintéticas de DNA desse batch. O `base_checkpoint` é o hash dos pesos do modelo; o miner valida-o contra o `weights_hash` do checkpoint recebido do seed-node.
 
 ### 6. CLI e config
 
@@ -82,9 +82,11 @@ Adicionar argumento `--trainer` (ou manter `--mock-mode` como alias):
 
 O default no devnet pode continuar a ser `mock` para não bloquear o devnet em CPU fraca. `--trainer=dnabert2` ativa treino real.
 
-### 7. Seed-node checkpoint
+### 7. Seed-node checkpoint e protocolo de pesos
 
-Atualizar `seed-node/src/rpc/server.rs` para que `GetTrainingBatch` retorne o `base_checkpoint` real (`weights_hash` do `ModelCheckpoint`) quando o modelo estiver descarregado. Enquanto o download não termina, pode retornar zeros.
+- Adicionar `RpcRequest::GetModelCheckpoint { model_id }` e `RpcResponse::ModelCheckpoint(ModelCheckpointBytes)` no protocolo WebSocket Borsh.
+- `seed-node/src/rpc/server.rs` deve responder a `GetModelCheckpoint` descarregando o modelo encriptado e enviando os bytes brutos (config + tokenizer + safetensors) ao miner.
+- `GetTrainingBatch` retorna o `base_checkpoint` real (`weights_hash` do `ModelCheckpoint`) quando o modelo estiver descarregado; enquanto não, pode retornar zeros.
 
 ## Testing Decisions
 
@@ -108,4 +110,4 @@ Atualizar `seed-node/src/rpc/server.rs` para que `GetTrainingBatch` retorne o `b
 
 - O DNABERT-2 (`multimolecule/dnabert2`) é uma variação do MosaicBERT com ALiBi e tokenizer BPE de 4096 tokens. A implementação em Candle é funcionalmente equivalente ao Python `multimolecule` mas escrita em Rust.
 - O `model.safetensors` tem ~468 MB. O devnet em CPU (2 vCPU / 8 GB) não será capaz de treinar este modelo em tempo real. O `--trainer=dnabert2` destina-se a hosts com GPU/CPU forte. Para validação do pipeline, sugere-se testar com um modelo menor (ex. `multimolecule/dnabert`) ou um dummy de teste.
-- O download do modelo faz-se em background no `xenom-miner`; se não estiver disponível quando o primeiro batch chega, o miner pode fazer fallback para `mock` ou esperar (configurável).
+- O seed-node descarrega o modelo do Hugging Face para `/data/models` encriptado. O miner recebe o checkpoint via WebSocket (`GetModelCheckpoint`) e carrega-o em memória; não descarrega directamente do HF nem armazena pesos localmente.
