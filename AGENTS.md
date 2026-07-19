@@ -165,10 +165,13 @@ make clean  # cleanup-devnet.sh
 - The `xenom` full node now implements `TrainingBlockService` (`xenom/src/training_block_service.rs`), a dedicated Borsh listener that:
   1. Validates the miner address and prefix against the running network.
   2. Deserializes the `TrainingProof` from the seed-node.
-  3. Builds a compact `CoinbaseExtraData` payload and requests a block template from the local consensus.
-  4. Solves the block PoW with `kaspa_pow::State`.
-  5. Submits the solved block via `submit_block_call` and returns `accepted` + `block_hash` to the seed-node.
+  3. Validates the proof against the active model: model id, base checkpoint, and loss improvement (`DifficultyTarget`).
+  4. Builds a compact `CoinbaseExtraData` payload and requests a block template from the local consensus.
+  5. Solves the block PoW with `kaspa_pow::State`.
+  6. Submits the solved block via `submit_block_call` and returns `accepted` + `block_hash` to the seed-node.
 - The listener is enabled with `--training-rpc-listen=<IP:PORT>` and is wired into `daemon.rs` as an `AsyncService`.
+- The active model defaults to `multimolecule/dnabert2` and its weights hash defaults to the network's `genome_merkle_root` (because the devnet miner uses the genome merkle root as the base checkpoint). Override with `--active-model-id` and `--active-model-weights-hash`.
 - Native devnet and Docker `.env.example` point `XENO_NODE_RPC` to the training RPC port (`16112` by default) and expose/forward that port.
 - If `--training-rpc-listen` is not provided, the listener is disabled and the seed-node will fail to connect as before.
+- This is full-node-side training proof validation (the block is rejected before being built/submitted if the proof is invalid). Consensus-level validation in `Header`/`UsefulPoW` is still dead code and not yet wired into the block pipeline.
 - The `model_id` field is now included in `TrainingBlock` so the seed-node can include it in the forwarded request.

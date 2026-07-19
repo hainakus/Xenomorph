@@ -49,7 +49,9 @@ pub const DESIRED_DAEMON_SOFT_FD_LIMIT: u64 = 8 * 1024;
 pub const MINIMUM_DAEMON_SOFT_FD_LIMIT: u64 = 4 * 1024;
 
 use crate::args::Args;
-use crate::training_block_service::TrainingBlockService;
+use crate::training_block_service::{ActiveModel, TrainingBlockService};
+use core::str::FromStr;
+use kaspa_hashes::Hash;
 
 const DEFAULT_DATA_DIR: &str = "datadir";
 const CONSENSUS_DB: &str = "consensus";
@@ -562,7 +564,7 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
     let grpc_service = if !args.disable_grpc {
         Some(Arc::new(GrpcService::new(
             grpc_server_addr,
-            config,
+            config.clone(),
             rpc_core_service.clone(),
             args.rpc_max_clients,
             grpc_service_broadcasters,
@@ -616,7 +618,21 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
 
     // Register the Xenomorph training-block Borsh RPC service if enabled.
     if let Some(training_rpc_listen) = args.training_rpc_listen {
-        async_runtime.register(TrainingBlockService::new(training_rpc_listen, network.network_type, rpc_core_service.clone()));
+        let weights_hash_hex = args.active_model_weights_hash.as_deref().unwrap_or(config.genome_merkle_root);
+        let weights_hash = Hash::from_str(weights_hash_hex)
+            .unwrap_or_else(|e| panic!("Invalid active model weights hash {}: {}", weights_hash_hex, e));
+        let active_model = ActiveModel {
+            model_id: args.active_model_id.clone(),
+            weights_hash,
+            reward_per_block: 0,
+            difficulty: kaspa_consensus_core::pow::DifficultyTarget { min_improvement: 0.0, max_loss_after: f64::MAX },
+        };
+        async_runtime.register(TrainingBlockService::new(
+            training_rpc_listen,
+            network.network_type,
+            active_model,
+            rpc_core_service.clone(),
+        ));
     }
 
     // Consensus must start first in order to init genesis in stores

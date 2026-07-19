@@ -12,6 +12,7 @@ use borsh::{to_vec, BorshDeserialize, BorshSerialize};
 use kaspa_addresses::{Address, Prefix};
 use kaspa_consensus_core::header::Header;
 use kaspa_consensus_core::network::NetworkType;
+use kaspa_consensus_core::pow::{DifficultyTarget, ModelId, PublicInputs, TrainingProof as ConsensusTrainingProof, ZKProof};
 use kaspa_core::task::service::{AsyncService, AsyncServiceError, AsyncServiceFuture};
 use kaspa_core::{info, trace, warn};
 use kaspa_hashes::Hash;
@@ -29,7 +30,7 @@ const TRAINING_BLOCK_SERVICE: &str = "training-block-rpc";
 
 /// Raw training proof as serialized by the `xenom-miner` / `seed-node`.
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
-pub struct TrainingProof {
+pub struct MinerTrainingProof {
     pub base_checkpoint: [u8; 32],
     pub loss_before: f64,
     pub loss_after: f64,
@@ -85,16 +86,31 @@ pub enum RpcMessage {
     Pong,
 }
 
+/// Active model state used to validate incoming training proofs.
+#[derive(Debug, Clone)]
+pub struct ActiveModel {
+    pub model_id: String,
+    pub weights_hash: Hash,
+    pub reward_per_block: u64,
+    pub difficulty: DifficultyTarget,
+}
+
 pub struct TrainingBlockService {
     listen_address: ContextualNetAddress,
     network_type: NetworkType,
+    active_model: ActiveModel,
     rpc_core_service: Arc<RpcCoreService>,
     shutdown: SingleTrigger,
 }
 
 impl TrainingBlockService {
-    pub fn new(listen_address: ContextualNetAddress, network_type: NetworkType, rpc_core_service: Arc<RpcCoreService>) -> Arc<Self> {
-        Arc::new(Self { listen_address, network_type, rpc_core_service, shutdown: SingleTrigger::new() })
+    pub fn new(
+        listen_address: ContextualNetAddress,
+        network_type: NetworkType,
+        active_model: ActiveModel,
+        rpc_core_service: Arc<RpcCoreService>,
+    ) -> Arc<Self> {
+        Arc::new(Self { listen_address, network_type, active_model, rpc_core_service, shutdown: SingleTrigger::new() })
     }
 
     async fn serve(self: Arc<Self>, listener: TcpListener) -> AnyhowResult<()> {
@@ -161,7 +177,7 @@ impl TrainingBlockService {
         }
 
         // Deserialize the training proof produced by the miner.
-        let proof = match TrainingProof::try_from_slice(&request.training_proof) {
+        let miner_proof = match MinerTrainingProof::try_from_slice(&request.training_proof) {
             Ok(proof) => proof,
             Err(e) => {
                 warn!("Rejecting training block: invalid training proof: {}", e);
@@ -169,13 +185,64 @@ impl TrainingBlockService {
             }
         };
 
+        // Validate the training proof against the currently active model.
+        let base_checkpoint = Hash::from_bytes(miner_proof.base_checkpoint);
+        if base_checkpoint != self.active_model.weights_hash {
+            warn!(
+                "Rejecting training block: base checkpoint {} does not match active model weights hash {} for model {}",
+                base_checkpoint, self.active_model.weights_hash, self.active_model.model_id
+            );
+            return error_response(format!(
+                "Base checkpoint does not match active model weights hash for model {}",
+                self.active_model.model_id
+            ));
+        }
+
+        if request.model_id != self.active_model.model_id {
+            warn!(
+                "Rejecting training block: model id {} does not match active model {}",
+                request.model_id, self.active_model.model_id
+            );
+            return error_response(format!("Model id {} is not the active model", request.model_id));
+        }
+
+        let consensus_proof = ConsensusTrainingProof {
+            model_id: ModelId(request.model_id.clone()),
+            base_checkpoint,
+            loss_before: miner_proof.loss_before,
+            loss_after: miner_proof.loss_after,
+            gradients_commitment: Hash::from_bytes(miner_proof.gradients_commitment),
+            zk_proof: ZKProof {
+                proof_data: miner_proof.zk_proof.clone(),
+                public_inputs: PublicInputs {
+                    model_hash: Hash::default(),
+                    input_hash: Hash::default(),
+                    output_gradients_hash: Hash::from_bytes(miner_proof.gradients_commitment),
+                    loss_before: miner_proof.loss_before,
+                    loss_after: miner_proof.loss_after,
+                },
+            },
+            batch_indices: miner_proof.batch_indices.clone(),
+        };
+
+        if !consensus_proof.verify(&self.active_model.difficulty) {
+            warn!(
+                "Rejecting training block: training proof does not meet difficulty target (loss_before={}, loss_after={}, min_improvement={}, max_loss_after={})",
+                miner_proof.loss_before,
+                miner_proof.loss_after,
+                self.active_model.difficulty.min_improvement,
+                self.active_model.difficulty.max_loss_after
+            );
+            return error_response("Training proof does not meet difficulty target".to_string());
+        }
+
         // Embed a compact proof summary into the coinbase extra-data.
         let extra_data = CoinbaseExtraData {
             model_id: request.model_id,
-            base_checkpoint: proof.base_checkpoint,
-            loss_before: proof.loss_before,
-            loss_after: proof.loss_after,
-            gradients_commitment: proof.gradients_commitment,
+            base_checkpoint: miner_proof.base_checkpoint,
+            loss_before: miner_proof.loss_before,
+            loss_after: miner_proof.loss_after,
+            gradients_commitment: miner_proof.gradients_commitment,
         };
         let extra_data_bytes = match to_vec(&extra_data) {
             Ok(bytes) => bytes,

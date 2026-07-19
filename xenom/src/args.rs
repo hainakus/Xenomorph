@@ -92,6 +92,8 @@ pub struct Args {
     pub disable_grpc: bool,
     pub ram_scale: f64,
     pub genome_file: Option<String>,
+    pub active_model_id: String,
+    pub active_model_weights_hash: Option<String>,
 }
 
 impl Default for Args {
@@ -143,6 +145,8 @@ impl Default for Args {
             disable_grpc: false,
             ram_scale: 1.0,
             genome_file: None,
+            active_model_id: "multimolecule/dnabert2".into(),
+            active_model_weights_hash: None,
         }
     }
 }
@@ -381,6 +385,22 @@ Setting to 0 prevents the preallocation and sets the maximum to {}, leading to 0
                 .help("Path to a .xenom packed GRCh38 genome file. Enables real-dataset Genome PoW validation and mining."),
         )
         .arg(
+            Arg::new("active-model-id")
+                .long("active-model-id")
+                .value_name("MODEL_ID")
+                .require_equals(true)
+                .value_parser(clap::value_parser!(String))
+                .help("HuggingFace model id used for training-proof validation (default: multimolecule/dnabert2)."),
+        )
+        .arg(
+            Arg::new("active-model-weights-hash")
+                .long("active-model-weights-hash")
+                .value_name("64_HEX")
+                .require_equals(true)
+                .value_parser(clap::value_parser!(String))
+                .help("Hex weights-hash of the active model. Defaults to the network's genome merkle root."),
+        )
+        .arg(
             Arg::new("ram-scale")
                 .long("ram-scale")
                 .require_equals(true)
@@ -468,6 +488,11 @@ impl Args {
             disable_grpc: arg_match_unwrap_or::<bool>(&m, "nogrpc", defaults.disable_grpc),
             ram_scale: arg_match_unwrap_or::<f64>(&m, "ram-scale", defaults.ram_scale),
             genome_file: m.get_one::<String>("genome-file").cloned().or(defaults.genome_file),
+            active_model_id: m.get_one::<String>("active-model-id").cloned().unwrap_or(defaults.active_model_id),
+            active_model_weights_hash: m
+                .get_one::<String>("active-model-weights-hash")
+                .cloned()
+                .or(defaults.active_model_weights_hash),
 
             #[cfg(feature = "devnet-prealloc")]
             num_prealloc_utxos: m.get_one::<u64>("num-prealloc-utxos").cloned(),
