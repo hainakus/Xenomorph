@@ -633,6 +633,8 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
             training_rpc_listen,
             network.network_type,
             active_model,
+            config.genome_pow_activation_daa_score,
+            config.genome_fragment_size_bytes,
             rpc_core_service.clone(),
         ));
     }

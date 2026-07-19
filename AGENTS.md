@@ -176,3 +176,4 @@ make clean  # cleanup-devnet.sh
 - This is full-node-side training proof validation (the block is rejected before being built/submitted if the proof is invalid). Consensus-level validation in `Header`/`UsefulPoW` is still dead code and not yet wired into the block pipeline.
 - The `model_id` field is now included in `TrainingBlock` so the seed-node can include it in the forwarded request.
 - `xenom-miner` `DnaBert2Trainer` clamps the batch `learning_rate` to `1e-4` for AdamW; the seed-node still sends `0.01`, but a full transformer diverges at that rate in a single step.
+- `TrainingBlockService` now mines the correct PoW for the active network: legacy KHeavyHash before `genome_pow_activation_daa_score`, and Genome PoW (with synthetic fragments) after it. This fixes the `block has invalid proof-of-work` rejections on devnet.

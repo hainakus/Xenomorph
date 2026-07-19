@@ -16,6 +16,7 @@ use kaspa_consensus_core::pow::{DifficultyTarget, ModelId, PublicInputs, Trainin
 use kaspa_core::task::service::{AsyncService, AsyncServiceError, AsyncServiceFuture};
 use kaspa_core::{info, trace, warn};
 use kaspa_hashes::Hash;
+use kaspa_pow::genome_pow::GenomeDatasetLoader;
 use kaspa_pow::State as PowState;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_rpc_core::{GetBlockTemplateRequest, SubmitBlockReport, SubmitBlockRequest};
@@ -99,6 +100,8 @@ pub struct TrainingBlockService {
     listen_address: ContextualNetAddress,
     network_type: NetworkType,
     active_model: ActiveModel,
+    genome_pow_activation_daa_score: u64,
+    genome_fragment_size_bytes: u32,
     rpc_core_service: Arc<RpcCoreService>,
     shutdown: SingleTrigger,
 }
@@ -108,9 +111,19 @@ impl TrainingBlockService {
         listen_address: ContextualNetAddress,
         network_type: NetworkType,
         active_model: ActiveModel,
+        genome_pow_activation_daa_score: u64,
+        genome_fragment_size_bytes: u32,
         rpc_core_service: Arc<RpcCoreService>,
     ) -> Arc<Self> {
-        Arc::new(Self { listen_address, network_type, active_model, rpc_core_service, shutdown: SingleTrigger::new() })
+        Arc::new(Self {
+            listen_address,
+            network_type,
+            active_model,
+            genome_pow_activation_daa_score,
+            genome_fragment_size_bytes,
+            rpc_core_service,
+            shutdown: SingleTrigger::new(),
+        })
     }
 
     async fn serve(self: Arc<Self>, listener: TcpListener) -> AnyhowResult<()> {
@@ -270,17 +283,40 @@ impl TrainingBlockService {
         // Solve the block PoW.
         let mut raw_block = template.block;
         let mut header: Header = raw_block.header.into();
-        let state = PowState::new(&header);
 
-        let mut nonce = 0u64;
-        let found_nonce = loop {
-            if state.check_pow(nonce).0 {
-                break nonce;
+        let found_nonce = if header.daa_score >= self.genome_pow_activation_daa_score {
+            // Devnet activates Genome PoW from daa_score 0. Use the same genome PoW logic
+            // the consensus header processor runs, with a synthetic fragment (no .xenom file).
+            let state = kaspa_pow::genome_pow_state(&header, self.genome_fragment_size_bytes);
+            let loader = kaspa_pow::genome_pow::SyntheticLoader::new(self.genome_fragment_size_bytes, header.epoch_seed);
+            let mut nonce = 0u64;
+            loop {
+                let fragment_idx = state.fragment_index_for(nonce);
+                let Some(fragment) = loader.load_fragment(fragment_idx) else {
+                    warn!("Failed to synthesize genome fragment {} for training block", fragment_idx);
+                    return error_response("Failed to synthesize genome fragment".to_string());
+                };
+                if state.check_pow_with_fragment(nonce, &fragment).0 {
+                    break nonce;
+                }
+                nonce = nonce.wrapping_add(1);
+                if nonce == 0 {
+                    warn!("Failed to solve Genome PoW for training block");
+                    return error_response("Failed to solve block Genome PoW".to_string());
+                }
             }
-            nonce = nonce.wrapping_add(1);
-            if nonce == 0 {
-                warn!("Failed to solve PoW for training block");
-                return error_response("Failed to solve block PoW".to_string());
+        } else {
+            let state = PowState::new(&header);
+            let mut nonce = 0u64;
+            loop {
+                if state.check_pow(nonce).0 {
+                    break nonce;
+                }
+                nonce = nonce.wrapping_add(1);
+                if nonce == 0 {
+                    warn!("Failed to solve PoW for training block");
+                    return error_response("Failed to solve block PoW".to_string());
+                }
             }
         };
 
