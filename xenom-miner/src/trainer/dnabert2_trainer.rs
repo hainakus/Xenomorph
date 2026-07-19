@@ -12,6 +12,11 @@ use crate::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch};
 use crate::tokenizer::DnaTokenizer;
 use crate::trainer::{DeviceInfo, DeviceType, Trainer, TrainingResult};
 
+/// AdamW learning rate cap for DNABERT-2 sized models.
+/// The seed-node sends `0.01` for all trainers, but that is far too aggressive for
+/// AdamW on a 110M parameter transformer and can make the loss increase after one step.
+const MAX_LEARNING_RATE: f32 = 1e-4;
+
 /// DNABERT-2 trainer that runs one SGD/AdamW step on a masked language modelling batch.
 pub struct DnaBert2Trainer {
     model: DnaBert2ForMaskedLM,
@@ -120,7 +125,10 @@ impl DnaBert2Trainer {
 
         let grads = loss_before.backward().context("Backward pass failed")?;
         let mut optimizer = self.optimizer.lock().map_err(|e| anyhow::anyhow!("Optimizer mutex poisoned: {}", e))?;
-        optimizer.set_learning_rate(learning_rate as f64);
+        // Clamp the learning rate: `0.01` from the batch is too large for a single AdamW step
+        // on a real DNABERT-2 model and can increase the loss instead of reducing it.
+        let effective_lr = learning_rate.min(MAX_LEARNING_RATE);
+        optimizer.set_learning_rate(effective_lr as f64);
         optimizer.step(&grads).context("Optimizer step failed")?;
 
         let logits_after = self.model.forward(&input_ids, None, Some(&attention_mask)).context("Forward pass after step failed")?;

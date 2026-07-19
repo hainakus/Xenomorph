@@ -625,7 +625,9 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
             model_id: args.active_model_id.clone(),
             weights_hash,
             reward_per_block: 0,
-            difficulty: kaspa_consensus_core::pow::DifficultyTarget { min_improvement: 0.0, max_loss_after: f64::MAX },
+            // Use a tiny negative min_improvement so a proof with zero (or floating-point-noise)
+            // improvement is still accepted, but a real loss increase is still rejected.
+            difficulty: kaspa_consensus_core::pow::DifficultyTarget { min_improvement: -1e-12, max_loss_after: f64::MAX },
         };
         async_runtime.register(TrainingBlockService::new(
             training_rpc_listen,
