@@ -14,8 +14,9 @@ use crate::trainer::{DeviceInfo, DeviceType, Trainer, TrainingResult};
 
 /// AdamW learning rate cap for DNABERT-2 sized models.
 /// The seed-node sends `0.01` for all trainers, but that is far too aggressive for
-/// AdamW on a 110M parameter transformer and can make the loss increase after one step.
-const MAX_LEARNING_RATE: f32 = 1e-4;
+/// fine-tuning a pre-trained transformer on a single batch and can make the loss
+/// increase after one step.
+const MAX_LEARNING_RATE: f32 = 1e-5;
 
 /// DNABERT-2 trainer that runs one SGD/AdamW step on a masked language modelling batch.
 pub struct DnaBert2Trainer {

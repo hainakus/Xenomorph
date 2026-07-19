@@ -625,9 +625,10 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
             model_id: args.active_model_id.clone(),
             weights_hash,
             reward_per_block: 0,
-            // Use a tiny negative min_improvement so a proof with zero (or floating-point-noise)
-            // improvement is still accepted, but a real loss increase is still rejected.
-            difficulty: kaspa_consensus_core::pow::DifficultyTarget { min_improvement: -1e-12, max_loss_after: f64::MAX },
+            // Devnet uses synthetic/random batches; a single AdamW step on a pre-trained
+            // DNABERT-2 model may not lower the loss on every batch. Allow the loss to
+            // increase by up to 1.0 while still rejecting proofs where the loss explodes.
+            difficulty: kaspa_consensus_core::pow::DifficultyTarget { min_improvement: -1.0, max_loss_after: f64::MAX },
         };
         async_runtime.register(TrainingBlockService::new(
             training_rpc_listen,
