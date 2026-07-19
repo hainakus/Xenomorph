@@ -21,6 +21,7 @@ async fn main() -> Result<()> {
     let models_dir = std::env::var("XENO_MODELS_DIR").unwrap_or_else(|_| "/data/models".to_string());
     let node_rpc = std::env::var("XENO_NODE_RPC").unwrap_or_else(|_| "127.0.0.1:16110".to_string());
     let grpc_addr = std::env::var("XENO_GRPC_ADDR").unwrap_or_else(|_| "0.0.0.0:50051".to_string());
+    let miner_ws_addr = std::env::var("XENO_MINER_WS_ADDR").unwrap_or_else(|_| "0.0.0.0:17110".to_string());
 
     let model_manager = Arc::new(ModelManager::new(models_dir).await?);
     let xenomorph_client = Arc::new(XenomorphRpcClient::new(&node_rpc).await?);
@@ -28,11 +29,18 @@ async fn main() -> Result<()> {
     // Initialize inference service
     let inference_service = InferenceService::new(model_manager.clone(), xenomorph_client.clone());
 
-    // Start gRPC server
+    // Start gRPC server in the background
     let addr: SocketAddr = grpc_addr.parse()?;
     info!("gRPC server listening on {}", addr);
+    let grpc_handle = tokio::spawn(async move {
+        Server::builder().add_service(inference_service.into_server()).serve(addr).await
+    });
 
-    Server::builder().add_service(inference_service.into_server()).serve(addr).await?;
+    // Start miner WebSocket server in the foreground
+    seed_node::rpc::server::run_miner_server(&miner_ws_addr, model_manager).await?;
+
+    // If the WebSocket server exits, wait for gRPC too
+    grpc_handle.await??;
 
     Ok(())
 }

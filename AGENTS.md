@@ -70,4 +70,4 @@ make clean  # cleanup-devnet.sh
 ### Notes
 
 - `build-devnet.sh` compiles `xenom`, `seed-node`, and `xenom-miner` binaries locally on Linux, or inside Docker on macOS via `--docker-build`.
-- `seed-node/src/main.rs` was patched to read `XENO_NODE_RPC`, `XENO_GRPC_ADDR`, and `XENO_MODELS_DIR` from the environment so it can reach the node in Docker networking.
+- `seed-node/src/main.rs` was patched to read `XENO_NODE_RPC`, `XENO_GRPC_ADDR`, `XENO_MODELS_DIR`, and `XENO_MINER_WS_ADDR` from the environment so it can reach the node in Docker networking.

@@ -10,8 +10,9 @@ RUN chmod +x /usr/local/bin/seed-node
 
 ENV XENO_NODE_RPC=127.0.0.1:16110
 ENV XENO_GRPC_ADDR=0.0.0.0:50051
+ENV XENO_MINER_WS_ADDR=0.0.0.0:17110
 ENV XENO_MODELS_DIR=/data/models
 
-EXPOSE 50051
+EXPOSE 50051 17110
 
 ENTRYPOINT ["/usr/local/bin/seed-node"]

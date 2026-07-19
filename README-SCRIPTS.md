@@ -58,6 +58,7 @@ Key variables:
 - `XENO_VERSION` — image tag version
 - `XENO_NODE_RPC_PORT` / `XENO_NODE_P2P_PORT` — node ports
 - `XENO_SEED_GRPC_PORT` — seed gRPC port
+- `XENO_MINER_RPC_PORT` — seed WebSocket port used by miners (default 17110)
 - `XENO_ANVIL_PORT` — local EVM devnet port
 - `XENO_MINER_MOCK_MODE` — `true` uses fast CPU-less training
 - `XENO_STRESS_MINERS` / `XENO_STRESS_DURATION` — stress defaults

@@ -33,12 +33,14 @@ services:
       dockerfile: Dockerfile.xeno-seed
     ports:
       - "${XENO_SEED_GRPC_PORT:-50051}:${XENO_SEED_GRPC_PORT:-50051}"
+      - "${XENO_MINER_RPC_PORT:-17110}:${XENO_MINER_RPC_PORT:-17110}"
     volumes:
       - "${XENO_DATA_DIR:-./devnet-data}/models:/data/models"
     environment:
       - RUST_LOG=${XENO_LOG_LEVEL:-info}
       - XENO_NODE_RPC=${XENO_SEED_NODE_RPC:-xeno-node:16110}
       - XENO_GRPC_ADDR=0.0.0.0:${XENO_SEED_GRPC_PORT:-50051}
+      - XENO_MINER_WS_ADDR=0.0.0.0:${XENO_MINER_RPC_PORT:-17110}
       - XENO_MODELS_DIR=${XENO_MODELS_DIR:-/data/models}
     networks:
       - xeno-devnet
@@ -57,7 +59,7 @@ services:
     environment:
       - RUST_LOG=${XENO_LOG_LEVEL:-info}
       - XENO_WALLET_PASSWORD=${XENO_WALLET_PASSWORD:-devnet-password}
-      - XENO_MINER_RPC_URL=ws://xeno-node:${XENO_NODE_RPC_PORT:-16110}
+      - XENO_MINER_RPC_URL=ws://xeno-seed:${XENO_MINER_RPC_PORT:-17110}
       - XENO_MINER_MODEL_ID=${XENO_MINER_MODEL_ID:-dnabert2}
       - XENO_MINER_THREADS=${XENO_MINER_THREADS:-4}
       - XENO_MINER_DATA_DIR=/root/.xenom-miner
