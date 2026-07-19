@@ -59,52 +59,54 @@ impl GpuTrainer {
         let inner = DnaBert2Trainer::new(config, weights, tokenizer, device, threads, dtype)
             .context("Failed to initialize DNABERT-2 trainer on selected device")?;
 
-        Ok(Self {
-            inner,
-            device_type,
-            device_name,
-            device_index,
-            threads,
-        })
+        Ok(Self { inner, device_type, device_name, device_index, threads })
     }
 
-    fn select_device(backend: GpuBackend, index: usize) -> Result<(Device, DeviceType, String)> {
+    fn select_device(backend: GpuBackend, _index: usize) -> Result<(Device, DeviceType, String)> {
         match backend {
             GpuBackend::Cuda => {
                 #[cfg(feature = "cuda")]
-                if let Ok(device) = Device::new_cuda(index) {
-                    return Ok((device, DeviceType::Cuda, format!("NVIDIA CUDA device {}", index)));
+                match Device::new_cuda(_index) {
+                    Ok(device) => return Ok((device, DeviceType::Cuda, format!("NVIDIA CUDA device {}", _index))),
+                    Err(e) => bail!("CUDA device {} is not accessible: {}. Check NVIDIA drivers/runtime.", _index, e),
                 }
-                bail!(
-                    "CUDA device {} is not available. Build with --features cuda or use --trainer cpu",
-                    index
-                )
+                #[cfg(not(feature = "cuda"))]
+                bail!("CUDA support was not compiled into this binary. Rebuild with: cargo build --release -p xenom-miner --features cuda")
             }
             GpuBackend::Metal => {
                 #[cfg(feature = "metal")]
-                if let Ok(device) = Device::new_metal(index) {
-                    return Ok((device, DeviceType::Metal, format!("Apple Metal device {}", index)));
+                match Device::new_metal(_index) {
+                    Ok(device) => return Ok((device, DeviceType::Metal, format!("Apple Metal device {}", _index))),
+                    Err(e) => bail!("Metal device {} is not accessible: {}. Check macOS Metal support.", _index, e),
                 }
-                bail!(
-                    "Metal device {} is not available. Build with --features metal or use --trainer cpu",
-                    index
-                )
+                #[cfg(not(feature = "metal"))]
+                bail!("Metal support was not compiled into this binary. Rebuild with: cargo build --release -p xenom-miner --features metal")
             }
             GpuBackend::Rocm => {
                 bail!("ROCm/HIP backend is not yet supported. Use --trainer cuda or --trainer cpu")
             }
             GpuBackend::Auto => {
                 #[cfg(feature = "cuda")]
-                if let Ok(device) = Device::new_cuda(index) {
-                    info!("Auto-selected NVIDIA CUDA device {}", index);
-                    return Ok((device, DeviceType::Cuda, format!("NVIDIA CUDA device {}", index)));
+                if let Ok(device) = Device::new_cuda(_index) {
+                    info!("Auto-selected NVIDIA CUDA device {}", _index);
+                    return Ok((device, DeviceType::Cuda, format!("NVIDIA CUDA device {}", _index)));
                 }
                 #[cfg(feature = "metal")]
-                if let Ok(device) = Device::new_metal(index) {
-                    info!("Auto-selected Apple Metal device {}", index);
-                    return Ok((device, DeviceType::Metal, format!("Apple Metal device {}", index)));
+                if let Ok(device) = Device::new_metal(_index) {
+                    info!("Auto-selected Apple Metal device {}", _index);
+                    return Ok((device, DeviceType::Metal, format!("Apple Metal device {}", _index)));
                 }
-                warn!("No GPU backend available; falling back to CPU");
+
+                #[cfg(not(any(feature = "cuda", feature = "metal")))]
+                warn!(
+                    "No GPU backend was compiled into this binary. Rebuild with one of:\n\
+                     cargo build --release -p xenom-miner --features cuda\n\
+                     cargo build --release -p xenom-miner --features metal\n\
+                     Falling back to CPU."
+                );
+                #[cfg(any(feature = "cuda", feature = "metal"))]
+                warn!("No accessible GPU device found; falling back to CPU");
+
                 Ok((Device::Cpu, DeviceType::Cpu, "CPU fallback".to_string()))
             }
         }

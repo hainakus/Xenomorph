@@ -124,6 +124,8 @@ Examples:
 - Compose: `docker-compose.devnet.yml`
 - Config template: `.env.example`
 - Native (no Docker): `scripts/run-native-devnet.sh` — builds/starts `xenom`, `seed-node` and `xenom-miner` directly from `target/release`.
+  - GPU auto-detection: when `XENO_MINER_TRAINER` is `dnabert2`, `gpu`, or `cuda` and both `nvidia-smi` and `nvcc` are present, the script compiles `xenom-miner` with `--features cuda`.
+  - Override with `--features <features>` or `XENO_MINER_FEATURES` (e.g. `XENO_MINER_FEATURES=cuda ./scripts/run-native-devnet.sh --trainer cuda`).
 
 ### Quick start
 

@@ -14,8 +14,10 @@ Run the Xenomorph devnet using locally built binaries (no Docker).
 Options:
   -b, --build              Build release binaries before starting (default)
   --no-build               Skip cargo build
-  -t, --trainer <name>     Miner trainer: mock, cpu, dnabert2
+  -t, --trainer <name>     Miner trainer: mock, cpu, dnabert2, gpu, cuda, metal, rocm
                            (default: \$XENO_MINER_TRAINER or mock)
+  --features <features>    Extra cargo features for xenom-miner (e.g. cuda, metal).
+                           Overrides auto-detection. Also accepts \$XENO_MINER_FEATURES.
   -d, --data-dir <dir>     Base data directory
                            (default: \$XENO_DATA_DIR or ./devnet-data-native)
   --anvil                  Start a local anvil instance for EVM/governance tests
@@ -26,6 +28,7 @@ Options:
 
 BUILD=1
 TRAINER="${XENO_MINER_TRAINER:-mock}"
+FEATURES="${XENO_MINER_FEATURES:-}"
 DATA_DIR="${XENO_DATA_DIR:-$SCRIPT_DIR/../devnet-data-native}"
 START_ANVIL=0
 
@@ -34,6 +37,7 @@ while [[ $# -gt 0 ]]; do
         -b|--build) BUILD=1; shift ;;
         --no-build) BUILD=0; shift ;;
         -t|--trainer) TRAINER="$2"; shift 2 ;;
+        --features) FEATURES="$2"; shift 2 ;;
         -d|--data-dir) DATA_DIR="$2"; shift 2 ;;
         --anvil) START_ANVIL=1; shift ;;
         -q|--quiet) XENO_QUIET=1; shift ;;
@@ -43,8 +47,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "$TRAINER" != "mock" && "$TRAINER" != "cpu" && "$TRAINER" != "dnabert2" ]]; then
-    err "Unknown trainer: $TRAINER. Use mock, cpu, or dnabert2."
+if [[ "$TRAINER" != "mock" && "$TRAINER" != "cpu" && "$TRAINER" != "dnabert2" && \
+      "$TRAINER" != "gpu" && "$TRAINER" != "cuda" && "$TRAINER" != "metal" && "$TRAINER" != "rocm" ]]; then
+    err "Unknown trainer: $TRAINER. Use mock, cpu, dnabert2, gpu, cuda, metal, or rocm."
     exit 1
 fi
 
@@ -71,8 +76,32 @@ BIN_PREFIX="${XENO_BIN_PREFIX:-$REPO_ROOT/target/release}"
 # Build
 # -----------------------------------------------------------------------------
 if [[ "$BUILD" == "1" ]]; then
+    # Auto-detect GPU features for the miner. Explicit --features or XENO_MINER_FEATURES
+    # always wins. For NVIDIA, we also require nvcc (CUDA toolkit) because candle-core's
+    # CUDA backend is compiled in at build time.
+    if [[ -z "$FEATURES" ]]; then
+        if [[ "$TRAINER" == "cuda" || "$TRAINER" == "gpu" || "$TRAINER" == "dnabert2" ]]; then
+            if has_command nvidia-smi && has_command nvcc; then
+                FEATURES="cuda"
+                qlog "NVIDIA GPUs + nvcc detected; building xenom-miner with --features cuda"
+            else
+                warn "GPU trainer selected but nvidia-smi or nvcc not found; building CPU miner. Set XENO_MINER_FEATURES=cuda and install the CUDA toolkit to use NVIDIA GPUs."
+            fi
+        elif [[ "$TRAINER" == "metal" ]]; then
+            FEATURES="metal"
+            qlog "Building xenom-miner with --features metal"
+        fi
+    else
+        qlog "Building xenom-miner with explicit features: $FEATURES"
+    fi
+
     qlog "Building release binaries..."
-    cargo build --release -p xenom -p seed-node -p xenom-miner
+    cargo build --release -p xenom -p seed-node
+    if [[ -n "$FEATURES" ]]; then
+        cargo build --release -p xenom-miner --features "$FEATURES"
+    else
+        cargo build --release -p xenom-miner
+    fi
 fi
 
 require_command "$BIN_PREFIX/xenom"
