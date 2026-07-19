@@ -7,7 +7,7 @@ use tokio::fs;
 use tracing::warn;
 
 use super::archive::{GenomeArchive, DEFAULT_FRAGMENT_SIZE};
-use super::downloader::GenomeDownloader;
+use super::downloader::{default_genome_release_url, GenomeDownloader};
 
 /// Cache and manage `.xenom` genome archives.
 pub struct GenomeStorage {
@@ -85,11 +85,9 @@ impl GenomeStorage {
             return Ok(archive);
         }
 
-        if source.is_empty() {
-            bail!("No cached genome archive for merkle {} and no source provided", hex::encode(merkle_root));
-        }
+        let source = if source.is_empty() { default_genome_release_url() } else { source.to_string() };
 
-        self.downloader.download(source, &cache_path).await?;
+        self.downloader.download(&source, &cache_path).await?;
         let archive = self.load_from_path(merkle_root, &cache_path).await?;
         self.active_genomes.insert(merkle_root, archive.clone());
         Ok(archive)

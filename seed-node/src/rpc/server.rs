@@ -130,10 +130,9 @@ async fn handle_genome_batch_request(
     request: GetGenomeTrainingBatch,
     genome_storage: Arc<RwLock<GenomeStorage>>,
 ) -> RpcResponse {
-    // Resolve a default source for the requested merkle root.
-    // In a production deployment the seed-node would consult a registry of
-    // genome sources; here we allow any locally cached or downloadable archive.
-    let source = format!("ipfs://{}", hex::encode(request.genome_merkle_root));
+    // The seed-node auto-discovers the genome archive in its local cache or falls
+    // back to the canonical GitHub Releases URL (overridable via XENO_GENOME_URL).
+    let source = String::new();
 
     let archive = match genome_storage.write().await.get_or_load(request.genome_merkle_root, &source).await {
         Ok(archive) => archive,

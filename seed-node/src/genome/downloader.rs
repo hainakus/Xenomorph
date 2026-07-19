@@ -9,6 +9,13 @@ use tracing::info;
 
 use super::archive::{GenomeArchive, DEFAULT_FRAGMENT_SIZE};
 
+/// Default canonical download URL for the GRCh38 `.xenom` dataset published
+/// by the Xenomorph GitHub Releases workflow.
+///
+/// Overridable via the `XENO_GENOME_URL` environment variable.
+pub const DEFAULT_GENOME_RELEASE_URL: &str =
+    "https://github.com/hainakus/Xenomorph/releases/download/genome-grch38-v0/grch38.xenom";
+
 /// Downloads `.xenom` genome archives over HTTP or via an IPFS gateway.
 pub struct GenomeDownloader {
     ipfs_gateway: String,
@@ -19,6 +26,11 @@ impl Default for GenomeDownloader {
     fn default() -> Self {
         Self::new("https://ipfs.io/ipfs".to_string())
     }
+}
+
+/// Return the canonical genome download URL, allowing override via `XENO_GENOME_URL`.
+pub fn default_genome_release_url() -> String {
+    std::env::var("XENO_GENOME_URL").unwrap_or_else(|_| DEFAULT_GENOME_RELEASE_URL.to_string())
 }
 
 impl GenomeDownloader {

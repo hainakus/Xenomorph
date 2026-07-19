@@ -48,7 +48,7 @@ cargo test --test integration
 - `.xenom` archives are produced by `genome-freeze` from GRCh38 FASTA files and use the `XENOGEN1` header layout (64-byte header + 2-bit packed DNA).
 - `GenomeArchive` parses `.xenom` archives (2-bit DNA encoding: A=00, C=01, G=10, T=11; four bases per byte, MSB-first).
 - `GenomeBatchGenerator` produces deterministic `GenomeTrainingBatch` slices from a 32-byte seed.
-- `GenomeStorage` caches archives locally and downloads missing ones via HTTP or an IPFS gateway.
+- `GenomeStorage` caches archives locally and downloads missing ones via HTTP or an IPFS gateway. The default fallback is the canonical GitHub Release `grch38.xenom` (override with `XENO_GENOME_URL`).
 - The seed-node WebSocket server handles `RpcRequest::GetGenomeTrainingBatch` and replies with `RpcResponse::GenomeTrainingBatch` (extracted DNA sequences).
 - New RPC enum variants are appended at the end to keep binary compatibility with older miners.
 
