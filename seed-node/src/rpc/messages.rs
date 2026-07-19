@@ -1,5 +1,7 @@
 use borsh_miner::{BorshDeserialize, BorshSerialize};
 
+use crate::genome::GenomeTrainingBatch;
+
 pub type BlockHash = [u8; 32];
 pub type DifficultyTarget = [u8; 32];
 
@@ -58,7 +60,24 @@ pub struct ModelCheckpoint {
     pub weights: Vec<u8>,
 }
 
+/// Request for a genome-backed DNABERT-2 training batch.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct GetGenomeTrainingBatch {
+    pub genome_merkle_root: [u8; 32],
+    pub model_id: String,
+    pub preferred_batch_size: usize,
+}
+
+/// Response containing a genome-backed training batch and the extracted DNA sequences.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct GenomeTrainingBatchMsg {
+    pub batch: GenomeTrainingBatch,
+    pub sequences: Vec<String>,
+}
+
 /// Request messages sent from the miner to the Xenomorph node.
+/// New variants are appended at the end to preserve Borsh enum indices for
+/// existing miners.
 #[allow(clippy::large_enum_variant)]
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub enum RpcRequest {
@@ -68,9 +87,12 @@ pub enum RpcRequest {
     GetBalance { address: String },
     GetDifficulty,
     Heartbeat,
+    GetGenomeTrainingBatch(GetGenomeTrainingBatch),
 }
 
 /// Response messages sent from the Xenomorph node to the miner.
+/// New variants are appended at the end to preserve Borsh enum indices for
+/// existing miners.
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub enum RpcResponse {
     TrainingBatch(Option<TrainingBatch>),
@@ -80,6 +102,7 @@ pub enum RpcResponse {
     Difficulty(DifficultyTarget),
     Pong,
     Error(String),
+    GenomeTrainingBatch(GenomeTrainingBatchMsg),
 }
 
 /// Wire envelope used by the RPC client to tag requests.

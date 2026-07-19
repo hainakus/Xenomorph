@@ -54,6 +54,9 @@ async fn start_mock_server() -> u16 {
                     RpcRequest::Heartbeat => RpcResponse::Pong,
                     RpcRequest::GetBalance { .. } => RpcResponse::Balance(0),
                     RpcRequest::GetDifficulty => RpcResponse::Difficulty([0xff; 32]),
+                    RpcRequest::GetGenomeTrainingBatch(_) => {
+                        RpcResponse::Error("genome batch not supported in mock".to_string())
+                    }
                 };
 
                 let payload = to_vec(&response).unwrap();

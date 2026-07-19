@@ -5,6 +5,8 @@ use tokio::sync::RwLock;
 use tracing::info;
 use uuid::Uuid;
 
+use crate::rpc::messages::{TrainingBatch};
+
 use super::checkpoint::{ModelCheckpoint, ModelMetrics};
 use super::downloader::download_model;
 use super::storage::ModelStorage;
@@ -144,6 +146,32 @@ impl ModelManager {
 
         info!("Stored model files for {} (weights {} bytes)", model_id, files.weights.len());
         Ok(())
+    }
+
+    /// Build a `TrainingBatch` that ties the model checkpoint to an optional genome merkle root.
+    pub async fn get_training_batch_with_genome(
+        &self,
+        model_id: &str,
+        genome_root: Option<[u8; 32]>,
+    ) -> Result<TrainingBatch> {
+        let base_checkpoint = if let Some(root) = genome_root {
+            root
+        } else {
+            // Fall back to the current model checkpoint hash if no genome root is provided.
+            match self.get_model(model_id).await {
+                Some(info) => info.checkpoint.weights_hash,
+                None => [0u8; 32],
+            }
+        };
+
+        Ok(TrainingBatch {
+            batch_id: 1,
+            model_id: model_id.to_string(),
+            base_checkpoint,
+            data_indices: vec![],
+            target_improvement: 0.01,
+            learning_rate: 0.01,
+        })
     }
 
     /// Return the raw model checkpoint files (config, tokenizer, weights) for a model id.

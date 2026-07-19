@@ -3,6 +3,40 @@ use borsh::{BorshDeserialize, BorshSerialize};
 pub type BlockHash = [u8; 32];
 pub type DifficultyTarget = [u8; 32];
 
+/// A slice of the genome selected for MLM training.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct GenomeSlice {
+    pub chunk_idx: u64,
+    pub start_base: u32,
+    pub length: u32,
+}
+
+/// A training batch composed of genome slices returned by the seed-node.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct GenomeTrainingBatch {
+    pub batch_id: u64,
+    pub model_id: String,
+    pub genome_merkle_root: [u8; 32],
+    pub data_indices: Vec<GenomeSlice>,
+    pub mask_ratio: f32,
+    pub seq_length: usize,
+}
+
+/// Request for a genome-backed DNABERT-2 training batch.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct GetGenomeTrainingBatch {
+    pub genome_merkle_root: [u8; 32],
+    pub model_id: String,
+    pub preferred_batch_size: usize,
+}
+
+/// Response containing a genome-backed training batch and the extracted DNA sequences.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct GenomeTrainingBatchMsg {
+    pub batch: GenomeTrainingBatch,
+    pub sequences: Vec<String>,
+}
+
 /// A batch of training data requested from the Xenomorph node.
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub struct TrainingBatch {
@@ -59,6 +93,8 @@ pub struct ModelCheckpoint {
 }
 
 /// Request messages sent from the miner to the Xenomorph node.
+/// New variants are appended at the end to preserve Borsh enum indices for the
+/// seed-node.
 #[allow(clippy::large_enum_variant)]
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub enum RpcRequest {
@@ -68,9 +104,12 @@ pub enum RpcRequest {
     GetBalance { address: String },
     GetDifficulty,
     Heartbeat,
+    GetGenomeTrainingBatch(GetGenomeTrainingBatch),
 }
 
 /// Response messages sent from the Xenomorph node to the miner.
+/// New variants are appended at the end to preserve Borsh enum indices for the
+/// seed-node.
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub enum RpcResponse {
     TrainingBatch(Option<TrainingBatch>),
@@ -80,6 +119,7 @@ pub enum RpcResponse {
     Difficulty(DifficultyTarget),
     Pong,
     Error(String),
+    GenomeTrainingBatch(GenomeTrainingBatchMsg),
 }
 
 /// Wire envelope used by the RPC client to tag requests.

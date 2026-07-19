@@ -43,6 +43,21 @@ cargo test --test integration
 - Tests spawn isolated Anvil devnets and mock WebSocket seed nodes; each test sets up and tears down its own environment.
 - `hex_to_bytes32` in `tests/integration/fixtures.rs` converts arbitrary strings to `bytes32`: valid hex is decoded, short ASCII strings are left-padded, and long inputs are hashed with Keccak-256.
 
+## GenomePoW (`seed-node/src/genome/`)
+
+- `GenomeArchive` parses `.xenom` packed genome archives (2-bit DNA encoding: A=00, T=01, C=10, G=11).
+- `GenomeBatchGenerator` produces deterministic `GenomeTrainingBatch` slices from a 32-byte seed.
+- `GenomeStorage` caches archives locally and downloads missing ones via HTTP or an IPFS gateway.
+- The seed-node WebSocket server handles `RpcRequest::GetGenomeTrainingBatch` and replies with `RpcResponse::GenomeTrainingBatch` (extracted DNA sequences).
+- New RPC enum variants are appended at the end to keep binary compatibility with older miners.
+
+### Build & test
+
+```bash
+cargo build -p seed-node -p xenom-miner
+cargo test -p seed-node -p xenom-miner
+```
+
 ## Miner (`xenom-miner`)
 
 ### Build & test

@@ -1,11 +1,14 @@
 #![allow(dead_code)]
 
 use anyhow::Result;
+use seed_node::genome::GenomeStorage;
 use seed_node::model::manager::ModelManager;
 use seed_node::rpc::client::XenomorphRpcClient;
 use seed_node::serving::inference::InferenceService;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tonic::transport::Server;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -24,7 +27,8 @@ async fn main() -> Result<()> {
     let miner_ws_addr = std::env::var("XENO_MINER_WS_ADDR").unwrap_or_else(|_| "0.0.0.0:17110".to_string());
     let default_model_id = std::env::var("XENO_DEFAULT_MODEL_ID").unwrap_or_else(|_| "multimolecule/dnabert2".to_string());
 
-    let model_manager = Arc::new(ModelManager::new(models_dir).await?);
+    let model_manager = Arc::new(ModelManager::new(models_dir.clone()).await?);
+    let genome_storage = Arc::new(RwLock::new(GenomeStorage::new(PathBuf::from(models_dir).join("genomes")).await?));
 
     // Try to download the default model in the background so the miner can start immediately
     let mm = model_manager.clone();
@@ -47,7 +51,7 @@ async fn main() -> Result<()> {
     });
 
     // Start miner WebSocket server in the foreground
-    seed_node::rpc::server::run_miner_server(&miner_ws_addr, model_manager).await?;
+    seed_node::rpc::server::run_miner_server(&miner_ws_addr, model_manager, genome_storage).await?;
 
     // If the WebSocket server exits, wait for gRPC too
     grpc_handle.await??;

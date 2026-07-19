@@ -5,23 +5,30 @@ use anyhow::{anyhow, Result};
 use borsh_miner::{to_vec, BorshDeserialize};
 use futures::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::RwLock;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
+use crate::genome::{GenomeBatchGenerator, GenomeStorage};
 use crate::model::manager::ModelManager;
-use crate::rpc::messages::{RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch};
+use crate::rpc::messages::{GenomeTrainingBatchMsg, GetGenomeTrainingBatch, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch};
 
 /// Start a WebSocket server for miner connections.
-pub async fn run_miner_server(addr: &str, model_manager: Arc<ModelManager>) -> Result<()> {
+pub async fn run_miner_server(
+    addr: &str,
+    model_manager: Arc<ModelManager>,
+    genome_storage: Arc<RwLock<GenomeStorage>>,
+) -> Result<()> {
     let listener = TcpListener::bind(addr).await.map_err(|e| anyhow!("Failed to bind miner server {}: {}", addr, e))?;
     let bound: SocketAddr = listener.local_addr()?;
     info!("Miner WebSocket server listening on {}", bound);
 
     while let Ok((stream, peer)) = listener.accept().await {
         let mm = model_manager.clone();
+        let gs = genome_storage.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, mm).await {
+            if let Err(e) = handle_connection(stream, mm, gs).await {
                 warn!("Miner WebSocket connection from {} closed: {}", peer, e);
             }
         });
@@ -30,7 +37,11 @@ pub async fn run_miner_server(addr: &str, model_manager: Arc<ModelManager>) -> R
     Ok(())
 }
 
-async fn handle_connection(stream: TcpStream, model_manager: Arc<ModelManager>) -> Result<()> {
+async fn handle_connection(
+    stream: TcpStream,
+    model_manager: Arc<ModelManager>,
+    genome_storage: Arc<RwLock<GenomeStorage>>,
+) -> Result<()> {
     let mut ws = accept_async(stream).await?;
 
     while let Some(msg) = ws.next().await {
@@ -45,7 +56,7 @@ async fn handle_connection(stream: TcpStream, model_manager: Arc<ModelManager>) 
                     }
                 };
 
-                let response = handle_request(envelope.payload, model_manager.clone()).await;
+                let response = handle_request(envelope.payload, model_manager.clone(), genome_storage.clone()).await;
                 let resp_bytes = match to_vec(&response) {
                     Ok(bytes) => bytes,
                     Err(e) => {
@@ -67,7 +78,11 @@ async fn handle_connection(stream: TcpStream, model_manager: Arc<ModelManager>) 
     Ok(())
 }
 
-async fn handle_request(req: RpcRequest, model_manager: Arc<ModelManager>) -> RpcResponse {
+async fn handle_request(
+    req: RpcRequest,
+    model_manager: Arc<ModelManager>,
+    genome_storage: Arc<RwLock<GenomeStorage>>,
+) -> RpcResponse {
     match req {
         RpcRequest::GetTrainingBatch { model_id } => {
             let base_checkpoint = get_checkpoint(&model_manager, &model_id).await;
@@ -79,6 +94,9 @@ async fn handle_request(req: RpcRequest, model_manager: Arc<ModelManager>) -> Rp
                 target_improvement: 0.01,
                 learning_rate: 0.01,
             }))
+        }
+        RpcRequest::GetGenomeTrainingBatch(request) => {
+            handle_genome_batch_request(request, genome_storage).await
         }
         RpcRequest::GetModelCheckpoint { model_id } => {
             match model_manager.get_model_checkpoint(&model_id).await {
@@ -106,6 +124,35 @@ async fn handle_request(req: RpcRequest, model_manager: Arc<ModelManager>) -> Rp
         RpcRequest::GetDifficulty => RpcResponse::Difficulty([0u8; 32]),
         RpcRequest::Heartbeat => RpcResponse::Pong,
     }
+}
+
+async fn handle_genome_batch_request(
+    request: GetGenomeTrainingBatch,
+    genome_storage: Arc<RwLock<GenomeStorage>>,
+) -> RpcResponse {
+    // Resolve a default source for the requested merkle root.
+    // In a production deployment the seed-node would consult a registry of
+    // genome sources; here we allow any locally cached or downloadable archive.
+    let source = format!("ipfs://{}", hex::encode(request.genome_merkle_root));
+
+    let archive = match genome_storage.write().await.get_or_load(request.genome_merkle_root, &source).await {
+        Ok(archive) => archive,
+        Err(e) => {
+            return RpcResponse::Error(format!("Failed to load genome archive: {}", e));
+        }
+    };
+
+    // Deterministic seed derived from the genome merkle root.
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&request.genome_merkle_root);
+
+    let mut generator = GenomeBatchGenerator::new((*archive).clone(), seed);
+    let mut batch = generator.generate_batch(request.preferred_batch_size, 128);
+    batch.model_id = request.model_id;
+
+    let sequences = generator.extract_sequences(&batch);
+
+    RpcResponse::GenomeTrainingBatch(GenomeTrainingBatchMsg { batch, sequences })
 }
 
 async fn get_checkpoint(model_manager: &ModelManager, model_id: &str) -> [u8; 32] {
