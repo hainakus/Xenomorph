@@ -62,12 +62,10 @@ impl MlmBatchGenerator {
 
             let mut encoded = self.tokenizer.encode(sequence, false)?;
             encoded.truncate(self.seq_len);
-            let actual_len = encoded.len();
 
             let offset = b * self.seq_len;
-            for i in 0..actual_len {
+            for (i, &original_id) in encoded.iter().enumerate() {
                 let pos = offset + i;
-                let original_id = encoded[i];
                 attention_mask[pos] = 1;
 
                 if rng.gen::<f64>() < self.mask_prob {
@@ -112,12 +110,10 @@ impl MlmBatchGenerator {
 
             let mut encoded = self.tokenizer.encode(&sequence, false)?;
             encoded.truncate(self.seq_len);
-            let actual_len = encoded.len();
 
             let offset = b * self.seq_len;
-            for i in 0..actual_len {
+            for (i, &original_id) in encoded.iter().enumerate() {
                 let pos = offset + i;
-                let original_id = encoded[i];
                 attention_mask[pos] = 1;
 
                 if rng.gen::<f64>() < self.mask_prob {
@@ -152,13 +148,12 @@ impl MlmBatchGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use tokenizers::models::bpe::BPE;
+    use tokenizers::models::bpe::{BPE, Vocab};
     use tokenizers::tokenizer::AddedToken;
     use tokenizers::Tokenizer;
 
     fn build_test_tokenizer() -> DnaTokenizer {
-        let mut vocab: HashMap<String, u32> = HashMap::new();
+        let mut vocab: Vocab = Vocab::new();
         vocab.insert("A".to_string(), 0);
         vocab.insert("T".to_string(), 1);
         vocab.insert("C".to_string(), 2);

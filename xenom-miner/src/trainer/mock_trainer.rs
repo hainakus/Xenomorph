@@ -62,6 +62,11 @@ impl Trainer for MockTrainer {
     }
 
     fn device_info(&self) -> DeviceInfo {
-        DeviceInfo { device_type: DeviceType::Mock, name: "Mock CPU trainer".to_string(), threads: 1 }
+        DeviceInfo {
+            device_type: DeviceType::Mock,
+            name: "Mock CPU trainer".to_string(),
+            threads: 1,
+            ..Default::default()
+        }
     }
 }

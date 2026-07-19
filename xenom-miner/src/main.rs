@@ -10,8 +10,6 @@ use std::time::{Duration, Instant};
 use tokio::time::timeout;
 use tracing::{error, info, warn};
 
-use candle_core::Device;
-
 use xenom_miner::block::BlockBuilder;
 use xenom_miner::config::MinerConfig;
 use xenom_miner::model::DnaBert2Config;
@@ -20,7 +18,7 @@ use xenom_miner::prover::{PublicInputs, ZkProver};
 use xenom_miner::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch};
 use xenom_miner::rpc::XenomRpcClient;
 use xenom_miner::tokenizer::DnaTokenizer;
-use xenom_miner::trainer::{CpuTrainer, DnaBert2Trainer, MockTrainer, Trainer};
+use xenom_miner::trainer::{CpuTrainer, GpuBackend, GpuTrainer, MockTrainer, Trainer};
 use xenom_miner::wallet::WalletManager;
 
 const DEFAULT_RPC_URL: &str = "ws://xeno-seed:17110";
@@ -50,13 +48,21 @@ struct Args {
     #[arg(long, default_value_t = DEFAULT_THREADS)]
     threads: usize,
 
-    /// Trainer backend to use: mock, cpu, or dnabert2.
-    #[arg(long, value_parser = ["mock", "cpu", "dnabert2"], default_value = "mock")]
+    /// Trainer backend to use: mock, cpu, dnabert2, gpu, cuda, rocm, or metal.
+    #[arg(long, value_parser = ["mock", "cpu", "dnabert2", "gpu", "cuda", "rocm", "metal"], default_value = "mock")]
     trainer: String,
 
     /// Deprecated alias for --trainer=mock.
     #[arg(long = "mock-mode", visible_alias = "mock", hide = true)]
     mock: bool,
+
+    /// GPU device ordinal to use when --trainer is gpu/cuda/metal.
+    #[arg(long, default_value_t = 0)]
+    gpu_device: usize,
+
+    /// Use FP16 mixed precision on supported GPU backends (CUDA/Metal).
+    #[arg(long)]
+    fp16: bool,
 
     /// Network to mine on. Used to derive the canonical genome merkle root
     /// from consensus parameters. Ignored when --genome-merkle is provided.
@@ -183,6 +189,9 @@ fn make_local_batch(model_id: &str, block_number: u64) -> TrainingBatch {
 async fn load_trainer(
     rpc_client: &mut Option<XenomRpcClient>,
     model_id: &str,
+    backend: GpuBackend,
+    gpu_device: usize,
+    fp16: bool,
     threads: usize,
     dry_run: bool,
 ) -> Result<Arc<dyn Trainer>> {
@@ -204,9 +213,10 @@ async fn load_trainer(
     let tokenizer = DnaTokenizer::from_bytes(&tokenizer).context("Failed to parse tokenizer")?;
     let model_id_for_log = model_id.clone();
     let trainer =
-        DnaBert2Trainer::new(config, weights, tokenizer, Device::Cpu, threads)
+        GpuTrainer::new(config, weights, tokenizer, backend, gpu_device, fp16, threads)
             .context("Failed to initialize DNABERT-2 trainer")?;
     info!("Loaded DNABERT-2 model checkpoint for {}", model_id_for_log);
+    info!("Trainer device: {:?}", trainer.device_info());
     Ok(Arc::new(trainer))
 }
 
@@ -274,16 +284,35 @@ async fn main() -> Result<()> {
             info!("Using legacy Candle CPU trainer");
             Arc::new(CpuTrainer::new(config.threads)?)
         }
-        "dnabert2" => {
-            info!("Using DNABERT-2 trainer");
-            load_trainer(&mut rpc_client, &config.model_id, config.threads, config.dry_run).await?
+        "dnabert2" | "gpu" | "cuda" | "rocm" | "metal" => {
+            let backend = match trainer_kind.as_str() {
+                "dnabert2" | "gpu" => GpuBackend::Auto,
+                "cuda" => GpuBackend::Cuda,
+                "rocm" => GpuBackend::Rocm,
+                "metal" => GpuBackend::Metal,
+                _ => unreachable!(),
+            };
+            info!("Using DNABERT-2 trainer with {:?} GPU backend", backend);
+            load_trainer(
+                &mut rpc_client,
+                &config.model_id,
+                backend,
+                args.gpu_device,
+                args.fp16,
+                config.threads,
+                config.dry_run,
+            )
+            .await?
         }
-        other => bail!("Unknown trainer: {}. Use mock, cpu, or dnabert2.", other),
+        other => bail!("Unknown trainer: {}. Use mock, cpu, dnabert2, gpu, cuda, rocm, or metal.", other),
     };
+
+    let dna_model_backends = ["dnabert2", "gpu", "cuda", "rocm", "metal"];
+    let is_dna_model = dna_model_backends.contains(&trainer_kind.as_str());
 
     let genome_merkle: Option<[u8; 32]> = if let Some(hex_str) = args.genome_merkle.as_deref() {
         Some(parse_genome_merkle(hex_str)?)
-    } else if trainer_kind == "dnabert2" {
+    } else if is_dna_model {
         let network = args.network.as_deref().unwrap_or("mainnet");
         let network_type = NetworkType::from_str(network).with_context(|| format!("Invalid network: {}", network))?;
         let params = Params::from(network_type);
@@ -292,8 +321,8 @@ async fn main() -> Result<()> {
     } else {
         None
     };
-    if genome_merkle.is_some() && trainer_kind != "dnabert2" {
-        warn!("--genome-merkle is only supported with --trainer=dnabert2; genome training will likely fail");
+    if genome_merkle.is_some() && !is_dna_model {
+        warn!("--genome-merkle is only supported with --trainer=dnabert2/gpu/cuda/rocm/metal; genome training will likely fail");
     }
 
     let prover = ZkProver::new();

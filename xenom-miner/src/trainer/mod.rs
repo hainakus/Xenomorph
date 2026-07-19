@@ -1,26 +1,44 @@
 pub mod cpu_trainer;
 pub mod dnabert2_trainer;
+pub mod gpu_trainer;
 pub mod mock_trainer;
+
+#[cfg(feature = "cuda")]
+pub mod cuda_kernels;
+
+#[cfg(test)]
+pub mod gpu_tests;
 
 use crate::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch};
 use anyhow::Result;
 
 pub use cpu_trainer::CpuTrainer;
 pub use dnabert2_trainer::DnaBert2Trainer;
+pub use gpu_trainer::{GpuBackend, GpuTrainer};
 pub use mock_trainer::MockTrainer;
 
 /// Information about the training device being used.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct DeviceInfo {
     pub device_type: DeviceType,
     pub name: String,
     pub threads: usize,
+    /// GPU memory currently in use, in bytes.
+    pub memory_used: Option<u64>,
+    /// GPU temperature in degrees Celsius.
+    pub temperature: Option<u32>,
+    /// GPU compute utilization percentage (0-100).
+    pub utilization: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum DeviceType {
+    #[default]
     Cpu,
     Mock,
+    Cuda,
+    Metal,
+    Rocm,
 }
 
 /// Result of training a single batch.

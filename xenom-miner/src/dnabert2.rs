@@ -373,7 +373,9 @@ impl DnaBert2ForMaskedLM {
             let tensor_data = varmap.data().lock().map_err(|e| candle_core::Error::Msg(e.to_string()))?;
             for (name, tensor) in tensors.iter() {
                 if let Some(var) = tensor_data.get(name) {
-                    var.set(tensor)?;
+                    // Safetensors weights are typically F32; cast to the requested training dtype.
+                    let tensor = tensor.to_dtype(dtype)?;
+                    var.set(&tensor)?;
                 }
                 // Unknown keys are ignored so that tied/decoded weights do not break loading.
             }

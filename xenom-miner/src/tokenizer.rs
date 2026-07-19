@@ -40,12 +40,11 @@ impl DnaTokenizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use tokenizers::models::bpe::BPE;
+    use tokenizers::models::bpe::{BPE, Vocab};
     use tokenizers::tokenizer::AddedToken;
 
     fn build_test_tokenizer_bytes() -> Vec<u8> {
-        let mut vocab: HashMap<String, u32> = HashMap::new();
+        let mut vocab: Vocab = Vocab::new();
         vocab.insert("A".to_string(), 0);
         vocab.insert("T".to_string(), 1);
         vocab.insert("C".to_string(), 2);

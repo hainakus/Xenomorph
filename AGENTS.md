@@ -72,8 +72,24 @@ cargo test -p xenom-miner -p seed-node
 
 - `--trainer mock` — fast CPU-less mock trainer (default for devnet).
 - `--trainer cpu` — legacy Candle MLP trainer.
-- `--trainer dnabert2` — real DNABERT-2 training; requires a seed-node that serves `GetModelCheckpoint`.
+- `--trainer dnabert2` — real DNABERT-2 training; auto-selects GPU (CUDA/Metal) with CPU fallback.
+- `--trainer gpu` — same as `dnabert2` (GPU auto-select).
+- `--trainer cuda` — force NVIDIA CUDA backend.
+- `--trainer metal` — force Apple Metal backend.
+- `--trainer rocm` — AMD ROCm/HIP (not yet implemented, returns a clear error).
 - `--mock-mode` / `--mock` are hidden aliases for `--trainer=mock`.
+- `--gpu-device <N>` — GPU device ordinal (default 0).
+- `--fp16` — enable FP16 mixed precision on CUDA/Metal when available.
+
+Build with GPU support:
+
+```bash
+# NVIDIA CUDA
+cargo build -p xenom-miner --release --features cuda
+
+# Apple Metal
+cargo build -p xenom-miner --release --features metal
+```
 
 Examples:
 
@@ -81,8 +97,11 @@ Examples:
 # Devnet (mock)
 ./target/debug/xenom-miner --rpc-url ws://xeno-seed:17110 --trainer mock --dry-run
 
-# Real DNABERT-2 training
+# Real DNABERT-2 training (auto GPU)
 ./target/debug/xenom-miner --rpc-url ws://xeno-seed:17110 --trainer dnabert2
+
+# Force CUDA with FP16 on a specific GPU
+./target/release/xenom-miner --rpc-url ws://xeno-seed:17110 --trainer cuda --gpu-device 0 --fp16
 
 # DNABERT-2 training on a genome archive served by the seed-node
 # --network derives the canonical genome merkle root from consensus Params.

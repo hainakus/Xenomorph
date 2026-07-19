@@ -161,7 +161,12 @@ impl Trainer for CpuTrainer {
     }
 
     fn device_info(&self) -> DeviceInfo {
-        DeviceInfo { device_type: DeviceType::Cpu, name: format!("Candle CPU ({} threads)", self.threads), threads: self.threads }
+        DeviceInfo {
+            device_type: DeviceType::Cpu,
+            name: format!("Candle CPU ({} threads)", self.threads),
+            threads: self.threads,
+            ..Default::default()
+        }
     }
 }
 

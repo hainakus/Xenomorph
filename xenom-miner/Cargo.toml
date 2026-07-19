@@ -24,13 +24,17 @@ sha2 = "0.10"
 rand = "0.8"
 rand_chacha = "0.3"
 
-# ML (CPU-only)
-candle-core = "0.3"
-candle-nn = "0.3"
+# ML
+# Use --features cuda / metal to enable GPU backends. CPU is always available.
+candle-core = { version = "0.3", default-features = false }
+candle-nn = { version = "0.3", default-features = false }
 candle-transformers = "0.3"
 # Pin half so its rand_distr feature uses the same rand 0.8 as candle-core.
 half = "=2.4.1"
 tokenizers = "0.21.4"
+
+# GPU monitoring (NVIDIA via NVML). Only compiled with the 'cuda' feature.
+nvml-wrapper = { version = "0.9", optional = true }
 
 # Wallet
 secp256k1 = { version = "0.28", features = ["global-context", "rand-std"] }
@@ -59,6 +63,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dirs = "5.0"
 futures = "0.3"
 url = "2.5"
+
+[features]
+default = ["cpu"]
+cpu = []
+cuda = ["candle-core/cuda", "candle-nn/cuda", "dep:nvml-wrapper"]
+metal = ["candle-core/metal", "candle-nn/metal"]
+rocm = []
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -1,7 +1,9 @@
+use std::sync::Mutex;
+use std::time::Instant;
+
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::{loss, AdamW, Optimizer};
-use std::time::Instant;
 
 use crate::data::{MlmBatch, MlmBatchGenerator};
 use crate::dnabert2::DnaBert2ForMaskedLM;
@@ -17,6 +19,7 @@ pub struct DnaBert2Trainer {
     generator: MlmBatchGenerator,
     device: Device,
     threads: usize,
+    optimizer: Mutex<AdamW>,
 }
 
 impl DnaBert2Trainer {
@@ -27,12 +30,15 @@ impl DnaBert2Trainer {
         tokenizer: DnaTokenizer,
         device: Device,
         threads: usize,
+        dtype: DType,
     ) -> Result<Self> {
-        let (model, varmap) = DnaBert2ForMaskedLM::load_for_training(config.clone(), weights, DType::F32, &device)
+        let (model, varmap) = DnaBert2ForMaskedLM::load_for_training(config.clone(), weights, dtype, &device)
             .context("Failed to load DNABERT-2 model for training")?;
         let seq_len = config.max_position_embeddings.min(512);
         let generator = MlmBatchGenerator::new(tokenizer, seq_len);
-        Ok(Self { model, varmap, generator, device, threads })
+        let optimizer = AdamW::new_lr(varmap.all_vars(), 0.0)
+            .context("Failed to create AdamW optimizer")?;
+        Ok(Self { model, varmap, generator, device, threads, optimizer: Mutex::new(optimizer) })
     }
 
     fn build_tensors(&self, batch: &MlmBatch) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
@@ -99,7 +105,9 @@ impl DnaBert2Trainer {
         let mut hasher = blake3::Hasher::new();
         for var in self.varmap.all_vars() {
             if let Some(grad) = grads.get(&var) {
-                let values = grad.flatten_all()?.to_vec1::<f32>()?;
+                // Normalize gradients to F32 for a deterministic, device-agnostic commitment.
+                let grad_f32 = grad.to_dtype(DType::F32)?;
+                let values = grad_f32.flatten_all()?.to_vec1::<f32>()?;
                 for value in values {
                     hasher.update(&value.to_le_bytes());
                 }
@@ -128,11 +136,11 @@ impl DnaBert2Trainer {
             .forward(&input_ids, None, Some(&attention_mask))
             .context("Forward pass failed")?;
         let loss_before = self.compute_loss(&logits_before, &labels, &mask)?;
-        let loss_before_scalar = loss_before.to_vec0::<f32>()? as f64;
+        let loss_before_scalar = loss_before.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64;
 
-        let mut optimizer = AdamW::new_lr(self.varmap.all_vars(), learning_rate as f64)
-            .context("Failed to create optimizer")?;
         let grads = loss_before.backward().context("Backward pass failed")?;
+        let mut optimizer = self.optimizer.lock().map_err(|e| anyhow::anyhow!("Optimizer mutex poisoned: {}", e))?;
+        optimizer.set_learning_rate(learning_rate as f64);
         optimizer.step(&grads).context("Optimizer step failed")?;
 
         let logits_after = self
@@ -140,7 +148,7 @@ impl DnaBert2Trainer {
             .forward(&input_ids, None, Some(&attention_mask))
             .context("Forward pass after step failed")?;
         let loss_after = self.compute_loss(&logits_after, &labels, &mask)?;
-        let loss_after_scalar = loss_after.to_vec0::<f32>()? as f64;
+        let loss_after_scalar = loss_after.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64;
 
         let gradients_commitment = self.gradient_commitment(&grads)?;
 
@@ -187,10 +195,25 @@ impl Trainer for DnaBert2Trainer {
     }
 
     fn device_info(&self) -> DeviceInfo {
+        let device_type = if self.device.is_cuda() {
+            DeviceType::Cuda
+        } else if self.device.is_metal() {
+            DeviceType::Metal
+        } else {
+            DeviceType::Cpu
+        };
+
+        let name = match device_type {
+            DeviceType::Cuda => format!("DNABERT-2 CUDA trainer ({} threads)", self.threads),
+            DeviceType::Metal => format!("DNABERT-2 Metal trainer ({} threads)", self.threads),
+            _ => format!("DNABERT-2 CPU trainer ({} threads)", self.threads),
+        };
+
         DeviceInfo {
-            device_type: DeviceType::Cpu,
-            name: "DNABERT-2 CPU trainer".to_string(),
+            device_type,
+            name,
             threads: self.threads,
+            ..Default::default()
         }
     }
 }
@@ -200,9 +223,10 @@ mod tests {
     use super::*;
     use candle_core::Tensor;
     use std::collections::HashMap;
+    use tokenizers::models::bpe::Vocab;
 
     fn build_tiny_tokenizer() -> DnaTokenizer {
-        let mut vocab: HashMap<String, u32> = HashMap::new();
+        let mut vocab: Vocab = Vocab::new();
         vocab.insert("<pad>".to_string(), 0);
         vocab.insert("A".to_string(), 1);
         vocab.insert("T".to_string(), 2);
@@ -306,7 +330,7 @@ mod tests {
     fn test_dna_bert2_trainer_runs_and_improves() {
         let (config, weights) = build_tiny_safetensors();
         let tokenizer = build_tiny_tokenizer();
-        let trainer = DnaBert2Trainer::new(config, weights, tokenizer, Device::Cpu, 2).unwrap();
+        let trainer = DnaBert2Trainer::new(config, weights, tokenizer, Device::Cpu, 2, DType::F32).unwrap();
 
         let result = trainer.train(&dummy_batch()).unwrap();
 
@@ -323,7 +347,7 @@ mod tests {
 
         let (config, weights) = build_tiny_safetensors();
         let tokenizer = build_tiny_tokenizer();
-        let trainer = DnaBert2Trainer::new(config, weights, tokenizer, Device::Cpu, 2).unwrap();
+        let trainer = DnaBert2Trainer::new(config, weights, tokenizer, Device::Cpu, 2, DType::F32).unwrap();
 
         let msg = GenomeTrainingBatchMsg {
             batch: GenomeTrainingBatch {
