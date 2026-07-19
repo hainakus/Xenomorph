@@ -192,8 +192,13 @@ async fn load_trainer(
     }
 
     let client = rpc_client.as_mut().context("No RPC connection to fetch model checkpoint")?;
+
+    // Retry until the seed-node has the model loaded. In Docker Compose the
+    // service dependency should already guarantee this, but the retry makes
+    // manual/standalone runs robust against slow model downloads.
     let ModelBundle { model_id, config, tokenizer, weights, .. } =
-        fetch_model_checkpoint(client, model_id).await.context("Failed to fetch model checkpoint from seed-node")?;
+        fetch_model_checkpoint_with_retry(client, model_id).await
+            .context("Failed to fetch model checkpoint from seed-node")?;
 
     let config = DnaBert2Config::from_bytes(&config).context("Failed to parse DNABERT-2 config")?;
     let tokenizer = DnaTokenizer::from_bytes(&tokenizer).context("Failed to parse tokenizer")?;
@@ -203,6 +208,27 @@ async fn load_trainer(
             .context("Failed to initialize DNABERT-2 trainer")?;
     info!("Loaded DNABERT-2 model checkpoint for {}", model_id_for_log);
     Ok(Arc::new(trainer))
+}
+
+async fn fetch_model_checkpoint_with_retry(
+    client: &mut XenomRpcClient,
+    model_id: &str,
+) -> Result<ModelBundle> {
+    let mut interval = tokio::time::interval(Duration::from_secs(2));
+    let max_attempts = 60;
+
+    for attempt in 1..=max_attempts {
+        match fetch_model_checkpoint(client, model_id).await {
+            Ok(bundle) => return Ok(bundle),
+            Err(e) if attempt < max_attempts => {
+                warn!("Model checkpoint not ready (attempt {}/{}): {}", attempt, max_attempts, e);
+                interval.tick().await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    bail!("Seed-node did not provide model checkpoint after {} retries", max_attempts)
 }
 
 #[tokio::main]
