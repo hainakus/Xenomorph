@@ -42,6 +42,7 @@ services:
       - XENO_GRPC_ADDR=0.0.0.0:${XENO_SEED_GRPC_PORT:-50051}
       - XENO_MINER_WS_ADDR=0.0.0.0:${XENO_MINER_RPC_PORT:-17110}
       - XENO_MODELS_DIR=${XENO_MODELS_DIR:-/data/models}
+      - XENO_DEFAULT_MODEL_ID=${XENO_DEFAULT_MODEL_ID:-multimolecule/dnabert2}
     networks:
       - xeno-devnet
     depends_on:

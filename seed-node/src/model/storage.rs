@@ -145,6 +145,12 @@ impl ModelStorage {
         Ok(())
     }
 
+    pub async fn model_exists(&self, model_id: &str) -> bool {
+        let model_path = self.model_path(model_id);
+        let file_path = format!("{}/model.enc", model_path);
+        Path::new(&file_path).exists()
+    }
+
     fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>, StorageError> {
         let cipher = Aes256Gcm::new_from_slice(&self.encryption_key).map_err(|e| StorageError::EncryptionError(e.to_string()))?;
 

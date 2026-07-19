@@ -22,8 +22,18 @@ async fn main() -> Result<()> {
     let node_rpc = std::env::var("XENO_NODE_RPC").unwrap_or_else(|_| "127.0.0.1:16110".to_string());
     let grpc_addr = std::env::var("XENO_GRPC_ADDR").unwrap_or_else(|_| "0.0.0.0:50051".to_string());
     let miner_ws_addr = std::env::var("XENO_MINER_WS_ADDR").unwrap_or_else(|_| "0.0.0.0:17110".to_string());
+    let default_model_id = std::env::var("XENO_DEFAULT_MODEL_ID").unwrap_or_else(|_| "multimolecule/dnabert2".to_string());
 
     let model_manager = Arc::new(ModelManager::new(models_dir).await?);
+
+    // Try to download the default model in the background so the miner can start immediately
+    let mm = model_manager.clone();
+    tokio::spawn(async move {
+        if let Err(e) = mm.ensure_model_downloaded(&default_model_id).await {
+            tracing::warn!("Failed to pre-download default model {}: {}", default_model_id, e);
+        }
+    });
+
     let xenomorph_client = Arc::new(XenomorphRpcClient::new(&node_rpc).await?);
 
     // Initialize inference service

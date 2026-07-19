@@ -6,6 +6,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use super::checkpoint::{ModelCheckpoint, ModelMetrics};
+use super::downloader::download_model_weights;
 use super::storage::ModelStorage;
 
 #[derive(Debug, Clone)]
@@ -72,6 +73,25 @@ impl ModelManager {
 
         info!("Loaded model: {}", model_id);
         Ok(model_info)
+    }
+
+    /// Ensure a model is available locally, downloading it from Hugging Face if needed.
+    /// Does nothing if the model is already stored.
+    pub async fn ensure_model_downloaded(&self, model_id: &str) -> Result<()> {
+        // Check if a model file or checkpoint already exists for this id.
+        if self.storage.model_exists(model_id).await {
+            info!("Model {} already exists locally; skipping download", model_id);
+            return Ok(());
+        }
+
+        info!("Model {} not found locally; downloading from Hugging Face", model_id);
+        let data = download_model_weights(model_id).await?;
+
+        let metrics = ModelMetrics::default();
+        self.store_model(model_id, &data, metrics).await?;
+
+        info!("Downloaded and stored model {} ({} bytes)", model_id, data.len());
+        Ok(())
     }
 
     pub async fn store_model(&self, model_id: &str, data: &[u8], metrics: ModelMetrics) -> Result<String> {
