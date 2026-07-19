@@ -33,7 +33,11 @@ pub struct ModelManager {
 impl ModelManager {
     pub async fn new(base_path: String) -> Result<Self> {
         let key = ModelStorage::generate_key();
-        let storage = Arc::new(ModelStorage::new(base_path.clone(), key));
+        Self::new_with_key(base_path, key).await
+    }
+
+    pub async fn new_with_key(base_path: String, encryption_key: [u8; 32]) -> Result<Self> {
+        let storage = Arc::new(ModelStorage::new(base_path.clone(), encryption_key));
 
         // Create base directory if it doesn't exist
         tokio::fs::create_dir_all(&base_path).await?;
@@ -82,12 +86,18 @@ impl ModelManager {
     }
 
     /// Ensure a model is available locally, downloading it from Hugging Face if needed.
-    /// Does nothing if the model is already stored.
+    /// If the stored files cannot be decrypted (e.g. the encryption key changed),
+    /// they are removed and re-downloaded.
     pub async fn ensure_model_downloaded(&self, model_id: &str) -> Result<()> {
         // Check if a model file or checkpoint already exists for this id.
         if self.storage.model_exists(model_id).await {
-            info!("Model {} already exists locally; skipping download", model_id);
-            return Ok(());
+            // Verify the files are actually loadable with the current key.
+            if self.storage.load_model_files(model_id).await.is_ok() {
+                info!("Model {} already exists locally; skipping download", model_id);
+                return Ok(());
+            }
+            info!("Model {} exists locally but cannot be decrypted; removing and re-downloading", model_id);
+            self.delete_model(model_id).await?;
         }
 
         info!("Model {} not found locally; downloading from Hugging Face", model_id);

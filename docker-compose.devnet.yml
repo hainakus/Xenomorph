@@ -43,6 +43,7 @@ services:
       - XENO_MINER_WS_ADDR=0.0.0.0:${XENO_MINER_RPC_PORT:-17110}
       - XENO_MODELS_DIR=${XENO_MODELS_DIR:-/data/models}
       - XENO_DEFAULT_MODEL_ID=${XENO_DEFAULT_MODEL_ID:-multimolecule/dnabert2}
+      - XENO_MODEL_KEY=${XENO_MODEL_KEY:-xenom-devnet-model-key}
     networks:
       - xeno-devnet
     depends_on:
