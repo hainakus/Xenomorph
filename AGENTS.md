@@ -126,5 +126,6 @@ make clean  # cleanup-devnet.sh
 ### Notes
 
 - `build-devnet.sh` compiles `xenom`, `seed-node`, and `xenom-miner` binaries locally on Linux, or inside Docker on macOS via `--docker-build`.
+- `build-devnet-macos.sh` is a macOS wrapper around `build-devnet.sh` that forces Docker builds and sets `DOCKER_DEFAULT_PLATFORM` to `linux/arm64` (Apple Silicon) or `linux/amd64` (Intel) so images are built for the native host architecture.
 - `seed-node/src/main.rs` reads `XENO_NODE_RPC`, `XENO_GRPC_ADDR`, `XENO_MODELS_DIR`, `XENO_MINER_WS_ADDR`, and `XENO_DEFAULT_MODEL_ID` from the environment so it can reach the node in Docker networking.
 - The seed-node downloads the default Hugging Face model (`multimolecule/dnabert2`) into `XENO_MODELS_DIR` on startup if it is not already present.

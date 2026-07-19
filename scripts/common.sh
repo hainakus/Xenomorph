@@ -208,7 +208,7 @@ register_cleanup() {
 }
 
 on_exit() {
-    for pid in "${cleanup_pids[@]}"; do
+    for pid in ${cleanup_pids[@]+"${cleanup_pids[@]}"}; do
         kill "$pid" 2>/dev/null || true
     done
 }
