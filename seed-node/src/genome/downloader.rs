@@ -7,7 +7,7 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tracing::info;
 
-use super::archive::GenomeArchive;
+use super::archive::{GenomeArchive, DEFAULT_FRAGMENT_SIZE};
 
 /// Downloads `.xenom` genome archives over HTTP or via an IPFS gateway.
 pub struct GenomeDownloader {
@@ -92,7 +92,7 @@ impl GenomeDownloader {
         expected_merkle: [u8; 32],
     ) -> Result<GenomeArchive> {
         let path = path.as_ref();
-        let archive = GenomeArchive::load(path)
+        let archive = GenomeArchive::load_with_fragment_size(path, DEFAULT_FRAGMENT_SIZE)
             .with_context(|| format!("Failed to load genome archive from {:?}", path))?;
 
         if archive.header.merkle_root != expected_merkle {
