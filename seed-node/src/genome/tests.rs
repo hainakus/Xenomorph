@@ -125,8 +125,8 @@ fn test_batch_generation_determinism() {
     let archive = GenomeArchive::from_bytes(&bytes, 16).unwrap();
 
     let seed = [9u8; 32];
-    let batch1 = GenomeBatchGenerator::new(archive.clone(), seed).generate_batch(5, 8);
-    let batch2 = GenomeBatchGenerator::new(archive, seed).generate_batch(5, 8);
+    let batch1 = GenomeBatchGenerator::new(Arc::new(archive.clone()), seed).generate_batch(5, 8);
+    let batch2 = GenomeBatchGenerator::new(Arc::new(archive), seed).generate_batch(5, 8);
 
     assert_eq!(batch1, batch2);
     assert_eq!(batch1.data_indices.len(), 5);

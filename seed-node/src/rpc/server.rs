@@ -161,7 +161,7 @@ async fn handle_genome_batch_request(
     let mut seed = [0u8; 32];
     seed.copy_from_slice(&request.genome_merkle_root);
 
-    let mut generator = GenomeBatchGenerator::new((*archive).clone(), seed);
+    let mut generator = GenomeBatchGenerator::new(archive, seed);
     let mut batch = generator.generate_batch(request.preferred_batch_size, 128);
     batch.model_id = request.model_id;
 

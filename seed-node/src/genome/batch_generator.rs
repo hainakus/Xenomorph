@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use borsh_miner::{BorshDeserialize, BorshSerialize};
 use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
@@ -26,13 +28,13 @@ pub struct GenomeTrainingBatch {
 
 /// Deterministic generator for `GenomeTrainingBatch` from a `.xenom` genome archive.
 pub struct GenomeBatchGenerator {
-    archive: GenomeArchive,
+    archive: Arc<GenomeArchive>,
     rng: StdRng,
 }
 
 impl GenomeBatchGenerator {
     /// Create a new generator seeded with a 32-byte block hash.
-    pub fn new(archive: GenomeArchive, seed: [u8; 32]) -> Self {
+    pub fn new(archive: Arc<GenomeArchive>, seed: [u8; 32]) -> Self {
         let rng = StdRng::from_seed(seed);
         Self { archive, rng }
     }
@@ -179,8 +181,8 @@ mod tests {
         let archive = tiny_archive("ACGTACGTACGTACGTACGTACGTACGTACGT", 32);
         let seed = [7u8; 32];
 
-        let mut gen1 = GenomeBatchGenerator::new(archive.clone(), seed);
-        let mut gen2 = GenomeBatchGenerator::new(archive, seed);
+        let mut gen1 = GenomeBatchGenerator::new(Arc::new(archive.clone()), seed);
+        let mut gen2 = GenomeBatchGenerator::new(Arc::new(archive), seed);
 
         let batch1 = gen1.generate_batch(4, 8);
         let batch2 = gen2.generate_batch(4, 8);
@@ -192,7 +194,7 @@ mod tests {
     #[test]
     fn test_extract_for_miner() {
         let archive = tiny_archive("ACGTACGTACGTACGT", 16);
-        let mut gen = GenomeBatchGenerator::new(archive, [1u8; 32]);
+        let mut gen = GenomeBatchGenerator::new(Arc::new(archive), [1u8; 32]);
 
         let batch = gen.generate_batch(1, 4);
         let slice = &batch.data_indices[0];
