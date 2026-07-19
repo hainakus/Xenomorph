@@ -69,6 +69,13 @@ Examples:
 ./target/debug/xenom-miner --rpc-url ws://xeno-seed:17110 --trainer dnabert2
 ```
 
+### End-to-end DNABERT-2 devnet test
+
+- Script: `scripts/test-dnabert2-devnet.sh`
+- HITL: requires ~8 GB RAM and several CPU cores to download the 110M model and run real MLM training.
+- Validates: model download, real `loss_before`/`loss_after` values, and block submission.
+- Run: `./scripts/test-dnabert2-devnet.sh --duration 300`
+
 ## Devnet Deployment Scripts
 
 - Location: `scripts/`

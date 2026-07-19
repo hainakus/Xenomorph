@@ -121,9 +121,13 @@ check_seed() {
 check_miner() {
     check_container xeno-miner
     if [[ "${STATUS[xeno-miner]}" != "critical" ]]; then
-        local blocks
-        blocks="$(docker_compose logs --no-log-prefix --tail=50 xeno-miner 2>/dev/null | grep -c 'Submitted block' || true)"
-        if [[ "$blocks" -gt 0 ]]; then
+        local logs blocks loss_line
+        logs="$(docker_compose logs --no-log-prefix --tail=100 xeno-miner 2>/dev/null || true)"
+        blocks="$(echo "$logs" | grep -c 'Submitted block' || true)"
+        loss_line="$(echo "$logs" | grep -E 'loss [0-9]+\.[0-9]+->[0-9]+\.[0-9]+' | tail -n1 || true)"
+        if [[ "$blocks" -gt 0 && -n "$loss_line" ]]; then
+            set_status xeno-miner healthy "$blocks blocks submitted | $loss_line"
+        elif [[ "$blocks" -gt 0 ]]; then
             set_status xeno-miner healthy "$blocks blocks submitted"
         else
             set_status xeno-miner warning "running, no blocks submitted yet"

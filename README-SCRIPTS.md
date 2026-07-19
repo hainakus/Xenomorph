@@ -42,6 +42,7 @@ cp .env.example .env
 | `build-devnet.sh` | Build all Docker images | `./scripts/build-devnet.sh --no-cache --parallel` |
 | `check-devnet-health.sh` | Verify all services | `./scripts/check-devnet-health.sh --json` |
 | `test-checkpoint-sync.sh` | Test checkpoint fast sync | `./scripts/test-checkpoint-sync.sh --from-block 1000 --verify` |
+| `test-dnabert2-devnet.sh` | End-to-end DNABERT-2 training test | `./scripts/test-dnabert2-devnet.sh --duration 300` |
 | `test-governance-flow.sh` | Governance lifecycle test | `./scripts/test-governance-flow.sh --proposal add-model --model-id test-v1` |
 | `test-payment-flow.sh` | USDT payment test | `./scripts/test-payment-flow.sh --amount 0.1` |
 | `stress-test.sh` | Load test | `./scripts/stress-test.sh --miners 5 --duration 30m` |
@@ -81,3 +82,4 @@ make clean    # cleanup-devnet.sh
 - On macOS / non-Linux hosts, `build-devnet.sh` defaults to `--docker-build` and compiles the binaries inside the Docker image (slower, but no cross-toolchain needed).
 - Use `./scripts/build-devnet.sh --local --target aarch64-unknown-linux-gnu` to cross-compile on Apple Silicon if you have a suitable linker.
 - `--trainer=mock` is enabled by default for fast devnet testing; use `--trainer=dnabert2` on CPU/GPU-capable hosts to run real DNABERT-2 training against a seed-node checkpoint. `--mock-mode` is still accepted as a hidden alias for `--trainer=mock`.
+- The `test-dnabert2-devnet.sh` script runs a full HITL end-to-end test: it starts the devnet with `--trainer=dnabert2`, waits for the model download, and validates real `loss_before`/`loss_after` values and block submission. It requires ~8 GB RAM and several CPU cores.

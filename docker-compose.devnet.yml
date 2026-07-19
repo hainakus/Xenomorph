@@ -64,7 +64,7 @@ services:
       - XENO_MINER_MODEL_ID=${XENO_MINER_MODEL_ID:-multimolecule/dnabert2}
       - XENO_MINER_THREADS=${XENO_MINER_THREADS:-4}
       - XENO_MINER_DATA_DIR=/root/.xenom-miner
-      - XENO_MINER_MOCK_MODE=${XENO_MINER_MOCK_MODE:-true}
+      - XENO_MINER_TRAINER=${XENO_MINER_TRAINER:-mock}
       - XENO_MINER_EXTRA_ARGS=${XENO_MINER_EXTRA_ARGS:-}
     networks:
       - xeno-devnet
@@ -74,7 +74,7 @@ services:
       resources:
         limits:
           cpus: "4"
-          memory: 4G
+          memory: 8G
 
   anvil:
     image: "${XENO_ANVIL_IMAGE:-ghcr.io/foundry-rs/foundry:stable}"
