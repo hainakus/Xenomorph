@@ -233,7 +233,7 @@ pub fn create_core_with_runtime(runtime: &Runtime, args: &Args, fd_total_budget:
     //   2. Auto-discover <appdir>/grch38.xenom  (node-local copy).
     //   3. Auto-discover ~/.rusty-xenom/grch38.xenom  (global default install location).
     //   4. Auto-download from GitHub Releases to ~/.rusty-xenom/grch38.xenom.
-    //   5. None → falls back to SyntheticLoader (devnet/testing only — download failed).
+    //   5. None → falls back to SyntheticLoader (simnet, or download failed).
     const GENOME_RELEASE_URL: &str = "https://github.com/hainakus/Xenomorph/releases/download/genome-grch38-v0/grch38.xenom";
 
     let genome_file_path: Option<String> = if args.genome_file.is_some() {
@@ -267,8 +267,8 @@ pub fn create_core_with_runtime(runtime: &Runtime, args: &Args, fd_total_budget:
 
             if global_valid {
                 Some(global.to_string_lossy().into_owned())
-            } else if matches!(network.network_type, NetworkType::Simnet | NetworkType::Devnet) {
-                // Simnet/Devnet: genome PoW is never active in tests/dev — skip download.
+            } else if matches!(network.network_type, NetworkType::Simnet) {
+                // Simnet skips proof-of-work entirely, so the genome dataset is not required.
                 None
             } else {
                 // Not found anywhere — attempt auto-download.
@@ -294,7 +294,7 @@ pub fn create_core_with_runtime(runtime: &Runtime, args: &Args, fd_total_budget:
                     Err(e) => {
                         kaspa_core::warn!(
                             "Failed to download genome dataset: {e}. \
-                             Falling back to synthetic fragments (devnet/testing only)."
+                             Falling back to synthetic fragments."
                         );
                         None
                     }

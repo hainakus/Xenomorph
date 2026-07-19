@@ -9,7 +9,7 @@ services:
       - "${XENO_NODE_RPC_PORT:-16110}:${XENO_NODE_RPC_PORT:-16110}"
       - "${XENO_NODE_P2P_PORT:-16111}:${XENO_NODE_P2P_PORT:-16111}"
     volumes:
-      - "${XENO_DATA_DIR:-./devnet-data}/node:/data"
+      - "${XENO_DATA_DIR:-./devnet-data}/node:/root/.rusty-xenom"
     environment:
       - RUST_LOG=${XENO_LOG_LEVEL:-info}
       - XENO_NODE_RPC_PORT=${XENO_NODE_RPC_PORT:-16110}
