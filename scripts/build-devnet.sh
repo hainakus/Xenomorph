@@ -130,7 +130,7 @@ build_image() {
         build_args+=("--build-arg" "BINARY_PATH=$binary")
     fi
 
-    if ! docker build -f "$dockerfile" -t "$full_tag" -t "$latest_tag" $NO_CACHE "${build_args[@]}" .; then
+    if ! docker build -f "$dockerfile" -t "$full_tag" -t "$latest_tag" $NO_CACHE ${build_args[@]+"${build_args[@]}"} .; then
         err "Failed to build $name"
         return 1
     fi
