@@ -4,7 +4,7 @@ use futures::{SinkExt, StreamExt};
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{connect_async_with_config, tungstenite::Message, tungstenite::protocol::WebSocketConfig, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, info, warn};
 
 use super::messages::{BlockHash, DifficultyTarget, GenomeTrainingBatchMsg, ModelCheckpoint, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch, TrainingBlock};
@@ -13,6 +13,20 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(60);
 const MAX_SEND_ATTEMPTS: usize = 3;
+/// Allow WebSocket messages up to 1 GiB so model checkpoints (config + tokenizer + weights) fit.
+const WS_MAX_MESSAGE_SIZE: usize = 1024 * 1024 * 1024;
+
+fn ws_config() -> WebSocketConfig {
+    #[allow(deprecated)]
+    WebSocketConfig {
+        max_send_queue: None,
+        write_buffer_size: 128 * 1024,
+        max_write_buffer_size: usize::MAX,
+        max_message_size: Some(WS_MAX_MESSAGE_SIZE),
+        max_frame_size: Some(WS_MAX_MESSAGE_SIZE),
+        accept_unmasked_frames: false,
+    }
+}
 
 /// A WebSocket-based Borsh RPC client for the Xenomorph node.
 pub struct XenomRpcClient {
@@ -30,7 +44,10 @@ impl XenomRpcClient {
 
     /// Connect (or reconnect) to the configured RPC endpoint.
     pub async fn connect(&mut self) -> Result<()> {
-        let (ws_stream, _) = connect_async(&self.url).await.with_context(|| format!("Failed to connect to {}", self.url))?;
+        let (ws_stream, _) =
+            connect_async_with_config(&self.url, Some(ws_config()), false)
+                .await
+                .with_context(|| format!("Failed to connect to {}", self.url))?;
 
         info!("Connected to {}", self.url);
         self.connection = Some(ws_stream);
@@ -132,7 +149,7 @@ impl XenomRpcClient {
 
         let mut delay = Duration::from_secs(1);
         loop {
-            match connect_async(&self.url).await {
+            match connect_async_with_config(&self.url, Some(ws_config()), false).await {
                 Ok((ws_stream, _)) => {
                     info!("Reconnected to {}", self.url);
                     self.connection = Some(ws_stream);

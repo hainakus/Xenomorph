@@ -6,13 +6,29 @@ use borsh_miner::{to_vec, BorshDeserialize};
 use futures::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
-use tokio_tungstenite::accept_async;
+use tokio_tungstenite::accept_async_with_config;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
 use crate::genome::{GenomeBatchGenerator, GenomeStorage};
 use crate::model::manager::ModelManager;
 use crate::rpc::messages::{GenomeTrainingBatchMsg, GetGenomeTrainingBatch, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch};
+
+/// Allow WebSocket messages up to 1 GiB so model checkpoints (config + tokenizer + weights) fit.
+const WS_MAX_MESSAGE_SIZE: usize = 1024 * 1024 * 1024;
+
+fn ws_config() -> WebSocketConfig {
+    #[allow(deprecated)]
+    WebSocketConfig {
+        max_send_queue: None,
+        write_buffer_size: 128 * 1024,
+        max_write_buffer_size: usize::MAX,
+        max_message_size: Some(WS_MAX_MESSAGE_SIZE),
+        max_frame_size: Some(WS_MAX_MESSAGE_SIZE),
+        accept_unmasked_frames: false,
+    }
+}
 
 /// Start a WebSocket server for miner connections.
 pub async fn run_miner_server(
@@ -42,7 +58,7 @@ async fn handle_connection(
     model_manager: Arc<ModelManager>,
     genome_storage: Arc<RwLock<GenomeStorage>>,
 ) -> Result<()> {
-    let mut ws = accept_async(stream).await?;
+    let mut ws = accept_async_with_config(stream, Some(ws_config())).await?;
 
     while let Some(msg) = ws.next().await {
         let msg = msg?;
