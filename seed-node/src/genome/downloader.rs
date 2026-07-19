@@ -13,8 +13,7 @@ use super::archive::{GenomeArchive, DEFAULT_FRAGMENT_SIZE};
 /// by the Xenomorph GitHub Releases workflow.
 ///
 /// Overridable via the `XENO_GENOME_URL` environment variable.
-pub const DEFAULT_GENOME_RELEASE_URL: &str =
-    "https://github.com/hainakus/Xenomorph/releases/download/genome-grch38-v0/grch38.xenom";
+pub const DEFAULT_GENOME_RELEASE_URL: &str = "https://github.com/hainakus/Xenomorph/releases/download/genome-grch38-v0/grch38.xenom";
 
 /// Downloads `.xenom` genome archives over HTTP or via an IPFS gateway.
 pub struct GenomeDownloader {
@@ -36,10 +35,7 @@ pub fn default_genome_release_url() -> String {
 impl GenomeDownloader {
     /// Create a downloader with a specific IPFS gateway base URL.
     pub fn new(ipfs_gateway: String) -> Self {
-        Self {
-            ipfs_gateway,
-            http_client: reqwest::Client::new(),
-        }
+        Self { ipfs_gateway, http_client: reqwest::Client::new() }
     }
 
     /// Download a genome archive to `dest`.
@@ -57,12 +53,8 @@ impl GenomeDownloader {
             fs::create_dir_all(parent).await?;
         }
 
-        let response = self
-            .http_client
-            .get(&url)
-            .send()
-            .await
-            .with_context(|| format!("Failed to fetch genome archive from {}", url))?;
+        let response =
+            self.http_client.get(&url).send().await.with_context(|| format!("Failed to fetch genome archive from {}", url))?;
 
         if !response.status().is_success() {
             bail!("HTTP {} when downloading genome archive from {}", response.status(), url);
@@ -83,12 +75,7 @@ impl GenomeDownloader {
 
     /// Download a genome archive to `dest` only if the local copy is missing, then load
     /// and verify it against the expected merkle root.
-    pub async fn get_or_download(
-        &self,
-        source: &str,
-        dest: &Path,
-        expected_merkle: [u8; 32],
-    ) -> Result<GenomeArchive> {
+    pub async fn get_or_download(&self, source: &str, dest: &Path, expected_merkle: [u8; 32]) -> Result<GenomeArchive> {
         if !dest.exists() {
             self.download(source, dest).await?;
         } else {
@@ -98,11 +85,7 @@ impl GenomeDownloader {
     }
 
     /// Load a genome archive from disk and verify its merkle root.
-    pub async fn verify_and_load<P: AsRef<Path>>(
-        &self,
-        path: P,
-        expected_merkle: [u8; 32],
-    ) -> Result<GenomeArchive> {
+    pub async fn verify_and_load<P: AsRef<Path>>(&self, path: P, expected_merkle: [u8; 32]) -> Result<GenomeArchive> {
         let path = path.as_ref();
         let archive = GenomeArchive::load_with_fragment_size(path, DEFAULT_FRAGMENT_SIZE)
             .with_context(|| format!("Failed to load genome archive from {:?}", path))?;

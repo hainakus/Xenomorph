@@ -5,7 +5,7 @@ use tokio::sync::RwLock;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::rpc::messages::{TrainingBatch};
+use crate::rpc::messages::TrainingBatch;
 
 use super::checkpoint::{ModelCheckpoint, ModelMetrics};
 use super::downloader::download_model;
@@ -159,11 +159,7 @@ impl ModelManager {
     }
 
     /// Build a `TrainingBatch` that ties the model checkpoint to an optional genome merkle root.
-    pub async fn get_training_batch_with_genome(
-        &self,
-        model_id: &str,
-        genome_root: Option<[u8; 32]>,
-    ) -> Result<TrainingBatch> {
+    pub async fn get_training_batch_with_genome(&self, model_id: &str, genome_root: Option<[u8; 32]>) -> Result<TrainingBatch> {
         let base_checkpoint = if let Some(root) = genome_root {
             root
         } else {
@@ -323,11 +319,7 @@ mod tests {
     async fn test_get_model_checkpoint() {
         let manager = ModelManager::new("/tmp/test_models_get_checkpoint".to_string()).await.unwrap();
 
-        let files = RawModelFiles {
-            config: b"config".to_vec(),
-            tokenizer: b"tokenizer".to_vec(),
-            weights: b"weights".to_vec(),
-        };
+        let files = RawModelFiles { config: b"config".to_vec(), tokenizer: b"tokenizer".to_vec(), weights: b"weights".to_vec() };
         manager.store_model_files("test_model", &files, ModelMetrics::default()).await.unwrap();
 
         let (checkpoint, loaded) = manager.get_model_checkpoint("test_model").await.unwrap();

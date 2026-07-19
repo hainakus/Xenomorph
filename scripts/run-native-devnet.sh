@@ -113,12 +113,14 @@ require_command "$BIN_PREFIX/xenom-miner"
 # -----------------------------------------------------------------------------
 NODE_RPC_PORT="${XENO_NODE_RPC_PORT:-16110}"
 NODE_P2P_PORT="${XENO_NODE_P2P_PORT:-16111}"
+NODE_TRAINING_RPC_PORT="${XENO_NODE_TRAINING_RPC_PORT:-16112}"
 SEED_GRPC_PORT="${XENO_SEED_GRPC_PORT:-50051}"
 MINER_WS_PORT="${XENO_MINER_RPC_PORT:-17110}"
 
 if ! is_port_free "$NODE_RPC_PORT" || ! is_port_free "$NODE_P2P_PORT" || \
-   ! is_port_free "$SEED_GRPC_PORT" || ! is_port_free "$MINER_WS_PORT"; then
-    err "One or more required ports are already in use: $NODE_RPC_PORT, $NODE_P2P_PORT, $SEED_GRPC_PORT, $MINER_WS_PORT"
+   ! is_port_free "$NODE_TRAINING_RPC_PORT" || ! is_port_free "$SEED_GRPC_PORT" || \
+   ! is_port_free "$MINER_WS_PORT"; then
+    err "One or more required ports are already in use: $NODE_RPC_PORT, $NODE_P2P_PORT, $NODE_TRAINING_RPC_PORT, $SEED_GRPC_PORT, $MINER_WS_PORT"
     exit 1
 fi
 
@@ -201,6 +203,7 @@ RUST_LOG="${RUST_LOG:-info}" "$BIN_PREFIX/xenom" \
     --logdir="$LOG_DIR/node" \
     --rpclisten="0.0.0.0:$NODE_RPC_PORT" \
     --listen="0.0.0.0:$NODE_P2P_PORT" \
+    --training-rpc-listen="0.0.0.0:$NODE_TRAINING_RPC_PORT" \
     --disable-upnp \
     --nodnsseed \
     > "$LOG_DIR/xeno-node.log" 2>&1 &
@@ -209,13 +212,14 @@ PIDS+=("$NODE_PID")
 qlog "xeno-node started (pid $NODE_PID)"
 
 wait_for_port "$NODE_RPC_PORT" 60 "$NODE_PID"
+wait_for_port "$NODE_TRAINING_RPC_PORT" 60 "$NODE_PID"
 
 # -----------------------------------------------------------------------------
 # xeno-seed (genome + model server, gRPC + miner WebSocket)
 # -----------------------------------------------------------------------------
 qlog "Starting xeno-seed..."
 XENO_MODELS_DIR="$SEED_DATA_DIR" \
-XENO_NODE_RPC="127.0.0.1:$NODE_RPC_PORT" \
+XENO_NODE_RPC="127.0.0.1:$NODE_TRAINING_RPC_PORT" \
 XENO_GRPC_ADDR="0.0.0.0:$SEED_GRPC_PORT" \
 XENO_MINER_WS_ADDR="0.0.0.0:$MINER_WS_PORT" \
 XENO_DEFAULT_MODEL_ID="${XENO_DEFAULT_MODEL_ID:-multimolecule/dnabert2}" \

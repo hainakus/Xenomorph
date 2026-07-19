@@ -1,5 +1,7 @@
 use candle_core::{DType, Device, Module, ModuleT, Result as CandleResult, Tensor};
-use candle_nn::{embedding, layer_norm, linear, linear_no_bias, Activation, Dropout, Embedding, LayerNorm, Linear, VarBuilder, VarMap};
+use candle_nn::{
+    embedding, layer_norm, linear, linear_no_bias, Activation, Dropout, Embedding, LayerNorm, Linear, VarBuilder, VarMap,
+};
 
 use crate::model::DnaBert2Config;
 
@@ -116,9 +118,7 @@ impl DnaBert2SelfAttention {
     }
 
     fn transpose_for_scores(&self, xs: &Tensor, batch: usize, seq: usize) -> CandleResult<Tensor> {
-        xs.reshape((batch, seq, self.num_attention_heads, self.attention_head_size))?
-            .transpose(1, 2)?
-            .contiguous()
+        xs.reshape((batch, seq, self.num_attention_heads, self.attention_head_size))?.transpose(1, 2)?.contiguous()
     }
 
     fn forward(&self, hidden_states: &Tensor, attention_mask: &Tensor) -> CandleResult<Tensor> {
@@ -285,12 +285,7 @@ impl DnaBert2LMPredictionHead {
         let decoder_weight = word_embeddings.embeddings().clone();
         let decoder_bias = lm_vb.get(config.vocab_size, "bias")?;
         let decoder = Linear::new(decoder_weight, Some(decoder_bias));
-        Ok(Self {
-            transform_dense,
-            transform_layer_norm,
-            transform_act: Activation::Gelu,
-            decoder,
-        })
+        Ok(Self { transform_dense, transform_layer_norm, transform_act: Activation::Gelu, decoder })
     }
 
     fn forward(&self, hidden_states: &Tensor) -> CandleResult<Tensor> {
@@ -437,25 +432,60 @@ mod tests {
 
         let config = build_tiny_config();
         insert_weight(&mut tensors, "model.embeddings.word_embeddings.weight", &[config.vocab_size, config.hidden_size], &device);
-        insert_weight(&mut tensors, "model.embeddings.token_type_embeddings.weight", &[config.type_vocab_size, config.hidden_size], &device);
+        insert_weight(
+            &mut tensors,
+            "model.embeddings.token_type_embeddings.weight",
+            &[config.type_vocab_size, config.hidden_size],
+            &device,
+        );
         insert_weight(&mut tensors, "model.embeddings.layer_norm.weight", &[config.hidden_size], &device);
         insert_weight(&mut tensors, "model.embeddings.layer_norm.bias", &[config.hidden_size], &device);
 
         for i in 0..config.num_hidden_layers {
             let prefix = format!("model.encoder.layer.{}", i);
-            insert_weight(&mut tensors, &format!("{}.attention.self.query.weight", prefix), &[config.hidden_size, config.hidden_size], &device);
+            insert_weight(
+                &mut tensors,
+                &format!("{}.attention.self.query.weight", prefix),
+                &[config.hidden_size, config.hidden_size],
+                &device,
+            );
             insert_weight(&mut tensors, &format!("{}.attention.self.query.bias", prefix), &[config.hidden_size], &device);
-            insert_weight(&mut tensors, &format!("{}.attention.self.key.weight", prefix), &[config.hidden_size, config.hidden_size], &device);
+            insert_weight(
+                &mut tensors,
+                &format!("{}.attention.self.key.weight", prefix),
+                &[config.hidden_size, config.hidden_size],
+                &device,
+            );
             insert_weight(&mut tensors, &format!("{}.attention.self.key.bias", prefix), &[config.hidden_size], &device);
-            insert_weight(&mut tensors, &format!("{}.attention.self.value.weight", prefix), &[config.hidden_size, config.hidden_size], &device);
+            insert_weight(
+                &mut tensors,
+                &format!("{}.attention.self.value.weight", prefix),
+                &[config.hidden_size, config.hidden_size],
+                &device,
+            );
             insert_weight(&mut tensors, &format!("{}.attention.self.value.bias", prefix), &[config.hidden_size], &device);
-            insert_weight(&mut tensors, &format!("{}.attention.output.dense.weight", prefix), &[config.hidden_size, config.hidden_size], &device);
+            insert_weight(
+                &mut tensors,
+                &format!("{}.attention.output.dense.weight", prefix),
+                &[config.hidden_size, config.hidden_size],
+                &device,
+            );
             insert_weight(&mut tensors, &format!("{}.attention.output.dense.bias", prefix), &[config.hidden_size], &device);
             insert_weight(&mut tensors, &format!("{}.attention.output.layer_norm.weight", prefix), &[config.hidden_size], &device);
             insert_weight(&mut tensors, &format!("{}.attention.output.layer_norm.bias", prefix), &[config.hidden_size], &device);
 
-            insert_weight(&mut tensors, &format!("{}.mlp.up_proj.weight", prefix), &[config.intermediate_size * 2, config.hidden_size], &device);
-            insert_weight(&mut tensors, &format!("{}.mlp.down_proj.weight", prefix), &[config.hidden_size, config.intermediate_size], &device);
+            insert_weight(
+                &mut tensors,
+                &format!("{}.mlp.up_proj.weight", prefix),
+                &[config.intermediate_size * 2, config.hidden_size],
+                &device,
+            );
+            insert_weight(
+                &mut tensors,
+                &format!("{}.mlp.down_proj.weight", prefix),
+                &[config.hidden_size, config.intermediate_size],
+                &device,
+            );
             insert_weight(&mut tensors, &format!("{}.mlp.down_proj.bias", prefix), &[config.hidden_size], &device);
             insert_weight(&mut tensors, &format!("{}.mlp.layer_norm.weight", prefix), &[config.hidden_size], &device);
             insert_weight(&mut tensors, &format!("{}.mlp.layer_norm.bias", prefix), &[config.hidden_size], &device);

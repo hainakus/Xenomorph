@@ -48,8 +48,7 @@ impl GenomeArchive {
         if fragment_size % 4 != 0 {
             bail!("fragment_size must be divisible by 4");
         }
-        let bytes = fs::read(&path)
-            .with_context(|| format!("Failed to read genome archive {:?}", path.as_ref()))?;
+        let bytes = fs::read(&path).with_context(|| format!("Failed to read genome archive {:?}", path.as_ref()))?;
         Self::from_bytes(&bytes, fragment_size)
     }
 
@@ -69,11 +68,7 @@ impl GenomeArchive {
 
         let data = bytes[GENOME_FILE_HEADER_SIZE..].to_vec();
         if data.len() as u64 != header.total_packed_bytes {
-            bail!(
-                "Packed data size mismatch: expected {} bytes, got {}",
-                header.total_packed_bytes,
-                data.len()
-            );
+            bail!("Packed data size mismatch: expected {} bytes, got {}", header.total_packed_bytes, data.len());
         }
 
         Ok(Self { header, data, fragment_size })
@@ -114,12 +109,7 @@ impl GenomeArchive {
     pub fn extract_sequence(&self, fragment_idx: u64, start: u32, len: u32) -> Result<String> {
         let fragment_bases = self.fragment_base_count(fragment_idx)?;
         if start.checked_add(len).ok_or_else(|| anyhow!("start+len overflow"))? > fragment_bases {
-            bail!(
-                "Requested range {}..{} exceeds fragment base count {}",
-                start,
-                start + len,
-                fragment_bases
-            );
+            bail!("Requested range {}..{} exceeds fragment base count {}", start, start + len, fragment_bases);
         }
 
         let packed_frag = self.packed_fragment_size() as usize;
@@ -195,14 +185,7 @@ impl GenomeArchive {
         let mut merkle_root = [0u8; 32];
         merkle_root.copy_from_slice(&bytes[32..64]);
 
-        Ok(XenomHeader {
-            magic,
-            version,
-            dataset_version,
-            total_bases,
-            total_packed_bytes,
-            merkle_root,
-        })
+        Ok(XenomHeader { magic, version, dataset_version, total_bases, total_packed_bytes, merkle_root })
     }
 }
 

@@ -36,6 +36,8 @@ pub struct Args {
     pub rpclisten_borsh: Option<WrpcNetAddress>,
     #[serde_as(as = "Option<DisplayFromStr>")]
     pub rpclisten_json: Option<WrpcNetAddress>,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    pub training_rpc_listen: Option<ContextualNetAddress>,
     #[serde(rename = "unsaferpc")]
     pub unsafe_rpc: bool,
     pub wrpc_verbose: bool,
@@ -116,6 +118,7 @@ impl Default for Args {
             sanity: false,
             logdir: None,
             rpclisten: None,
+            training_rpc_listen: None,
             wrpc_verbose: false,
             log_level: "INFO".into(),
             connect_peers: vec![],
@@ -249,6 +252,15 @@ pub fn cli() -> Command {
                 .default_missing_value("default") // TODO: Find a way to use defaults.rpclisten_json
                 .value_parser(clap::value_parser!(WrpcNetAddress))
                 .help("Interface:port to listen for wRPC JSON connections (default port: 18110, testnet: 18210)."),
+        )
+        .arg(
+            Arg::new("training-rpc-listen")
+                .long("training-rpc-listen")
+                .value_name("IP[:PORT]")
+                .num_args(0..=1)
+                .require_equals(true)
+                .value_parser(clap::value_parser!(ContextualNetAddress))
+                .help("Interface:port to listen for Xenomorph training-block Borsh submissions from the seed-node (disabled by default)."),
         )
         .arg(arg!(--unsaferpc "Enable RPC commands which affect the state of the node"))
         .arg(
@@ -423,6 +435,7 @@ impl Args {
             rpclisten: m.get_one::<ContextualNetAddress>("rpclisten").cloned().or(defaults.rpclisten),
             rpclisten_borsh: m.get_one::<WrpcNetAddress>("rpclisten-borsh").cloned().or(defaults.rpclisten_borsh),
             rpclisten_json: m.get_one::<WrpcNetAddress>("rpclisten-json").cloned().or(defaults.rpclisten_json),
+            training_rpc_listen: m.get_one::<ContextualNetAddress>("training-rpc-listen").cloned().or(defaults.training_rpc_listen),
             unsafe_rpc: arg_match_unwrap_or::<bool>(&m, "unsaferpc", defaults.unsafe_rpc),
             wrpc_verbose: false,
             log_level: arg_match_unwrap_or::<String>(&m, "log_level", defaults.log_level),

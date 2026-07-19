@@ -40,7 +40,7 @@ impl DnaTokenizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokenizers::models::bpe::{BPE, Vocab};
+    use tokenizers::models::bpe::{Vocab, BPE};
     use tokenizers::tokenizer::AddedToken;
 
     fn build_test_tokenizer_bytes() -> Vec<u8> {
@@ -54,10 +54,7 @@ mod tests {
 
         let bpe = BPE::new(vocab, vec![]);
         let mut tokenizer = Tokenizer::new(bpe);
-        tokenizer.add_special_tokens(&[
-            AddedToken::from("<mask>", true),
-            AddedToken::from("<pad>", true),
-        ]);
+        tokenizer.add_special_tokens(&[AddedToken::from("<mask>", true), AddedToken::from("<pad>", true)]);
 
         serde_json::to_vec(&tokenizer).expect("failed to serialize test tokenizer")
     }

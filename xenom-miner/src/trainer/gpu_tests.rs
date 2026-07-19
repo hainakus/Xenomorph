@@ -22,10 +22,7 @@ mod tests {
 
         let bpe = tokenizers::models::bpe::BPE::new(vocab, vec![]);
         let mut tokenizer = tokenizers::Tokenizer::new(bpe);
-        tokenizer.add_special_tokens(&[
-            AddedToken::from("<mask>", true),
-            AddedToken::from("<pad>", true),
-        ]);
+        tokenizer.add_special_tokens(&[AddedToken::from("<mask>", true), AddedToken::from("<pad>", true)]);
 
         let bytes = serde_json::to_vec(&tokenizer).unwrap();
         DnaTokenizer::from_bytes(&bytes).unwrap()
@@ -64,25 +61,60 @@ mod tests {
 
         let mut tensors: HashMap<String, Tensor> = HashMap::new();
         insert_weight(&mut tensors, "model.embeddings.word_embeddings.weight", &[config.vocab_size, config.hidden_size], &device);
-        insert_weight(&mut tensors, "model.embeddings.token_type_embeddings.weight", &[config.type_vocab_size, config.hidden_size], &device);
+        insert_weight(
+            &mut tensors,
+            "model.embeddings.token_type_embeddings.weight",
+            &[config.type_vocab_size, config.hidden_size],
+            &device,
+        );
         insert_weight(&mut tensors, "model.embeddings.layer_norm.weight", &[config.hidden_size], &device);
         insert_weight(&mut tensors, "model.embeddings.layer_norm.bias", &[config.hidden_size], &device);
 
         for i in 0..config.num_hidden_layers {
             let prefix = format!("model.encoder.layer.{}", i);
-            insert_weight(&mut tensors, &format!("{}.attention.self.query.weight", prefix), &[config.hidden_size, config.hidden_size], &device);
+            insert_weight(
+                &mut tensors,
+                &format!("{}.attention.self.query.weight", prefix),
+                &[config.hidden_size, config.hidden_size],
+                &device,
+            );
             insert_weight(&mut tensors, &format!("{}.attention.self.query.bias", prefix), &[config.hidden_size], &device);
-            insert_weight(&mut tensors, &format!("{}.attention.self.key.weight", prefix), &[config.hidden_size, config.hidden_size], &device);
+            insert_weight(
+                &mut tensors,
+                &format!("{}.attention.self.key.weight", prefix),
+                &[config.hidden_size, config.hidden_size],
+                &device,
+            );
             insert_weight(&mut tensors, &format!("{}.attention.self.key.bias", prefix), &[config.hidden_size], &device);
-            insert_weight(&mut tensors, &format!("{}.attention.self.value.weight", prefix), &[config.hidden_size, config.hidden_size], &device);
+            insert_weight(
+                &mut tensors,
+                &format!("{}.attention.self.value.weight", prefix),
+                &[config.hidden_size, config.hidden_size],
+                &device,
+            );
             insert_weight(&mut tensors, &format!("{}.attention.self.value.bias", prefix), &[config.hidden_size], &device);
-            insert_weight(&mut tensors, &format!("{}.attention.output.dense.weight", prefix), &[config.hidden_size, config.hidden_size], &device);
+            insert_weight(
+                &mut tensors,
+                &format!("{}.attention.output.dense.weight", prefix),
+                &[config.hidden_size, config.hidden_size],
+                &device,
+            );
             insert_weight(&mut tensors, &format!("{}.attention.output.dense.bias", prefix), &[config.hidden_size], &device);
             insert_weight(&mut tensors, &format!("{}.attention.output.layer_norm.weight", prefix), &[config.hidden_size], &device);
             insert_weight(&mut tensors, &format!("{}.attention.output.layer_norm.bias", prefix), &[config.hidden_size], &device);
 
-            insert_weight(&mut tensors, &format!("{}.mlp.up_proj.weight", prefix), &[config.intermediate_size * 2, config.hidden_size], &device);
-            insert_weight(&mut tensors, &format!("{}.mlp.down_proj.weight", prefix), &[config.hidden_size, config.intermediate_size], &device);
+            insert_weight(
+                &mut tensors,
+                &format!("{}.mlp.up_proj.weight", prefix),
+                &[config.intermediate_size * 2, config.hidden_size],
+                &device,
+            );
+            insert_weight(
+                &mut tensors,
+                &format!("{}.mlp.down_proj.weight", prefix),
+                &[config.hidden_size, config.intermediate_size],
+                &device,
+            );
             insert_weight(&mut tensors, &format!("{}.mlp.down_proj.bias", prefix), &[config.hidden_size], &device);
             insert_weight(&mut tensors, &format!("{}.mlp.layer_norm.weight", prefix), &[config.hidden_size], &device);
             insert_weight(&mut tensors, &format!("{}.mlp.layer_norm.bias", prefix), &[config.hidden_size], &device);
@@ -133,8 +165,7 @@ mod tests {
     fn test_gpu_trainer_cpu_fallback() {
         let (config, weights) = build_tiny_safetensors();
         let tokenizer = build_tiny_tokenizer();
-        let trainer =
-            GpuTrainer::new(config, weights, tokenizer, GpuBackend::Auto, 0, false, 2).unwrap();
+        let trainer = GpuTrainer::new(config, weights, tokenizer, GpuBackend::Auto, 0, false, 2).unwrap();
 
         let info = trainer.device_info();
         assert_eq!(info.device_type, DeviceType::Cpu);
@@ -150,8 +181,7 @@ mod tests {
     fn test_gpu_trainer_genome_fallback() {
         let (config, weights) = build_tiny_safetensors();
         let tokenizer = build_tiny_tokenizer();
-        let trainer =
-            GpuTrainer::new(config, weights, tokenizer, GpuBackend::Auto, 0, false, 2).unwrap();
+        let trainer = GpuTrainer::new(config, weights, tokenizer, GpuBackend::Auto, 0, false, 2).unwrap();
 
         let result = trainer.train_genome(&dummy_genome_msg()).unwrap();
         assert_eq!(result.model_id, "dnabert2");

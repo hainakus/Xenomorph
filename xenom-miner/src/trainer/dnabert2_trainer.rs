@@ -36,39 +36,22 @@ impl DnaBert2Trainer {
             .context("Failed to load DNABERT-2 model for training")?;
         let seq_len = config.max_position_embeddings.min(512);
         let generator = MlmBatchGenerator::new(tokenizer, seq_len);
-        let optimizer = AdamW::new_lr(varmap.all_vars(), 0.0)
-            .context("Failed to create AdamW optimizer")?;
+        let optimizer = AdamW::new_lr(varmap.all_vars(), 0.0).context("Failed to create AdamW optimizer")?;
         Ok(Self { model, varmap, generator, device, threads, optimizer: Mutex::new(optimizer) })
     }
 
     fn build_tensors(&self, batch: &MlmBatch) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
-        let input_ids = Tensor::from_vec(
-            batch.input_ids.clone(),
-            (batch.batch_size, batch.seq_len),
-            &self.device,
-        )
-        .context("Failed to create input_ids tensor")?;
+        let input_ids = Tensor::from_vec(batch.input_ids.clone(), (batch.batch_size, batch.seq_len), &self.device)
+            .context("Failed to create input_ids tensor")?;
 
-        let attention_mask = Tensor::from_vec(
-            batch.attention_mask.clone(),
-            (batch.batch_size, batch.seq_len),
-            &self.device,
-        )
-        .context("Failed to create attention_mask tensor")?;
+        let attention_mask = Tensor::from_vec(batch.attention_mask.clone(), (batch.batch_size, batch.seq_len), &self.device)
+            .context("Failed to create attention_mask tensor")?;
 
-        let labels = Tensor::from_vec(
-            batch.labels.clone(),
-            (batch.batch_size, batch.seq_len),
-            &self.device,
-        )
-        .context("Failed to create labels tensor")?;
+        let labels = Tensor::from_vec(batch.labels.clone(), (batch.batch_size, batch.seq_len), &self.device)
+            .context("Failed to create labels tensor")?;
 
-        let mask = Tensor::from_vec(
-            batch.mask.clone(),
-            (batch.batch_size, batch.seq_len),
-            &self.device,
-        )
-        .context("Failed to create mask tensor")?;
+        let mask = Tensor::from_vec(batch.mask.clone(), (batch.batch_size, batch.seq_len), &self.device)
+            .context("Failed to create mask tensor")?;
 
         Ok((input_ids, attention_mask, labels, mask))
     }
@@ -131,10 +114,7 @@ impl DnaBert2Trainer {
 
         let (input_ids, attention_mask, labels, mask) = self.build_tensors(mlm_batch)?;
 
-        let logits_before = self
-            .model
-            .forward(&input_ids, None, Some(&attention_mask))
-            .context("Forward pass failed")?;
+        let logits_before = self.model.forward(&input_ids, None, Some(&attention_mask)).context("Forward pass failed")?;
         let loss_before = self.compute_loss(&logits_before, &labels, &mask)?;
         let loss_before_scalar = loss_before.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64;
 
@@ -143,10 +123,7 @@ impl DnaBert2Trainer {
         optimizer.set_learning_rate(learning_rate as f64);
         optimizer.step(&grads).context("Optimizer step failed")?;
 
-        let logits_after = self
-            .model
-            .forward(&input_ids, None, Some(&attention_mask))
-            .context("Forward pass after step failed")?;
+        let logits_after = self.model.forward(&input_ids, None, Some(&attention_mask)).context("Forward pass after step failed")?;
         let loss_after = self.compute_loss(&logits_after, &labels, &mask)?;
         let loss_after_scalar = loss_after.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64;
 
@@ -167,13 +144,7 @@ impl DnaBert2Trainer {
 impl Trainer for DnaBert2Trainer {
     fn train(&self, batch: &TrainingBatch) -> Result<TrainingResult> {
         let mlm_batch = self.generator.generate(batch).context("Failed to generate MLM batch")?;
-        self.train_mlm_batch(
-            &mlm_batch,
-            &batch.model_id,
-            batch.base_checkpoint,
-            batch.data_indices.clone(),
-            batch.learning_rate,
-        )
+        self.train_mlm_batch(&mlm_batch, &batch.model_id, batch.base_checkpoint, batch.data_indices.clone(), batch.learning_rate)
     }
 
     fn train_genome(&self, msg: &GenomeTrainingBatchMsg) -> Result<TrainingResult> {
@@ -185,13 +156,7 @@ impl Trainer for DnaBert2Trainer {
 
         let batch_indices: Vec<u64> = batch.data_indices.iter().map(|slice| slice.chunk_idx).collect();
 
-        self.train_mlm_batch(
-            &mlm_batch,
-            &batch.model_id,
-            batch.genome_merkle_root,
-            batch_indices,
-            0.01,
-        )
+        self.train_mlm_batch(&mlm_batch, &batch.model_id, batch.genome_merkle_root, batch_indices, 0.01)
     }
 
     fn device_info(&self) -> DeviceInfo {
@@ -209,12 +174,7 @@ impl Trainer for DnaBert2Trainer {
             _ => format!("DNABERT-2 CPU trainer ({} threads)", self.threads),
         };
 
-        DeviceInfo {
-            device_type,
-            name,
-            threads: self.threads,
-            ..Default::default()
-        }
+        DeviceInfo { device_type, name, threads: self.threads, ..Default::default() }
     }
 }
 
@@ -278,25 +238,60 @@ mod tests {
 
         let mut tensors: HashMap<String, Tensor> = HashMap::new();
         insert_weight(&mut tensors, "model.embeddings.word_embeddings.weight", &[config.vocab_size, config.hidden_size], &device);
-        insert_weight(&mut tensors, "model.embeddings.token_type_embeddings.weight", &[config.type_vocab_size, config.hidden_size], &device);
+        insert_weight(
+            &mut tensors,
+            "model.embeddings.token_type_embeddings.weight",
+            &[config.type_vocab_size, config.hidden_size],
+            &device,
+        );
         insert_weight(&mut tensors, "model.embeddings.layer_norm.weight", &[config.hidden_size], &device);
         insert_weight(&mut tensors, "model.embeddings.layer_norm.bias", &[config.hidden_size], &device);
 
         for i in 0..config.num_hidden_layers {
             let prefix = format!("model.encoder.layer.{}", i);
-            insert_weight(&mut tensors, &format!("{}.attention.self.query.weight", prefix), &[config.hidden_size, config.hidden_size], &device);
+            insert_weight(
+                &mut tensors,
+                &format!("{}.attention.self.query.weight", prefix),
+                &[config.hidden_size, config.hidden_size],
+                &device,
+            );
             insert_weight(&mut tensors, &format!("{}.attention.self.query.bias", prefix), &[config.hidden_size], &device);
-            insert_weight(&mut tensors, &format!("{}.attention.self.key.weight", prefix), &[config.hidden_size, config.hidden_size], &device);
+            insert_weight(
+                &mut tensors,
+                &format!("{}.attention.self.key.weight", prefix),
+                &[config.hidden_size, config.hidden_size],
+                &device,
+            );
             insert_weight(&mut tensors, &format!("{}.attention.self.key.bias", prefix), &[config.hidden_size], &device);
-            insert_weight(&mut tensors, &format!("{}.attention.self.value.weight", prefix), &[config.hidden_size, config.hidden_size], &device);
+            insert_weight(
+                &mut tensors,
+                &format!("{}.attention.self.value.weight", prefix),
+                &[config.hidden_size, config.hidden_size],
+                &device,
+            );
             insert_weight(&mut tensors, &format!("{}.attention.self.value.bias", prefix), &[config.hidden_size], &device);
-            insert_weight(&mut tensors, &format!("{}.attention.output.dense.weight", prefix), &[config.hidden_size, config.hidden_size], &device);
+            insert_weight(
+                &mut tensors,
+                &format!("{}.attention.output.dense.weight", prefix),
+                &[config.hidden_size, config.hidden_size],
+                &device,
+            );
             insert_weight(&mut tensors, &format!("{}.attention.output.dense.bias", prefix), &[config.hidden_size], &device);
             insert_weight(&mut tensors, &format!("{}.attention.output.layer_norm.weight", prefix), &[config.hidden_size], &device);
             insert_weight(&mut tensors, &format!("{}.attention.output.layer_norm.bias", prefix), &[config.hidden_size], &device);
 
-            insert_weight(&mut tensors, &format!("{}.mlp.up_proj.weight", prefix), &[config.intermediate_size * 2, config.hidden_size], &device);
-            insert_weight(&mut tensors, &format!("{}.mlp.down_proj.weight", prefix), &[config.hidden_size, config.intermediate_size], &device);
+            insert_weight(
+                &mut tensors,
+                &format!("{}.mlp.up_proj.weight", prefix),
+                &[config.intermediate_size * 2, config.hidden_size],
+                &device,
+            );
+            insert_weight(
+                &mut tensors,
+                &format!("{}.mlp.down_proj.weight", prefix),
+                &[config.hidden_size, config.intermediate_size],
+                &device,
+            );
             insert_weight(&mut tensors, &format!("{}.mlp.down_proj.bias", prefix), &[config.hidden_size], &device);
             insert_weight(&mut tensors, &format!("{}.mlp.layer_norm.weight", prefix), &[config.hidden_size], &device);
             insert_weight(&mut tensors, &format!("{}.mlp.layer_norm.bias", prefix), &[config.hidden_size], &device);

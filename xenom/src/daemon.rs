@@ -49,6 +49,7 @@ pub const DESIRED_DAEMON_SOFT_FD_LIMIT: u64 = 8 * 1024;
 pub const MINIMUM_DAEMON_SOFT_FD_LIMIT: u64 = 4 * 1024;
 
 use crate::args::Args;
+use crate::training_block_service::TrainingBlockService;
 
 const DEFAULT_DATA_DIR: &str = "datadir";
 const CONSENSUS_DB: &str = "consensus";
@@ -612,6 +613,11 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
         })
     })
     .for_each(|server| async_runtime.register(server));
+
+    // Register the Xenomorph training-block Borsh RPC service if enabled.
+    if let Some(training_rpc_listen) = args.training_rpc_listen {
+        async_runtime.register(TrainingBlockService::new(training_rpc_listen, network.network_type, rpc_core_service.clone()));
+    }
 
     // Consensus must start first in order to init genesis in stores
     core.bind(consensus_manager);

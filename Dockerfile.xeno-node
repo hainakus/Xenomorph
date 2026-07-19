@@ -9,7 +9,7 @@ COPY ${BINARY_PATH} /usr/local/bin/xenom
 COPY scripts/node-entrypoint.sh /usr/local/bin/xenom-node-entrypoint.sh
 RUN chmod +x /usr/local/bin/xenom /usr/local/bin/xenom-node-entrypoint.sh
 
-EXPOSE 16110 16111
+EXPOSE 16110 16111 16112
 
 ENTRYPOINT ["/usr/local/bin/xenom-node-entrypoint.sh"]
 CMD []

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use borsh_miner::{BorshDeserialize, BorshSerialize};
-use rand::{Rng, SeedableRng};
 use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 
 use super::archive::{packed_bytes_for, GenomeArchive};
 
@@ -66,17 +66,9 @@ impl GenomeBatchGenerator {
             if length == 0 {
                 continue;
             }
-            let start_base = if fragment_bases == length {
-                0
-            } else {
-                self.rng.gen_range(0..=(fragment_bases - length))
-            };
+            let start_base = if fragment_bases == length { 0 } else { self.rng.gen_range(0..=(fragment_bases - length)) };
 
-            slices.push(GenomeSlice {
-                chunk_idx: fragment_idx,
-                start_base: start_base as u32,
-                length: length as u32,
-            });
+            slices.push(GenomeSlice { chunk_idx: fragment_idx, start_base: start_base as u32, length: length as u32 });
         }
 
         let batch_id = self.rng.gen::<u64>();
@@ -98,11 +90,7 @@ impl GenomeBatchGenerator {
 
     /// Convenience helper to extract all sequences for a batch.
     pub fn extract_sequences(&self, batch: &GenomeTrainingBatch) -> Vec<String> {
-        batch
-            .data_indices
-            .iter()
-            .filter_map(|slice| self.extract_for_miner(slice).ok())
-            .collect()
+        batch.data_indices.iter().filter_map(|slice| self.extract_for_miner(slice).ok()).collect()
     }
 }
 
@@ -132,9 +120,9 @@ pub fn pack_sequence(seq: &str) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::archive::{GenomeArchive, GENOME_FILE_HEADER_SIZE, GENOME_FILE_MAGIC};
     use super::*;
     use crate::genome::base_from_bits;
-    use super::super::archive::{GenomeArchive, GENOME_FILE_HEADER_SIZE, GENOME_FILE_MAGIC};
 
     fn tiny_archive(seq: &str, fragment_size: u32) -> GenomeArchive {
         let packed = pack_sequence(seq);

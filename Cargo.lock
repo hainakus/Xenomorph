@@ -11521,7 +11521,9 @@ dependencies = [
 name = "xenom"
 version = "0.15.5"
 dependencies = [
+ "anyhow",
  "async-channel 2.3.1",
+ "borsh 1.5.1",
  "cfg-if 1.0.0",
  "clap 4.5.16",
  "dhat",
@@ -11543,6 +11545,7 @@ dependencies = [
  "kaspa-notify",
  "kaspa-p2p-flows",
  "kaspa-perf-monitor",
+ "kaspa-pow",
  "kaspa-rpc-core",
  "kaspa-rpc-service",
  "kaspa-txscript",

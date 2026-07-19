@@ -24,28 +24,17 @@ impl GenomeStorage {
     }
 
     /// Create a new storage instance with a specific fragment size.
-    pub async fn new_with_fragment_size<P: AsRef<Path>>(
-        cache_dir: P,
-        fragment_size: u32,
-    ) -> Result<Self> {
+    pub async fn new_with_fragment_size<P: AsRef<Path>>(cache_dir: P, fragment_size: u32) -> Result<Self> {
         if fragment_size % 4 != 0 {
             bail!("Genome fragment size must be divisible by 4");
         }
         let cache_dir = cache_dir.as_ref().to_path_buf();
         fs::create_dir_all(&cache_dir).await?;
-        Ok(Self {
-            cache_dir,
-            active_genomes: HashMap::new(),
-            downloader: GenomeDownloader::default(),
-            fragment_size,
-        })
+        Ok(Self { cache_dir, active_genomes: HashMap::new(), downloader: GenomeDownloader::default(), fragment_size })
     }
 
     /// Create a new storage instance with a custom downloader.
-    pub async fn new_with_downloader<P: AsRef<Path>>(
-        cache_dir: P,
-        downloader: GenomeDownloader,
-    ) -> Result<Self> {
+    pub async fn new_with_downloader<P: AsRef<Path>>(cache_dir: P, downloader: GenomeDownloader) -> Result<Self> {
         Self::new_with_downloader_and_fragment_size(cache_dir, downloader, DEFAULT_FRAGMENT_SIZE).await
     }
 
@@ -60,20 +49,11 @@ impl GenomeStorage {
         }
         let cache_dir = cache_dir.as_ref().to_path_buf();
         fs::create_dir_all(&cache_dir).await?;
-        Ok(Self {
-            cache_dir,
-            active_genomes: HashMap::new(),
-            downloader,
-            fragment_size,
-        })
+        Ok(Self { cache_dir, active_genomes: HashMap::new(), downloader, fragment_size })
     }
 
     /// Return a loaded genome archive, fetching it from `source` if it is not already cached.
-    pub async fn get_or_load(
-        &mut self,
-        merkle_root: [u8; 32],
-        source: &str,
-    ) -> Result<Arc<GenomeArchive>> {
+    pub async fn get_or_load(&mut self, merkle_root: [u8; 32], source: &str) -> Result<Arc<GenomeArchive>> {
         if let Some(archive) = self.active_genomes.get(&merkle_root) {
             return Ok(archive.clone());
         }
@@ -94,18 +74,13 @@ impl GenomeStorage {
     }
 
     /// Load a genome archive from a local path, verify its merkle root, and cache it.
-    pub async fn load_from_path<P: AsRef<Path>>(
-        &mut self,
-        merkle_root: [u8; 32],
-        path: P,
-    ) -> Result<Arc<GenomeArchive>> {
+    pub async fn load_from_path<P: AsRef<Path>>(&mut self, merkle_root: [u8; 32], path: P) -> Result<Arc<GenomeArchive>> {
         if let Some(archive) = self.active_genomes.get(&merkle_root) {
             return Ok(archive.clone());
         }
 
-        let archive =
-            GenomeArchive::load_with_fragment_size(path.as_ref(), self.fragment_size)
-                .with_context(|| format!("Failed to load genome archive from {:?}", path.as_ref()))?;
+        let archive = GenomeArchive::load_with_fragment_size(path.as_ref(), self.fragment_size)
+            .with_context(|| format!("Failed to load genome archive from {:?}", path.as_ref()))?;
 
         if archive.header.merkle_root != merkle_root {
             bail!(

@@ -4,10 +4,15 @@ use futures::{SinkExt, StreamExt};
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
-use tokio_tungstenite::{connect_async_with_config, tungstenite::Message, tungstenite::protocol::WebSocketConfig, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{
+    connect_async_with_config, tungstenite::protocol::WebSocketConfig, tungstenite::Message, MaybeTlsStream, WebSocketStream,
+};
 use tracing::{debug, info, warn};
 
-use super::messages::{BlockHash, DifficultyTarget, GenomeTrainingBatchMsg, ModelCheckpoint, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch, TrainingBlock};
+use super::messages::{
+    BlockHash, DifficultyTarget, GenomeTrainingBatchMsg, ModelCheckpoint, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch,
+    TrainingBlock,
+};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
@@ -44,10 +49,9 @@ impl XenomRpcClient {
 
     /// Connect (or reconnect) to the configured RPC endpoint.
     pub async fn connect(&mut self) -> Result<()> {
-        let (ws_stream, _) =
-            connect_async_with_config(&self.url, Some(ws_config()), false)
-                .await
-                .with_context(|| format!("Failed to connect to {}", self.url))?;
+        let (ws_stream, _) = connect_async_with_config(&self.url, Some(ws_config()), false)
+            .await
+            .with_context(|| format!("Failed to connect to {}", self.url))?;
 
         info!("Connected to {}", self.url);
         self.connection = Some(ws_stream);

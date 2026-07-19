@@ -79,15 +79,7 @@ impl MlmBatchGenerator {
             }
         }
 
-        Ok(MlmBatch {
-            input_ids,
-            token_type_ids,
-            attention_mask,
-            labels,
-            mask,
-            seq_len: self.seq_len,
-            batch_size,
-        })
+        Ok(MlmBatch { input_ids, token_type_ids, attention_mask, labels, mask, seq_len: self.seq_len, batch_size })
     }
 
     /// Generate an MLM batch from a `TrainingBatch`.
@@ -127,15 +119,7 @@ impl MlmBatchGenerator {
             }
         }
 
-        Ok(MlmBatch {
-            input_ids,
-            token_type_ids,
-            attention_mask,
-            labels,
-            mask,
-            seq_len: self.seq_len,
-            batch_size,
-        })
+        Ok(MlmBatch { input_ids, token_type_ids, attention_mask, labels, mask, seq_len: self.seq_len, batch_size })
     }
 
     fn seeded_rng(base_checkpoint: &[u8; 32], index: u64) -> ChaCha8Rng {
@@ -148,7 +132,7 @@ impl MlmBatchGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokenizers::models::bpe::{BPE, Vocab};
+    use tokenizers::models::bpe::{Vocab, BPE};
     use tokenizers::tokenizer::AddedToken;
     use tokenizers::Tokenizer;
 
@@ -163,10 +147,7 @@ mod tests {
 
         let bpe = BPE::new(vocab, vec![]);
         let mut tokenizer = Tokenizer::new(bpe);
-        tokenizer.add_special_tokens(&[
-            AddedToken::from("<mask>", true),
-            AddedToken::from("<pad>", true),
-        ]);
+        tokenizer.add_special_tokens(&[AddedToken::from("<mask>", true), AddedToken::from("<pad>", true)]);
 
         let bytes = serde_json::to_vec(&tokenizer).unwrap();
         DnaTokenizer::from_bytes(&bytes).unwrap()

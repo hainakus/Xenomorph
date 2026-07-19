@@ -145,10 +145,7 @@ async fn test_storage_load_and_verify() {
     let cache_dir = tempfile::tempdir().unwrap();
     let mut storage = GenomeStorage::new_with_fragment_size(cache_dir.path(), 8).await.unwrap();
 
-    let archive = storage
-        .load_from_path(merkle, tmp.path())
-        .await
-        .unwrap();
+    let archive = storage.load_from_path(merkle, tmp.path()).await.unwrap();
 
     assert_eq!(storage.list_available(), vec![merkle]);
     assert_eq!(archive.extract_sequence(0, 0, 4).unwrap(), "ACGT");

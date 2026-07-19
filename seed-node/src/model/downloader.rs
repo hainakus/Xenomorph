@@ -18,14 +18,11 @@ pub async fn download_model(model_id: &str) -> Result<RawModelFiles> {
         .build()
         .context("Failed to build HTTP client")?;
 
-    let config = download_file(&client, &model_url(model_id, "config.json")?)
-        .await
-        .context("Failed to download config.json")?;
+    let config = download_file(&client, &model_url(model_id, "config.json")?).await.context("Failed to download config.json")?;
     info!("Downloaded config.json for {}", model_id);
 
-    let tokenizer = download_file(&client, &model_url(model_id, "tokenizer.json")?)
-        .await
-        .context("Failed to download tokenizer.json")?;
+    let tokenizer =
+        download_file(&client, &model_url(model_id, "tokenizer.json")?).await.context("Failed to download tokenizer.json")?;
     info!("Downloaded tokenizer.json for {}", model_id);
 
     let mut weights: Option<Vec<u8>> = None;

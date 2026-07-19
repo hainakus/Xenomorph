@@ -32,14 +32,17 @@ kaspa-mining.workspace = true
 kaspa-notify.workspace = true
 kaspa-p2p-flows.workspace = true
 kaspa-perf-monitor.workspace = true
+kaspa-pow.workspace = true
 kaspa-rpc-core.workspace = true
 kaspa-rpc-service.workspace = true
 kaspa-txscript.workspace = true
+borsh.workspace = true
 kaspa-utils.workspace = true
 kaspa-utils-tower.workspace = true
 kaspa-utxoindex.workspace = true
 kaspa-wrpc-server.workspace = true
 
+anyhow = "1.0"
 async-channel.workspace = true
 cfg-if.workspace = true
 clap.workspace = true
@@ -54,7 +57,7 @@ reqwest.workspace = true
 serde.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["sync", "rt", "macros", "rt-multi-thread", "net", "io-util"] }
 workflow-log.workspace = true
 
 toml = "0.8.10"

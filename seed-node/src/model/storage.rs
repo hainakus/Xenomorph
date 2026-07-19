@@ -42,10 +42,7 @@ impl ModelStorage {
     /// Sanitize a model identifier so it is safe to use in filesystem paths.
     /// Replaces path separators and other special characters with underscores.
     fn sanitize_id(model_id: &str) -> String {
-        model_id
-            .chars()
-            .map(|c| if c == '/' || c == '\\' || c == ':' || c == ' ' || c == '\0' { '_' } else { c })
-            .collect()
+        model_id.chars().map(|c| if c == '/' || c == '\\' || c == ':' || c == ' ' || c == '\0' { '_' } else { c }).collect()
     }
 
     fn model_path(&self, model_id: &str) -> String {
@@ -184,8 +181,7 @@ impl ModelStorage {
 
     pub async fn model_exists(&self, model_id: &str) -> bool {
         let model_path = self.model_path(model_id);
-        Path::new(&format!("{}/weights.enc", model_path)).exists()
-            || Path::new(&format!("{}/model.enc", model_path)).exists()
+        Path::new(&format!("{}/weights.enc", model_path)).exists() || Path::new(&format!("{}/model.enc", model_path)).exists()
     }
 
     fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>, StorageError> {
@@ -269,11 +265,7 @@ mod tests {
         let key = ModelStorage::generate_key();
         let storage = ModelStorage::new("/tmp/test_models_files".to_string(), key);
 
-        let files = RawModelFiles {
-            config: b"{}".to_vec(),
-            tokenizer: b"[]".to_vec(),
-            weights: b"model weights".to_vec(),
-        };
+        let files = RawModelFiles { config: b"{}".to_vec(), tokenizer: b"[]".to_vec(), weights: b"model weights".to_vec() };
         storage.store_model_files("test_model_files", &files).await.unwrap();
 
         let loaded = storage.load_model_files("test_model_files").await.unwrap();

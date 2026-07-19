@@ -161,10 +161,14 @@ make clean  # cleanup-devnet.sh
 
 ## Seed-node -> Xenom node block forwarding
 
-- `seed-node/src/rpc/server.rs` now forwards `SubmitBlock` training proofs to the Xenomorph full node over the Borsh `XenomorphRpcClient` (`XENO_NODE_RPC`, default `xeno-node:16110`).
-- The full node must expose a compatible Borsh training-block listener for the chain to actually advance; the current `xenom` node does **not** implement this listener yet.
-- Until the listener is implemented, the seed-node will:
-  1. Validate the miner's address format.
-  2. Attempt to forward the proof and log whether the full node accepted/rejected it.
-  3. Return a local `BlockHash` to the miner so the local training loop can continue.
+- `seed-node/src/rpc/server.rs` forwards `SubmitBlock` training proofs to the Xenomorph full node over the Borsh `XenomorphRpcClient` (`XENO_NODE_RPC`, default `xeno-node:16112`).
+- The `xenom` full node now implements `TrainingBlockService` (`xenom/src/training_block_service.rs`), a dedicated Borsh listener that:
+  1. Validates the miner address and prefix against the running network.
+  2. Deserializes the `TrainingProof` from the seed-node.
+  3. Builds a compact `CoinbaseExtraData` payload and requests a block template from the local consensus.
+  4. Solves the block PoW with `kaspa_pow::State`.
+  5. Submits the solved block via `submit_block_call` and returns `accepted` + `block_hash` to the seed-node.
+- The listener is enabled with `--training-rpc-listen=<IP:PORT>` and is wired into `daemon.rs` as an `AsyncService`.
+- Native devnet and Docker `.env.example` point `XENO_NODE_RPC` to the training RPC port (`16112` by default) and expose/forward that port.
+- If `--training-rpc-listen` is not provided, the listener is disabled and the seed-node will fail to connect as before.
 - The `model_id` field is now included in `TrainingBlock` so the seed-node can include it in the forwarded request.

@@ -26,11 +26,7 @@ impl GpuMonitor {
         let mem = device.memory_info()?;
         let temp = device.temperature(TemperatureSensor::Gpu)?;
 
-        Ok(GpuStats {
-            utilization: util.gpu,
-            memory_used: mem.used,
-            temperature: temp,
-        })
+        Ok(GpuStats { utilization: util.gpu, memory_used: mem.used, temperature: temp })
     }
 
     #[cfg(not(feature = "cuda"))]
