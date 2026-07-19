@@ -48,6 +48,12 @@ services:
     depends_on:
       xeno-node:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 5 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/${XENO_MINER_RPC_PORT:-17110}'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
 
   xeno-miner:
     image: "${XENO_REGISTRY:-}${XENO_MINER_IMAGE:-xeno-miner}:${XENO_VERSION:-latest}"
@@ -69,11 +75,12 @@ services:
     networks:
       - xeno-devnet
     depends_on:
-      - xeno-seed
+      xeno-seed:
+        condition: service_healthy
     deploy:
       resources:
         limits:
-          cpus: "2"
+          cpus: "1"
           memory: 8G
 
   anvil:

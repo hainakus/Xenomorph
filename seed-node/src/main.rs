@@ -30,13 +30,11 @@ async fn main() -> Result<()> {
     let model_manager = Arc::new(ModelManager::new(models_dir.clone()).await?);
     let genome_storage = Arc::new(RwLock::new(GenomeStorage::new(PathBuf::from(models_dir).join("genomes")).await?));
 
-    // Try to download the default model in the background so the miner can start immediately
-    let mm = model_manager.clone();
-    tokio::spawn(async move {
-        if let Err(e) = mm.ensure_model_downloaded(&default_model_id).await {
-            tracing::warn!("Failed to pre-download default model {}: {}", default_model_id, e);
-        }
-    });
+    // The seed-node is only considered ready once the default model is available.
+    // Block startup until the model is downloaded and stored locally.
+    info!("Ensuring default model {} is available...", default_model_id);
+    model_manager.ensure_model_downloaded(&default_model_id).await?;
+    info!("Default model {} is ready", default_model_id);
 
     let xenomorph_client = Arc::new(XenomorphRpcClient::new(&node_rpc).await?);
 
