@@ -46,11 +46,11 @@ impl GpuTrainer {
     ) -> Result<Self> {
         let (device, device_type, device_name) = Self::select_device(backend, device_index)?;
 
-        let dtype = if fp16 && device.is_cuda() {
-            info!("Using FP16 mixed precision on CUDA device");
+        let dtype = if fp16 && (device.is_cuda() || device.is_metal()) {
+            info!("Using FP16 mixed precision on GPU device");
             DType::F16
-        } else if fp16 && !device.is_cuda() {
-            warn!("FP16 requested but only CUDA/Metal GPUs support it; using F32");
+        } else if fp16 {
+            warn!("FP16 requested but the selected device does not support it; using F32");
             DType::F32
         } else {
             DType::F32
