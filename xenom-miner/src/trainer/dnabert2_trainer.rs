@@ -6,7 +6,7 @@ use std::time::Instant;
 use crate::data::{MlmBatch, MlmBatchGenerator};
 use crate::dnabert2::DnaBert2ForMaskedLM;
 use crate::model::DnaBert2Config;
-use crate::rpc::messages::TrainingBatch;
+use crate::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch};
 use crate::tokenizer::DnaTokenizer;
 use crate::trainer::{DeviceInfo, DeviceType, Trainer, TrainingResult};
 
@@ -16,7 +16,6 @@ pub struct DnaBert2Trainer {
     varmap: candle_nn::VarMap,
     generator: MlmBatchGenerator,
     device: Device,
-    model_id: String,
     threads: usize,
 }
 
@@ -27,14 +26,13 @@ impl DnaBert2Trainer {
         weights: Vec<u8>,
         tokenizer: DnaTokenizer,
         device: Device,
-        model_id: String,
         threads: usize,
     ) -> Result<Self> {
         let (model, varmap) = DnaBert2ForMaskedLM::load_for_training(config.clone(), weights, DType::F32, &device)
             .context("Failed to load DNABERT-2 model for training")?;
         let seq_len = config.max_position_embeddings.min(512);
         let generator = MlmBatchGenerator::new(tokenizer, seq_len);
-        Ok(Self { model, varmap, generator, device, model_id, threads })
+        Ok(Self { model, varmap, generator, device, threads })
     }
 
     fn build_tensors(&self, batch: &MlmBatch) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
@@ -111,12 +109,19 @@ impl DnaBert2Trainer {
     }
 }
 
-impl Trainer for DnaBert2Trainer {
-    fn train(&self, batch: &TrainingBatch) -> Result<TrainingResult> {
+impl DnaBert2Trainer {
+    /// Shared training step: forward, compute loss, backward, optimize, forward again.
+    fn train_mlm_batch(
+        &self,
+        mlm_batch: &MlmBatch,
+        model_id: &str,
+        base_checkpoint: [u8; 32],
+        batch_indices: Vec<u64>,
+        learning_rate: f32,
+    ) -> Result<TrainingResult> {
         let start = Instant::now();
 
-        let mlm_batch = self.generator.generate(batch).context("Failed to generate MLM batch")?;
-        let (input_ids, attention_mask, labels, mask) = self.build_tensors(&mlm_batch)?;
+        let (input_ids, attention_mask, labels, mask) = self.build_tensors(mlm_batch)?;
 
         let logits_before = self
             .model
@@ -125,7 +130,7 @@ impl Trainer for DnaBert2Trainer {
         let loss_before = self.compute_loss(&logits_before, &labels, &mask)?;
         let loss_before_scalar = loss_before.to_vec0::<f32>()? as f64;
 
-        let mut optimizer = AdamW::new_lr(self.varmap.all_vars(), batch.learning_rate as f64)
+        let mut optimizer = AdamW::new_lr(self.varmap.all_vars(), learning_rate as f64)
             .context("Failed to create optimizer")?;
         let grads = loss_before.backward().context("Backward pass failed")?;
         optimizer.step(&grads).context("Optimizer step failed")?;
@@ -140,14 +145,45 @@ impl Trainer for DnaBert2Trainer {
         let gradients_commitment = self.gradient_commitment(&grads)?;
 
         Ok(TrainingResult {
-            model_id: self.model_id.clone(),
-            batch_indices: batch.data_indices.clone(),
-            base_checkpoint: batch.base_checkpoint,
+            model_id: model_id.to_string(),
+            batch_indices,
+            base_checkpoint,
             loss_before: loss_before_scalar,
             loss_after: loss_after_scalar,
             gradients_commitment,
             compute_time_ms: start.elapsed().as_millis() as u64,
         })
+    }
+}
+
+impl Trainer for DnaBert2Trainer {
+    fn train(&self, batch: &TrainingBatch) -> Result<TrainingResult> {
+        let mlm_batch = self.generator.generate(batch).context("Failed to generate MLM batch")?;
+        self.train_mlm_batch(
+            &mlm_batch,
+            &batch.model_id,
+            batch.base_checkpoint,
+            batch.data_indices.clone(),
+            batch.learning_rate,
+        )
+    }
+
+    fn train_genome(&self, msg: &GenomeTrainingBatchMsg) -> Result<TrainingResult> {
+        let batch = &msg.batch;
+        let mlm_batch = self
+            .generator
+            .generate_from_sequences(&msg.sequences, &batch.genome_merkle_root, batch.batch_id)
+            .context("Failed to generate MLM batch from genome sequences")?;
+
+        let batch_indices: Vec<u64> = batch.data_indices.iter().map(|slice| slice.chunk_idx).collect();
+
+        self.train_mlm_batch(
+            &mlm_batch,
+            &batch.model_id,
+            batch.genome_merkle_root,
+            batch_indices,
+            0.01,
+        )
     }
 
     fn device_info(&self) -> DeviceInfo {
@@ -270,7 +306,7 @@ mod tests {
     fn test_dna_bert2_trainer_runs_and_improves() {
         let (config, weights) = build_tiny_safetensors();
         let tokenizer = build_tiny_tokenizer();
-        let trainer = DnaBert2Trainer::new(config, weights, tokenizer, Device::Cpu, "dnabert2".to_string(), 2).unwrap();
+        let trainer = DnaBert2Trainer::new(config, weights, tokenizer, Device::Cpu, 2).unwrap();
 
         let result = trainer.train(&dummy_batch()).unwrap();
 
@@ -278,6 +314,37 @@ mod tests {
         assert!(!result.gradients_commitment.iter().all(|&b| b == 0));
         // The tiny model should usually reduce the loss after one AdamW step.
         // We allow equality in the very rare case where the random seed gives no improvement.
+        assert!(result.loss_after <= result.loss_before);
+    }
+
+    #[test]
+    fn test_dna_bert2_trainer_train_genome() {
+        use crate::rpc::messages::{GenomeSlice, GenomeTrainingBatch};
+
+        let (config, weights) = build_tiny_safetensors();
+        let tokenizer = build_tiny_tokenizer();
+        let trainer = DnaBert2Trainer::new(config, weights, tokenizer, Device::Cpu, 2).unwrap();
+
+        let msg = GenomeTrainingBatchMsg {
+            batch: GenomeTrainingBatch {
+                batch_id: 1,
+                model_id: "dnabert2".to_string(),
+                genome_merkle_root: [1u8; 32],
+                data_indices: vec![
+                    GenomeSlice { chunk_idx: 0, start_base: 0, length: 4 },
+                    GenomeSlice { chunk_idx: 1, start_base: 0, length: 4 },
+                ],
+                mask_ratio: 0.15,
+                seq_length: 8,
+            },
+            sequences: vec!["ATCG".to_string(), "GCTA".to_string()],
+        };
+
+        let result = trainer.train_genome(&msg).unwrap();
+
+        assert_eq!(result.model_id, "dnabert2");
+        assert_eq!(result.batch_indices, vec![0, 1]);
+        assert!(!result.gradients_commitment.iter().all(|&b| b == 0));
         assert!(result.loss_after <= result.loss_before);
     }
 }

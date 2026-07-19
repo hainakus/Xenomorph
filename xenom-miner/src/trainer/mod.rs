@@ -2,7 +2,7 @@ pub mod cpu_trainer;
 pub mod dnabert2_trainer;
 pub mod mock_trainer;
 
-use crate::rpc::messages::TrainingBatch;
+use crate::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch};
 use anyhow::Result;
 
 pub use cpu_trainer::CpuTrainer;
@@ -39,6 +39,14 @@ pub struct TrainingResult {
 pub trait Trainer: Send + Sync {
     /// Train one batch and return the result.
     fn train(&self, batch: &TrainingBatch) -> Result<TrainingResult>;
+
+    /// Train on a genome-backed batch.
+    ///
+    /// The default implementation returns an error; real trainers (e.g.
+    /// `DnaBert2Trainer`) override this to tokenize the provided DNA sequences.
+    fn train_genome(&self, _msg: &GenomeTrainingBatchMsg) -> Result<TrainingResult> {
+        Err(anyhow::anyhow!("Genome training is not supported by this trainer"))
+    }
 
     /// Return information about the device being used.
     fn device_info(&self) -> DeviceInfo;

@@ -7,7 +7,7 @@ use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, info, warn};
 
-use super::messages::{BlockHash, DifficultyTarget, ModelCheckpoint, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch, TrainingBlock};
+use super::messages::{BlockHash, DifficultyTarget, GenomeTrainingBatchMsg, ModelCheckpoint, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch, TrainingBlock};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
@@ -55,6 +55,28 @@ impl XenomRpcClient {
             RpcResponse::TrainingBatch(batch) => Ok(batch),
             RpcResponse::Error(msg) => bail!("Node returned error: {}", msg),
             other => bail!("Unexpected response to GetTrainingBatch: {:?}", other),
+        }
+    }
+
+    /// Request a genome-backed DNABERT-2 training batch from the seed-node.
+    pub async fn get_genome_training_batch(
+        &mut self,
+        genome_merkle_root: [u8; 32],
+        model_id: &str,
+        preferred_batch_size: usize,
+    ) -> Result<GenomeTrainingBatchMsg> {
+        let response = self
+            .send_request(RpcRequest::GetGenomeTrainingBatch(super::messages::GetGenomeTrainingBatch {
+                genome_merkle_root,
+                model_id: model_id.to_string(),
+                preferred_batch_size,
+            }))
+            .await?;
+
+        match response {
+            RpcResponse::GenomeTrainingBatch(msg) => Ok(msg),
+            RpcResponse::Error(msg) => bail!("Node returned error: {}", msg),
+            other => bail!("Unexpected response to GetGenomeTrainingBatch: {:?}", other),
         }
     }
 

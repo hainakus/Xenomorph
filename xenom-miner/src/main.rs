@@ -14,7 +14,7 @@ use xenom_miner::config::MinerConfig;
 use xenom_miner::model::DnaBert2Config;
 use xenom_miner::model_client::{fetch_model_checkpoint, ModelBundle};
 use xenom_miner::prover::{PublicInputs, ZkProver};
-use xenom_miner::rpc::messages::TrainingBatch;
+use xenom_miner::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch};
 use xenom_miner::rpc::XenomRpcClient;
 use xenom_miner::tokenizer::DnaTokenizer;
 use xenom_miner::trainer::{CpuTrainer, DnaBert2Trainer, MockTrainer, Trainer};
@@ -54,6 +54,15 @@ struct Args {
     /// Deprecated alias for --trainer=mock.
     #[arg(long = "mock-mode", visible_alias = "mock", hide = true)]
     mock: bool,
+
+    /// Optional genome archive merkle root (hex). When set, the miner requests
+    /// genome-backed DNABERT-2 training batches instead of synthetic ones.
+    #[arg(long)]
+    genome_merkle: Option<String>,
+
+    /// Number of DNA sequences to request per genome batch.
+    #[arg(long, default_value_t = 4)]
+    genome_batch_size: usize,
 
     /// Do not submit mined blocks; useful for local testing.
     #[arg(long)]
@@ -122,6 +131,33 @@ async fn get_batch(rpc_client: &mut Option<XenomRpcClient>, model_id: &str) -> O
     None
 }
 
+fn parse_genome_merkle(hex_str: &str) -> Result<[u8; 32]> {
+    let bytes = hex::decode(hex_str.trim()).context("Invalid --genome-merkle hex string")?;
+    if bytes.len() != 32 {
+        bail!("--genome-merkle must be exactly 32 bytes (64 hex chars), got {}", bytes.len());
+    }
+    let mut root = [0u8; 32];
+    root.copy_from_slice(&bytes);
+    Ok(root)
+}
+
+async fn get_genome_batch(
+    rpc_client: &mut Option<XenomRpcClient>,
+    genome_merkle: [u8; 32],
+    model_id: &str,
+    batch_size: usize,
+) -> Option<GenomeTrainingBatchMsg> {
+    if let Some(client) = rpc_client.as_mut() {
+        match client.get_genome_training_batch(genome_merkle, model_id, batch_size).await {
+            Ok(msg) => return Some(msg),
+            Err(e) => {
+                warn!("Failed to fetch genome training batch: {}", e);
+            }
+        }
+    }
+    None
+}
+
 fn make_local_batch(model_id: &str, block_number: u64) -> TrainingBatch {
     let mut checkpoint = [0u8; 32];
     checkpoint[..8].copy_from_slice(&block_number.to_le_bytes());
@@ -154,7 +190,7 @@ async fn load_trainer(
     let tokenizer = DnaTokenizer::from_bytes(&tokenizer).context("Failed to parse tokenizer")?;
     let model_id_for_log = model_id.clone();
     let trainer =
-        DnaBert2Trainer::new(config, weights, tokenizer, Device::Cpu, model_id, threads)
+        DnaBert2Trainer::new(config, weights, tokenizer, Device::Cpu, threads)
             .context("Failed to initialize DNABERT-2 trainer")?;
     info!("Loaded DNABERT-2 model checkpoint for {}", model_id_for_log);
     Ok(Arc::new(trainer))
@@ -210,6 +246,14 @@ async fn main() -> Result<()> {
         other => bail!("Unknown trainer: {}. Use mock, cpu, or dnabert2.", other),
     };
 
+    let genome_merkle: Option<[u8; 32]> = match args.genome_merkle.as_deref() {
+        Some(hex_str) => Some(parse_genome_merkle(hex_str)?),
+        None => None,
+    };
+    if genome_merkle.is_some() && trainer_kind != "dnabert2" {
+        warn!("--genome-merkle is only supported with --trainer=dnabert2; genome training will likely fail");
+    }
+
     let prover = ZkProver::new();
     let mut block_builder = BlockBuilder::new(miner_address.clone());
 
@@ -243,25 +287,50 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                let batch = match get_batch(&mut rpc_client, &config.model_id).await {
-                    Some(batch) => batch,
-                    None if config.dry_run => make_local_batch(&config.model_id, block_number),
-                    None => {
-                        warn!("No batch available; retrying");
-                        tokio::time::sleep(RETRY_DELAY).await;
-                        return Ok::<_, anyhow::Error>(());
-                    }
-                };
+                let (result, batch_id) = if let Some(merkle) = genome_merkle {
+                    let msg = match get_genome_batch(&mut rpc_client, merkle, &config.model_id, args.genome_batch_size).await {
+                        Some(msg) => msg,
+                        None if config.dry_run => {
+                            warn!("Dry-run with --genome-merkle but no RPC; cannot generate genome batch");
+                            tokio::time::sleep(RETRY_DELAY).await;
+                            return Ok::<_, anyhow::Error>(());
+                        }
+                        None => {
+                            warn!("No genome batch available; retrying");
+                            tokio::time::sleep(RETRY_DELAY).await;
+                            return Ok::<_, anyhow::Error>(());
+                        }
+                    };
 
-                let batch_for_training = batch.clone();
-                let trainer = Arc::clone(&trainer);
-                let result = tokio::task::spawn_blocking(move || trainer.train(&batch_for_training))
-                    .await
-                    .context("Training task panicked")??;
+                    let batch_id = msg.batch.batch_id;
+                    let trainer = Arc::clone(&trainer);
+                    let result = tokio::task::spawn_blocking(move || trainer.train_genome(&msg))
+                        .await
+                        .context("Genome training task panicked")??;
+                    (result, batch_id)
+                } else {
+                    let batch = match get_batch(&mut rpc_client, &config.model_id).await {
+                        Some(batch) => batch,
+                        None if config.dry_run => make_local_batch(&config.model_id, block_number),
+                        None => {
+                            warn!("No batch available; retrying");
+                            tokio::time::sleep(RETRY_DELAY).await;
+                            return Ok::<_, anyhow::Error>(());
+                        }
+                    };
+
+                    let batch_id = batch.batch_id;
+                    let batch_for_training = batch.clone();
+                    let trainer = Arc::clone(&trainer);
+                    let result = tokio::task::spawn_blocking(move || trainer.train(&batch_for_training))
+                        .await
+                        .context("Training task panicked")??;
+                    (result, batch_id)
+                };
 
                 let public_inputs = PublicInputs {
                     model_id: config.model_id.clone(),
-                    batch_id: batch.batch_id,
+                    batch_id,
                     loss_before: result.loss_before,
                     loss_after: result.loss_after,
                     gradients_commitment: result.gradients_commitment,

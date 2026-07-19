@@ -41,6 +41,57 @@ impl MlmBatchGenerator {
         self
     }
 
+    /// Generate an MLM batch from a list of DNA sequences.
+    ///
+    /// Each sequence is tokenized, truncated or padded to `seq_len`, and masked
+    /// using an RNG seeded from `seed` and `batch_id`.
+    pub fn generate_from_sequences(&self, sequences: &[String], seed: &[u8; 32], batch_id: u64) -> Result<MlmBatch> {
+        let batch_size = sequences.len();
+        let total_len = batch_size * self.seq_len;
+
+        let mut input_ids = vec![self.tokenizer.pad_token_id; total_len];
+        let token_type_ids = vec![0u32; total_len];
+        let mut attention_mask = vec![0u32; total_len];
+        let mut labels = vec![u32::MAX; total_len];
+        let mut mask = vec![0u8; total_len];
+
+        let base_seed = u64::from_le_bytes(seed[..8].try_into().unwrap_or([0u8; 8])) ^ batch_id;
+
+        for (b, sequence) in sequences.iter().enumerate() {
+            let mut rng = ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(b as u64));
+
+            let mut encoded = self.tokenizer.encode(sequence, false)?;
+            encoded.truncate(self.seq_len);
+            let actual_len = encoded.len();
+
+            let offset = b * self.seq_len;
+            for i in 0..actual_len {
+                let pos = offset + i;
+                let original_id = encoded[i];
+                attention_mask[pos] = 1;
+
+                if rng.gen::<f64>() < self.mask_prob {
+                    mask[pos] = 1;
+                    labels[pos] = original_id;
+                    input_ids[pos] = self.tokenizer.mask_token_id;
+                } else {
+                    input_ids[pos] = original_id;
+                    labels[pos] = u32::MAX;
+                }
+            }
+        }
+
+        Ok(MlmBatch {
+            input_ids,
+            token_type_ids,
+            attention_mask,
+            labels,
+            mask,
+            seq_len: self.seq_len,
+            batch_size,
+        })
+    }
+
     /// Generate an MLM batch from a `TrainingBatch`.
     pub fn generate(&self, batch: &TrainingBatch) -> Result<MlmBatch> {
         let batch_size = batch.data_indices.len();
@@ -167,5 +218,25 @@ mod tests {
                 assert_eq!(mlm.labels[i], u32::MAX);
             }
         }
+    }
+
+    #[test]
+    fn test_generate_from_sequences() {
+        let tokenizer = build_test_tokenizer();
+        let generator = MlmBatchGenerator::new(tokenizer, 8);
+
+        let sequences = vec!["ATCGATCG".to_string(), "GCTAGCTA".to_string()];
+        let seed = [42u8; 32];
+        let mlm = generator.generate_from_sequences(&sequences, &seed, 1).unwrap();
+
+        assert_eq!(mlm.batch_size, 2);
+        assert_eq!(mlm.seq_len, 8);
+        assert_eq!(mlm.input_ids.len(), 16);
+        assert_eq!(mlm.labels.len(), 16);
+        assert_eq!(mlm.mask.len(), 16);
+
+        // Determinism: same seed should produce the same batch.
+        let mlm2 = generator.generate_from_sequences(&sequences, &seed, 1).unwrap();
+        assert_eq!(mlm, mlm2);
     }
 }

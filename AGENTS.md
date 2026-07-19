@@ -82,6 +82,9 @@ Examples:
 
 # Real DNABERT-2 training
 ./target/debug/xenom-miner --rpc-url ws://xeno-seed:17110 --trainer dnabert2
+
+# DNABERT-2 training on a genome archive served by the seed-node
+./target/debug/xenom-miner --rpc-url ws://xeno-seed:17110 --trainer dnabert2 --genome-merkle <64-hex-chars>
 ```
 
 ### End-to-end DNABERT-2 devnet test
