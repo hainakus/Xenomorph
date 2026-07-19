@@ -2,6 +2,7 @@ pub mod block;
 pub mod config;
 pub mod data;
 pub mod governance;
+pub mod model;
 pub mod model_client;
 pub mod prover;
 pub mod rpc;
