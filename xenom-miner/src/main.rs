@@ -1,7 +1,10 @@
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
+use kaspa_consensus_core::config::params::Params;
+use kaspa_consensus_core::network::NetworkType;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
@@ -55,8 +58,14 @@ struct Args {
     #[arg(long = "mock-mode", visible_alias = "mock", hide = true)]
     mock: bool,
 
+    /// Network to mine on. Used to derive the canonical genome merkle root
+    /// from consensus parameters. Ignored when --genome-merkle is provided.
+    #[arg(long, value_parser = ["mainnet", "testnet", "devnet", "simnet"])]
+    network: Option<String>,
+
     /// Optional genome archive merkle root (hex). When set, the miner requests
     /// genome-backed DNABERT-2 training batches instead of synthetic ones.
+    /// Overrides the merkle root derived from --network.
     #[arg(long)]
     genome_merkle: Option<String>,
 
@@ -246,9 +255,16 @@ async fn main() -> Result<()> {
         other => bail!("Unknown trainer: {}. Use mock, cpu, or dnabert2.", other),
     };
 
-    let genome_merkle: Option<[u8; 32]> = match args.genome_merkle.as_deref() {
-        Some(hex_str) => Some(parse_genome_merkle(hex_str)?),
-        None => None,
+    let genome_merkle: Option<[u8; 32]> = if let Some(hex_str) = args.genome_merkle.as_deref() {
+        Some(parse_genome_merkle(hex_str)?)
+    } else if trainer_kind == "dnabert2" {
+        let network = args.network.as_deref().unwrap_or("mainnet");
+        let network_type = NetworkType::from_str(network).with_context(|| format!("Invalid network: {}", network))?;
+        let params = Params::from(network_type);
+        info!("Using {} genome merkle root: {}", network, params.genome_merkle_root);
+        Some(parse_genome_merkle(params.genome_merkle_root)?)
+    } else {
+        None
     };
     if genome_merkle.is_some() && trainer_kind != "dnabert2" {
         warn!("--genome-merkle is only supported with --trainer=dnabert2; genome training will likely fail");

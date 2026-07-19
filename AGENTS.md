@@ -85,6 +85,10 @@ Examples:
 ./target/debug/xenom-miner --rpc-url ws://xeno-seed:17110 --trainer dnabert2
 
 # DNABERT-2 training on a genome archive served by the seed-node
+# --network derives the canonical genome merkle root from consensus Params.
+./target/debug/xenom-miner --rpc-url ws://xeno-seed:17110 --trainer dnabert2 --network mainnet
+
+# Override the genome merkle root explicitly
 ./target/debug/xenom-miner --rpc-url ws://xeno-seed:17110 --trainer dnabert2 --genome-merkle <64-hex-chars>
 ```
 

@@ -11548,6 +11548,7 @@ dependencies = [
  "half 2.4.1",
  "hex",
  "indicatif",
+ "kaspa-consensus-core",
  "mockall",
  "rand 0.8.5",
  "rand_chacha 0.3.1",

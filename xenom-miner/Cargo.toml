@@ -37,6 +37,9 @@ secp256k1 = { version = "0.28", features = ["global-context", "rand-std"] }
 bip39 = "2.0"
 bip32 = "0.5"
 
+# Consensus parameters (genome merkle root, network defaults)
+kaspa-consensus-core = { workspace = true }
+
 # On-chain governance
 ethers = { version = "2.0", features = ["rustls"] }
 
