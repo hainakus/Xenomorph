@@ -1,10 +1,12 @@
 pub mod cpu_trainer;
+pub mod dnabert2_trainer;
 pub mod mock_trainer;
 
 use crate::rpc::messages::TrainingBatch;
 use anyhow::Result;
 
 pub use cpu_trainer::CpuTrainer;
+pub use dnabert2_trainer::DnaBert2Trainer;
 pub use mock_trainer::MockTrainer;
 
 /// Information about the training device being used.

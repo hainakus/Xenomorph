@@ -1,5 +1,5 @@
 use candle_core::{DType, Device, Module, ModuleT, Result as CandleResult, Tensor};
-use candle_nn::{embedding, layer_norm, linear, linear_no_bias, Activation, Dropout, Embedding, LayerNorm, Linear, VarBuilder};
+use candle_nn::{embedding, layer_norm, linear, linear_no_bias, Activation, Dropout, Embedding, LayerNorm, Linear, VarBuilder, VarMap};
 
 use crate::model::DnaBert2Config;
 
@@ -13,7 +13,7 @@ struct DnaBert2Embeddings {
 }
 
 impl DnaBert2Embeddings {
-    fn load(vb: VarBuilder, config: &DnaBert2Config) -> CandleResult<Self> {
+    fn new(vb: VarBuilder, config: &DnaBert2Config) -> CandleResult<Self> {
         let word_embeddings = embedding(config.vocab_size, config.hidden_size, vb.pp("word_embeddings"))?;
         let token_type_embeddings = embedding(config.type_vocab_size, config.hidden_size, vb.pp("token_type_embeddings"))?;
         let layer_norm = layer_norm(config.hidden_size, config.layer_norm_eps, vb.pp("layer_norm"))?;
@@ -93,7 +93,7 @@ struct DnaBert2SelfAttention {
 }
 
 impl DnaBert2SelfAttention {
-    fn load(vb: VarBuilder, config: &DnaBert2Config, device: &Device) -> CandleResult<Self> {
+    fn new(vb: VarBuilder, config: &DnaBert2Config, device: &Device) -> CandleResult<Self> {
         let all_head_size = config.hidden_size;
         let attention_head_size = config.hidden_size / config.num_attention_heads;
 
@@ -157,7 +157,7 @@ struct DnaBert2SelfOutput {
 }
 
 impl DnaBert2SelfOutput {
-    fn load(vb: VarBuilder, config: &DnaBert2Config) -> CandleResult<Self> {
+    fn new(vb: VarBuilder, config: &DnaBert2Config) -> CandleResult<Self> {
         let dense = linear(config.hidden_size, config.hidden_size, vb.pp("dense"))?;
         let layer_norm = layer_norm(config.hidden_size, config.layer_norm_eps, vb.pp("layer_norm"))?;
         let dropout = Dropout::new(config.hidden_dropout);
@@ -178,10 +178,10 @@ struct DnaBert2Attention {
 }
 
 impl DnaBert2Attention {
-    fn load(vb: VarBuilder, config: &DnaBert2Config, device: &Device) -> CandleResult<Self> {
+    fn new(vb: VarBuilder, config: &DnaBert2Config, device: &Device) -> CandleResult<Self> {
         Ok(Self {
-            self_attn: DnaBert2SelfAttention::load(vb.pp("self"), config, device)?,
-            output: DnaBert2SelfOutput::load(vb.pp("output"), config)?,
+            self_attn: DnaBert2SelfAttention::new(vb.pp("self"), config, device)?,
+            output: DnaBert2SelfOutput::new(vb.pp("output"), config)?,
         })
     }
 
@@ -202,7 +202,7 @@ struct DnaBert2GatedMlp {
 }
 
 impl DnaBert2GatedMlp {
-    fn load(vb: VarBuilder, config: &DnaBert2Config) -> CandleResult<Self> {
+    fn new(vb: VarBuilder, config: &DnaBert2Config) -> CandleResult<Self> {
         let up_proj = linear_no_bias(config.hidden_size, config.intermediate_size * 2, vb.pp("up_proj"))?;
         let down_proj = linear(config.intermediate_size, config.hidden_size, vb.pp("down_proj"))?;
         let layer_norm = layer_norm(config.hidden_size, config.layer_norm_eps, vb.pp("layer_norm"))?;
@@ -233,10 +233,10 @@ struct DnaBert2Layer {
 }
 
 impl DnaBert2Layer {
-    fn load(vb: VarBuilder, config: &DnaBert2Config, device: &Device) -> CandleResult<Self> {
+    fn new(vb: VarBuilder, config: &DnaBert2Config, device: &Device) -> CandleResult<Self> {
         Ok(Self {
-            attention: DnaBert2Attention::load(vb.pp("attention"), config, device)?,
-            mlp: DnaBert2GatedMlp::load(vb.pp("mlp"), config)?,
+            attention: DnaBert2Attention::new(vb.pp("attention"), config, device)?,
+            mlp: DnaBert2GatedMlp::new(vb.pp("mlp"), config)?,
         })
     }
 
@@ -252,10 +252,10 @@ struct DnaBert2Encoder {
 }
 
 impl DnaBert2Encoder {
-    fn load(vb: VarBuilder, config: &DnaBert2Config, device: &Device) -> CandleResult<Self> {
+    fn new(vb: VarBuilder, config: &DnaBert2Config, device: &Device) -> CandleResult<Self> {
         let mut layers = Vec::with_capacity(config.num_hidden_layers);
         for i in 0..config.num_hidden_layers {
-            layers.push(DnaBert2Layer::load(vb.pp(format!("layer.{}", i)), config, device)?);
+            layers.push(DnaBert2Layer::new(vb.pp(format!("layer.{}", i)), config, device)?);
         }
         Ok(Self { layers })
     }
@@ -278,7 +278,7 @@ struct DnaBert2LMPredictionHead {
 }
 
 impl DnaBert2LMPredictionHead {
-    fn load(vb: VarBuilder, config: &DnaBert2Config, word_embeddings: &Embedding) -> CandleResult<Self> {
+    fn new(vb: VarBuilder, config: &DnaBert2Config, word_embeddings: &Embedding) -> CandleResult<Self> {
         let lm_vb = vb.pp("lm_head");
         let transform_dense = linear(config.hidden_size, config.hidden_size, lm_vb.pp("transform").pp("dense"))?;
         let transform_layer_norm = layer_norm(config.hidden_size, config.layer_norm_eps, lm_vb.pp("transform").pp("layer_norm"))?;
@@ -309,9 +309,9 @@ pub struct DnaBert2Model {
 }
 
 impl DnaBert2Model {
-    fn load(vb: VarBuilder, config: DnaBert2Config, device: &Device) -> CandleResult<Self> {
-        let embeddings = DnaBert2Embeddings::load(vb.pp("model").pp("embeddings"), &config)?;
-        let encoder = DnaBert2Encoder::load(vb.pp("model").pp("encoder"), &config, device)?;
+    fn new(vb: VarBuilder, config: DnaBert2Config, device: &Device) -> CandleResult<Self> {
+        let embeddings = DnaBert2Embeddings::new(vb.pp("model").pp("embeddings"), &config)?;
+        let encoder = DnaBert2Encoder::new(vb.pp("model").pp("encoder"), &config, device)?;
         Ok(Self { embeddings, encoder, config })
     }
 
@@ -348,12 +348,31 @@ pub struct DnaBert2ForMaskedLM {
 }
 
 impl DnaBert2ForMaskedLM {
-    /// Load a `DnaBert2ForMaskedLM` from raw `model.safetensors` bytes.
+    /// Build a model from an existing `VarBuilder` (e.g. `VarMap` for training or
+    /// `from_buffered_safetensors` for inference).
+    pub fn new(vb: VarBuilder, config: DnaBert2Config, device: &Device) -> CandleResult<Self> {
+        let model = DnaBert2Model::new(vb.clone(), config, device)?;
+        let lm_head = DnaBert2LMPredictionHead::new(vb, &model.config, &model.embeddings.word_embeddings)?;
+        Ok(Self { model, lm_head })
+    }
+
+    /// Load a `DnaBert2ForMaskedLM` from raw `model.safetensors` bytes (inference only).
     pub fn load(config: DnaBert2Config, weights: Vec<u8>, dtype: DType, device: &Device) -> CandleResult<Self> {
         let vb = VarBuilder::from_buffered_safetensors(weights, dtype, device)?;
-        let model = DnaBert2Model::load(vb.clone(), config, device)?;
-        let lm_head = DnaBert2LMPredictionHead::load(vb, &model.config, &model.embeddings.word_embeddings)?;
-        Ok(Self { model, lm_head })
+        Self::new(vb, config, device)
+    }
+
+    /// Load a trainable model from raw `model.safetensors` bytes, returning it together with
+    /// the underlying `VarMap` so that an optimizer can be created.
+    pub fn load_for_training(config: DnaBert2Config, weights: Vec<u8>, dtype: DType, device: &Device) -> CandleResult<(Self, VarMap)> {
+        let mut varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, dtype, device);
+        let model = Self::new(vb, config, device)?;
+        let tensors = candle_core::safetensors::load_buffer(&weights, device)?;
+        for (name, tensor) in tensors.iter() {
+            varmap.set_one(name, tensor)?;
+        }
+        Ok((model, varmap))
     }
 
     pub fn forward(
