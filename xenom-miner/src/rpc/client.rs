@@ -7,7 +7,7 @@ use tokio::time::timeout;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, info, warn};
 
-use super::messages::{BlockHash, DifficultyTarget, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch, TrainingBlock};
+use super::messages::{BlockHash, DifficultyTarget, ModelCheckpoint, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch, TrainingBlock};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
@@ -55,6 +55,17 @@ impl XenomRpcClient {
             RpcResponse::TrainingBatch(batch) => Ok(batch),
             RpcResponse::Error(msg) => bail!("Node returned error: {}", msg),
             other => bail!("Unexpected response to GetTrainingBatch: {:?}", other),
+        }
+    }
+
+    /// Request the full model checkpoint (config + tokenizer + weights) from the seed-node.
+    pub async fn get_model_checkpoint(&mut self, model_id: &str) -> Result<ModelCheckpoint> {
+        let response = self.send_request(RpcRequest::GetModelCheckpoint { model_id: model_id.to_string() }).await?;
+
+        match response {
+            RpcResponse::ModelCheckpoint(cp) => Ok(cp),
+            RpcResponse::Error(msg) => bail!("Node returned error: {}", msg),
+            other => bail!("Unexpected response to GetModelCheckpoint: {:?}", other),
         }
     }
 

@@ -9,6 +9,8 @@ use std::path::Path;
 use thiserror::Error;
 use tokio::fs;
 
+use super::RawModelFiles;
+
 #[derive(Error, Debug)]
 pub enum StorageError {
     #[error("IO error: {0}")]
@@ -69,6 +71,41 @@ impl ModelStorage {
         fs::write(&key_path, &key_hash).await?;
 
         Ok(file_path)
+    }
+
+    pub async fn store_model_files(&self, model_id: &str, files: &RawModelFiles) -> Result<(), StorageError> {
+        let model_path = self.model_path(model_id);
+        fs::create_dir_all(&model_path).await?;
+
+        self.write_encrypted_file(&format!("{}/config.enc", model_path), &files.config).await?;
+        self.write_encrypted_file(&format!("{}/tokenizer.enc", model_path), &files.tokenizer).await?;
+        self.write_encrypted_file(&format!("{}/weights.enc", model_path), &files.weights).await?;
+
+        Ok(())
+    }
+
+    pub async fn load_model_files(&self, model_id: &str) -> Result<RawModelFiles, StorageError> {
+        let model_path = self.model_path(model_id);
+
+        let config = self.read_encrypted_file(&format!("{}/config.enc", model_path)).await?;
+        let tokenizer = self.read_encrypted_file(&format!("{}/tokenizer.enc", model_path)).await?;
+        let weights = self.read_encrypted_file(&format!("{}/weights.enc", model_path)).await?;
+
+        Ok(RawModelFiles { config, tokenizer, weights })
+    }
+
+    async fn write_encrypted_file(&self, path: &str, data: &[u8]) -> Result<(), StorageError> {
+        let encrypted = self.encrypt(data)?;
+        fs::write(path, encrypted).await?;
+        Ok(())
+    }
+
+    async fn read_encrypted_file(&self, path: &str) -> Result<Vec<u8>, StorageError> {
+        if !Path::new(path).exists() {
+            return Err(StorageError::FileNotFound(path.to_string()));
+        }
+        let encrypted = fs::read(path).await?;
+        self.decrypt(&encrypted)
     }
 
     pub async fn load_model(&self, model_id: &str) -> Result<Vec<u8>, StorageError> {
@@ -147,8 +184,8 @@ impl ModelStorage {
 
     pub async fn model_exists(&self, model_id: &str) -> bool {
         let model_path = self.model_path(model_id);
-        let file_path = format!("{}/model.enc", model_path);
-        Path::new(&file_path).exists()
+        Path::new(&format!("{}/weights.enc", model_path)).exists()
+            || Path::new(&format!("{}/model.enc", model_path)).exists()
     }
 
     fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>, StorageError> {
@@ -225,5 +262,26 @@ mod tests {
 
         // Cleanup
         let _ = storage.delete_model("test_model").await;
+    }
+
+    #[tokio::test]
+    async fn test_store_load_model_files() {
+        let key = ModelStorage::generate_key();
+        let storage = ModelStorage::new("/tmp/test_models_files".to_string(), key);
+
+        let files = RawModelFiles {
+            config: b"{}".to_vec(),
+            tokenizer: b"[]".to_vec(),
+            weights: b"model weights".to_vec(),
+        };
+        storage.store_model_files("test_model_files", &files).await.unwrap();
+
+        let loaded = storage.load_model_files("test_model_files").await.unwrap();
+        assert_eq!(files.config, loaded.config);
+        assert_eq!(files.tokenizer, loaded.tokenizer);
+        assert_eq!(files.weights, loaded.weights);
+
+        // Cleanup
+        let _ = storage.delete_model("test_model_files").await;
     }
 }

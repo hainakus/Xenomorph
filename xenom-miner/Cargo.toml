@@ -27,8 +27,10 @@ rand_chacha = "0.3"
 # ML (CPU-only)
 candle-core = "0.3"
 candle-nn = "0.3"
+candle-transformers = "0.3"
 # Pin half so its rand_distr feature uses the same rand 0.8 as candle-core.
 half = "=2.4.1"
+tokenizers = "0.15"
 
 # Wallet
 secp256k1 = { version = "0.28", features = ["global-context", "rand-std"] }

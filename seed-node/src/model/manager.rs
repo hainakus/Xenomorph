@@ -6,8 +6,9 @@ use tracing::info;
 use uuid::Uuid;
 
 use super::checkpoint::{ModelCheckpoint, ModelMetrics};
-use super::downloader::download_model_weights;
+use super::downloader::download_model;
 use super::storage::ModelStorage;
+use super::RawModelFiles;
 
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
@@ -49,8 +50,11 @@ impl ModelManager {
             }
         }
 
-        // Load from storage
-        let data = self.storage.load_model(model_id).await.map_err(|e| anyhow!("Failed to load model: {}", e))?;
+        // Load from storage. New checkpoints store config/tokenizer/weights; legacy ones use a single model.enc.
+        let data = match self.storage.load_model_files(model_id).await {
+            Ok(files) => files.weights,
+            Err(_) => self.storage.load_model(model_id).await.map_err(|e| anyhow!("Failed to load model: {}", e))?,
+        };
 
         // Parse checkpoint from data (simplified - in production would deserialize)
         let checkpoint = ModelCheckpoint::new(0, model_id.to_string(), 1, &data, ModelMetrics::default());
@@ -85,12 +89,12 @@ impl ModelManager {
         }
 
         info!("Model {} not found locally; downloading from Hugging Face", model_id);
-        let data = download_model_weights(model_id).await?;
+        let files = download_model(model_id).await?;
 
         let metrics = ModelMetrics::default();
-        self.store_model(model_id, &data, metrics).await?;
+        self.store_model_files(model_id, &files, metrics).await?;
 
-        info!("Downloaded and stored model {} ({} bytes)", model_id, data.len());
+        info!("Downloaded and stored model {} (weights {} bytes)", model_id, files.weights.len());
         Ok(())
     }
 
@@ -116,6 +120,37 @@ impl ModelManager {
 
         info!("Stored model: {} at {}", model_id, path);
         Ok(path)
+    }
+
+    pub async fn store_model_files(&self, model_id: &str, files: &RawModelFiles, metrics: ModelMetrics) -> Result<()> {
+        self.storage.store_model_files(model_id, files).await.map_err(|e| anyhow!("Failed to store model files: {}", e))?;
+
+        let checkpoint = ModelCheckpoint::new(0, model_id.to_string(), 1, &files.weights, metrics);
+
+        let model_info = ModelInfo {
+            id: model_id.to_string(),
+            name: model_id.to_string(),
+            version: 1,
+            category: "NLP".to_string(),
+            checkpoint,
+            loaded: false,
+            last_used: 0,
+        };
+
+        {
+            let mut models = self.models.write().await;
+            models.insert(model_id.to_string(), model_info);
+        }
+
+        info!("Stored model files for {} (weights {} bytes)", model_id, files.weights.len());
+        Ok(())
+    }
+
+    /// Return the raw model checkpoint files (config, tokenizer, weights) for a model id.
+    pub async fn get_model_checkpoint(&self, model_id: &str) -> Result<(ModelCheckpoint, RawModelFiles)> {
+        let files = self.storage.load_model_files(model_id).await.map_err(|e| anyhow!("Failed to load model files: {}", e))?;
+        let checkpoint = ModelCheckpoint::new(0, model_id.to_string(), 1, &files.weights, ModelMetrics::default());
+        Ok((checkpoint, files))
     }
 
     pub async fn store_checkpoint(&self, model_id: &str, version: u32, data: &[u8], _metrics: ModelMetrics) -> Result<String> {
@@ -241,6 +276,27 @@ mod tests {
 
         let checkpoints = manager.list_checkpoints("test_model").await.unwrap();
         assert_eq!(checkpoints, vec![1]);
+
+        // Cleanup
+        let _ = manager.delete_model("test_model").await;
+    }
+
+    #[tokio::test]
+    async fn test_get_model_checkpoint() {
+        let manager = ModelManager::new("/tmp/test_models_get_checkpoint".to_string()).await.unwrap();
+
+        let files = RawModelFiles {
+            config: b"config".to_vec(),
+            tokenizer: b"tokenizer".to_vec(),
+            weights: b"weights".to_vec(),
+        };
+        manager.store_model_files("test_model", &files, ModelMetrics::default()).await.unwrap();
+
+        let (checkpoint, loaded) = manager.get_model_checkpoint("test_model").await.unwrap();
+        assert_eq!(loaded.config, files.config);
+        assert_eq!(loaded.tokenizer, files.tokenizer);
+        assert_eq!(loaded.weights, files.weights);
+        assert!(checkpoint.verify_integrity(&files.weights));
 
         // Cleanup
         let _ = manager.delete_model("test_model").await;

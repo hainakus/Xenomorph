@@ -43,6 +43,13 @@ async fn start_mock_server() -> u16 {
                         target_improvement: 0.01,
                         learning_rate: 0.01,
                     })),
+                    RpcRequest::GetModelCheckpoint { model_id } => RpcResponse::ModelCheckpoint(xenom_miner::rpc::messages::ModelCheckpoint {
+                        model_id,
+                        base_checkpoint: [1u8; 32],
+                        config: b"{}".to_vec(),
+                        tokenizer: b"[]".to_vec(),
+                        weights: vec![0u8; 64],
+                    }),
                     RpcRequest::SubmitBlock(_) => RpcResponse::BlockHash([7u8; 32]),
                     RpcRequest::Heartbeat => RpcResponse::Pong,
                     RpcRequest::GetBalance { .. } => RpcResponse::Balance(0),

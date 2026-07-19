@@ -80,6 +80,18 @@ async fn handle_request(req: RpcRequest, model_manager: Arc<ModelManager>) -> Rp
                 learning_rate: 0.01,
             }))
         }
+        RpcRequest::GetModelCheckpoint { model_id } => {
+            match model_manager.get_model_checkpoint(&model_id).await {
+                Ok((checkpoint, files)) => RpcResponse::ModelCheckpoint(super::messages::ModelCheckpoint {
+                    model_id,
+                    base_checkpoint: checkpoint.weights_hash,
+                    config: files.config,
+                    tokenizer: files.tokenizer,
+                    weights: files.weights,
+                }),
+                Err(e) => RpcResponse::Error(format!("Failed to get model checkpoint: {}", e)),
+            }
+        }
         RpcRequest::SubmitBlock(block) => {
             let block_bytes = match to_vec(&block) {
                 Ok(bytes) => bytes,

@@ -47,11 +47,23 @@ pub struct TrainingBlock {
     pub signature: [u8; 64],
 }
 
+/// Raw model checkpoint bytes returned by the seed-node. The seed-node is the only entity that
+/// downloads and stores model weights; the miner receives them in memory and does not persist.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct ModelCheckpoint {
+    pub model_id: String,
+    pub base_checkpoint: [u8; 32],
+    pub config: Vec<u8>,
+    pub tokenizer: Vec<u8>,
+    pub weights: Vec<u8>,
+}
+
 /// Request messages sent from the miner to the Xenomorph node.
 #[allow(clippy::large_enum_variant)]
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub enum RpcRequest {
     GetTrainingBatch { model_id: String },
+    GetModelCheckpoint { model_id: String },
     SubmitBlock(TrainingBlock),
     GetBalance { address: String },
     GetDifficulty,
@@ -62,6 +74,7 @@ pub enum RpcRequest {
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub enum RpcResponse {
     TrainingBatch(Option<TrainingBatch>),
+    ModelCheckpoint(ModelCheckpoint),
     BlockHash(BlockHash),
     Balance(u64),
     Difficulty(DifficultyTarget),
@@ -74,4 +87,33 @@ pub enum RpcResponse {
 pub struct RpcEnvelope {
     pub request_id: u64,
     pub payload: RpcRequest,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use borsh_miner::to_vec;
+
+    #[test]
+    fn test_roundtrip_model_checkpoint() {
+        let checkpoint = ModelCheckpoint {
+            model_id: "multimolecule/dnabert2".to_string(),
+            base_checkpoint: [1u8; 32],
+            config: b"{}".to_vec(),
+            tokenizer: b"[]".to_vec(),
+            weights: vec![0u8; 64],
+        };
+        let bytes = to_vec(&checkpoint).unwrap();
+        let decoded: ModelCheckpoint = ModelCheckpoint::try_from_slice(&bytes).unwrap();
+        assert_eq!(checkpoint, decoded);
+    }
+
+    #[test]
+    fn test_roundtrip_request() {
+        let req = RpcRequest::GetModelCheckpoint { model_id: "dnabert2".to_string() };
+        let env = RpcEnvelope { request_id: 1, payload: req };
+        let bytes = to_vec(&env).unwrap();
+        let decoded: RpcEnvelope = RpcEnvelope::try_from_slice(&bytes).unwrap();
+        assert_eq!(env, decoded);
+    }
 }
