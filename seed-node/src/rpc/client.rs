@@ -21,6 +21,7 @@ pub struct GetModelCheckpointResponse {
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub struct SubmitTrainingBlockRequest {
     pub model_id: String,
+    pub miner_address: String,
     pub training_proof: Vec<u8>,
     pub block_height: u64,
 }
@@ -74,10 +75,16 @@ impl XenomorphRpcClient {
     pub async fn submit_training_block(
         &self,
         model_id: &str,
+        miner_address: &str,
         training_proof: Vec<u8>,
         block_height: u64,
     ) -> Result<SubmitTrainingBlockResponse> {
-        let request = SubmitTrainingBlockRequest { model_id: model_id.to_string(), training_proof, block_height };
+        let request = SubmitTrainingBlockRequest {
+            model_id: model_id.to_string(),
+            miner_address: miner_address.to_string(),
+            training_proof,
+            block_height,
+        };
 
         let message = RpcMessage::SubmitTrainingBlock(request);
         let response = self.send_message(message).await?;

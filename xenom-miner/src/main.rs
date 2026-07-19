@@ -19,7 +19,7 @@ use xenom_miner::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch};
 use xenom_miner::rpc::XenomRpcClient;
 use xenom_miner::tokenizer::DnaTokenizer;
 use xenom_miner::trainer::{CpuTrainer, GpuBackend, GpuTrainer, MockTrainer, Trainer};
-use xenom_miner::wallet::WalletManager;
+use xenom_miner::wallet::{validate_address, WalletManager};
 
 const DEFAULT_RPC_URL: &str = "ws://xeno-seed:17110";
 const DEFAULT_MODEL_ID: &str = "multimolecule/dnabert2";
@@ -206,24 +206,19 @@ async fn load_trainer(
     // service dependency should already guarantee this, but the retry makes
     // manual/standalone runs robust against slow model downloads.
     let ModelBundle { model_id, config, tokenizer, weights, .. } =
-        fetch_model_checkpoint_with_retry(client, model_id).await
-            .context("Failed to fetch model checkpoint from seed-node")?;
+        fetch_model_checkpoint_with_retry(client, model_id).await.context("Failed to fetch model checkpoint from seed-node")?;
 
     let config = DnaBert2Config::from_bytes(&config).context("Failed to parse DNABERT-2 config")?;
     let tokenizer = DnaTokenizer::from_bytes(&tokenizer).context("Failed to parse tokenizer")?;
     let model_id_for_log = model_id.clone();
-    let trainer =
-        GpuTrainer::new(config, weights, tokenizer, backend, gpu_device, fp16, threads)
-            .context("Failed to initialize DNABERT-2 trainer")?;
+    let trainer = GpuTrainer::new(config, weights, tokenizer, backend, gpu_device, fp16, threads)
+        .context("Failed to initialize DNABERT-2 trainer")?;
     info!("Loaded DNABERT-2 model checkpoint for {}", model_id_for_log);
     info!("Trainer device: {:?}", trainer.device_info());
     Ok(Arc::new(trainer))
 }
 
-async fn fetch_model_checkpoint_with_retry(
-    client: &mut XenomRpcClient,
-    model_id: &str,
-) -> Result<ModelBundle> {
+async fn fetch_model_checkpoint_with_retry(client: &mut XenomRpcClient, model_id: &str) -> Result<ModelBundle> {
     let mut interval = tokio::time::interval(Duration::from_secs(2));
     let max_attempts = 60;
 
@@ -250,6 +245,9 @@ async fn main() -> Result<()> {
     let data_dir = expand_tilde(&args.data_dir);
     std::fs::create_dir_all(&data_dir).with_context(|| format!("Failed to create data directory {:?}", data_dir))?;
 
+    let network_type = NetworkType::from_str(args.network.as_deref().unwrap_or("mainnet"))
+        .with_context(|| format!("Invalid network: {}", args.network.as_deref().unwrap_or("mainnet")))?;
+
     let mut config = MinerConfig::load_or_create(&data_dir)?;
     if !args.wallet.is_empty() {
         config.wallet_address = args.wallet.clone();
@@ -267,9 +265,15 @@ async fn main() -> Result<()> {
     config.data_dir = data_dir.clone();
     config.save(&data_dir)?;
 
-    let wallet =
-        Arc::new(WalletManager::load_or_create(&data_dir, &args.password).with_context(|| "Failed to load or create wallet")?);
-    let miner_address = if config.wallet_address.is_empty() { wallet.address().to_string() } else { config.wallet_address.clone() };
+    let wallet = Arc::new(
+        WalletManager::load_or_create(&data_dir, &args.password, network_type).with_context(|| "Failed to load or create wallet")?,
+    );
+    let miner_address = if config.wallet_address.is_empty() {
+        wallet.address().to_string()
+    } else {
+        validate_address(&config.wallet_address, network_type).with_context(|| "Invalid --wallet address for the selected network")?;
+        config.wallet_address.clone()
+    };
     info!("Miner address: {}", miner_address);
 
     let mut rpc_client: Option<XenomRpcClient> = None;
@@ -293,16 +297,8 @@ async fn main() -> Result<()> {
                 _ => unreachable!(),
             };
             info!("Using DNABERT-2 trainer with {:?} GPU backend", backend);
-            load_trainer(
-                &mut rpc_client,
-                &config.model_id,
-                backend,
-                args.gpu_device,
-                args.fp16,
-                config.threads,
-                config.dry_run,
-            )
-            .await?
+            load_trainer(&mut rpc_client, &config.model_id, backend, args.gpu_device, args.fp16, config.threads, config.dry_run)
+                .await?
         }
         other => bail!("Unknown trainer: {}. Use mock, cpu, dnabert2, gpu, cuda, rocm, or metal.", other),
     };
@@ -409,7 +405,7 @@ async fn main() -> Result<()> {
                 };
 
                 let zk_proof = prover.generate_proof(&result, &public_inputs)?;
-                let mut block = block_builder.build_block(&result, zk_proof, [0u8; 32])?;
+                let mut block = block_builder.build_block(&config.model_id, &result, zk_proof, [0u8; 32])?;
                 wallet.sign_block(&mut block)?;
 
                 if config.dry_run {

@@ -43,6 +43,7 @@ pub struct BlockHeader {
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub struct TrainingBlock {
     pub header: BlockHeader,
+    pub model_id: String,
     pub training_proof: TrainingProof,
     pub miner_address: String,
     pub timestamp: u64,

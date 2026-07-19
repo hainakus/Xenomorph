@@ -1,3 +1,3 @@
 pub mod manager;
 
-pub use manager::WalletManager;
+pub use manager::{validate_address, WalletManager};

@@ -75,6 +75,7 @@ pub struct BlockHeader {
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub struct TrainingBlock {
     pub header: BlockHeader,
+    pub model_id: String,
     pub training_proof: TrainingProof,
     pub miner_address: String,
     pub timestamp: u64,
@@ -161,6 +162,7 @@ mod tests {
                 difficulty: [2u8; 32],
                 nonce: 0,
             },
+            model_id: "dnabert2".to_string(),
             training_proof: TrainingProof {
                 base_checkpoint: [3u8; 32],
                 loss_before: 2.45,

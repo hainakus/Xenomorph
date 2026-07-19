@@ -149,3 +149,20 @@ make clean  # cleanup-devnet.sh
 - `build-devnet-macos.sh` is a macOS wrapper around `build-devnet.sh` that forces Docker builds and sets `DOCKER_DEFAULT_PLATFORM` to `linux/arm64` (Apple Silicon) or `linux/amd64` (Intel) so images are built for the native host architecture.
 - `seed-node/src/main.rs` reads `XENO_NODE_RPC`, `XENO_GRPC_ADDR`, `XENO_MODELS_DIR`, `XENO_MINER_WS_ADDR`, and `XENO_DEFAULT_MODEL_ID` from the environment so it can reach the node in Docker networking.
 - The seed-node downloads the default Hugging Face model (`multimolecule/dnabert2`) into `XENO_MODELS_DIR` on startup if it is not already present.
+
+## Wallet addresses and network prefixes
+
+- `xenom-miner` derives the mining address from the BIP39 mnemonic using the network prefix selected via `--network` (`mainnet`/`testnet`/`devnet`/`simnet`).
+- Valid prefixes are `xenom` (mainnet), `xenomtest` (testnet), `xenomdev` (devnet) and `xenomsim` (simnet).
+- If `--wallet` is supplied, it is validated against the selected network. An address with the wrong prefix is rejected before training/submission starts.
+- The same mnemonic produces a different address string for each network; only the prefix changes.
+
+## Seed-node -> Xenom node block forwarding
+
+- `seed-node/src/rpc/server.rs` now forwards `SubmitBlock` training proofs to the Xenomorph full node over the Borsh `XenomorphRpcClient` (`XENO_NODE_RPC`, default `xeno-node:16110`).
+- The full node must expose a compatible Borsh training-block listener for the chain to actually advance; the current `xenom` node does **not** implement this listener yet.
+- Until the listener is implemented, the seed-node will:
+  1. Validate the miner's address format.
+  2. Attempt to forward the proof and log whether the full node accepted/rejected it.
+  3. Return a local `BlockHash` to the miner so the local training loop can continue.
+- The `model_id` field is now included in `TrainingBlock` so the seed-node can include it in the forwarded request.

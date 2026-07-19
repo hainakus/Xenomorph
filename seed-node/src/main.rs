@@ -79,12 +79,10 @@ async fn main() -> Result<()> {
     // Start gRPC server in the background
     let addr: SocketAddr = grpc_addr.parse()?;
     info!("gRPC server listening on {}", addr);
-    let grpc_handle = tokio::spawn(async move {
-        Server::builder().add_service(inference_service.into_server()).serve(addr).await
-    });
+    let grpc_handle = tokio::spawn(async move { Server::builder().add_service(inference_service.into_server()).serve(addr).await });
 
     // Start miner WebSocket server in the foreground
-    seed_node::rpc::server::run_miner_server(&miner_ws_addr, model_manager, genome_storage).await?;
+    seed_node::rpc::server::run_miner_server(&miner_ws_addr, model_manager, genome_storage, Some(xenomorph_client.clone())).await?;
 
     // If the WebSocket server exits, wait for gRPC too
     grpc_handle.await??;

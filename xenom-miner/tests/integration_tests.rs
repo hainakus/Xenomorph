@@ -1,5 +1,6 @@
 use borsh::{to_vec, BorshDeserialize};
 use futures::{SinkExt, StreamExt};
+use kaspa_consensus_core::network::NetworkType;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
@@ -43,20 +44,20 @@ async fn start_mock_server() -> u16 {
                         target_improvement: 0.01,
                         learning_rate: 0.01,
                     })),
-                    RpcRequest::GetModelCheckpoint { model_id } => RpcResponse::ModelCheckpoint(xenom_miner::rpc::messages::ModelCheckpoint {
-                        model_id,
-                        base_checkpoint: [1u8; 32],
-                        config: b"{}".to_vec(),
-                        tokenizer: b"[]".to_vec(),
-                        weights: vec![0u8; 64],
-                    }),
+                    RpcRequest::GetModelCheckpoint { model_id } => {
+                        RpcResponse::ModelCheckpoint(xenom_miner::rpc::messages::ModelCheckpoint {
+                            model_id,
+                            base_checkpoint: [1u8; 32],
+                            config: b"{}".to_vec(),
+                            tokenizer: b"[]".to_vec(),
+                            weights: vec![0u8; 64],
+                        })
+                    }
                     RpcRequest::SubmitBlock(_) => RpcResponse::BlockHash([7u8; 32]),
                     RpcRequest::Heartbeat => RpcResponse::Pong,
                     RpcRequest::GetBalance { .. } => RpcResponse::Balance(0),
                     RpcRequest::GetDifficulty => RpcResponse::Difficulty([0xff; 32]),
-                    RpcRequest::GetGenomeTrainingBatch(_) => {
-                        RpcResponse::Error("genome batch not supported in mock".to_string())
-                    }
+                    RpcRequest::GetGenomeTrainingBatch(_) => RpcResponse::Error("genome batch not supported in mock".to_string()),
                 };
 
                 let payload = to_vec(&response).unwrap();
@@ -93,6 +94,7 @@ async fn test_rpc_client_against_mock_server() {
             difficulty: [2u8; 32],
             nonce: 0,
         },
+        model_id: "dnabert2".to_string(),
         training_proof: TrainingProof {
             base_checkpoint: [3u8; 32],
             loss_before: 2.45,
@@ -114,7 +116,7 @@ async fn test_rpc_client_against_mock_server() {
 #[tokio::test]
 async fn test_end_to_end_mining_pipeline() {
     let tmp = tempfile::tempdir().unwrap();
-    let wallet = WalletManager::create_new(tmp.path(), "password").unwrap();
+    let wallet = WalletManager::create_new(tmp.path(), "password", NetworkType::Devnet).unwrap();
 
     let batch = TrainingBatch {
         batch_id: 1,
@@ -142,7 +144,7 @@ async fn test_end_to_end_mining_pipeline() {
     assert!(prover.verify_proof(&proof, &result, &public_inputs));
 
     let mut builder = BlockBuilder::new(wallet.address().to_string());
-    let mut block = builder.build_block(&result, proof, [0u8; 32]).unwrap();
+    let mut block = builder.build_block("dnabert2", &result, proof, [0u8; 32]).unwrap();
     wallet.sign_block(&mut block).unwrap();
     assert!(wallet.verify_signature(&block).unwrap());
 }

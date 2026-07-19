@@ -43,6 +43,7 @@ bip32 = "0.5"
 
 # Consensus parameters (genome merkle root, network defaults)
 kaspa-consensus-core = { workspace = true }
+kaspa-addresses = { workspace = true }
 
 # On-chain governance
 ethers = { version = "2.0", features = ["rustls"] }

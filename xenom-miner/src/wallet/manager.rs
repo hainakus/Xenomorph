@@ -1,5 +1,7 @@
 use anyhow::{bail, Context, Result};
 use bip39::{Language, Mnemonic};
+use kaspa_addresses::{Address, Prefix, Version};
+use kaspa_consensus_core::network::NetworkType;
 use rand::RngCore;
 use secp256k1::{Message, PublicKey, SecretKey};
 use sha2::{Digest, Sha256};
@@ -17,46 +19,47 @@ const SALT_BYTES: usize = 16;
 pub struct WalletManager {
     secret_key: SecretKey,
     public_key: PublicKey,
+    network_type: NetworkType,
     address: String,
 }
 
 impl WalletManager {
     /// Create a new random wallet and persist it encrypted under `data_dir`.
-    pub fn create_new(data_dir: &Path, password: &str) -> Result<Self> {
+    pub fn create_new(data_dir: &Path, password: &str, network_type: NetworkType) -> Result<Self> {
         let mut entropy = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut entropy);
 
         let mnemonic = Mnemonic::from_entropy_in(Language::English, &entropy).with_context(|| "Failed to generate BIP39 mnemonic")?;
         let phrase = mnemonic.to_string();
 
-        Self::from_mnemonic(data_dir, &phrase, password)
+        Self::from_mnemonic(data_dir, &phrase, password, network_type)
     }
 
     /// Load an existing wallet or create a new one if none exists.
-    pub fn load_or_create(data_dir: &Path, password: &str) -> Result<Self> {
+    pub fn load_or_create(data_dir: &Path, password: &str, network_type: NetworkType) -> Result<Self> {
         let wallet_path = wallet_path(data_dir);
 
         if wallet_path.exists() {
             let encrypted = fs::read(&wallet_path).with_context(|| format!("Failed to read wallet at {:?}", wallet_path))?;
             let phrase = decrypt_with_password(&encrypted, password)
                 .with_context(|| "Failed to decrypt wallet (wrong password or corrupt data)")?;
-            Self::from_mnemonic(data_dir, &phrase, password)
+            Self::from_mnemonic(data_dir, &phrase, password, network_type)
         } else {
             info!("No wallet found at {:?}; creating a new one", wallet_path);
-            Self::create_new(data_dir, password)
+            Self::create_new(data_dir, password, network_type)
         }
     }
 
     /// Restore a wallet from a BIP39 mnemonic phrase and persist it.
-    pub fn from_mnemonic(data_dir: &Path, phrase: &str, password: &str) -> Result<Self> {
+    pub fn from_mnemonic(data_dir: &Path, phrase: &str, password: &str, network_type: NetworkType) -> Result<Self> {
         let mnemonic = Mnemonic::parse_in(Language::English, phrase).with_context(|| "Invalid BIP39 mnemonic phrase")?;
         let seed = mnemonic.to_seed("");
 
         let secret_key = SecretKey::from_slice(&seed[..32]).with_context(|| "Failed to derive secret key from seed")?;
         let public_key = PublicKey::from_secret_key_global(&secret_key);
-        let address = derive_address(&public_key);
+        let address = derive_address(&public_key, network_type);
 
-        let manager = Self { secret_key, public_key, address };
+        let manager = Self { secret_key, public_key, network_type, address };
         manager.save(data_dir, password, phrase)?;
         Ok(manager)
     }
@@ -88,6 +91,10 @@ impl WalletManager {
         &self.public_key
     }
 
+    pub fn network_type(&self) -> NetworkType {
+        self.network_type
+    }
+
     /// Return the raw 32-byte secp256k1 secret key.
     pub fn secret_bytes(&self) -> [u8; 32] {
         self.secret_key.secret_bytes()
@@ -103,9 +110,30 @@ impl WalletManager {
     }
 }
 
-fn derive_address(public_key: &PublicKey) -> String {
-    let hash = blake3::hash(public_key.serialize().as_ref());
-    format!("xnom:{}", hex::encode(hash.as_bytes()))
+/// Validate that `address` is a well-formed Xenomorph address with the correct
+/// prefix and version for `network_type`.
+pub fn validate_address(address: &str, network_type: NetworkType) -> Result<Address> {
+    let address = Address::try_from(address).with_context(|| format!("Invalid Xenomorph address: {}", address))?;
+    let expected_prefix = Prefix::from(network_type);
+    if address.prefix != expected_prefix {
+        bail!(
+            "Address prefix {} does not match the selected network {:?} (expected {})",
+            address.prefix,
+            network_type,
+            expected_prefix
+        );
+    }
+    if address.version != Version::PubKey {
+        bail!("Mining addresses must use the PubKey version; got {}", address.version);
+    }
+    Ok(address)
+}
+
+fn derive_address(public_key: &PublicKey, network_type: NetworkType) -> String {
+    let (x_only_public_key, _) = public_key.x_only_public_key();
+    let prefix = Prefix::from(network_type);
+    let address = Address::new(prefix, Version::PubKey, &x_only_public_key.serialize());
+    String::from(&address)
 }
 
 fn wallet_path(data_dir: &Path) -> PathBuf {
@@ -187,6 +215,7 @@ mod tests {
                 difficulty: [2u8; 32],
                 nonce: 0,
             },
+            model_id: "dnabert2".to_string(),
             training_proof: TrainingProof {
                 base_checkpoint: [3u8; 32],
                 loss_before: 2.45,
@@ -196,7 +225,7 @@ mod tests {
                 batch_indices: vec![0, 1, 2],
                 compute_time_ms: 100,
             },
-            miner_address: "xnom:test".to_string(),
+            miner_address: "xenomdev:qqauqsvk7yf9unexwmxsnmg547mhyga37csh0kj53q6xxgl24ydxjsgzthw5j".to_string(),
             timestamp: 0,
             signature: [0u8; 64],
         }
@@ -205,34 +234,61 @@ mod tests {
     #[test]
     fn test_wallet_creation_and_signing() {
         let tmp = tempfile::tempdir().unwrap();
-        let wallet = WalletManager::create_new(tmp.path(), "password").unwrap();
+        let wallet = WalletManager::create_new(tmp.path(), "password", NetworkType::Devnet).unwrap();
 
-        assert!(wallet.address().starts_with("xnom:"));
+        assert!(wallet.address().starts_with("xenomdev:"), "devnet address should start with xenomdev:");
 
         let mut block = dummy_block();
+        block.miner_address = wallet.address().to_string();
         wallet.sign_block(&mut block).unwrap();
         assert!(wallet.verify_signature(&block).unwrap());
 
-        let loaded = WalletManager::load_or_create(tmp.path(), "password").unwrap();
+        let loaded = WalletManager::load_or_create(tmp.path(), "password", NetworkType::Devnet).unwrap();
         assert_eq!(loaded.address(), wallet.address());
     }
 
     #[test]
     fn test_wrong_password_fails_to_decrypt() {
         let tmp = tempfile::tempdir().unwrap();
-        WalletManager::create_new(tmp.path(), "right").unwrap();
+        WalletManager::create_new(tmp.path(), "right", NetworkType::Devnet).unwrap();
 
-        assert!(WalletManager::load_or_create(tmp.path(), "wrong").is_err());
+        assert!(WalletManager::load_or_create(tmp.path(), "wrong", NetworkType::Devnet).is_err());
     }
 
     #[test]
     fn test_mnemonic_restore() {
         let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art";
         let tmp = tempfile::tempdir().unwrap();
-        let wallet1 = WalletManager::from_mnemonic(tmp.path(), phrase, "pw").unwrap();
+        let wallet1 = WalletManager::from_mnemonic(tmp.path(), phrase, "pw", NetworkType::Devnet).unwrap();
 
         // Recreating with the same mnemonic should produce the same address.
-        let wallet2 = WalletManager::from_mnemonic(tmp.path(), phrase, "pw").unwrap();
+        let wallet2 = WalletManager::from_mnemonic(tmp.path(), phrase, "pw", NetworkType::Devnet).unwrap();
         assert_eq!(wallet1.address(), wallet2.address());
+    }
+
+    #[test]
+    fn test_address_validation_by_network() {
+        // Same BIP39 phrase on different networks produces different prefixes.
+        let phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art";
+        let tmp = tempfile::tempdir().unwrap();
+        let devnet_wallet = WalletManager::from_mnemonic(tmp.path(), phrase, "pw", NetworkType::Devnet).unwrap();
+        assert!(devnet_wallet.address().starts_with("xenomdev:"));
+
+        let mainnet_wallet = WalletManager::from_mnemonic(tmp.path(), phrase, "pw", NetworkType::Mainnet).unwrap();
+        assert!(mainnet_wallet.address().starts_with("xenom:"));
+
+        // The same phrase must produce the same payload encoded with the network prefix.
+        assert!(validate_address(devnet_wallet.address(), NetworkType::Devnet).is_ok());
+        assert!(validate_address(mainnet_wallet.address(), NetworkType::Mainnet).is_ok());
+        assert!(validate_address(devnet_wallet.address(), NetworkType::Mainnet).is_err());
+        assert!(validate_address(mainnet_wallet.address(), NetworkType::Devnet).is_err());
+    }
+
+    #[test]
+    fn test_rejects_invalid_prefix_and_malformed_address() {
+        assert!(validate_address("notanaddress", NetworkType::Devnet).is_err());
+        assert!(validate_address("xenom:nope", NetworkType::Devnet).is_err()); // wrong network prefix
+        assert!(validate_address("xenomdev:nope", NetworkType::Devnet).is_err());
+        // malformed payload
     }
 }

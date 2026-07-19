@@ -24,7 +24,13 @@ impl BlockBuilder {
     }
 
     /// Build a `TrainingBlock` from a completed training result.
-    pub fn build_block(&mut self, result: &TrainingResult, zk_proof: Vec<u8>, difficulty: DifficultyTarget) -> Result<TrainingBlock> {
+    pub fn build_block(
+        &mut self,
+        model_id: &str,
+        result: &TrainingResult,
+        zk_proof: Vec<u8>,
+        difficulty: DifficultyTarget,
+    ) -> Result<TrainingBlock> {
         let training_proof = TrainingProof {
             base_checkpoint: result.base_checkpoint,
             loss_before: result.loss_before,
@@ -65,7 +71,14 @@ impl BlockBuilder {
             }
         }
 
-        Ok(TrainingBlock { header, training_proof, miner_address: self.miner_address.clone(), timestamp, signature: [0u8; 64] })
+        Ok(TrainingBlock {
+            header,
+            model_id: model_id.to_string(),
+            training_proof,
+            miner_address: self.miner_address.clone(),
+            timestamp,
+            signature: [0u8; 64],
+        })
     }
 
     pub fn current_block_number(&self) -> u64 {
@@ -117,9 +130,10 @@ mod tests {
         };
         let result = trainer.train(&batch).unwrap();
 
-        let block = builder.build_block(&result, vec![0u8; 32], [0u8; 32]).unwrap();
+        let block = builder.build_block("dnabert2", &result, vec![0u8; 32], [0u8; 32]).unwrap();
 
         assert_eq!(block.header.block_number, 1);
+        assert_eq!(block.model_id, "dnabert2");
         assert_eq!(block.miner_address, "xnom:test");
         assert_eq!(block.training_proof.loss_after, result.loss_after);
     }
@@ -138,7 +152,7 @@ mod tests {
         };
         let result = trainer.train(&batch).unwrap();
 
-        let block = builder.build_block(&result, vec![0u8; 32], [0xff; 32]).unwrap();
+        let block = builder.build_block("dnabert2", &result, vec![0u8; 32], [0xff; 32]).unwrap();
         // With the maximum target every hash is accepted, so the block is built without extra PoW iterations.
         assert_eq!(block.header.nonce, 0);
     }
