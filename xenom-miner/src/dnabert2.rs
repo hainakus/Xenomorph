@@ -365,12 +365,18 @@ impl DnaBert2ForMaskedLM {
     /// Load a trainable model from raw `model.safetensors` bytes, returning it together with
     /// the underlying `VarMap` so that an optimizer can be created.
     pub fn load_for_training(config: DnaBert2Config, weights: Vec<u8>, dtype: DType, device: &Device) -> CandleResult<(Self, VarMap)> {
-        let mut varmap = VarMap::new();
+        let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, dtype, device);
         let model = Self::new(vb, config, device)?;
         let tensors = candle_core::safetensors::load_buffer(&weights, device)?;
-        for (name, tensor) in tensors.iter() {
-            varmap.set_one(name, tensor)?;
+        {
+            let tensor_data = varmap.data().lock().map_err(|e| candle_core::Error::Msg(e.to_string()))?;
+            for (name, tensor) in tensors.iter() {
+                if let Some(var) = tensor_data.get(name) {
+                    var.set(tensor)?;
+                }
+                // Unknown keys are ignored so that tied/decoded weights do not break loading.
+            }
         }
         Ok((model, varmap))
     }
