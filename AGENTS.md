@@ -104,6 +104,7 @@ Examples:
 - Location: `scripts/`
 - Compose: `docker-compose.devnet.yml`
 - Config template: `.env.example`
+- Native (no Docker): `scripts/run-native-devnet.sh` — builds/starts `xenom`, `seed-node` and `xenom-miner` directly from `target/release`.
 
 ### Quick start
 
