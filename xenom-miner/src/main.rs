@@ -11,6 +11,7 @@ use tokio::time::timeout;
 use tracing::{error, info, warn};
 
 use xenom_miner::block::BlockBuilder;
+use xenom_miner::cli::gpu_args::GpuArgs;
 use xenom_miner::config::MinerConfig;
 use xenom_miner::model::DnaBert2Config;
 use xenom_miner::model_client::{fetch_model_checkpoint, ModelBundle};
@@ -18,7 +19,7 @@ use xenom_miner::prover::{PublicInputs, ZkProver};
 use xenom_miner::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch};
 use xenom_miner::rpc::XenomRpcClient;
 use xenom_miner::tokenizer::DnaTokenizer;
-use xenom_miner::trainer::{CpuTrainer, GpuBackend, GpuTrainer, MockTrainer, Trainer};
+use xenom_miner::trainer::{CpuTrainer, GpuBackend, MockTrainer, MultiGpuConfig, MultiGpuTrainer, Trainer};
 use xenom_miner::wallet::{validate_address, WalletManager};
 
 const DEFAULT_RPC_URL: &str = "ws://xeno-node:17110";
@@ -56,13 +57,13 @@ struct Args {
     #[arg(long = "mock-mode", visible_alias = "mock", hide = true)]
     mock: bool,
 
-    /// GPU device ordinal to use when --trainer is gpu/cuda/metal.
+    /// Legacy GPU device ordinal. Used only when --gpus is not provided.
     #[arg(long, default_value_t = 0)]
     gpu_device: usize,
 
-    /// Use FP16 mixed precision on supported GPU backends (CUDA/Metal).
-    #[arg(long)]
-    fp16: bool,
+    /// Multi-GPU training options (gpus, micro-batch-size, gradient accumulation, fp16, etc.).
+    #[clap(flatten)]
+    gpu: GpuArgs,
 
     /// Network to mine on. Used to derive the canonical genome merkle root
     /// from consensus parameters. Ignored when --genome-merkle is provided.
@@ -190,8 +191,7 @@ async fn load_trainer(
     rpc_client: &mut Option<XenomRpcClient>,
     model_id: &str,
     backend: GpuBackend,
-    gpu_device: usize,
-    fp16: bool,
+    gpu_config: MultiGpuConfig,
     threads: usize,
     dry_run: bool,
 ) -> Result<Arc<dyn Trainer>> {
@@ -211,8 +211,8 @@ async fn load_trainer(
     let config = DnaBert2Config::from_bytes(&config).context("Failed to parse DNABERT-2 config")?;
     let tokenizer = DnaTokenizer::from_bytes(&tokenizer).context("Failed to parse tokenizer")?;
     let model_id_for_log = model_id.clone();
-    let trainer = GpuTrainer::new(config, weights, tokenizer, backend, gpu_device, fp16, threads)
-        .context("Failed to initialize DNABERT-2 trainer")?;
+    let trainer = MultiGpuTrainer::new(model_id, config, weights, tokenizer, gpu_config, backend, threads)
+        .context("Failed to initialize multi-GPU DNABERT-2 trainer")?;
     info!("Loaded DNABERT-2 model checkpoint for {}", model_id_for_log);
     info!("Trainer device: {:?}", trainer.device_info());
     Ok(Arc::new(trainer))
@@ -296,8 +296,24 @@ async fn main() -> Result<()> {
                 "metal" => GpuBackend::Metal,
                 _ => unreachable!(),
             };
-            info!("Using DNABERT-2 trainer with {:?} GPU backend", backend);
-            load_trainer(&mut rpc_client, &config.model_id, backend, args.gpu_device, args.fp16, config.threads, config.dry_run)
+
+            let gpus = if args.gpu.gpus.is_empty() {
+                vec![args.gpu_device]
+            } else {
+                args.gpu.gpus.clone()
+            };
+            let gpu_config = MultiGpuConfig {
+                gpus,
+                micro_batch_size: args.gpu.micro_batch_size,
+                gradient_accumulation_steps: args.gpu.gradient_accumulation,
+                use_mixed_precision: args.gpu.fp16,
+                use_gradient_checkpointing: args.gpu.gradient_checkpointing,
+                zero_optimization: args.gpu.zero,
+            };
+            gpu_config.validate()?;
+
+            info!("Using multi-GPU DNABERT-2 trainer with {:?} backend and config {:?}", backend, gpu_config);
+            load_trainer(&mut rpc_client, &config.model_id, backend, gpu_config, config.threads, config.dry_run)
                 .await?
         }
         other => bail!("Unknown trainer: {}. Use mock, cpu, dnabert2, gpu, cuda, rocm, or metal.", other),

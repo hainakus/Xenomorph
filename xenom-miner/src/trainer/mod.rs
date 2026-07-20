@@ -1,7 +1,9 @@
 pub mod cpu_trainer;
 pub mod dnabert2_trainer;
 pub mod gpu_trainer;
+pub mod mixed_precision;
 pub mod mock_trainer;
+pub mod multi_gpu;
 
 #[cfg(feature = "cuda")]
 pub mod cuda_kernels;
@@ -15,7 +17,9 @@ use anyhow::Result;
 pub use cpu_trainer::CpuTrainer;
 pub use dnabert2_trainer::DnaBert2Trainer;
 pub use gpu_trainer::{GpuBackend, GpuTrainer};
+pub use mixed_precision::MixedPrecisionScaler;
 pub use mock_trainer::MockTrainer;
+pub use multi_gpu::{MultiGpuConfig, MultiGpuTrainer};
 
 /// Information about the training device being used.
 #[derive(Debug, Clone, PartialEq, Default)]

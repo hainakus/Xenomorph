@@ -1,9 +1,10 @@
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, Tensor};
-use candle_nn::{loss, AdamW, Optimizer};
+use candle_nn::loss;
 
 use crate::data::{MlmBatch, MlmBatchGenerator};
 use crate::dnabert2::DnaBert2ForMaskedLM;
@@ -20,12 +21,12 @@ const MAX_LEARNING_RATE: f32 = 1e-5;
 
 /// DNABERT-2 trainer that runs one SGD/AdamW step on a masked language modelling batch.
 pub struct DnaBert2Trainer {
-    model: DnaBert2ForMaskedLM,
-    varmap: candle_nn::VarMap,
-    generator: MlmBatchGenerator,
-    device: Device,
-    threads: usize,
-    optimizer: Mutex<AdamW>,
+    pub(crate) model: DnaBert2ForMaskedLM,
+    pub(crate) varmap: candle_nn::VarMap,
+    pub(crate) generator: MlmBatchGenerator,
+    pub(crate) device: Device,
+    pub(crate) threads: usize,
+    pub(crate) optimizer: Mutex<ManualAdamW>,
 }
 
 impl DnaBert2Trainer {
@@ -42,7 +43,7 @@ impl DnaBert2Trainer {
             .context("Failed to load DNABERT-2 model for training")?;
         let seq_len = config.max_position_embeddings.min(512);
         let generator = MlmBatchGenerator::new(tokenizer, seq_len);
-        let optimizer = AdamW::new_lr(varmap.all_vars(), 0.0).context("Failed to create AdamW optimizer")?;
+        let optimizer = ManualAdamW::new(0.0);
         Ok(Self { model, varmap, generator, device, threads, optimizer: Mutex::new(optimizer) })
     }
 
@@ -90,19 +91,77 @@ impl DnaBert2Trainer {
         loss::cross_entropy(&masked_logits, &masked_labels).context("Failed to compute cross-entropy loss")
     }
 
-    fn gradient_commitment(&self, grads: &candle_core::backprop::GradStore) -> Result<[u8; 32]> {
+    /// Compute a deterministic gradient commitment hash from a name -> tensor map.
+    pub(crate) fn gradient_commitment_from_named_tensors(&self, grads: HashMap<String, Tensor>) -> Result<[u8; 32]> {
         let mut hasher = blake3::Hasher::new();
-        for var in self.varmap.all_vars() {
-            if let Some(grad) = grads.get(&var) {
-                // Normalize gradients to F32 for a deterministic, device-agnostic commitment.
-                let grad_f32 = grad.to_dtype(DType::F32)?;
-                let values = grad_f32.flatten_all()?.to_vec1::<f32>()?;
-                for value in values {
-                    hasher.update(&value.to_le_bytes());
-                }
+        let mut names: Vec<_> = grads.keys().cloned().collect();
+        names.sort();
+        for name in names {
+            let grad = &grads[&name];
+            // Normalize gradients to F32 for a deterministic, device-agnostic commitment.
+            let grad_f32 = grad.to_dtype(DType::F32)?;
+            let values = grad_f32.flatten_all()?.to_vec1::<f32>()?;
+            hasher.update(name.as_bytes());
+            for value in values {
+                hasher.update(&value.to_le_bytes());
             }
         }
         Ok(*hasher.finalize().as_bytes())
+    }
+
+    /// Run a forward/backward pass and return the unscaled loss plus per-variable
+    /// gradients moved to the CPU. `loss_scale` can be used for FP16 mixed precision.
+    pub(crate) fn compute_gradients(
+        &self,
+        mlm_batch: &MlmBatch,
+        loss_scale: f32,
+    ) -> Result<(f64, HashMap<String, Tensor>)> {
+        let (input_ids, attention_mask, labels, mask) = self.build_tensors(mlm_batch)?;
+
+        let logits_before = self.model.forward(&input_ids, None, Some(&attention_mask)).context("Forward pass failed")?;
+        let loss_before = self.compute_loss(&logits_before, &labels, &mask)?;
+        let loss_before_scalar = loss_before.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64;
+
+        let scaled_loss = if (loss_scale - 1.0).abs() > f32::EPSILON {
+            (&loss_before * (loss_scale as f64))?
+        } else {
+            loss_before
+        };
+
+        let grads = scaled_loss.backward().context("Backward pass failed")?;
+        let named_grads = Self::grad_store_to_map(&grads, &self.varmap)?;
+        Ok((loss_before_scalar, named_grads))
+    }
+
+    /// Apply named gradients to this trainer using its AdamW optimizer.
+    pub(crate) fn apply_gradients(&self, named_grads: &HashMap<String, Tensor>, learning_rate: f32) -> Result<()> {
+        let mut optimizer = self.optimizer.lock().map_err(|e| anyhow::anyhow!("Optimizer mutex poisoned: {}", e))?;
+        let effective_lr = learning_rate.min(MAX_LEARNING_RATE);
+        optimizer.set_learning_rate(effective_lr as f64);
+        optimizer.step(&self.varmap, named_grads).context("Optimizer step failed")?;
+        Ok(())
+    }
+
+    /// Compute the scalar loss for a batch without taking gradients.
+    pub(crate) fn compute_loss_scalar(&self, mlm_batch: &MlmBatch) -> Result<f64> {
+        let (input_ids, attention_mask, labels, mask) = self.build_tensors(mlm_batch)?;
+        let logits = self.model.forward(&input_ids, None, Some(&attention_mask)).context("Forward pass failed")?;
+        let loss = self.compute_loss(&logits, &labels, &mask)?;
+        Ok(loss.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64)
+    }
+
+    /// Convert a `GradStore` into a `HashMap` keyed by variable name, with gradients
+    /// moved to the CPU and cast to F32 for stable averaging across GPUs.
+    fn grad_store_to_map(grads: &candle_core::backprop::GradStore, varmap: &candle_nn::VarMap) -> Result<HashMap<String, Tensor>> {
+        let mut out = HashMap::new();
+        let data = varmap.data().lock().map_err(|e: PoisonError<_>| anyhow::anyhow!("VarMap poisoned: {}", e))?;
+        for (name, var) in data.iter() {
+            if let Some(grad) = grads.get(var.as_tensor()) {
+                let grad_cpu = grad.to_device(&Device::Cpu)?.to_dtype(DType::F32)?;
+                out.insert(name.clone(), grad_cpu);
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -118,25 +177,10 @@ impl DnaBert2Trainer {
     ) -> Result<TrainingResult> {
         let start = Instant::now();
 
-        let (input_ids, attention_mask, labels, mask) = self.build_tensors(mlm_batch)?;
-
-        let logits_before = self.model.forward(&input_ids, None, Some(&attention_mask)).context("Forward pass failed")?;
-        let loss_before = self.compute_loss(&logits_before, &labels, &mask)?;
-        let loss_before_scalar = loss_before.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64;
-
-        let grads = loss_before.backward().context("Backward pass failed")?;
-        let mut optimizer = self.optimizer.lock().map_err(|e| anyhow::anyhow!("Optimizer mutex poisoned: {}", e))?;
-        // Clamp the learning rate: `0.01` from the batch is too large for a single AdamW step
-        // on a real DNABERT-2 model and can increase the loss instead of reducing it.
-        let effective_lr = learning_rate.min(MAX_LEARNING_RATE);
-        optimizer.set_learning_rate(effective_lr as f64);
-        optimizer.step(&grads).context("Optimizer step failed")?;
-
-        let logits_after = self.model.forward(&input_ids, None, Some(&attention_mask)).context("Forward pass after step failed")?;
-        let loss_after = self.compute_loss(&logits_after, &labels, &mask)?;
-        let loss_after_scalar = loss_after.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64;
-
-        let gradients_commitment = self.gradient_commitment(&grads)?;
+        let (loss_before_scalar, grads) = self.compute_gradients(mlm_batch, 1.0)?;
+        self.apply_gradients(&grads, learning_rate)?;
+        let loss_after_scalar = self.compute_loss_scalar(mlm_batch)?;
+        let gradients_commitment = self.gradient_commitment_from_named_tensors(grads)?;
 
         Ok(TrainingResult {
             model_id: model_id.to_string(),
@@ -184,6 +228,84 @@ impl Trainer for DnaBert2Trainer {
         };
 
         DeviceInfo { device_type, name, threads: self.threads, ..Default::default() }
+    }
+}
+
+/// A minimal AdamW optimizer that operates on a `VarMap` using a name-indexed
+/// gradient map. This exists because `candle_core::backprop::GradStore` cannot
+/// be constructed from outside the crate, which prevents feeding averaged
+/// multi-GPU gradients into `candle_nn::AdamW`.
+pub(crate) struct ManualAdamW {
+    step_t: usize,
+    lr: f64,
+    beta1: f64,
+    beta2: f64,
+    eps: f64,
+    weight_decay: f64,
+    /// First/second moment estimates keyed by variable name.
+    moments: Mutex<HashMap<String, (Tensor, Tensor)>>,
+}
+
+impl ManualAdamW {
+    pub(crate) fn new(learning_rate: f64) -> Self {
+        Self {
+            step_t: 0,
+            lr: learning_rate,
+            beta1: 0.9,
+            beta2: 0.999,
+            eps: 1e-8,
+            weight_decay: 0.01,
+            moments: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn set_learning_rate(&mut self, lr: f64) {
+        self.lr = lr;
+    }
+
+    /// Apply named gradients (multi-GPU path where gradients are already on CPU and in F32).
+    pub(crate) fn step(&mut self, varmap: &candle_nn::VarMap, named_grads: &HashMap<String, Tensor>) -> Result<()> {
+        self.step_t += 1;
+        let lr = self.lr;
+        let lambda = self.weight_decay;
+        let lr_lambda = lr * lambda;
+        let beta1 = self.beta1;
+        let beta2 = self.beta2;
+        let scale_m = 1.0 / (1.0 - beta1.powi(self.step_t as i32));
+        let scale_v = 1.0 / (1.0 - beta2.powi(self.step_t as i32));
+
+        let mut moments = self.moments.lock().map_err(|e| anyhow::anyhow!("Moments mutex poisoned: {}", e))?;
+        let data = varmap.data().lock().map_err(|e: PoisonError<_>| anyhow::anyhow!("VarMap poisoned: {}", e))?;
+
+        for (name, var) in data.iter() {
+            let grad = match named_grads.get(name) {
+                Some(g) => g,
+                None => continue,
+            };
+
+            let theta = var.as_tensor();
+            let device = theta.device();
+            let grad = grad.to_device(device)?;
+
+            let (m, v) = moments.entry(name.clone()).or_insert_with(|| {
+                // `zeros_like` cannot fail for a well-formed tensor; unwrap is safe here.
+                (theta.zeros_like().unwrap(), theta.zeros_like().unwrap())
+            });
+
+            let next_m = ((&*m * beta1)? + (&grad * (1.0 - beta1))?)?;
+            let next_v = ((&*v * beta2)? + (&grad.sqr()? * (1.0 - beta2))?)?;
+            let m_hat = (&next_m * scale_m)?;
+            let v_hat = (&next_v * scale_v)?;
+            let next_theta = (theta * (1.0 - lr_lambda))?;
+            let adjusted_grad = (&m_hat / (&v_hat.sqrt()? + self.eps)?)?;
+            let next_theta = (&next_theta - (&adjusted_grad * lr)?)?;
+
+            var.set(&next_theta)?;
+            *m = next_m;
+            *v = next_v;
+        }
+
+        Ok(())
     }
 }
 

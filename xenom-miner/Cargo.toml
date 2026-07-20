@@ -33,6 +33,10 @@ candle-transformers = "0.3"
 half = "=2.4.1"
 tokenizers = "0.21.4"
 
+# Multi-GPU / distributed training helpers
+rayon = "1.8"
+async-trait = "0.1"
+
 # GPU monitoring (NVIDIA via NVML). Only compiled with the 'cuda' feature.
 nvml-wrapper = { version = "0.9", optional = true }
 
@@ -71,6 +75,8 @@ cpu = []
 cuda = ["candle-core/cuda", "candle-nn/cuda", "dep:nvml-wrapper"]
 metal = ["candle-core/metal", "candle-nn/metal"]
 rocm = []
+multi-gpu = ["cuda"]
+nccl = ["multi-gpu"]
 
 [dev-dependencies]
 tokio-test = "0.4"
