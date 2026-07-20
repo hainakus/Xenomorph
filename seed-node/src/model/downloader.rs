@@ -9,7 +9,7 @@ const HF_HUB_URL: &str = "https://huggingface.co";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Download a complete model checkpoint (config.json, tokenizer.json, weights) from Hugging Face.
-/// Tries `model.safetensors` first, then falls back to `pytorch_model.bin`.
+/// Only `model.safetensors` is supported by the miner; PyTorch `.bin` files are rejected.
 pub async fn download_model(model_id: &str) -> Result<RawModelFiles> {
     let client = reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
@@ -26,7 +26,7 @@ pub async fn download_model(model_id: &str) -> Result<RawModelFiles> {
     info!("Downloaded tokenizer.json for {}", model_id);
 
     let mut weights: Option<Vec<u8>> = None;
-    for filename in ["model.safetensors", "pytorch_model.bin"] {
+    for filename in ["model.safetensors"] {
         match download_and_validate_weights(&client, model_id, filename).await {
             Ok(data) => {
                 info!("Downloaded {} ({:.2} MB) for {}", filename, data.len() as f64 / 1_048_576.0, model_id);
@@ -39,7 +39,7 @@ pub async fn download_model(model_id: &str) -> Result<RawModelFiles> {
         }
     }
 
-    let weights = weights.ok_or_else(|| anyhow!("Could not download valid model weights for {} from Hugging Face", model_id))?;
+    let weights = weights.ok_or_else(|| anyhow!("Could not download valid model.safetensors weights for {} from Hugging Face", model_id))?;
 
     Ok(RawModelFiles { config, tokenizer, weights })
 }
@@ -61,11 +61,10 @@ async fn download_and_validate_weights(client: &reqwest::Client, model_id: &str,
     Err(anyhow!("{} from {} is not a valid weights file", filename, model_id))
 }
 
-/// Heuristic validation of downloaded weight bytes.
-/// Accepts safetensors, PyTorch zip pickles, or old pickle checkpoints.
-/// Rejects HTML pages, git-lfs pointers, and truncated files.
+/// Heuristic validation that `data` is a real `model.safetensors` file.
+/// Rejects git-lfs pointers, HTML error pages, PyTorch .bin files, and truncated data.
 pub fn is_valid_weights(data: &[u8]) -> bool {
-    if data.len() < 8 {
+    if data.len() < 9 {
         return false;
     }
 
@@ -79,23 +78,19 @@ pub fn is_valid_weights(data: &[u8]) -> bool {
         return false;
     }
 
-    // Safetensors: first 8 bytes are a little-endian u64 header length, followed by JSON.
-    let header_len = u64::from_le_bytes(data[0..8].try_into().expect("8 bytes")) as usize;
-    if header_len + 8 <= data.len() && header_len <= 1_000_000_000 && data[8] == b'{' {
-        return true;
-    }
-
     // PyTorch zip pickle (new torch.save): starts with PK\x03\x04 or PK\x05\x06 or PK\x07\x08.
     if data.starts_with(b"PK\x03\x04") || data.starts_with(b"PK\x05\x06") || data.starts_with(b"PK\x07\x08") {
-        return true;
+        return false;
     }
 
-    // Old PyTorch pickle (protocol 2+): first byte is the pickle opcode 0x80 followed by protocol.
-    if data[0] == 0x80 && data.len() > 2 {
-        return true;
+    // Old PyTorch pickle (protocol 2+): first byte is the pickle opcode 0x80.
+    if data[0] == 0x80 {
+        return false;
     }
 
-    false
+    // Safetensors: first 8 bytes are a little-endian u64 header length, followed by JSON.
+    let header_len = u64::from_le_bytes(data[0..8].try_into().expect("8 bytes")) as usize;
+    header_len + 8 <= data.len() && header_len <= 1_000_000_000 && data[8] == b'{'
 }
 
 /// Build a canonical Hugging Face resolve URL for a file in a model repo.
