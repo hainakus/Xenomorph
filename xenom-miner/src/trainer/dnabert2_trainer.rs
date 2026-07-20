@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::loss;
 
@@ -121,12 +121,20 @@ impl DnaBert2Trainer {
         let logits_before = self.model.forward(&input_ids, None, Some(&attention_mask)).context("Forward pass failed")?;
         let loss_before = self.compute_loss(&logits_before, &labels, &mask)?;
         let loss_before_scalar = loss_before.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64;
+        if !loss_before_scalar.is_finite() {
+            bail!("Loss is not finite ({}) before backward", loss_before_scalar);
+        }
 
         let scaled_loss = if (loss_scale - 1.0).abs() > f32::EPSILON {
             (&loss_before * (loss_scale as f64))?
         } else {
             loss_before
         };
+
+        let scaled_loss_scalar = scaled_loss.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64;
+        if !scaled_loss_scalar.is_finite() {
+            bail!("Scaled loss is not finite ({}); loss scale {} is too large", scaled_loss_scalar, loss_scale);
+        }
 
         let grads = scaled_loss.backward().context("Backward pass failed")?;
         let named_grads = Self::grad_store_to_map(&grads, &self.varmap)?;

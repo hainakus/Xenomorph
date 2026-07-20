@@ -232,6 +232,7 @@ impl MultiGpuTrainer {
         let mut accumulated_grads: Option<HashMap<String, Tensor>> = None;
         let mut loss_sum = 0.0f64;
         let mut loss_count = 0usize;
+        let mut any_overflow = false;
 
         for step in &micro_batches {
             let mut step_grads = Vec::new();
@@ -245,7 +246,29 @@ impl MultiGpuTrainer {
                     .lock()
                     .map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?
                     .scale();
-                let (loss, grads) = trainer.compute_gradients(micro, loss_scale)?;
+
+                let (loss, grads) = match trainer.compute_gradients(micro, loss_scale) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!("GPU {} gradient computation overflowed: {}; skipping micro-batch", gpu_idx, e);
+                        any_overflow = true;
+                        continue;
+                    }
+                };
+
+                // Reject this micro-batch if the gradients themselves are non-finite.
+                let flat_grads: Vec<(String, Tensor)> = grads.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let step_had_overflow = self
+                    .scaler
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?
+                    .has_overflow(&flat_grads)?;
+                if step_had_overflow {
+                    warn!("GPU {} produced non-finite gradients; skipping micro-batch", gpu_idx);
+                    any_overflow = true;
+                    continue;
+                }
+
                 step_losses.push(loss);
                 step_grads.push(grads);
             }
@@ -265,15 +288,18 @@ impl MultiGpuTrainer {
             loss_count += step_losses.len();
         }
 
+        // If every micro-batch overflowed, reduce the scale and bail so the next batch can retry.
         if accumulated_grads.is_none() {
-            bail!("No micro-batches were produced from the input batch; cannot train");
+            self.scaler
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?
+                .update_scale(true);
+            bail!("All micro-batches overflowed; loss scale reduced. Will retry on next batch.");
         }
+
         let final_grads = accumulated_grads.unwrap();
         let avg_loss_before = loss_sum / loss_count.max(1) as f64;
 
-        // Mixed-precision overflow check. If overflow is detected we still
-        // commit the gradients in this prototype; in a full FP16 trainer this
-        // step would be skipped and the scale reduced.
         let flat_grads: Vec<(String, Tensor)> = final_grads.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         let had_overflow = self
             .scaler
@@ -287,21 +313,26 @@ impl MultiGpuTrainer {
             .map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?
             .effective_learning_rate(learning_rate.min(MAX_LEARNING_RATE));
 
-        // Apply to the master replica and synchronize to the others.
-        self.trainers[0]
-            .apply_gradients(&final_grads, effective_lr)
-            .context("Failed to apply averaged gradients to master replica")?;
-        self.broadcast_master_to_others()
-            .context("Failed to broadcast updated weights to replica GPUs")?;
+        // Only update weights when the averaged gradients are finite.
+        if !had_overflow {
+            self.trainers[0]
+                .apply_gradients(&final_grads, effective_lr)
+                .context("Failed to apply averaged gradients to master replica")?;
+            self.broadcast_master_to_others()
+                .context("Failed to broadcast updated weights to replica GPUs")?;
+        } else {
+            warn!("Averaged gradients are non-finite; skipping optimizer step and reducing loss scale");
+            any_overflow = true;
+        }
 
         // Update the loss scale based on overflow status.
         self.scaler
             .lock()
             .map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?
-            .update_scale(had_overflow);
+            .update_scale(any_overflow);
 
         // Compute post-update loss on the master replica using the first
-        // available micro-batch.
+        // valid micro-batch.
         let first_micro = micro_batches
             .iter()
             .flat_map(|step| step.iter())

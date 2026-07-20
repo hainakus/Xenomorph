@@ -18,9 +18,10 @@ pub struct MixedPrecisionScaler {
 }
 
 impl MixedPrecisionScaler {
-    /// Default scale factor (2^16). Large enough to keep small gradients visible
-    /// in FP16, small enough to avoid frequent overflow on DNABERT-2 sized models.
-    pub const DEFAULT_SCALE: f32 = 65536.0;
+    /// Default scale factor (2^10 = 1024). FP16 max is ~65504, and DNABERT-2
+    /// losses are typically single-digit, so this keeps gradients visible while
+    /// avoiding immediate loss-scaling overflow.
+    pub const DEFAULT_SCALE: f32 = 1024.0;
 
     /// Create a new scaler.
     pub fn new(enabled: bool) -> Self {
@@ -52,6 +53,12 @@ impl MixedPrecisionScaler {
         } else {
             base_lr
         }
+    }
+
+    /// Check whether a scalar loss tensor is finite.
+    pub fn isfinite_loss(&self, loss: &Tensor) -> CandleResult<bool> {
+        let v = loss.to_dtype(DType::F32)?.to_vec0::<f32>()?;
+        Ok(v.is_finite())
     }
 
     /// Check whether any gradient contains inf/nan. If so, the step should be
