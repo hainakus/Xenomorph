@@ -246,8 +246,8 @@ pub fn create_core_with_runtime(runtime: &Runtime, args: &Args, fd_total_budget:
         let global_candidate = dirs::home_dir().map(|h| h.join(".rusty-xenom").join("grch38.xenom"));
 
         // Minimum plausible genome file size (64-byte header + at least some data).
-        // A real grch38.xenom is ~739 MB; anything under 1 MB is a corrupt/partial download.
-        const GENOME_MIN_BYTES: u64 = 1_048_576;
+        // A real grch38.xenom is ~739 MB; anything under 100 MB is a corrupt/partial download.
+        const GENOME_MIN_BYTES: u64 = 100 * 1_048_576;
 
         let appdir_valid =
             appdir_candidate.exists() && fs::metadata(&appdir_candidate).map(|m| m.len()).unwrap_or(0) >= GENOME_MIN_BYTES;
