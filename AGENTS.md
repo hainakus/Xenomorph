@@ -78,8 +78,12 @@ cargo test -p xenom-miner -p seed-node
 - `--trainer metal` — force Apple Metal backend.
 - `--trainer rocm` — AMD ROCm/HIP (not yet implemented, returns a clear error).
 - `--mock-mode` / `--mock` are hidden aliases for `--trainer=mock`.
-- `--gpu-device <N>` — GPU device ordinal (default 0).
+- `--gpus <0,1,...>` — GPU device ordinals for multi-GPU training (default `0`).
+- `--micro-batch-size <N>` — micro-batch size per GPU per accumulation step (default `1`).
+- `--gradient-accumulation <N>` — number of gradient-accumulation steps (default `1`).
 - `--fp16` — enable FP16 mixed precision on CUDA/Metal when available.
+- `--gradient-checkpointing` — enable gradient checkpointing (stub).
+- `--zero <N>` — ZeRO optimization level (stub, default `0`).
 
 Build with GPU support:
 
@@ -101,7 +105,11 @@ Examples:
 ./target/debug/xenom-miner --rpc-url ws://xeno-seed:17110 --trainer dnabert2
 
 # Force CUDA with FP16 on a specific GPU
-./target/release/xenom-miner --rpc-url ws://xeno-seed:17110 --trainer cuda --gpu-device 0 --fp16
+./target/release/xenom-miner --rpc-url ws://xeno-seed:17110 --trainer cuda --gpus 0 --fp16 --micro-batch-size 1
+
+# Multi-GPU CUDA with FP16 and gradient accumulation
+./target/release/xenom-miner --rpc-url ws://xeno-seed:17110 \
+  --trainer cuda --gpus 0,1 --micro-batch-size 1 --gradient-accumulation 2 --fp16
 
 # DNABERT-2 training on a genome archive served by the seed-node
 # --network derives the canonical genome merkle root from consensus Params.
@@ -126,6 +134,7 @@ Examples:
 - Native (no Docker): `scripts/run-native-devnet.sh` — builds/starts `xenom`, `seed-node` and `xenom-miner` directly from `target/release`.
   - GPU auto-detection: when `XENO_MINER_TRAINER` is `dnabert2`, `gpu`, or `cuda` and both `nvidia-smi` and `nvcc` are present, the script compiles `xenom-miner` with `--features cuda`.
   - Override with `--features <features>` or `XENO_MINER_FEATURES` (e.g. `XENO_MINER_FEATURES=cuda ./scripts/run-native-devnet.sh --trainer cuda`).
+  - Multi-GPU options are forwarded to the miner: `--gpus`, `--micro-batch-size`, `--gradient-accumulation`, `--fp16`, `--gradient-checkpointing`, `--zero`.
 
 ### Quick start
 

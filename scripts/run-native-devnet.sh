@@ -13,23 +13,38 @@ Run the Xenomorph devnet using locally built binaries (no Docker).
 The xenom node now also serves as the training coordinator / genome server.
 
 Options:
-  -b, --build              Build release binaries before starting (default)
-  --no-build               Skip cargo build
-  -t, --trainer <name>     Miner trainer: mock, cpu, dnabert2, gpu, cuda, metal, rocm
-                           (default: \$XENO_MINER_TRAINER or mock)
-  --features <features>    Extra cargo features for xenom-miner (e.g. cuda, metal).
-                           Overrides auto-detection. Also accepts \$XENO_MINER_FEATURES.
-  -d, --data-dir <dir>     Base data directory
-                           (default: \$XENO_DATA_DIR or ./devnet-data-native)
-  --anvil                  Start a local anvil instance for EVM/governance tests
-  -q, --quiet              Minimal output
-  -v, --verbose            Debug output
-  -h, --help               Show this help and exit
+  -b, --build                     Build release binaries before starting (default)
+  --no-build                      Skip cargo build
+  -t, --trainer <name>            Miner trainer: mock, cpu, dnabert2, gpu, cuda, metal, rocm
+                                  (default: \$XENO_MINER_TRAINER or mock)
+  --features <features>           Extra cargo features for xenom-miner (e.g. cuda, metal).
+                                  Overrides auto-detection. Also accepts \$XENO_MINER_FEATURES.
+  --gpus <ids>                    Comma-separated GPU ordinals for multi-GPU training
+                                  (default: \$XENO_MINER_GPUS or 0)
+  --micro-batch-size <n>          Micro-batch size per GPU per accumulation step
+                                  (default: \$XENO_MINER_MICRO_BATCH_SIZE or 1)
+  --gradient-accumulation <n>     Number of gradient-accumulation steps
+                                  (default: \$XENO_MINER_GRADIENT_ACCUMULATION or 1)
+  --fp16                          Enable FP16 mixed precision
+  --gradient-checkpointing        Enable gradient checkpointing (stub)
+  --zero <n>                      ZeRO optimization level (stub, default 0)
+  -d, --data-dir <dir>            Base data directory
+                                  (default: \$XENO_DATA_DIR or ./devnet-data-native)
+  --anvil                         Start a local anvil instance for EVM/governance tests
+  -q, --quiet                     Minimal output
+  -v, --verbose                   Debug output
+  -h, --help                      Show this help and exit
 "
 
 BUILD=1
 TRAINER="${XENO_MINER_TRAINER:-mock}"
 FEATURES="${XENO_MINER_FEATURES:-}"
+GPUS="${XENO_MINER_GPUS:-0}"
+MICRO_BATCH_SIZE="${XENO_MINER_MICRO_BATCH_SIZE:-1}"
+GRADIENT_ACCUMULATION="${XENO_MINER_GRADIENT_ACCUMULATION:-1}"
+FP16=0
+GRADIENT_CHECKPOINTING=0
+ZERO=0
 DATA_DIR="${XENO_DATA_DIR:-$SCRIPT_DIR/../devnet-data-native}"
 START_ANVIL=0
 
@@ -39,6 +54,12 @@ while [[ $# -gt 0 ]]; do
         --no-build) BUILD=0; shift ;;
         -t|--trainer) TRAINER="$2"; shift 2 ;;
         --features) FEATURES="$2"; shift 2 ;;
+        --gpus) GPUS="$2"; shift 2 ;;
+        --micro-batch-size) MICRO_BATCH_SIZE="$2"; shift 2 ;;
+        --gradient-accumulation) GRADIENT_ACCUMULATION="$2"; shift 2 ;;
+        --fp16) FP16=1; shift ;;
+        --gradient-checkpointing) GRADIENT_CHECKPOINTING=1; shift ;;
+        --zero) ZERO="$2"; shift 2 ;;
         -d|--data-dir) DATA_DIR="$2"; shift 2 ;;
         --anvil) START_ANVIL=1; shift ;;
         -q|--quiet) XENO_QUIET=1; shift ;;
@@ -98,6 +119,9 @@ if [[ "$BUILD" == "1" ]]; then
 
     qlog "Building release binaries..."
     cargo build --release -p xenom
+    # Clean xenom-miner to avoid stale release artifacts after source changes
+    # (cargo relies on mtimes and git checkouts can leave them older than binaries).
+    cargo clean -p xenom-miner
     if [[ -n "$FEATURES" ]]; then
         cargo build --release -p xenom-miner --features "$FEATURES"
     else
@@ -217,7 +241,19 @@ wait_for_port "$MINER_WS_PORT" 600 "$NODE_PID"
 # -----------------------------------------------------------------------------
 # xeno-miner
 # -----------------------------------------------------------------------------
-qlog "Starting xeno-miner (trainer=$TRAINER)..."
+MINER_EXTRA_ARGS=()
+if [[ "$TRAINER" == "dnabert2" || "$TRAINER" == "gpu" || "$TRAINER" == "cuda" || "$TRAINER" == "metal" || "$TRAINER" == "rocm" ]]; then
+    MINER_EXTRA_ARGS+=(
+        --gpus "$GPUS"
+        --micro-batch-size "$MICRO_BATCH_SIZE"
+        --gradient-accumulation "$GRADIENT_ACCUMULATION"
+        --zero "$ZERO"
+    )
+    [[ "$FP16" == "1" ]] && MINER_EXTRA_ARGS+=(--fp16)
+    [[ "$GRADIENT_CHECKPOINTING" == "1" ]] && MINER_EXTRA_ARGS+=(--gradient-checkpointing)
+fi
+
+qlog "Starting xeno-miner (trainer=$TRAINER, gpus=$GPUS, micro_batch=$MICRO_BATCH_SIZE, acc=$GRADIENT_ACCUMULATION, fp16=$FP16)..."
 XENO_WALLET_PASSWORD="${XENO_WALLET_PASSWORD:-devnet-password}" \
 RUST_LOG="${RUST_LOG:-info}" \
     "$BIN_PREFIX/xenom-miner" \
@@ -228,6 +264,7 @@ RUST_LOG="${RUST_LOG:-info}" \
     --network devnet \
     --data-dir "$MINER_DATA_DIR" \
     --password "${XENO_WALLET_PASSWORD:-devnet-password}" \
+    "${MINER_EXTRA_ARGS[@]}" \
     > "$LOG_DIR/xeno-miner.log" 2>&1 &
 MINER_PID=$!
 PIDS+=("$MINER_PID")
