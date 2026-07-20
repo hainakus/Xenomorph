@@ -210,7 +210,9 @@ PIDS+=("$NODE_PID")
 qlog "xeno-node started (pid $NODE_PID)"
 
 wait_for_port "$NODE_RPC_PORT" 60 "$NODE_PID"
-wait_for_port "$MINER_WS_PORT" 60 "$NODE_PID"
+# The miner WebSocket listener is bound only after the active model is downloaded,
+# which can take several minutes on the first run.
+wait_for_port "$MINER_WS_PORT" 600 "$NODE_PID"
 
 # -----------------------------------------------------------------------------
 # xeno-miner

@@ -11444,6 +11444,7 @@ version = "0.15.5"
 dependencies = [
  "anyhow",
  "async-channel 2.3.1",
+ "blake3",
  "borsh",
  "cfg-if 1.0.0",
  "clap 4.5.16",

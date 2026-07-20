@@ -74,7 +74,20 @@ impl Coordinator {
         tokio::fs::create_dir_all(&models_dir).await?;
         tokio::fs::create_dir_all(&genome_cache_dir).await?;
 
-        let model_manager = Arc::new(ModelManager::new(models_dir.to_string_lossy().to_string()).await?);
+        // Use a stable key for the local model cache so restarts do not force a re-download.
+        let model_key = std::env::var("XENO_MODEL_KEY").unwrap_or_else(|_| "xenom-devnet-model-key".to_string());
+        let mut encryption_key = [0u8; 32];
+        let key_hash = blake3::hash(model_key.as_bytes());
+        encryption_key.copy_from_slice(key_hash.as_bytes());
+
+        let model_manager = Arc::new(
+            ModelManager::new_with_key(models_dir.to_string_lossy().to_string(), encryption_key).await?,
+        );
+
+        // Pre-download the active model before accepting miner connections. This avoids the
+        // 30s RPC request timeout in xenom-miner while the full node is still downloading.
+        info!("Pre-downloading active model {} ...", active_model_id);
+        model_manager.ensure_model_downloaded(&active_model_id).await?;
 
         let mut genome_storage = GenomeStorage::new(&genome_cache_dir).await?;
         if let Some(path) = genome_file {
@@ -87,10 +100,10 @@ impl Coordinator {
 
         let difficulty = DifficultyTarget { min_improvement: -1.0, max_loss_after: f64::MAX };
 
-        Ok(Self {
+        let coordinator = Self {
             inner: Arc::new(CoordinatorInner {
                 network_type,
-                active_model_id,
+                active_model_id: active_model_id.clone(),
                 active_weights_hash: RwLock::new(None),
                 difficulty,
                 model_manager,
@@ -101,7 +114,12 @@ impl Coordinator {
                 genome_pow_activation_daa_score,
                 current_epoch: AtomicU64::new(0),
             }),
-        })
+        };
+
+        // Compute and cache the weights hash now so subsequent miner requests are fast.
+        let _ = coordinator.active_weights_hash().await?;
+
+        Ok(coordinator)
     }
 
     /// Return the active model's weights hash, downloading the model if necessary.
