@@ -38,6 +38,8 @@ pub struct Args {
     pub rpclisten_json: Option<WrpcNetAddress>,
     #[serde_as(as = "Option<DisplayFromStr>")]
     pub training_rpc_listen: Option<ContextualNetAddress>,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    pub miner_ws_listen: Option<ContextualNetAddress>,
     #[serde(rename = "unsaferpc")]
     pub unsafe_rpc: bool,
     pub wrpc_verbose: bool,
@@ -94,6 +96,11 @@ pub struct Args {
     pub genome_file: Option<String>,
     pub active_model_id: String,
     pub active_model_weights_hash: Option<String>,
+
+    // Unified training coordinator options (node = seed-node + full node)
+    pub models_dir: Option<String>,
+    pub genome_cache_dir: Option<String>,
+    pub genome_url: Option<String>,
 }
 
 impl Default for Args {
@@ -121,6 +128,7 @@ impl Default for Args {
             logdir: None,
             rpclisten: None,
             training_rpc_listen: None,
+            miner_ws_listen: None,
             wrpc_verbose: false,
             log_level: "INFO".into(),
             connect_peers: vec![],
@@ -147,6 +155,10 @@ impl Default for Args {
             genome_file: None,
             active_model_id: "multimolecule/dnabert2".into(),
             active_model_weights_hash: None,
+
+            models_dir: None,
+            genome_cache_dir: None,
+            genome_url: None,
         }
     }
 }
@@ -264,7 +276,16 @@ pub fn cli() -> Command {
                 .num_args(0..=1)
                 .require_equals(true)
                 .value_parser(clap::value_parser!(ContextualNetAddress))
-                .help("Interface:port to listen for Xenomorph training-block Borsh submissions from the seed-node (disabled by default)."),
+                .help("Legacy TCP listener for training-block Borsh submissions (disabled by default; use --miner-ws-listen instead)."),
+        )
+        .arg(
+            Arg::new("miner-ws-listen")
+                .long("miner-ws-listen")
+                .value_name("IP[:PORT]")
+                .num_args(0..=1)
+                .require_equals(true)
+                .value_parser(clap::value_parser!(ContextualNetAddress))
+                .help("Interface:port to listen for miner WebSocket connections (default port: 17110)."),
         )
         .arg(arg!(--unsaferpc "Enable RPC commands which affect the state of the node"))
         .arg(
@@ -398,7 +419,31 @@ Setting to 0 prevents the preallocation and sets the maximum to {}, leading to 0
                 .value_name("64_HEX")
                 .require_equals(true)
                 .value_parser(clap::value_parser!(String))
-                .help("Hex weights-hash of the active model. Defaults to the network's genome merkle root."),
+                .help("Hex weights-hash of the active model. If omitted the node computes it from the downloaded checkpoint."),
+        )
+        .arg(
+            Arg::new("models-dir")
+                .long("models-dir")
+                .value_name("PATH")
+                .require_equals(true)
+                .value_parser(clap::value_parser!(String))
+                .help("Directory to cache downloaded model checkpoints (defaults to <appdir>/models)."),
+        )
+        .arg(
+            Arg::new("genome-cache-dir")
+                .long("genome-cache-dir")
+                .value_name("PATH")
+                .require_equals(true)
+                .value_parser(clap::value_parser!(String))
+                .help("Directory to cache .xenom genome archives (defaults to <appdir>/genome)."),
+        )
+        .arg(
+            Arg::new("genome-url")
+                .long("genome-url")
+                .value_name("URL")
+                .require_equals(true)
+                .value_parser(clap::value_parser!(String))
+                .help("Override the default .xenom genome archive download URL."),
         )
         .arg(
             Arg::new("ram-scale")
@@ -456,6 +501,7 @@ impl Args {
             rpclisten_borsh: m.get_one::<WrpcNetAddress>("rpclisten-borsh").cloned().or(defaults.rpclisten_borsh),
             rpclisten_json: m.get_one::<WrpcNetAddress>("rpclisten-json").cloned().or(defaults.rpclisten_json),
             training_rpc_listen: m.get_one::<ContextualNetAddress>("training-rpc-listen").cloned().or(defaults.training_rpc_listen),
+            miner_ws_listen: m.get_one::<ContextualNetAddress>("miner-ws-listen").cloned().or(defaults.miner_ws_listen),
             unsafe_rpc: arg_match_unwrap_or::<bool>(&m, "unsaferpc", defaults.unsafe_rpc),
             wrpc_verbose: false,
             log_level: arg_match_unwrap_or::<String>(&m, "log_level", defaults.log_level),
@@ -493,6 +539,10 @@ impl Args {
                 .get_one::<String>("active-model-weights-hash")
                 .cloned()
                 .or(defaults.active_model_weights_hash),
+
+            models_dir: m.get_one::<String>("models-dir").cloned().or(defaults.models_dir),
+            genome_cache_dir: m.get_one::<String>("genome-cache-dir").cloned().or(defaults.genome_cache_dir),
+            genome_url: m.get_one::<String>("genome-url").cloned().or(defaults.genome_url),
 
             #[cfg(feature = "devnet-prealloc")]
             num_prealloc_utxos: m.get_one::<u64>("num-prealloc-utxos").cloned(),

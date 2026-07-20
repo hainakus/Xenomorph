@@ -57,11 +57,16 @@ reqwest.workspace = true
 serde.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "rt", "macros", "rt-multi-thread", "net", "io-util"] }
+tokio = { workspace = true, features = ["sync", "rt", "macros", "rt-multi-thread", "net", "io-util", "time"] }
 workflow-log.workspace = true
 
 toml = "0.8.10"
 serde_with = "3.7.0"
+
+# Unified training: reuse seed-node's genome and model management inside the full node.
+seed-node = { path = "../seed-node" }
+tokio-tungstenite = "0.21"
+hex = "0.4"
 
 [features]
 heap = ["dhat", "kaspa-alloc/heap"]

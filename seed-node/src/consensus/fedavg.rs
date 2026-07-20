@@ -147,7 +147,7 @@ impl FedAvgAggregator {
 
     pub fn serialize_state(&self) -> Result<Vec<u8>, FedAvgError> {
         let state: Vec<&GradientAccumulator> = self.accumulators.values().collect();
-        state.try_to_vec().map_err(|_| FedAvgError::NoGradients)
+        borsh::to_vec(&state).map_err(|_| FedAvgError::NoGradients)
     }
 
     pub fn deserialize_state(&mut self, data: &[u8]) -> Result<(), FedAvgError> {

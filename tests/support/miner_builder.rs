@@ -1,6 +1,7 @@
 //! Build test miners backed by the real `xenom-miner` crates.
 
 use anyhow::{Context, Result};
+use kaspa_consensus_core::network::NetworkType;
 use tempfile::TempDir;
 use xenom_miner::block::BlockBuilder;
 use xenom_miner::prover::{PublicInputs, ZkProver};
@@ -25,7 +26,8 @@ impl TestMiner {
     /// Create a miner and load/create a wallet in a temporary directory.
     pub async fn new(url: &str) -> Result<Self> {
         let data_dir = tempfile::tempdir()?;
-        let wallet = WalletManager::load_or_create(data_dir.path(), "test-password").context("failed to create test wallet")?;
+        let wallet = WalletManager::load_or_create(data_dir.path(), "test-password", NetworkType::Devnet)
+            .context("failed to create test wallet")?;
         let address = wallet.address().to_string();
         let rpc = XenomRpcClient::new(url.to_string());
 
@@ -68,7 +70,7 @@ impl TestMiner {
 
         let zk_proof = self.prover.generate_proof(&result, &public_inputs).context("failed to generate zk proof")?;
 
-        let mut block = self.builder.build_block(&result, zk_proof, [0u8; 32]).context("failed to build block")?;
+        let mut block = self.builder.build_block(&result.model_id, &result, zk_proof, [0u8; 32]).context("failed to build block")?;
 
         self.wallet.sign_block(&mut block).context("failed to sign block")?;
 
@@ -77,7 +79,8 @@ impl TestMiner {
 
     /// Submit a block with an intentionally invalid (zeroed) proof.
     pub async fn submit_invalid_block(&mut self, result: TrainingResult) -> Result<[u8; 32]> {
-        let mut block = self.builder.build_block(&result, vec![0u8; 32], [0u8; 32]).context("failed to build invalid block")?;
+        let mut block = self.builder.build_block(&result.model_id, &result, vec![0u8; 32], [0u8; 32])
+            .context("failed to build invalid block")?;
         self.wallet.sign_block(&mut block)?;
         self.rpc.submit_block(block).await
     }

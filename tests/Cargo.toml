@@ -8,6 +8,7 @@ edition = "2021"
 xenom-miner = { path = "../xenom-miner" }
 seed-node = { path = "../seed-node" }
 api-gateway = { path = "../api-gateway" }
+kaspa-consensus-core = { path = "../consensus/core" }
 
 # Async
 tokio = { version = "1.35", features = ["full", "test-util"] }
@@ -15,8 +16,8 @@ tokio-test = "0.4"
 tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
 futures = "0.3"
 
-# Serialization (must match xenom-miner's borsh 1.x)
-borsh = { version = "1.2", features = ["derive"] }
+# Serialization (must match xenom-miner/seed-node borsh)
+borsh = { workspace = true }
 
 # Ethereum
 ethers = { version = "2.0", features = ["rustls", "abigen"] }

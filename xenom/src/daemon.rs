@@ -640,6 +640,27 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
         ));
     }
 
+    // Unified training WebSocket server (replaces the standalone seed-node).
+    if let Some(miner_ws_listen) = args.miner_ws_listen {
+        let models_dir = args.models_dir.as_ref().map(PathBuf::from).unwrap_or_else(|| app_dir.join("models"));
+        let genome_cache_dir = args.genome_cache_dir.as_ref().map(PathBuf::from).unwrap_or_else(|| app_dir.join("genome"));
+        let genome_source_url = args.genome_url.clone().unwrap_or_default();
+        let genome_file = genome_file_path.as_ref().map(PathBuf::from);
+
+        async_runtime.register(crate::training::service::MinerWebsocketService::new(
+            miner_ws_listen,
+            network.network_type,
+            args.active_model_id.clone(),
+            models_dir,
+            genome_cache_dir,
+            genome_file,
+            genome_source_url,
+            rpc_core_service.clone(),
+            config.genome_fragment_size_bytes,
+            config.genome_pow_activation_daa_score,
+        ));
+    }
+
     // Consensus must start first in order to init genesis in stores
     core.bind(consensus_manager);
     core.bind(async_runtime);

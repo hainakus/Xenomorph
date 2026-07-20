@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use borsh_miner::{to_vec, BorshDeserialize};
+use borsh::{to_vec, BorshDeserialize};
 use futures::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;

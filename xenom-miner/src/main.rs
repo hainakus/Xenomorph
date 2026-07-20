@@ -21,7 +21,7 @@ use xenom_miner::tokenizer::DnaTokenizer;
 use xenom_miner::trainer::{CpuTrainer, GpuBackend, GpuTrainer, MockTrainer, Trainer};
 use xenom_miner::wallet::{validate_address, WalletManager};
 
-const DEFAULT_RPC_URL: &str = "ws://xeno-seed:17110";
+const DEFAULT_RPC_URL: &str = "ws://xeno-node:17110";
 const DEFAULT_MODEL_ID: &str = "multimolecule/dnabert2";
 const DEFAULT_THREADS: usize = 4;
 const DEFAULT_DATA_DIR: &str = "~/.xenom-miner";

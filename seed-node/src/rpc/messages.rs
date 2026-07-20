@@ -1,4 +1,4 @@
-use borsh_miner::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::genome::GenomeTrainingBatch;
 
@@ -116,7 +116,7 @@ pub struct RpcEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use borsh_miner::to_vec;
+    use borsh::to_vec;
 
     #[test]
     fn test_roundtrip_model_checkpoint() {

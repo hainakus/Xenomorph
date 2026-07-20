@@ -16,7 +16,7 @@ indicatif = "0.17"
 console = "0.15"
 
 # Serialization (Borsh para Xenomorph)
-borsh = { version = "1.2", features = ["derive"] }
+borsh = { workspace = true }
 
 # Crypto
 blake3 = "1.5"

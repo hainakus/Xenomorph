@@ -8,15 +8,25 @@ services:
     ports:
       - "${XENO_NODE_RPC_PORT:-16110}:${XENO_NODE_RPC_PORT:-16110}"
       - "${XENO_NODE_P2P_PORT:-16111}:${XENO_NODE_P2P_PORT:-16111}"
-      - "${XENO_NODE_TRAINING_RPC_PORT:-16112}:${XENO_NODE_TRAINING_RPC_PORT:-16112}"
+      - "${XENO_MINER_RPC_PORT:-17110}:${XENO_MINER_RPC_PORT:-17110}"
     volumes:
       - "${XENO_DATA_DIR:-./devnet-data}/node:/root/.rusty-xenom"
     environment:
       - RUST_LOG=${XENO_LOG_LEVEL:-info}
       - XENO_NODE_RPC_PORT=${XENO_NODE_RPC_PORT:-16110}
       - XENO_NODE_P2P_PORT=${XENO_NODE_P2P_PORT:-16111}
+      - XENO_MINER_RPC_PORT=${XENO_MINER_RPC_PORT:-17110}
       - XENO_NODE_EXTRA_ARGS=${XENO_NODE_EXTRA_ARGS:---devnet --utxoindex}
       - XENO_NODE_ADDPEERS=${XENO_NODE_ADDPEERS:-}
+    command:
+      - --devnet
+      - --utxoindex
+      - --rpclisten=0.0.0.0:${XENO_NODE_RPC_PORT:-16110}
+      - --listen=0.0.0.0:${XENO_NODE_P2P_PORT:-16111}
+      - --miner-ws-listen=0.0.0.0:${XENO_MINER_RPC_PORT:-17110}
+      - --models-dir=/root/.rusty-xenom/models
+      - --disable-upnp
+      - --nodnsseed
     networks:
       - xeno-devnet
     healthcheck:
@@ -25,39 +35,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
-
-  xeno-seed:
-    image: "${XENO_REGISTRY:-}${XENO_SEED_IMAGE:-xeno-seed}:${XENO_VERSION:-latest}"
-    container_name: xeno-seed
-    build:
-      context: .
-      dockerfile: Dockerfile.xeno-seed
-    ports:
-      - "${XENO_SEED_GRPC_PORT:-50051}:${XENO_SEED_GRPC_PORT:-50051}"
-      - "${XENO_MINER_RPC_PORT:-17110}:${XENO_MINER_RPC_PORT:-17110}"
-    volumes:
-      - "${XENO_DATA_DIR:-./devnet-data}/models:/data/models"
-    environment:
-      - RUST_LOG=${XENO_LOG_LEVEL:-info}
-      - XENO_NODE_RPC=${XENO_SEED_NODE_RPC:-xeno-node:16110}
-      - XENO_GRPC_ADDR=0.0.0.0:${XENO_SEED_GRPC_PORT:-50051}
-      - XENO_MINER_WS_ADDR=0.0.0.0:${XENO_MINER_RPC_PORT:-17110}
-      - XENO_MODELS_DIR=${XENO_MODELS_DIR:-/data/models}
-      - XENO_DEFAULT_MODEL_ID=${XENO_DEFAULT_MODEL_ID:-multimolecule/dnabert2}
-      - XENO_MODEL_KEY=${XENO_MODEL_KEY:-xenom-devnet-model-key}
-    networks:
-      - xeno-devnet
-    depends_on:
-      xeno-node:
-        condition: service_healthy
-    healthcheck:
-      # Use the gRPC port for the readiness probe. Probing the WebSocket port
-      # with a plain TCP connect causes "Handshake not finished" warnings.
-      test: ["CMD-SHELL", "timeout 5 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/${XENO_SEED_GRPC_PORT:-50051}'"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 120s
 
   xeno-miner:
     image: "${XENO_REGISTRY:-}${XENO_MINER_IMAGE:-xeno-miner}:${XENO_VERSION:-latest}"
@@ -70,7 +47,7 @@ services:
     environment:
       - RUST_LOG=${XENO_LOG_LEVEL:-info}
       - XENO_WALLET_PASSWORD=${XENO_WALLET_PASSWORD:-devnet-password}
-      - XENO_MINER_RPC_URL=ws://xeno-seed:${XENO_MINER_RPC_PORT:-17110}
+      - XENO_MINER_RPC_URL=ws://xeno-node:${XENO_MINER_RPC_PORT:-17110}
       - XENO_MINER_MODEL_ID=${XENO_MINER_MODEL_ID:-multimolecule/dnabert2}
       - XENO_MINER_THREADS=${XENO_MINER_THREADS:-4}
       - XENO_MINER_DATA_DIR=/root/.xenom-miner
@@ -79,7 +56,7 @@ services:
     networks:
       - xeno-devnet
     depends_on:
-      xeno-seed:
+      xeno-node:
         condition: service_healthy
     deploy:
       resources:

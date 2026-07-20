@@ -82,17 +82,6 @@ dependencies = [
 
 [[package]]
 name = "ahash"
-version = "0.7.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "891477e0c6a8957309ee5c45a6368af3ae14bb510732d2684ffa19af310920f9"
-dependencies = [
- "getrandom 0.2.15",
- "once_cell",
- "version_check",
-]
-
-[[package]]
-name = "ahash"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e89da841a80418a9b391ebaea17f5c112ffaaa96f621d2c285b5174da76b9011"
@@ -934,35 +923,12 @@ dependencies = [
 
 [[package]]
 name = "borsh"
-version = "0.10.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "115e54d64eb62cdebad391c19efc9dce4981c690c85a33a12199d99bb9546fee"
-dependencies = [
- "borsh-derive 0.10.4",
- "hashbrown 0.12.3",
-]
-
-[[package]]
-name = "borsh"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6362ed55def622cddc70a4746a68554d7b687713770de539e59a739b249f8ed"
 dependencies = [
- "borsh-derive 1.5.1",
+ "borsh-derive",
  "cfg_aliases 0.2.1",
-]
-
-[[package]]
-name = "borsh-derive"
-version = "0.10.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "831213f80d9423998dd696e2c5345aba6be7a0bd8cd19e31c5243e13df1cef89"
-dependencies = [
- "borsh-derive-internal",
- "borsh-schema-derive-internal",
- "proc-macro-crate 0.1.5",
- "proc-macro2",
- "syn 1.0.109",
 ]
 
 [[package]]
@@ -972,33 +938,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3ef8005764f53cd4dca619f5bf64cafd4664dada50ece25e4d81de54c80cc0b"
 dependencies = [
  "once_cell",
- "proc-macro-crate 3.1.0",
+ "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
  "syn_derive",
-]
-
-[[package]]
-name = "borsh-derive-internal"
-version = "0.10.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65d6ba50644c98714aa2a70d13d7df3cd75cd2b523a2b452bf010443800976b3"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
-name = "borsh-schema-derive-internal"
-version = "0.10.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "276691d96f063427be83e6692b86148e488ebba9f48f77788724ca027ba3b6d4"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
 ]
 
 [[package]]
@@ -2563,7 +2507,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syn 2.0.119",
- "toml 0.8.19",
+ "toml",
  "walkdir",
 ]
 
@@ -3571,9 +3515,6 @@ name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
-dependencies = [
- "ahash 0.7.8",
-]
 
 [[package]]
 name = "hashbrown"
@@ -3581,7 +3522,7 @@ version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 dependencies = [
- "ahash 0.8.11",
+ "ahash",
  "allocator-api2",
 ]
 
@@ -4300,7 +4241,7 @@ dependencies = [
 name = "kaspa-addresses"
 version = "0.15.5"
 dependencies = [
- "borsh 1.5.1",
+ "borsh",
  "criterion",
  "js-sys",
  "serde",
@@ -4317,7 +4258,7 @@ dependencies = [
 name = "kaspa-addressmanager"
 version = "0.15.5"
 dependencies = [
- "borsh 1.5.1",
+ "borsh",
  "igd-next",
  "itertools 0.13.0",
  "kaspa-consensus-core",
@@ -4347,7 +4288,7 @@ dependencies = [
 name = "kaspa-bip32"
 version = "0.15.5"
 dependencies = [
- "borsh 1.5.1",
+ "borsh",
  "bs58",
  "faster-hex",
  "getrandom 0.2.15",
@@ -4438,7 +4379,7 @@ dependencies = [
 name = "kaspa-consensus-client"
 version = "0.15.5"
 dependencies = [
- "ahash 0.8.11",
+ "ahash",
  "cfg-if 1.0.0",
  "faster-hex",
  "hex",
@@ -4469,7 +4410,7 @@ version = "0.15.5"
 dependencies = [
  "async-trait",
  "bincode",
- "borsh 1.5.1",
+ "borsh",
  "cfg-if 1.0.0",
  "criterion",
  "faster-hex",
@@ -4585,7 +4526,7 @@ name = "kaspa-daemon"
 version = "0.15.5"
 dependencies = [
  "async-trait",
- "borsh 1.5.1",
+ "borsh",
  "cfg-if 1.0.0",
  "downcast-rs",
  "futures",
@@ -4727,7 +4668,7 @@ name = "kaspa-hashes"
 version = "0.15.5"
 dependencies = [
  "blake3",
- "borsh 1.5.1",
+ "borsh",
  "cc",
  "criterion",
  "faster-hex",
@@ -4795,7 +4736,7 @@ dependencies = [
 name = "kaspa-math"
 version = "0.15.5"
 dependencies = [
- "borsh 1.5.1",
+ "borsh",
  "criterion",
  "faster-hex",
  "js-sys",
@@ -4824,7 +4765,7 @@ name = "kaspa-metrics-core"
 version = "0.15.5"
 dependencies = [
  "async-trait",
- "borsh 1.5.1",
+ "borsh",
  "futures",
  "kaspa-core",
  "kaspa-rpc-core",
@@ -4879,7 +4820,7 @@ name = "kaspa-muhash"
 version = "0.15.5"
 dependencies = [
  "blake2b_simd",
- "borsh 1.5.1",
+ "borsh",
  "criterion",
  "faster-hex",
  "hex",
@@ -4904,7 +4845,7 @@ version = "0.15.5"
 dependencies = [
  "async-channel 2.3.1",
  "async-trait",
- "borsh 1.5.1",
+ "borsh",
  "criterion",
  "derive_more 0.99.18",
  "futures",
@@ -4969,7 +4910,7 @@ dependencies = [
 name = "kaspa-p2p-lib"
 version = "0.15.5"
 dependencies = [
- "borsh 1.5.1",
+ "borsh",
  "ctrlc",
  "futures",
  "h2 0.4.6",
@@ -5033,7 +4974,7 @@ version = "0.15.5"
 dependencies = [
  "async-channel 2.3.1",
  "async-trait",
- "borsh 1.5.1",
+ "borsh",
  "cfg-if 1.0.0",
  "derive_more 0.99.18",
  "downcast",
@@ -5117,7 +5058,7 @@ version = "0.15.5"
 dependencies = [
  "blake2b_simd",
  "blake3",
- "borsh 1.5.1",
+ "borsh",
  "cfg-if 1.0.0",
  "criterion",
  "hex",
@@ -5162,7 +5103,7 @@ dependencies = [
  "async-channel 2.3.1",
  "async-trait",
  "bincode",
- "borsh 1.5.1",
+ "borsh",
  "cfg-if 1.0.0",
  "criterion",
  "duct",
@@ -5244,13 +5185,13 @@ name = "kaspa-wallet-core"
 version = "0.15.5"
 dependencies = [
  "aes",
- "ahash 0.8.11",
+ "ahash",
  "argon2",
  "async-channel 2.3.1",
  "async-std",
  "async-trait",
  "base64 0.22.1",
- "borsh 1.5.1",
+ "borsh",
  "cfb-mode",
  "cfg-if 1.0.0",
  "chacha20poly1305",
@@ -5325,7 +5266,7 @@ name = "kaspa-wallet-keys"
 version = "0.15.5"
 dependencies = [
  "async-trait",
- "borsh 1.5.1",
+ "borsh",
  "downcast",
  "faster-hex",
  "hmac",
@@ -5438,7 +5379,7 @@ version = "0.15.5"
 dependencies = [
  "async-std",
  "async-trait",
- "borsh 1.5.1",
+ "borsh",
  "cfg-if 1.0.0",
  "futures",
  "js-sys",
@@ -5456,7 +5397,7 @@ dependencies = [
  "serde-wasm-bindgen",
  "serde_json",
  "thiserror 1.0.63",
- "toml 0.8.19",
+ "toml",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "workflow-core",
@@ -5507,7 +5448,7 @@ name = "kaspa-wrpc-server"
 version = "0.15.5"
 dependencies = [
  "async-trait",
- "borsh 1.5.1",
+ "borsh",
  "futures",
  "kaspa-consensus-core",
  "kaspa-core",
@@ -5544,7 +5485,7 @@ dependencies = [
 name = "kaspa-wrpc-wasm"
 version = "0.15.5"
 dependencies = [
- "ahash 0.8.11",
+ "ahash",
  "async-std",
  "cfg-if 1.0.0",
  "futures",
@@ -6577,7 +6518,7 @@ version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
 dependencies = [
- "proc-macro-crate 3.1.0",
+ "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -6839,7 +6780,7 @@ version = "3.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34b4653168b563151153c9e4c08ebed57fb8262bebfa79711552fa983c623e7a"
 dependencies = [
- "proc-macro-crate 3.1.0",
+ "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -7306,15 +7247,6 @@ dependencies = [
  "impl-serde",
  "scale-info",
  "uint",
-]
-
-[[package]]
-name = "proc-macro-crate"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d6ea3c4595b96363c13943497db34af4460fb474a95c43f4446ad341b8c9785"
-dependencies = [
- "toml 0.5.11",
 ]
 
 [[package]]
@@ -8244,7 +8176,7 @@ version = "2.11.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6630024bf739e2179b91fb424b28898baf819414262c5d376677dbff1fe7ebf"
 dependencies = [
- "proc-macro-crate 3.1.0",
+ "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -8395,9 +8327,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "blake3",
- "borsh 0.10.4",
- "borsh 1.5.1",
- "borsh-derive 0.10.4",
+ "borsh",
  "chrono",
  "ethers",
  "futures",
@@ -8955,7 +8885,7 @@ version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "24ba59a9342a3d9bab6c56c118be528b27c9b60e490080e9711a04dccac83ef6"
 dependencies = [
- "ahash 0.8.11",
+ "ahash",
  "atoi",
  "byteorder",
  "bytes",
@@ -9619,7 +9549,7 @@ version = "0.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a620b996116a59e184c2fa2dfd8251ea34a36d0a514758c6f966386bd2e03476"
 dependencies = [
- "ahash 0.8.11",
+ "ahash",
  "aho-corasick",
  "compact_str 0.9.1",
  "dary_heap",
@@ -9795,15 +9725,6 @@ dependencies = [
  "futures-sink",
  "pin-project-lite",
  "tokio",
-]
-
-[[package]]
-name = "toml"
-version = "0.5.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4f7f0dd8d50a853a531c426359045b1998f04219d88799810762cd4ad314234"
-dependencies = [
- "serde",
 ]
 
 [[package]]
@@ -11083,7 +11004,7 @@ checksum = "a1d67bbe225ea90aa6979167f28935275506696ac867661e218893d3a42e1666"
 dependencies = [
  "async-channel 2.3.1",
  "async-std",
- "borsh 1.5.1",
+ "borsh",
  "bs58",
  "cfg-if 1.0.0",
  "chrono",
@@ -11194,7 +11115,7 @@ version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b85c9add43b5da3bed3d0d6d92eb3a2c5986c0ae65c7c3f5189876c19648154"
 dependencies = [
- "borsh 1.5.1",
+ "borsh",
  "futures",
  "js-sys",
  "lazy_static",
@@ -11215,9 +11136,9 @@ version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2dd8c77686e6456be8e92237daaa88ad31546974e04514a09b1a38f812530ef"
 dependencies = [
- "ahash 0.8.11",
+ "ahash",
  "async-trait",
- "borsh 1.5.1",
+ "borsh",
  "futures",
  "js-sys",
  "nw-sys",
@@ -11264,10 +11185,10 @@ version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec4235eb167f0bef3bcbdf0c578823a0105ab5303115e3b2afb4d526e2498b08"
 dependencies = [
- "ahash 0.8.11",
+ "ahash",
  "async-std",
  "async-trait",
- "borsh 1.5.1",
+ "borsh",
  "downcast-rs",
  "futures",
  "futures-util",
@@ -11307,8 +11228,8 @@ version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "64679db6856852a472caff4ce869e3ecebe291fbccc9406e9643eb5951a0904a"
 dependencies = [
- "ahash 0.8.11",
- "borsh 1.5.1",
+ "ahash",
+ "borsh",
  "serde",
 ]
 
@@ -11454,7 +11375,7 @@ version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "515483a047477c91b5142e1090cce0afc21a0139d9c0c06ea42f0d3dbf3a6fcd"
 dependencies = [
- "ahash 0.8.11",
+ "ahash",
  "async-channel 2.3.1",
  "async-std",
  "async-trait",
@@ -11523,12 +11444,13 @@ version = "0.15.5"
 dependencies = [
  "anyhow",
  "async-channel 2.3.1",
- "borsh 1.5.1",
+ "borsh",
  "cfg-if 1.0.0",
  "clap 4.5.16",
  "dhat",
  "dirs",
  "futures-util",
+ "hex",
  "kaspa-addresses",
  "kaspa-addressmanager",
  "kaspa-alloc",
@@ -11558,12 +11480,14 @@ dependencies = [
  "rand 0.8.5",
  "rayon",
  "reqwest 0.12.7",
+ "seed-node",
  "serde",
  "serde_with",
  "tempfile",
  "thiserror 1.0.63",
  "tokio",
- "toml 0.8.19",
+ "tokio-tungstenite 0.21.0",
+ "toml",
  "workflow-log",
 ]
 
@@ -11572,7 +11496,7 @@ name = "xenom-cli"
 version = "0.15.5"
 dependencies = [
  "async-trait",
- "borsh 1.5.1",
+ "borsh",
  "cfg-if 1.0.0",
  "convert_case 0.6.0",
  "dashmap",
@@ -11620,10 +11544,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "api-gateway",
- "borsh 1.5.1",
+ "borsh",
  "ethers",
  "futures",
  "hex",
+ "kaspa-consensus-core",
  "rand 0.8.5",
  "seed-node",
  "serde",
@@ -11647,7 +11572,7 @@ dependencies = [
  "bip32",
  "bip39",
  "blake3",
- "borsh 1.5.1",
+ "borsh",
  "candle-core",
  "candle-nn",
  "candle-transformers",

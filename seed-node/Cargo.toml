@@ -6,10 +6,8 @@ edition = "2021"
 [dependencies]
 tokio = { version = "1.35", features = ["full"] }
 tonic = "0.10"
-borsh = "0.10"
+borsh = { workspace = true }
 kaspa-addresses = { workspace = true }
-borsh-derive = "0.10"
-borsh-miner = { package = "borsh", version = "1.2", features = ["derive"] }
 blake3 = "1.5"
 futures = "0.3"
 tokio-tungstenite = { version = "0.21", features = ["native-tls"] }

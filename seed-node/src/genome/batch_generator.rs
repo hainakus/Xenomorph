@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use borsh_miner::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSerialize};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
