@@ -360,10 +360,15 @@ impl DnaBert2ForMaskedLM {
     /// Load a trainable model from raw `model.safetensors` bytes, returning it together with
     /// the underlying `VarMap` so that an optimizer can be created.
     pub fn load_for_training(config: DnaBert2Config, weights: Vec<u8>, dtype: DType, device: &Device) -> CandleResult<(Self, VarMap)> {
+        if let Some(hint) = diagnose_weights(&weights) {
+            return Err(candle_core::Error::Msg(hint));
+        }
+
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, dtype, device);
         let model = Self::new(vb, config, device)?;
-        let tensors = candle_core::safetensors::load_buffer(&weights, device)?;
+        let tensors = candle_core::safetensors::load_buffer(&weights, device)
+            .map_err(|e| candle_core::Error::Msg(format!("Failed to load safetensors weights: {}. {}", e, diagnose_weights(&weights).unwrap_or_default())))?;
         {
             let tensor_data = varmap.data().lock().map_err(|e| candle_core::Error::Msg(e.to_string()))?;
             for (name, tensor) in tensors.iter() {
@@ -387,6 +392,34 @@ impl DnaBert2ForMaskedLM {
         let hidden_states = self.model.forward(input_ids, token_type_ids, attention_mask)?;
         self.lm_head.forward(&hidden_states)
     }
+}
+
+/// Return a human-readable diagnostic if `weights` is clearly not a `model.safetensors` file.
+fn diagnose_weights(weights: &[u8]) -> Option<String> {
+    if weights.is_empty() {
+        return Some("weights buffer is empty".to_string());
+    }
+    if weights.starts_with(b"version https://git-lfs.github.com/spec/v1") {
+        return Some(
+            "weights look like a git-lfs pointer instead of a safetensors file. \
+             Delete the local model cache and re-download."
+                .to_string(),
+        );
+    }
+    if weights.starts_with(b"<!DOCTYPE") || weights.starts_with(b"<html") || weights.starts_with(b"<HTML") {
+        return Some("weights look like an HTML error page instead of a safetensors file".to_string());
+    }
+    if weights.len() < 16 {
+        return Some(format!("weights buffer is too small to be a safetensors file ({} bytes)", weights.len()));
+    }
+    if weights.starts_with(b"PK\x03\x04") || weights[0] == 0x80 {
+        return Some(
+            "weights look like a PyTorch .bin / .pth file. Only safetensors is supported by this miner; \
+             delete the local model cache and re-download the safetensors variant."
+                .to_string(),
+        );
+    }
+    None
 }
 
 #[cfg(test)]

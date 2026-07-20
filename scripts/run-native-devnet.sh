@@ -118,9 +118,10 @@ if [[ "$BUILD" == "1" ]]; then
     fi
 
     qlog "Building release binaries..."
-    cargo build --release -p xenom
-    # Clean xenom-miner to avoid stale release artifacts after source changes
+    # Clean node/miner crates to avoid stale release artifacts after source changes
     # (cargo relies on mtimes and git checkouts can leave them older than binaries).
+    cargo clean -p xenom
+    cargo build --release -p xenom
     cargo clean -p xenom-miner
     if [[ -n "$FEATURES" ]]; then
         cargo build --release -p xenom-miner --features "$FEATURES"

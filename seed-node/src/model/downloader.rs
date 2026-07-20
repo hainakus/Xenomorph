@@ -27,24 +27,75 @@ pub async fn download_model(model_id: &str) -> Result<RawModelFiles> {
 
     let mut weights: Option<Vec<u8>> = None;
     for filename in ["model.safetensors", "pytorch_model.bin"] {
-        let url = model_url(model_id, filename)?;
-        info!("Attempting to download model weights from {}", url);
-
-        match download_file(&client, &url).await {
+        match download_and_validate_weights(&client, model_id, filename).await {
             Ok(data) => {
-                info!("Downloaded {} ({:.2} MB) from {}", filename, data.len() as f64 / 1_048_576.0, url);
+                info!("Downloaded {} ({:.2} MB) for {}", filename, data.len() as f64 / 1_048_576.0, model_id);
                 weights = Some(data);
                 break;
             }
             Err(e) => {
-                warn!("Could not download {}: {}", url, e);
+                warn!("Could not use {} for {}: {}", filename, model_id, e);
             }
         }
     }
 
-    let weights = weights.ok_or_else(|| anyhow!("Could not download model weights for {} from Hugging Face", model_id))?;
+    let weights = weights.ok_or_else(|| anyhow!("Could not download valid model weights for {} from Hugging Face", model_id))?;
 
     Ok(RawModelFiles { config, tokenizer, weights })
+}
+
+/// Download a weights file and verify it is a real checkpoint, not an HTML/LFS pointer.
+/// If the plain resolve URL returns a pointer, retry once with `?download=true`.
+async fn download_and_validate_weights(client: &reqwest::Client, model_id: &str, filename: &str) -> Result<Vec<u8>> {
+    let base_url = model_url(model_id, filename)?;
+
+    for url in [&base_url, &format!("{}?download=true", base_url)] {
+        info!("Attempting to download model weights from {}", url);
+        match download_file(client, url).await {
+            Ok(data) if is_valid_weights(&data) => return Ok(data),
+            Ok(data) => warn!("Downloaded {} but content does not look like valid weights ({} bytes); will retry if possible", url, data.len()),
+            Err(e) => warn!("Failed to download {}: {}", url, e),
+        }
+    }
+
+    Err(anyhow!("{} from {} is not a valid weights file", filename, model_id))
+}
+
+/// Heuristic validation of downloaded weight bytes.
+/// Accepts safetensors, PyTorch zip pickles, or old pickle checkpoints.
+/// Rejects HTML pages, git-lfs pointers, and truncated files.
+pub fn is_valid_weights(data: &[u8]) -> bool {
+    if data.len() < 8 {
+        return false;
+    }
+
+    // git-lfs pointer files start with "version https://git-lfs.github.com/spec/v1"
+    if data.starts_with(b"version https://git-lfs.github.com/spec/v1") {
+        return false;
+    }
+
+    // HTML error pages start with "<!DOCTYPE" or "<html".
+    if data.starts_with(b"<!DOCTYPE") || data.starts_with(b"<html") || data.starts_with(b"<HTML") {
+        return false;
+    }
+
+    // Safetensors: first 8 bytes are a little-endian u64 header length, followed by JSON.
+    let header_len = u64::from_le_bytes(data[0..8].try_into().expect("8 bytes")) as usize;
+    if header_len + 8 <= data.len() && header_len <= 1_000_000_000 && data[8] == b'{' {
+        return true;
+    }
+
+    // PyTorch zip pickle (new torch.save): starts with PK\x03\x04 or PK\x05\x06 or PK\x07\x08.
+    if data.starts_with(b"PK\x03\x04") || data.starts_with(b"PK\x05\x06") || data.starts_with(b"PK\x07\x08") {
+        return true;
+    }
+
+    // Old PyTorch pickle (protocol 2+): first byte is the pickle opcode 0x80 followed by protocol.
+    if data[0] == 0x80 && data.len() > 2 {
+        return true;
+    }
+
+    false
 }
 
 /// Build a canonical Hugging Face resolve URL for a file in a model repo.

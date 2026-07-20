@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::rpc::messages::TrainingBatch;
 
 use super::checkpoint::{ModelCheckpoint, ModelMetrics};
-use super::downloader::download_model;
+use super::downloader::{download_model, is_valid_weights};
 use super::storage::ModelStorage;
 use super::RawModelFiles;
 
@@ -86,17 +86,25 @@ impl ModelManager {
     }
 
     /// Ensure a model is available locally, downloading it from Hugging Face if needed.
-    /// If the stored files cannot be decrypted (e.g. the encryption key changed),
-    /// they are removed and re-downloaded.
+    /// If the stored files cannot be decrypted (e.g. the encryption key changed) or the
+    /// weights are not a valid checkpoint (e.g. a stale git-lfs pointer), they are removed
+    /// and re-downloaded.
     pub async fn ensure_model_downloaded(&self, model_id: &str) -> Result<()> {
         // Check if a model file or checkpoint already exists for this id.
         if self.storage.model_exists(model_id).await {
-            // Verify the files are actually loadable with the current key.
-            if self.storage.load_model_files(model_id).await.is_ok() {
-                info!("Model {} already exists locally; skipping download", model_id);
-                return Ok(());
+            // Verify the files are actually loadable with the current key and contain valid weights.
+            match self.storage.load_model_files(model_id).await {
+                Ok(files) if is_valid_weights(&files.weights) => {
+                    info!("Model {} already exists locally; skipping download", model_id);
+                    return Ok(());
+                }
+                Ok(_) => {
+                    info!("Model {} exists locally but weights look invalid (e.g. LFS pointer); removing and re-downloading", model_id);
+                }
+                Err(_) => {
+                    info!("Model {} exists locally but cannot be decrypted; removing and re-downloading", model_id);
+                }
             }
-            info!("Model {} exists locally but cannot be decrypted; removing and re-downloading", model_id);
             self.delete_model(model_id).await?;
         }
 
