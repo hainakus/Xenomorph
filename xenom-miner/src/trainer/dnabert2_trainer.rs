@@ -79,9 +79,9 @@ impl DnaBert2Trainer {
             }
         }
 
-        // If nothing is masked (extremely unlikely with 15% masking), return a zero loss.
+        // If nothing is masked (extremely unlikely with 15% masking), return a zero loss in the logits dtype.
         if positions.is_empty() {
-            return Ok(Tensor::new(0.0f32, &self.device)?);
+            return Ok(Tensor::new(0.0f32, &self.device)?.to_dtype(logits.dtype())?);
         }
 
         let positions = Tensor::new(positions.as_slice(), &self.device)?;
@@ -288,8 +288,10 @@ impl ManualAdamW {
             let grad = grad.to_device(device)?;
 
             let (m, v) = moments.entry(name.clone()).or_insert_with(|| {
-                // `zeros_like` cannot fail for a well-formed tensor; unwrap is safe here.
-                (theta.zeros_like().unwrap(), theta.zeros_like().unwrap())
+                // Keep moment estimates in F32 for numerical stability, even when the model is F16.
+                let m = Tensor::zeros(theta.shape().clone(), DType::F32, device).unwrap();
+                let v = Tensor::zeros(theta.shape().clone(), DType::F32, device).unwrap();
+                (m, v)
             });
 
             let next_m = ((&*m * beta1)? + (&grad * (1.0 - beta1))?)?;
@@ -298,6 +300,8 @@ impl ManualAdamW {
             let v_hat = (&next_v * scale_v)?;
             let next_theta = (theta * (1.0 - lr_lambda))?;
             let adjusted_grad = (&m_hat / (&v_hat.sqrt()? + self.eps)?)?;
+            // Cast the update back to the parameter's dtype (F16 or F32) before applying it.
+            let adjusted_grad = adjusted_grad.to_dtype(theta.dtype())?;
             let next_theta = (&next_theta - (&adjusted_grad * lr)?)?;
 
             var.set(&next_theta)?;

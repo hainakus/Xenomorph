@@ -23,6 +23,11 @@ impl DnaBert2Embeddings {
         Ok(Self { word_embeddings, token_type_embeddings, layer_norm, dropout, pad_token_id: config.pad_token_id })
     }
 
+    /// Return the dtype of the word embedding weights; this is the dtype the whole model runs in.
+    fn dtype(&self) -> DType {
+        self.word_embeddings.embeddings().dtype()
+    }
+
     fn forward(&self, input_ids: &Tensor, token_type_ids: Option<&Tensor>) -> CandleResult<Tensor> {
         let words = self.word_embeddings.forward(input_ids)?;
 
@@ -131,13 +136,13 @@ impl DnaBert2SelfAttention {
         let query_layer = self.transpose_for_scores(&mixed_query, batch, seq)?;
 
         let scale = 1.0 / (self.attention_head_size as f64).sqrt();
-        let scale_t = Tensor::new(scale as f32, hidden_states.device())?;
+        let scale_t = Tensor::new(scale as f32, hidden_states.device())?.to_dtype(hidden_states.dtype())?;
 
         let key_t = key_layer.transpose(2, 3)?.contiguous()?;
         let mut attention_scores = query_layer.matmul(&key_t)?;
         attention_scores = attention_scores.broadcast_mul(&scale_t)?;
 
-        let alibi = self.alibi.bias(seq)?.unsqueeze(0)?; // [1, heads, seq, seq]
+        let alibi = self.alibi.bias(seq)?.to_dtype(hidden_states.dtype())?.unsqueeze(0)?; // [1, heads, seq, seq]
         attention_scores = attention_scores.broadcast_add(&alibi)?;
         attention_scores = attention_scores.broadcast_add(attention_mask)?;
 
@@ -319,14 +324,16 @@ impl DnaBert2Model {
         let dims = input_ids.dims();
         let (_batch, _seq) = (dims[0], dims[1]);
 
+        // Run the model in the dtype of the embedding weights (F32 or F16/mixed precision).
+        let model_dtype = self.embeddings.dtype();
         let attention_mask = match attention_mask {
-            Some(mask) => mask.to_dtype(DType::F32)?,
-            None => input_ids.ne(self.embeddings.pad_token_id as f64)?.to_dtype(DType::F32)?,
+            Some(mask) => mask.to_dtype(model_dtype)?,
+            None => input_ids.ne(self.embeddings.pad_token_id as f64)?.to_dtype(model_dtype)?,
         };
 
-        let ones = Tensor::ones(attention_mask.dims(), DType::F32, attention_mask.device())?;
+        let ones = Tensor::ones(attention_mask.dims(), model_dtype, attention_mask.device())?;
         let additive = ones.broadcast_sub(&attention_mask)?;
-        let scale = Tensor::new(-10000.0f32, attention_mask.device())?;
+        let scale = Tensor::new(-10000.0f32, attention_mask.device())?.to_dtype(model_dtype)?;
         let additive = additive.broadcast_mul(&scale)?;
         let additive = additive.unsqueeze(1)?.unsqueeze(1)?; // [batch, 1, 1, seq]
 
