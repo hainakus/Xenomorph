@@ -382,10 +382,10 @@ impl DnaBert2Model {
 
 /// Split a flat `MlmBatch` into a 2-D grid `[accum_step][gpu] -> Option<MlmBatch>`.
 ///
-/// The grid is filled row-major. Each non-None cell holds at most
-/// `micro_batch_size` sequences. If the input has more sequences than the grid
-/// can hold, the tail is dropped with a warning. If it has fewer, some cells
-/// are `None`.
+/// Sequences are distributed evenly across the GPUs in each accumulation step,
+/// keeping each cell contiguous and respecting `micro_batch_size`. This avoids
+/// the old row-major behaviour where the first GPU(s) would eat the whole batch
+/// and leave the remaining GPUs idle.
 fn split_mlm_batch(
     batch: &MlmBatch,
     num_gpus: usize,
@@ -406,12 +406,26 @@ fn split_mlm_batch(
     }
 
     let mut consumed = 0usize;
+    let usable = total.min(max_usable);
     for step in 0..accumulation_steps {
+        if consumed >= usable {
+            break;
+        }
+        let remaining = usable - consumed;
+        let step_capacity = num_gpus.saturating_mul(micro_batch_size);
+        let step_total = remaining.min(step_capacity);
+
+        // Spread `step_total` sequences over the GPUs in this step as evenly as
+        // possible while never exceeding `micro_batch_size` per GPU.
+        let base = step_total / num_gpus;
+        let extra = step_total % num_gpus;
         for gpu in 0..num_gpus {
-            if consumed >= total || consumed >= max_usable {
-                break;
+            let gpu_total = base + if gpu < extra { 1 } else { 0 };
+            let gpu_total = gpu_total.min(micro_batch_size);
+            if gpu_total == 0 {
+                continue;
             }
-            let end = (consumed + micro_batch_size).min(total).min(max_usable);
+            let end = (consumed + gpu_total).min(usable);
             grid[step][gpu] = Some(extract_mlm_batch(batch, consumed, end, seq_len));
             consumed = end;
         }
