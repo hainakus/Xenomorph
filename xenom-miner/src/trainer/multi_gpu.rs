@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
+use borsh::to_vec as borsh_to_vec;
 use candle_core::{Device, Tensor};
 use tracing::{info, warn};
 
@@ -21,7 +22,7 @@ use crate::data::MlmBatch;
 use crate::dnabert2::DnaBert2Model;
 use crate::model::DnaBert2Config;
 use crate::models::checkpointed_forward::CheckpointedForward;
-use crate::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch};
+use crate::rpc::messages::{GenomeTrainingBatchMsg, GradientLayer, GradientPayload, GradientUpdate, TrainingBatch};
 use crate::tokenizer::DnaTokenizer;
 use crate::trainer::gpu_trainer::GpuBackend;
 use crate::trainer::mixed_precision::{to_grad_dtype, MixedPrecisionScaler};
@@ -207,7 +208,7 @@ impl MultiGpuTrainer {
         base_checkpoint: [u8; 32],
         batch_indices: Vec<u64>,
         learning_rate: f32,
-    ) -> Result<TrainingResult> {
+    ) -> Result<(TrainingResult, HashMap<String, Tensor>)> {
         let start = Instant::now();
 
         let micro_batches =
@@ -309,9 +310,9 @@ impl MultiGpuTrainer {
         // Compute post-update loss on the master replica using the same
         // sequences that were actually trained.
         let loss_after = self.trainers[0].compute_loss_scalar(&used_batch)?;
-        let gradients_commitment = self.trainers[0].gradient_commitment_from_named_tensors(final_grads)?;
+        let gradients_commitment = self.trainers[0].gradient_commitment_from_named_tensors(&final_grads)?;
 
-        Ok(TrainingResult {
+        let result = TrainingResult {
             model_id: model_id.to_string(),
             batch_indices,
             base_checkpoint,
@@ -319,7 +320,9 @@ impl MultiGpuTrainer {
             loss_after,
             gradients_commitment,
             compute_time_ms: start.elapsed().as_millis() as u64,
-        })
+        };
+
+        Ok((result, final_grads))
     }
 
     /// Copy updated parameters from the master (device 0) replica to all other
@@ -345,10 +348,44 @@ impl MultiGpuTrainer {
     }
 }
 
+impl MultiGpuTrainer {
+    /// Encrypt and package the averaged gradients as a `GradientUpdate` ready to
+    /// be sent to the seed-node's FedAvg aggregator.
+    fn build_gradient_update(
+        &self,
+        model_id: &str,
+        base_checkpoint: [u8; 32],
+        named_grads: HashMap<String, Tensor>,
+    ) -> Result<GradientUpdate> {
+        let mut layer_gradients = HashMap::with_capacity(named_grads.len());
+        for (name, grad) in named_grads {
+            let shape = grad.dims().to_vec();
+            let values = grad.flatten_all()?.to_vec1::<f32>()?;
+            layer_gradients.insert(name, GradientLayer { values, shape });
+        }
+
+        let payload = GradientPayload { layer_gradients };
+        let payload_bytes = borsh_to_vec(&payload).context("Failed to serialize gradient payload")?;
+        let encrypted_payload = model_crypto::encrypt(&payload_bytes, &model_crypto::derive_encryption_key())
+            .context("Failed to encrypt gradient payload")?;
+
+        Ok(GradientUpdate { model_id: model_id.to_string(), base_checkpoint, encrypted_payload, participant_weight: 1.0 })
+    }
+}
+
 impl Trainer for MultiGpuTrainer {
     fn train(&self, batch: &TrainingBatch) -> Result<TrainingResult> {
         let mlm_batch = self.trainers[0].generator.generate(batch).context("Failed to generate MLM batch")?;
         self.train_mlm_batch(&mlm_batch, &batch.model_id, batch.base_checkpoint, batch.data_indices.clone(), batch.learning_rate)
+            .map(|(result, _)| result)
+    }
+
+    fn train_with_gradients(&self, batch: &TrainingBatch) -> Result<(TrainingResult, Option<GradientUpdate>)> {
+        let mlm_batch = self.trainers[0].generator.generate(batch).context("Failed to generate MLM batch")?;
+        let (result, named_grads) =
+            self.train_mlm_batch(&mlm_batch, &batch.model_id, batch.base_checkpoint, batch.data_indices.clone(), batch.learning_rate)?;
+        let update = self.build_gradient_update(&batch.model_id, batch.base_checkpoint, named_grads)?;
+        Ok((result, Some(update)))
     }
 
     fn train_genome(&self, msg: &GenomeTrainingBatchMsg) -> Result<TrainingResult> {
@@ -359,7 +396,20 @@ impl Trainer for MultiGpuTrainer {
             .context("Failed to generate MLM batch from genome sequences")?;
 
         let batch_indices: Vec<u64> = batch.data_indices.iter().map(|slice| slice.chunk_idx).collect();
-        self.train_mlm_batch(&mlm_batch, &batch.model_id, msg.base_checkpoint, batch_indices, 0.01)
+        self.train_mlm_batch(&mlm_batch, &batch.model_id, msg.base_checkpoint, batch_indices, 0.01).map(|(result, _)| result)
+    }
+
+    fn train_genome_with_gradients(&self, msg: &GenomeTrainingBatchMsg) -> Result<(TrainingResult, Option<GradientUpdate>)> {
+        let batch = &msg.batch;
+        let mlm_batch = self.trainers[0]
+            .generator
+            .generate_from_sequences(&msg.sequences, &batch.genome_merkle_root, batch.batch_id)
+            .context("Failed to generate MLM batch from genome sequences")?;
+
+        let batch_indices: Vec<u64> = batch.data_indices.iter().map(|slice| slice.chunk_idx).collect();
+        let (result, named_grads) = self.train_mlm_batch(&mlm_batch, &batch.model_id, msg.base_checkpoint, batch_indices, 0.01)?;
+        let update = self.build_gradient_update(&batch.model_id, msg.base_checkpoint, named_grads)?;
+        Ok((result, Some(update)))
     }
 
     fn device_info(&self) -> DeviceInfo {

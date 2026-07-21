@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 
@@ -94,7 +95,7 @@ impl DnaBert2Trainer {
     }
 
     /// Compute a deterministic gradient commitment hash from a name -> tensor map.
-    pub(crate) fn gradient_commitment_from_named_tensors(&self, grads: HashMap<String, Tensor>) -> Result<[u8; 32]> {
+    pub(crate) fn gradient_commitment_from_named_tensors(&self, grads: &HashMap<String, Tensor>) -> Result<[u8; 32]> {
         let mut hasher = blake3::Hasher::new();
         let mut names: Vec<_> = grads.keys().cloned().collect();
         names.sort();
@@ -147,6 +148,35 @@ impl DnaBert2Trainer {
         Ok(())
     }
 
+    /// Apply a simple SGD update from a map of named gradients. This is used by
+    /// the seed-node's FedAvg aggregator where no per-miner optimizer state is
+    /// available; the gradient is already the averaged update across participants.
+    pub fn apply_sgd_gradients(&self, named_grads: &HashMap<String, Tensor>, learning_rate: f32) -> Result<()> {
+        let effective_lr = learning_rate.min(MAX_LEARNING_RATE) as f64;
+        let data = self.varmap.data().lock().map_err(|e| anyhow::anyhow!("VarMap poisoned: {}", e))?;
+        for (name, var) in data.iter() {
+            if let Some(grad) = named_grads.get(name) {
+                let theta = var.as_tensor();
+                let updated = (theta - &(grad * effective_lr)?)?;
+                var.set(&updated)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Persist the current trainable weights to `path` as a SafeTensors file.
+    pub fn save_weights_to_path<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let data = self.varmap.data().lock().map_err(|e| anyhow::anyhow!("VarMap poisoned: {}", e))?;
+        let tensors: HashMap<String, Tensor> = data.iter().map(|(k, v)| (k.clone(), v.as_tensor().clone())).collect();
+        candle_core::safetensors::save(&tensors, path).context("Failed to save model weights")
+    }
+
+    /// Access the underlying trainable variables. Used by the seed-node FedAvg
+    /// aggregator to reconstruct gradient tensors with the correct shapes.
+    pub fn varmap(&self) -> &candle_nn::VarMap {
+        &self.varmap
+    }
+
     /// Compute the scalar loss for a batch without taking gradients.
     pub(crate) fn compute_loss_scalar(&self, mlm_batch: &MlmBatch) -> Result<f64> {
         let (input_ids, attention_mask, labels, mask) = self.build_tensors(mlm_batch)?;
@@ -185,7 +215,7 @@ impl DnaBert2Trainer {
         let (loss_before_scalar, grads) = self.compute_gradients(mlm_batch, 1.0)?;
         self.apply_gradients(&grads, learning_rate)?;
         let loss_after_scalar = self.compute_loss_scalar(mlm_batch)?;
-        let gradients_commitment = self.gradient_commitment_from_named_tensors(grads)?;
+        let gradients_commitment = self.gradient_commitment_from_named_tensors(&grads)?;
 
         Ok(TrainingResult {
             model_id: model_id.to_string(),

@@ -1,16 +1,24 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use borsh::BorshDeserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::rpc::messages::TrainingBatch;
+use crate::consensus::fedavg::{FedAvgAggregator, FedAvgConfig, WeightingStrategy};
+use crate::rpc::messages::{GradientPayload, GradientUpdate, TrainingBatch};
 
 use super::checkpoint::{ModelCheckpoint, ModelMetrics};
 use super::downloader::{download_model, is_valid_weights};
 use super::storage::ModelStorage;
 use super::{EncryptedModelFiles, RawModelFiles};
+
+use candle_core::{DType, Device, Tensor};
+use model_crypto;
+use xenom_miner::model::DnaBert2Config;
+use xenom_miner::tokenizer::DnaTokenizer;
+use xenom_miner::trainer::DnaBert2Trainer;
 
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
@@ -27,6 +35,8 @@ pub struct ModelManager {
     base_path: String,
     storage: Arc<ModelStorage>,
     models: Arc<RwLock<HashMap<String, ModelInfo>>>,
+    aggregators: Arc<RwLock<HashMap<String, FedAvgAggregator>>>,
+    fedavg_config: FedAvgConfig,
     node_id: String,
 }
 
@@ -44,7 +54,17 @@ impl ModelManager {
 
         let node_id = Uuid::new_v4().to_string();
 
-        Ok(Self { base_path, storage, models: Arc::new(RwLock::new(HashMap::new())), node_id })
+        let min_participants = std::env::var("FEDAVG_MIN_PARTICIPANTS").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+        let fedavg_config = FedAvgConfig { min_participants, max_participants: 10, weighting_strategy: WeightingStrategy::Uniform };
+
+        Ok(Self {
+            base_path,
+            storage,
+            models: Arc::new(RwLock::new(HashMap::new())),
+            aggregators: Arc::new(RwLock::new(HashMap::new())),
+            fedavg_config,
+            node_id,
+        })
     }
 
     pub async fn load_model(&self, model_id: &str) -> Result<ModelInfo> {
@@ -292,6 +312,109 @@ impl ModelManager {
         }
 
         Ok(removed)
+    }
+
+    /// Submit an encrypted gradient update for FedAvg aggregation.
+    ///
+    /// If the aggregator reaches `min_participants` for all layers, the averaged
+    /// gradient is applied to the model, a new checkpoint is stored, and its
+    /// weights hash is returned.
+    pub async fn submit_gradients(&self, update: &GradientUpdate) -> Result<Option<[u8; 32]>> {
+        if update.participant_weight <= 0.0 {
+            bail!("participant_weight must be positive");
+        }
+
+        let plaintext = model_crypto::decrypt(&update.encrypted_payload, self.storage.encryption_key())
+            .context("Failed to decrypt gradient payload")?;
+        let payload: GradientPayload =
+            GradientPayload::try_from_slice(&plaintext).context("Failed to deserialize gradient payload")?;
+
+        if payload.layer_gradients.is_empty() {
+            bail!("Gradient payload contains no layers");
+        }
+
+        let mut aggregators = self.aggregators.write().await;
+        let aggregator =
+            aggregators.entry(update.model_id.clone()).or_insert_with(|| FedAvgAggregator::new(self.fedavg_config.clone()));
+
+        for (name, layer) in &payload.layer_gradients {
+            aggregator
+                .add_gradient(name, layer.values.clone(), layer.shape.clone(), update.participant_weight)
+                .with_context(|| format!("Failed to add gradient for layer {}", name))?;
+        }
+
+        if !aggregator.all_ready() {
+            let first = payload.layer_gradients.keys().next().unwrap();
+            info!(
+                "Collected gradients for {} ({} of {} participants)",
+                update.model_id,
+                aggregator.participant_count(first),
+                self.fedavg_config.min_participants
+            );
+            return Ok(None);
+        }
+
+        let averages = aggregator.compute_all_averages().context("Failed to compute averaged gradients")?;
+        aggregator.reset();
+        drop(aggregators);
+
+        self.apply_averaged_gradients(&update.model_id, averages).await
+    }
+
+    async fn apply_averaged_gradients(&self, model_id: &str, averages: HashMap<String, Vec<f32>>) -> Result<Option<[u8; 32]>> {
+        info!("Aggregating gradients for {} and producing a new checkpoint", model_id);
+
+        let files = self.storage.load_model_files(model_id).await.map_err(|e| anyhow!("Failed to load model files: {}", e))?;
+
+        let config_for_task = files.config.clone();
+        let tokenizer_for_task = files.tokenizer.clone();
+        let base_path = self.base_path.clone();
+        let model_id_owned = model_id.to_string();
+
+        let (weights, new_hash_bytes) = tokio::task::spawn_blocking(move || {
+            let config = DnaBert2Config::from_bytes(&config_for_task).context("Failed to parse model config")?;
+            let tokenizer = DnaTokenizer::from_bytes(&tokenizer_for_task).context("Failed to parse tokenizer")?;
+
+            let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+            let trainer = DnaBert2Trainer::new(config, files.weights, tokenizer, Device::Cpu, threads, DType::F32)
+                .context("Failed to load trainable model for aggregation")?;
+
+            let data = trainer.varmap().data().lock().map_err(|e| anyhow!("VarMap poisoned: {}", e))?;
+
+            let mut named_grads: HashMap<String, Tensor> = HashMap::with_capacity(averages.len());
+            for (name, avg) in averages {
+                let var = data.get(&name).ok_or_else(|| anyhow!("Model has no variable named {}", name))?;
+                let shape = var.as_tensor().shape().clone();
+                let grad = Tensor::from_vec(avg, shape, &Device::Cpu)
+                    .with_context(|| format!("Failed to build gradient tensor for {}", name))?
+                    .to_dtype(DType::F32)?;
+                named_grads.insert(name, grad);
+            }
+            drop(data);
+
+            // Use the same learning-rate cap the miner uses so a single aggregated step
+            // does not destabilise the pretrained model.
+            trainer.apply_sgd_gradients(&named_grads, 1e-5f32).context("Failed to apply averaged gradients")?;
+
+            let tmp_name = format!("{}_fedavg_{}.safetensors", model_id_owned.replace('/', "_"), Uuid::new_v4());
+            let tmp_path = std::path::Path::new(&base_path).join(&tmp_name);
+            trainer.save_weights_to_path(&tmp_path).context("Failed to save updated weights")?;
+            let weights = std::fs::read(&tmp_path).context("Failed to read updated weights")?;
+            let _ = std::fs::remove_file(&tmp_path);
+
+            let new_hash = blake3::hash(&weights);
+            Ok::<_, anyhow::Error>((weights, <[u8; 32]>::from(new_hash)))
+        })
+        .await
+        .context("Gradient aggregation task panicked")??;
+
+        let new_hash_bytes: [u8; 32] = new_hash_bytes;
+        let new_files = RawModelFiles { config: files.config, tokenizer: files.tokenizer, weights };
+        self.store_model_files(model_id, &new_files, ModelMetrics::default()).await?;
+
+        info!("FedAvg produced new checkpoint for {}: hash {}", model_id, hex::encode(new_hash_bytes));
+
+        Ok(Some(new_hash_bytes))
     }
 }
 

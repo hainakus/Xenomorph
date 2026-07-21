@@ -6,7 +6,7 @@ use crate::gpu::monitor::GpuMonitor;
 use crate::model::DnaBert2Config;
 use crate::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch};
 use crate::tokenizer::DnaTokenizer;
-use crate::trainer::{DeviceInfo, DeviceType, DnaBert2Trainer, Trainer, TrainingResult};
+use crate::trainer::{DeviceInfo, DeviceType, DnaBert2Trainer, GradientUpdate, Trainer, TrainingResult};
 
 /// GPU backend selector for the DNABERT-2 trainer.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -130,8 +130,16 @@ impl Trainer for GpuTrainer {
         self.inner.train(batch)
     }
 
+    fn train_with_gradients(&self, batch: &TrainingBatch) -> Result<(TrainingResult, Option<GradientUpdate>)> {
+        self.inner.train_with_gradients(batch)
+    }
+
     fn train_genome(&self, msg: &GenomeTrainingBatchMsg) -> Result<TrainingResult> {
         self.inner.train_genome(msg)
+    }
+
+    fn train_genome_with_gradients(&self, msg: &GenomeTrainingBatchMsg) -> Result<(TrainingResult, Option<GradientUpdate>)> {
+        self.inner.train_genome_with_gradients(msg)
     }
 
     fn device_info(&self) -> DeviceInfo {

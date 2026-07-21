@@ -95,6 +95,13 @@ async fn handle_request(req: RpcRequest, coordinator: &Coordinator) -> RpcRespon
             coordinator.get_model_checkpoint_info(model_id).await
         }
         RpcRequest::SubmitBlock(block) => coordinator.submit_block(block).await,
+        RpcRequest::SubmitGradients(update) => match coordinator.submit_gradients(&update).await {
+            Ok(new_checkpoint) => RpcResponse::GradientAck { new_checkpoint },
+            Err(e) => {
+                warn!("Failed to submit gradients for {}: {}", update.model_id, e);
+                RpcResponse::Error(format!("Failed to submit gradients: {}", e))
+            }
+        },
         RpcRequest::GetBalance { .. } => RpcResponse::Balance(10_000),
         RpcRequest::GetDifficulty => RpcResponse::Difficulty([0u8; 32]),
         RpcRequest::Heartbeat => RpcResponse::Pong,

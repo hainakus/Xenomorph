@@ -44,6 +44,10 @@ impl ModelStorage {
         Self { base_path, encryption_key }
     }
 
+    pub fn encryption_key(&self) -> &[u8; 32] {
+        &self.encryption_key
+    }
+
     /// Derive the 32-byte AES key used to encrypt/decrypt model files.
     ///
     /// If `XENO_MODEL_KEY` is a 64-character hex string, it is decoded directly;

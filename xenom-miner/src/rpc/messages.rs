@@ -1,4 +1,5 @@
 use borsh::{BorshDeserialize, BorshSerialize};
+use std::collections::HashMap;
 
 pub type BlockHash = [u8; 32];
 pub type DifficultyTarget = [u8; 32];
@@ -112,6 +113,31 @@ pub struct ModelCheckpointInfo {
     pub base_checkpoint: [u8; 32],
 }
 
+/// One layer's flattened gradient vector plus its original shape, used for
+/// FedAvg aggregation across miners.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct GradientLayer {
+    pub values: Vec<f32>,
+    pub shape: Vec<usize>,
+}
+
+/// Plaintext gradient payload that is serialized and then encrypted before
+/// being sent over the wire.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct GradientPayload {
+    pub layer_gradients: HashMap<String, GradientLayer>,
+}
+
+/// Gradient update submitted by a miner to the aggregator.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct GradientUpdate {
+    pub model_id: String,
+    pub base_checkpoint: [u8; 32],
+    pub encrypted_payload: Vec<u8>,
+    /// Relative weight of this participant in the average (e.g. dataset size).
+    pub participant_weight: f32,
+}
+
 /// Request messages sent from the miner to the Xenomorph node.
 /// New variants are appended at the end to preserve Borsh enum indices for the
 /// seed-node.
@@ -126,6 +152,7 @@ pub enum RpcRequest {
     Heartbeat,
     GetGenomeTrainingBatch(GetGenomeTrainingBatch),
     GetModelCheckpointInfo(GetModelCheckpointInfo),
+    SubmitGradients(GradientUpdate),
 }
 
 /// Response messages sent from the Xenomorph node to the miner.
@@ -142,6 +169,7 @@ pub enum RpcResponse {
     Error(String),
     GenomeTrainingBatch(GenomeTrainingBatchMsg),
     ModelCheckpointInfo(ModelCheckpointInfo),
+    GradientAck { new_checkpoint: Option<[u8; 32]> },
 }
 
 /// Wire envelope used by the RPC client to tag requests.

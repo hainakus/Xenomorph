@@ -25,7 +25,7 @@ use seed_node::genome::{GenomeBatchGenerator, GenomeStorage};
 use seed_node::model::manager::ModelManager;
 use seed_node::model::storage::ModelStorage;
 use seed_node::rpc::messages::{
-    GenomeTrainingBatchMsg, GetGenomeTrainingBatch, ModelCheckpoint as RpcModelCheckpoint,
+    GenomeTrainingBatchMsg, GetGenomeTrainingBatch, GradientUpdate, ModelCheckpoint as RpcModelCheckpoint,
     ModelCheckpointInfo as RpcModelCheckpointInfo, RpcResponse, TrainingBatch, TrainingBlock,
 };
 use tokio::sync::RwLock;
@@ -438,5 +438,28 @@ impl Coordinator {
         }
 
         RpcResponse::BlockHash(block_hash)
+    }
+
+    /// Submit a gradient update for FedAvg aggregation and, if enough participants
+    /// have contributed, apply the averaged update to the active model.
+    pub async fn submit_gradients(&self, update: &GradientUpdate) -> Result<Option<[u8; 32]>> {
+        if update.model_id != self.inner.active_model_id {
+            return Err(anyhow::anyhow!(
+                "Gradient update for {} does not match active model {}",
+                update.model_id,
+                self.inner.active_model_id
+            ));
+        }
+
+        let new_checkpoint = self.inner.model_manager.submit_gradients(update).await?;
+
+        // Update the cached active weights hash so the next miner round uses the new checkpoint.
+        if let Some(hash) = new_checkpoint {
+            let hash = Hash::from_bytes(hash);
+            let mut cached = self.inner.active_weights_hash.write().await;
+            *cached = Some(hash);
+        }
+
+        Ok(new_checkpoint)
     }
 }

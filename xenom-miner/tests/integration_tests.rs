@@ -64,6 +64,7 @@ async fn start_mock_server() -> u16 {
                     RpcRequest::GetModelCheckpointInfo(req) => {
                         RpcResponse::ModelCheckpointInfo(ModelCheckpointInfo { model_id: req.model_id, base_checkpoint: [1u8; 32] })
                     }
+                    RpcRequest::SubmitGradients(_) => RpcResponse::GradientAck { new_checkpoint: None },
                 };
 
                 let payload = to_vec(&response).unwrap();

@@ -384,7 +384,7 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                let (result, batch_id) = if let Some(merkle) = genome_merkle {
+                let (result, batch_id, gradient_update) = if let Some(merkle) = genome_merkle {
                     let msg = match get_genome_batch(&mut rpc_client, merkle, &config.model_id, args.genome_batch_size).await {
                         Some(msg) => msg,
                         None if config.dry_run => {
@@ -401,10 +401,11 @@ async fn main() -> Result<()> {
 
                     let batch_id = msg.batch.batch_id;
                     let trainer = Arc::clone(&trainer);
-                    let result = tokio::task::spawn_blocking(move || trainer.train_genome(&msg))
-                        .await
-                        .context("Genome training task panicked")??;
-                    (result, batch_id)
+                    let (result, gradient_update) =
+                        tokio::task::spawn_blocking(move || trainer.train_genome_with_gradients(&msg))
+                            .await
+                            .context("Genome training task panicked")??;
+                    (result, batch_id, gradient_update)
                 } else {
                     let batch = match get_batch(&mut rpc_client, &config.model_id).await {
                         Some(batch) => batch,
@@ -419,10 +420,11 @@ async fn main() -> Result<()> {
                     let batch_id = batch.batch_id;
                     let batch_for_training = batch.clone();
                     let trainer = Arc::clone(&trainer);
-                    let result = tokio::task::spawn_blocking(move || trainer.train(&batch_for_training))
-                        .await
-                        .context("Training task panicked")??;
-                    (result, batch_id)
+                    let (result, gradient_update) =
+                        tokio::task::spawn_blocking(move || trainer.train_with_gradients(&batch_for_training))
+                            .await
+                            .context("Training task panicked")??;
+                    (result, batch_id, gradient_update)
                 };
 
                 let public_inputs = PublicInputs {
@@ -461,6 +463,24 @@ async fn main() -> Result<()> {
                         }
                         Err(e) => {
                             warn!("Failed to submit block: {}", e);
+                            rpc_client = None;
+                        }
+                    }
+                }
+
+                // Submit the gradient update for FedAvg aggregation. This is independent of
+                // the block submission; the seed-node will aggregate and produce a new
+                // checkpoint once enough participants have contributed.
+                if let (Some(update), Some(client)) = (gradient_update, rpc_client.as_mut()) {
+                    match client.submit_gradients(update).await {
+                        Ok(Some(new_checkpoint)) => {
+                            info!("FedAvg produced new checkpoint: {}", hex::encode(new_checkpoint));
+                        }
+                        Ok(None) => {
+                            info!("Gradient update accepted; waiting for more participants");
+                        }
+                        Err(e) => {
+                            warn!("Failed to submit gradients: {}", e);
                             rpc_client = None;
                         }
                     }

@@ -10,8 +10,8 @@ use tokio_tungstenite::{
 use tracing::{debug, info, warn};
 
 use super::messages::{
-    BlockHash, DifficultyTarget, GenomeTrainingBatchMsg, GetModelCheckpointInfo, ModelCheckpoint, ModelCheckpointInfo, RpcEnvelope,
-    RpcRequest, RpcResponse, TrainingBatch, TrainingBlock,
+    BlockHash, DifficultyTarget, GenomeTrainingBatchMsg, GetModelCheckpointInfo, GradientUpdate, ModelCheckpoint, ModelCheckpointInfo,
+    RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch, TrainingBlock,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -137,6 +137,17 @@ impl XenomRpcClient {
             RpcResponse::BlockHash(hash) => Ok(hash),
             RpcResponse::Error(msg) => bail!("Node rejected block: {}", msg),
             other => bail!("Unexpected response to SubmitBlock: {:?}", other),
+        }
+    }
+
+    /// Submit a gradient update for FedAvg aggregation.
+    pub async fn submit_gradients(&mut self, update: GradientUpdate) -> Result<Option<[u8; 32]>> {
+        let response = self.send_request(RpcRequest::SubmitGradients(update)).await?;
+
+        match response {
+            RpcResponse::GradientAck { new_checkpoint } => Ok(new_checkpoint),
+            RpcResponse::Error(msg) => bail!("Node rejected gradient update: {}", msg),
+            other => bail!("Unexpected response to SubmitGradients: {:?}", other),
         }
     }
 
