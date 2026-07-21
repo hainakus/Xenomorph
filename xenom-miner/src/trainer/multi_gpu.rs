@@ -284,7 +284,7 @@ impl MultiGpuTrainer {
             .scaler
             .lock()
             .map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?
-            .effective_learning_rate(learning_rate.min(MAX_LEARNING_RATE));
+            .effective_learning_rate(learning_rate, MAX_LEARNING_RATE);
 
         // Only update weights when the averaged gradients are finite.
         if !had_overflow {

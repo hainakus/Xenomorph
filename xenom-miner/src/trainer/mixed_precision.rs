@@ -47,12 +47,10 @@ impl MixedPrecisionScaler {
 
     /// Adjust an external learning rate to account for the loss scale.
     /// The optimizer sees scaled gradients, so the effective LR is `lr / scale`.
-    pub fn effective_learning_rate(&self, base_lr: f32) -> f32 {
-        if self.enabled {
-            base_lr / self.scale
-        } else {
-            base_lr
-        }
+    /// The result is clamped to `max_lr` so it never exceeds the safe cap for the model.
+    pub fn effective_learning_rate(&self, base_lr: f32, max_lr: f32) -> f32 {
+        let effective = if self.enabled { base_lr / self.scale } else { base_lr };
+        effective.min(max_lr)
     }
 
     /// Check whether a scalar loss tensor is finite.
