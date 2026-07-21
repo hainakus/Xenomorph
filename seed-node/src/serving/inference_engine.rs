@@ -136,8 +136,28 @@ impl InferenceEngine {
         let mask_token = loaded.tokenizer.mask_token();
 
         // Normalize common aliases to the tokenizer's mask token, but never hardcode `<mask>`.
-        let normalized =
-            if mask_token == "<mask>" && input.contains("[MASK]") { input.replace("[MASK]", mask_token) } else { input.to_string() };
+        let mut sanitized = input.trim().to_string();
+        if mask_token == "<mask>" {
+            sanitized = sanitized.replace("[MASK]", mask_token);
+        }
+
+        // Replace the mask token with a placeholder that is not a valid DNA base, then
+        // uppercase and validate the rest of the sequence. This avoids upper-casing the
+        // mask token itself.
+        let placeholder = '\x07';
+        let mut with_placeholder = sanitized.replace(mask_token, &placeholder.to_string());
+        with_placeholder = with_placeholder.to_uppercase();
+        with_placeholder.retain(|c| !c.is_whitespace());
+
+        if with_placeholder.chars().any(|c| !matches!(c, 'A' | 'T' | 'C' | 'G' | '\x07')) {
+            return Err(anyhow!(
+                "Input contains characters that are not valid DNA bases. \
+                 Only A, T, C, G and the mask token '{}' are supported.",
+                mask_token
+            ));
+        }
+
+        let normalized = with_placeholder.replace(placeholder, mask_token);
 
         if !normalized.contains(mask_token) {
             // No mask token in the prompt; return the input unchanged.
@@ -195,12 +215,20 @@ impl InferenceEngine {
     /// Compute mean-pooled sequence embeddings for a DNA sequence.
     pub fn embed(&self, model_id: &str, input: &str) -> Result<Vec<f32>> {
         let loaded = self.get_or_load(model_id)?;
-        let input = input.trim();
-        if input.is_empty() {
-            return Err(anyhow!("Input is empty"));
+
+        // Embeddings only make sense for raw DNA; strip mask tokens, whitespace and validate.
+        let mut sanitized = input.trim().to_uppercase().replace(loaded.tokenizer.mask_token(), "");
+        sanitized.retain(|c| !c.is_whitespace());
+        if sanitized.is_empty() {
+            return Err(anyhow!("Input is empty after removing mask tokens and whitespace"));
+        }
+        if sanitized.chars().any(|c| !matches!(c, 'A' | 'T' | 'C' | 'G')) {
+            return Err(anyhow!(
+                "Input contains characters that are not valid DNA bases. Only A, T, C, G are supported for embeddings."
+            ));
         }
 
-        let input_ids_vec = loaded.tokenizer.encode(input, true)?;
+        let input_ids_vec = loaded.tokenizer.encode(&sanitized, true)?;
         let seq_len = input_ids_vec.len();
         let input_ids = Tensor::new(input_ids_vec.as_slice(), &self.device)?.reshape((1, seq_len))?;
 

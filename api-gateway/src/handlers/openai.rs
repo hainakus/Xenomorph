@@ -99,6 +99,31 @@ pub struct OpenAiModel {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Sanitize user input for a DNA model.
+///
+/// Keeps only A, T, C, G and the `<mask>` / `[MASK]` token. Everything else is
+/// removed. This prevents `Unk token ... not found in the vocabulary` errors
+/// when users paste natural language or stray characters into a direct
+/// DNABERT-2 call.
+fn sanitize_dna_input(input: &str) -> String {
+    let mut s = input.trim().to_string();
+    s = s.replace("[MASK]", "<mask>");
+
+    // Use a placeholder for the mask token so it survives upper-casing/filtering.
+    let placeholder = '\x07';
+    let mut with_placeholder = s.replace("<mask>", &placeholder.to_string());
+    with_placeholder = with_placeholder.to_uppercase();
+    with_placeholder.retain(|c| !c.is_whitespace());
+
+    let filtered: String = with_placeholder.chars().filter(|&c| matches!(c, 'A' | 'T' | 'C' | 'G' | '\x07')).collect();
+
+    filtered.replace(placeholder, "<mask>")
+}
+
+// ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
@@ -118,9 +143,15 @@ pub async fn chat_completions(
     info!("OpenAI chat completion for model: {}", request.model);
 
     let model_id = request.model.clone();
+    let sanitized = sanitize_dna_input(&user_content);
+    if sanitized.is_empty() {
+        error!("OpenAI chat input contains no valid DNA bases");
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
     let response = if let Some(mut client) = state.seed_client.clone() {
         let query_id = Uuid::new_v4().to_string();
-        match client.predict(&model_id, user_content.as_bytes(), &query_id).await {
+        match client.predict(&model_id, sanitized.as_bytes(), &query_id).await {
             Ok(grpc_response) => String::from_utf8_lossy(&grpc_response.output_data).to_string(),
             Err(e) => {
                 error!("Seed node predict failed for OpenAI chat: {}", e);
@@ -132,7 +163,7 @@ pub async fn chat_completions(
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     };
 
-    let prompt_tokens = user_content.split_whitespace().count() as u32;
+    let prompt_tokens = sanitized.split_whitespace().count() as u32;
     let completion_tokens = response.split_whitespace().count() as u32;
 
     Ok(Json(ChatCompletionsResponse {
@@ -165,10 +196,15 @@ pub async fn embeddings(
     if let Some(mut client) = state.seed_client.clone() {
         for (index, input) in inputs.into_iter().enumerate() {
             let query_id = Uuid::new_v4().to_string();
-            let prompt_tokens = input.split_whitespace().count() as u32;
+            let sanitized = sanitize_dna_input(&input);
+            if sanitized.is_empty() {
+                error!("OpenAI embeddings input contains no valid DNA bases");
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            let prompt_tokens = sanitized.split_whitespace().count() as u32;
             total_tokens += prompt_tokens;
 
-            match client.embed(&request.model, input.as_bytes(), &query_id).await {
+            match client.embed(&request.model, sanitized.as_bytes(), &query_id).await {
                 Ok(grpc_response) => {
                     data.push(EmbeddingData {
                         object: "embedding".to_string(),
