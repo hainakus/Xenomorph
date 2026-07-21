@@ -52,6 +52,9 @@ pub struct TrainingBlock {
 
 /// Raw model checkpoint bytes returned by the seed-node. The seed-node is the only entity that
 /// downloads and stores model weights; the miner receives them in memory and does not persist.
+///
+/// When `encrypted` is true, `config`, `tokenizer` and `weights` are AES-256-GCM ciphertexts
+/// with the nonce prepended, and the miner must decrypt them with the same `XENO_MODEL_KEY`.
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub struct ModelCheckpoint {
     pub model_id: String,
@@ -59,6 +62,7 @@ pub struct ModelCheckpoint {
     pub config: Vec<u8>,
     pub tokenizer: Vec<u8>,
     pub weights: Vec<u8>,
+    pub encrypted: bool,
 }
 
 /// Request for a genome-backed DNABERT-2 training batch.
@@ -144,6 +148,7 @@ mod tests {
             config: b"{}".to_vec(),
             tokenizer: b"[]".to_vec(),
             weights: vec![0u8; 64],
+            encrypted: true,
         };
         let bytes = to_vec(&checkpoint).unwrap();
         let decoded: ModelCheckpoint = ModelCheckpoint::try_from_slice(&bytes).unwrap();

@@ -126,13 +126,14 @@ async fn handle_request(
                 base_checkpoint: get_checkpoint(&model_manager, &model_id).await,
             })
         }
-        RpcRequest::GetModelCheckpoint { model_id } => match model_manager.get_model_checkpoint(&model_id).await {
+        RpcRequest::GetModelCheckpoint { model_id } => match model_manager.get_encrypted_model_checkpoint(&model_id).await {
             Ok((checkpoint, files)) => RpcResponse::ModelCheckpoint(super::messages::ModelCheckpoint {
                 model_id,
                 base_checkpoint: checkpoint.weights_hash,
                 config: files.config,
                 tokenizer: files.tokenizer,
                 weights: files.weights,
+                encrypted: true,
             }),
             Err(e) => RpcResponse::Error(format!("Failed to get model checkpoint: {}", e)),
         },

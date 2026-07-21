@@ -29,6 +29,7 @@ members = [
     "crypto/muhash",
     "crypto/addresses",
     "crypto/merkle",
+    "crypto/model-crypto",
     "notify",
     "indexes/core",
     "indexes/processor",

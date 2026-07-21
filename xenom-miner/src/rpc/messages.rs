@@ -86,6 +86,9 @@ pub struct TrainingBlock {
 }
 
 /// Raw model checkpoint bytes returned by the seed-node.
+///
+/// When `encrypted` is true, `config`, `tokenizer` and `weights` are AES-256-GCM
+/// ciphertexts (nonce || ciphertext) and must be decrypted with `XENO_MODEL_KEY`.
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub struct ModelCheckpoint {
     pub model_id: String,
@@ -93,6 +96,7 @@ pub struct ModelCheckpoint {
     pub config: Vec<u8>,
     pub tokenizer: Vec<u8>,
     pub weights: Vec<u8>,
+    pub encrypted: bool,
 }
 
 /// Request the lightweight metadata for the active model checkpoint.
@@ -216,6 +220,7 @@ mod tests {
             config: b"{}".to_vec(),
             tokenizer: b"[]".to_vec(),
             weights: vec![0u8; 64],
+            encrypted: true,
         };
         let bytes = to_vec(&checkpoint).unwrap();
         let decoded: ModelCheckpoint = ModelCheckpoint::try_from_slice(&bytes).unwrap();

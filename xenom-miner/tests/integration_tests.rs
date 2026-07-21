@@ -53,6 +53,7 @@ async fn start_mock_server() -> u16 {
                             config: b"{}".to_vec(),
                             tokenizer: b"[]".to_vec(),
                             weights: vec![0u8; 64],
+                            encrypted: false,
                         })
                     }
                     RpcRequest::SubmitBlock(_) => RpcResponse::BlockHash([7u8; 32]),

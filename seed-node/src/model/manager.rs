@@ -10,7 +10,7 @@ use crate::rpc::messages::TrainingBatch;
 use super::checkpoint::{ModelCheckpoint, ModelMetrics};
 use super::downloader::{download_model, is_valid_weights};
 use super::storage::ModelStorage;
-use super::RawModelFiles;
+use super::{EncryptedModelFiles, RawModelFiles};
 
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
@@ -196,6 +196,19 @@ impl ModelManager {
         let files = self.storage.load_model_files(model_id).await.map_err(|e| anyhow!("Failed to load model files: {}", e))?;
         let checkpoint = ModelCheckpoint::new(0, model_id.to_string(), 1, &files.weights, ModelMetrics::default());
         Ok((checkpoint, files))
+    }
+
+    /// Return the model checkpoint with still-encrypted files so they can be sent
+    /// over the network and decrypted by the receiver.
+    pub async fn get_encrypted_model_checkpoint(&self, model_id: &str) -> Result<(ModelCheckpoint, EncryptedModelFiles)> {
+        // Load the model once to get the canonical plaintext weights hash and metadata.
+        let model_info = self.load_model(model_id).await?;
+        let files = self
+            .storage
+            .load_encrypted_model_files(model_id)
+            .await
+            .map_err(|e| anyhow!("Failed to load encrypted model files: {}", e))?;
+        Ok((model_info.checkpoint, files))
     }
 
     pub async fn store_checkpoint(&self, model_id: &str, version: u32, data: &[u8], _metrics: ModelMetrics) -> Result<String> {

@@ -20,6 +20,7 @@ borsh = { workspace = true }
 
 # Crypto
 blake3 = "1.5"
+model-crypto = { path = "../crypto/model-crypto" }
 sha2 = "0.10"
 rand = "0.8"
 rand_chacha = "0.3"

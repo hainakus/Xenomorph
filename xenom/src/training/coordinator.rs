@@ -238,7 +238,7 @@ impl Coordinator {
             return RpcResponse::Error(format!("Failed to download model: {}", e));
         }
 
-        let (checkpoint, files) = match self.inner.model_manager.get_model_checkpoint(&model_id).await {
+        let (checkpoint, files) = match self.inner.model_manager.get_encrypted_model_checkpoint(&model_id).await {
             Ok(cp) => cp,
             Err(e) => return RpcResponse::Error(format!("Failed to load model checkpoint: {}", e)),
         };
@@ -249,6 +249,7 @@ impl Coordinator {
             config: files.config,
             tokenizer: files.tokenizer,
             weights: files.weights,
+            encrypted: true,
         })
     }
 

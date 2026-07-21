@@ -4,4 +4,4 @@ pub mod manager;
 pub mod model_files;
 pub mod storage;
 
-pub use model_files::RawModelFiles;
+pub use model_files::{EncryptedModelFiles, RawModelFiles};
