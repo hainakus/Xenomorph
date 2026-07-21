@@ -39,6 +39,33 @@ impl ModelStorage {
         Self { base_path, encryption_key }
     }
 
+    /// Derive the 32-byte AES key used to encrypt/decrypt model files.
+    ///
+    /// If `XENO_MODEL_KEY` is a 64-character hex string, it is decoded directly;
+    /// otherwise the value (or a default devnet string) is hashed with SHA-256.
+    /// This function is shared by the seed-node and the unified xeno-node so both
+    /// processes can read the same on-disk model cache.
+    pub fn derive_encryption_key() -> [u8; 32] {
+        const DEFAULT_KEY: &str = "xenom-devnet-model-key";
+        let seed = std::env::var("XENO_MODEL_KEY").unwrap_or_else(|_| DEFAULT_KEY.to_string());
+        let seed = seed.trim();
+
+        if seed.len() == 64 {
+            if let Ok(decoded) = hex::decode(seed) {
+                if decoded.len() == 32 {
+                    let mut key = [0u8; 32];
+                    key.copy_from_slice(&decoded);
+                    return key;
+                }
+            }
+        }
+
+        let hash = Sha256::digest(seed.as_bytes());
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&hash);
+        key
+    }
+
     /// Sanitize a model identifier so it is safe to use in filesystem paths.
     /// Replaces path separators and other special characters with underscores.
     fn sanitize_id(model_id: &str) -> String {

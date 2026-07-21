@@ -23,6 +23,7 @@ use kaspa_rpc_core::{GetBlockTemplateRequest, SubmitBlockReport, SubmitBlockRequ
 use kaspa_rpc_service::service::RpcCoreService;
 use seed_node::genome::{GenomeBatchGenerator, GenomeStorage};
 use seed_node::model::manager::ModelManager;
+use seed_node::model::storage::ModelStorage;
 use seed_node::rpc::messages::{GenomeTrainingBatchMsg, GetGenomeTrainingBatch, ModelCheckpoint as RpcModelCheckpoint, RpcResponse, TrainingBatch, TrainingBlock};
 use tokio::sync::RwLock;
 
@@ -76,10 +77,8 @@ impl Coordinator {
         tokio::fs::create_dir_all(&genome_cache_dir).await?;
 
         // Use a stable key for the local model cache so restarts do not force a re-download.
-        let model_key = std::env::var("XENO_MODEL_KEY").unwrap_or_else(|_| "xenom-devnet-model-key".to_string());
-        let mut encryption_key = [0u8; 32];
-        let key_hash = blake3::hash(model_key.as_bytes());
-        encryption_key.copy_from_slice(key_hash.as_bytes());
+        // The same derivation is used by the seed-node so they can share a model cache directory.
+        let encryption_key = ModelStorage::derive_encryption_key();
 
         let model_manager = Arc::new(
             ModelManager::new_with_key(models_dir.to_string_lossy().to_string(), encryption_key).await?,
