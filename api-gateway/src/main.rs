@@ -71,7 +71,8 @@ async fn main() -> Result<()> {
         .with_state(state);
 
     // Start server
-    let addr: SocketAddr = "0.0.0.0:3000".parse()?;
+    let api_port = std::env::var("API_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(3000u16);
+    let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], api_port));
     info!("API Gateway listening on {}", addr);
 
     let listener = TcpListener::bind(addr).await?;
