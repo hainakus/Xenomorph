@@ -185,7 +185,9 @@ async fn handle_connection(stream: tokio::net::TcpStream, state: Arc<Mutex<MockS
                         tokenizer: b"[]".to_vec(),
                         weights: vec![0u8; 64],
                     }),
-                    RpcRequest::GetGenomeTrainingBatch(_) => RpcResponse::Error("mock seed node does not serve genome batches".to_string()),
+                    RpcRequest::GetGenomeTrainingBatch(_) => {
+                        RpcResponse::Error("mock seed node does not serve genome batches".to_string())
+                    }
                     RpcRequest::SubmitBlock(block) => {
                         // The real proof has 1 version byte + 32 commitments + 32 hash.
                         let valid_proof =

@@ -25,8 +25,8 @@ use crate::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch};
 use crate::tokenizer::DnaTokenizer;
 use crate::trainer::gpu_trainer::GpuBackend;
 use crate::trainer::mixed_precision::{to_grad_dtype, MixedPrecisionScaler};
-use crate::trainer::{DeviceInfo, DeviceType, Trainer, TrainingResult};
 use crate::trainer::DnaBert2Trainer;
+use crate::trainer::{DeviceInfo, DeviceType, Trainer, TrainingResult};
 
 /// Learning-rate cap inherited from `DnaBert2Trainer`.
 const MAX_LEARNING_RATE: f32 = 1e-5;
@@ -122,27 +122,15 @@ impl MultiGpuTrainer {
             // Each replica needs its own copy of the weights so it can build a
             // VarMap on its device.
             let replica_weights = weights.clone();
-            let trainer = DnaBert2Trainer::new(
-                config.clone(),
-                replica_weights,
-                tokenizer.clone(),
-                device.clone(),
-                threads,
-                dtype,
-            )
-            .with_context(|| format!("Failed to load DNABERT-2 replica on device {:?}", device))?;
+            let trainer = DnaBert2Trainer::new(config.clone(), replica_weights, tokenizer.clone(), device.clone(), threads, dtype)
+                .with_context(|| format!("Failed to load DNABERT-2 replica on device {:?}", device))?;
             info!("Loaded DNABERT-2 replica {}/{} on device {:?}", idx + 1, devices.len(), device);
             trainers.push(Arc::new(trainer));
         }
 
         let device_info = Self::build_device_info(&devices, threads);
 
-        Ok(Self {
-            trainers,
-            config: gpu_config,
-            scaler,
-            device_info,
-        })
+        Ok(Self { trainers, config: gpu_config, scaler, device_info })
     }
 
     /// Determine which physical devices to use based on the CLI config and
@@ -222,12 +210,8 @@ impl MultiGpuTrainer {
     ) -> Result<TrainingResult> {
         let start = Instant::now();
 
-        let micro_batches = split_mlm_batch(
-            mlm_batch,
-            self.trainers.len(),
-            self.config.gradient_accumulation_steps,
-            self.config.micro_batch_size,
-        );
+        let micro_batches =
+            split_mlm_batch(mlm_batch, self.trainers.len(), self.config.gradient_accumulation_steps, self.config.micro_batch_size);
 
         let mut accumulated_grads: Option<HashMap<String, Tensor>> = None;
         let mut loss_sum = 0.0f64;
@@ -241,11 +225,7 @@ impl MultiGpuTrainer {
             for (gpu_idx, maybe_micro) in step.iter().enumerate() {
                 let Some(micro) = maybe_micro else { continue };
                 let trainer = &self.trainers[gpu_idx];
-                let loss_scale = self
-                    .scaler
-                    .lock()
-                    .map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?
-                    .scale();
+                let loss_scale = self.scaler.lock().map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?.scale();
 
                 let (loss, grads) = match trainer.compute_gradients(micro, loss_scale) {
                     Ok(v) => v,
@@ -277,8 +257,7 @@ impl MultiGpuTrainer {
                 continue;
             }
 
-            let avg = average_grad_maps(&step_grads)
-                .context("Failed to average gradients across GPUs for an accumulation step")?;
+            let avg = average_grad_maps(&step_grads).context("Failed to average gradients across GPUs for an accumulation step")?;
             accumulated_grads = Some(match accumulated_grads {
                 None => avg,
                 Some(acc) => add_grad_maps(acc, avg)?,
@@ -290,10 +269,7 @@ impl MultiGpuTrainer {
 
         // If every micro-batch overflowed, reduce the scale and bail so the next batch can retry.
         if accumulated_grads.is_none() {
-            self.scaler
-                .lock()
-                .map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?
-                .update_scale(true);
+            self.scaler.lock().map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?.update_scale(true);
             bail!("All micro-batches overflowed; loss scale reduced. Will retry on next batch.");
         }
 
@@ -301,11 +277,8 @@ impl MultiGpuTrainer {
         let avg_loss_before = loss_sum / loss_count.max(1) as f64;
 
         let flat_grads: Vec<(String, Tensor)> = final_grads.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        let had_overflow = self
-            .scaler
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?
-            .has_overflow(&flat_grads)?;
+        let had_overflow =
+            self.scaler.lock().map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?.has_overflow(&flat_grads)?;
 
         let effective_lr = self
             .scaler
@@ -318,27 +291,18 @@ impl MultiGpuTrainer {
             self.trainers[0]
                 .apply_gradients(&final_grads, effective_lr)
                 .context("Failed to apply averaged gradients to master replica")?;
-            self.broadcast_master_to_others()
-                .context("Failed to broadcast updated weights to replica GPUs")?;
+            self.broadcast_master_to_others().context("Failed to broadcast updated weights to replica GPUs")?;
         } else {
             warn!("Averaged gradients are non-finite; skipping optimizer step and reducing loss scale");
             any_overflow = true;
         }
 
         // Update the loss scale based on overflow status.
-        self.scaler
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?
-            .update_scale(any_overflow);
+        self.scaler.lock().map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?.update_scale(any_overflow);
 
         // Compute post-update loss on the master replica using the first
         // valid micro-batch.
-        let first_micro = micro_batches
-            .iter()
-            .flat_map(|step| step.iter())
-            .flatten()
-            .next()
-            .unwrap_or(mlm_batch);
+        let first_micro = micro_batches.iter().flat_map(|step| step.iter()).flatten().next().unwrap_or(mlm_batch);
         let loss_after = self.trainers[0].compute_loss_scalar(first_micro)?;
         let gradients_commitment = self.trainers[0].gradient_commitment_from_named_tensors(final_grads)?;
 
@@ -366,13 +330,8 @@ impl MultiGpuTrainer {
         for (idx, replica) in self.trainers.iter().enumerate().skip(1) {
             let replica_data = replica.varmap.data().lock().map_err(|e| anyhow::anyhow!("VarMap poisoned: {}", e))?;
             for (name, master_var) in master_data.iter() {
-                let replica_var = replica_data
-                    .get(name)
-                    .with_context(|| format!("Replica {} is missing variable {}", idx, name))?;
-                let updated = master_var
-                    .as_tensor()
-                    .to_device(&replica.device)?
-                    .contiguous()?;
+                let replica_var = replica_data.get(name).with_context(|| format!("Replica {} is missing variable {}", idx, name))?;
+                let updated = master_var.as_tensor().to_device(&replica.device)?.contiguous()?;
                 replica_var.set(&updated)?;
             }
         }
@@ -383,10 +342,7 @@ impl MultiGpuTrainer {
 
 impl Trainer for MultiGpuTrainer {
     fn train(&self, batch: &TrainingBatch) -> Result<TrainingResult> {
-        let mlm_batch = self.trainers[0]
-            .generator
-            .generate(batch)
-            .context("Failed to generate MLM batch")?;
+        let mlm_batch = self.trainers[0].generator.generate(batch).context("Failed to generate MLM batch")?;
         self.train_mlm_batch(&mlm_batch, &batch.model_id, batch.base_checkpoint, batch.data_indices.clone(), batch.learning_rate)
     }
 
@@ -446,10 +402,7 @@ fn split_mlm_batch(
 
     let max_usable = micro_batch_size.saturating_mul(num_gpus).saturating_mul(accumulation_steps);
     if total > max_usable {
-        warn!(
-            "Batch size {} exceeds usable grid capacity {}; truncating to {}",
-            total, max_usable, max_usable
-        );
+        warn!("Batch size {} exceeds usable grid capacity {}; truncating to {}", total, max_usable, max_usable);
     }
 
     let mut consumed = 0usize;
@@ -496,9 +449,7 @@ fn average_grad_maps(grads: &[HashMap<String, Tensor>]) -> Result<HashMap<String
     for (name, base) in first.iter() {
         let mut sum = to_grad_dtype(base)?;
         for other in &grads[1..] {
-            let g = other
-                .get(name)
-                .with_context(|| format!("Gradient map missing variable {}", name))?;
+            let g = other.get(name).with_context(|| format!("Gradient map missing variable {}", name))?;
             let g = to_grad_dtype(g)?;
             sum = (&sum + &g)?;
         }

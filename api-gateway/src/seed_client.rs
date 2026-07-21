@@ -47,12 +47,8 @@ impl SeedNodeClient {
     }
 
     pub async fn list_models(&mut self) -> Result<GrpcListModelsResponse> {
-        let request = tonic::Request::new(GrpcListModelsRequest {
-            category: String::new(),
-            active_only: false,
-            limit: 100,
-            offset: 0,
-        });
+        let request =
+            tonic::Request::new(GrpcListModelsRequest { category: String::new(), active_only: false, limit: 100, offset: 0 });
 
         let response = self.client.list_models(request).await.map_err(|e| anyhow!("Seed node list_models failed: {}", e))?;
 

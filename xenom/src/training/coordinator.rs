@@ -24,7 +24,9 @@ use kaspa_rpc_service::service::RpcCoreService;
 use seed_node::genome::{GenomeBatchGenerator, GenomeStorage};
 use seed_node::model::manager::ModelManager;
 use seed_node::model::storage::ModelStorage;
-use seed_node::rpc::messages::{GenomeTrainingBatchMsg, GetGenomeTrainingBatch, ModelCheckpoint as RpcModelCheckpoint, RpcResponse, TrainingBatch, TrainingBlock};
+use seed_node::rpc::messages::{
+    GenomeTrainingBatchMsg, GetGenomeTrainingBatch, ModelCheckpoint as RpcModelCheckpoint, RpcResponse, TrainingBatch, TrainingBlock,
+};
 use tokio::sync::RwLock;
 
 /// Compact training summary embedded into the coinbase extra-data payload.
@@ -80,9 +82,7 @@ impl Coordinator {
         // The same derivation is used by the seed-node so they can share a model cache directory.
         let encryption_key = ModelStorage::derive_encryption_key();
 
-        let model_manager = Arc::new(
-            ModelManager::new_with_key(models_dir.to_string_lossy().to_string(), encryption_key).await?,
-        );
+        let model_manager = Arc::new(ModelManager::new_with_key(models_dir.to_string_lossy().to_string(), encryption_key).await?);
 
         // Pre-download the active model before accepting miner connections. This avoids the
         // 30s RPC request timeout in xenom-miner while the full node is still downloading.
@@ -344,7 +344,8 @@ impl Coordinator {
                     }
                     Err(e) => {
                         warn!("Failed to open genome file {:?} for mining: {}; falling back to synthetic fragment", path, e);
-                        let loader = kaspa_pow::genome_pow::SyntheticLoader::new(self.inner.genome_fragment_size_bytes, header.epoch_seed);
+                        let loader =
+                            kaspa_pow::genome_pow::SyntheticLoader::new(self.inner.genome_fragment_size_bytes, header.epoch_seed);
                         loop {
                             let fragment_idx = state.fragment_index_for(nonce);
                             let Some(fragment) = loader.load_fragment(fragment_idx) else {

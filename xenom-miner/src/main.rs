@@ -307,11 +307,7 @@ async fn main() -> Result<()> {
                 _ => unreachable!(),
             };
 
-            let gpus = if args.gpu.gpus.is_empty() {
-                vec![args.gpu_device]
-            } else {
-                args.gpu.gpus.clone()
-            };
+            let gpus = if args.gpu.gpus.is_empty() { vec![args.gpu_device] } else { args.gpu.gpus.clone() };
             let gpu_config = MultiGpuConfig {
                 gpus,
                 micro_batch_size: args.gpu.micro_batch_size,
@@ -323,8 +319,7 @@ async fn main() -> Result<()> {
             gpu_config.validate()?;
 
             info!("Using multi-GPU DNABERT-2 trainer with {:?} backend and config {:?}", backend, gpu_config);
-            load_trainer(&mut rpc_client, &config.model_id, backend, gpu_config, config.threads, config.dry_run)
-                .await?
+            load_trainer(&mut rpc_client, &config.model_id, backend, gpu_config, config.threads, config.dry_run).await?
         }
         other => bail!("Unknown trainer: {}. Use mock, cpu, dnabert2, gpu, cuda, rocm, or metal.", other),
     };

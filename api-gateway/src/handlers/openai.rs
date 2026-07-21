@@ -112,13 +112,8 @@ pub async fn chat_completions(
     }
 
     // Use the last user message as the DNA query.
-    let user_content = request
-        .messages
-        .iter()
-        .rev()
-        .find(|m| m.role == "user")
-        .map(|m| m.content.clone())
-        .ok_or(StatusCode::BAD_REQUEST)?;
+    let user_content =
+        request.messages.iter().rev().find(|m| m.role == "user").map(|m| m.content.clone()).ok_or(StatusCode::BAD_REQUEST)?;
 
     info!("OpenAI chat completion for model: {}", request.model);
 
@@ -150,11 +145,7 @@ pub async fn chat_completions(
             message: ChatMessage { role: "assistant".to_string(), content: response },
             finish_reason: "stop".to_string(),
         }],
-        usage: Usage {
-            prompt_tokens,
-            completion_tokens,
-            total_tokens: prompt_tokens + completion_tokens,
-        },
+        usage: Usage { prompt_tokens, completion_tokens, total_tokens: prompt_tokens + completion_tokens },
     }))
 }
 
@@ -201,11 +192,7 @@ pub async fn embeddings(
         object: "list".to_string(),
         data,
         model: request.model,
-        usage: Usage {
-            prompt_tokens: total_tokens,
-            completion_tokens: 0,
-            total_tokens,
-        },
+        usage: Usage { prompt_tokens: total_tokens, completion_tokens: 0, total_tokens },
     }))
 }
 
@@ -236,10 +223,7 @@ pub async fn list_models(State(state): State<Arc<AppState>>) -> Result<Json<Mode
     Ok(Json(ModelsResponse { object: "list".to_string(), data: models }))
 }
 
-pub async fn get_model(
-    State(state): State<Arc<AppState>>,
-    Path(model_id): Path<String>,
-) -> Result<Json<OpenAiModel>, StatusCode> {
+pub async fn get_model(State(state): State<Arc<AppState>>, Path(model_id): Path<String>) -> Result<Json<OpenAiModel>, StatusCode> {
     let models = if let Some(mut client) = state.seed_client.clone() {
         match client.list_models().await {
             Ok(grpc_response) => grpc_response.models,

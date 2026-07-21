@@ -79,8 +79,8 @@ impl TestMiner {
 
     /// Submit a block with an intentionally invalid (zeroed) proof.
     pub async fn submit_invalid_block(&mut self, result: TrainingResult) -> Result<[u8; 32]> {
-        let mut block = self.builder.build_block(&result.model_id, &result, vec![0u8; 32], [0u8; 32])
-            .context("failed to build invalid block")?;
+        let mut block =
+            self.builder.build_block(&result.model_id, &result, vec![0u8; 32], [0u8; 32]).context("failed to build invalid block")?;
         self.wallet.sign_block(&mut block)?;
         self.rpc.submit_block(block).await
     }

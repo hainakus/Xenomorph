@@ -111,11 +111,7 @@ impl DnaBert2Trainer {
 
     /// Run a forward/backward pass and return the unscaled loss plus per-variable
     /// gradients moved to the CPU. `loss_scale` can be used for FP16 mixed precision.
-    pub(crate) fn compute_gradients(
-        &self,
-        mlm_batch: &MlmBatch,
-        loss_scale: f32,
-    ) -> Result<(f64, HashMap<String, Tensor>)> {
+    pub(crate) fn compute_gradients(&self, mlm_batch: &MlmBatch, loss_scale: f32) -> Result<(f64, HashMap<String, Tensor>)> {
         let (input_ids, attention_mask, labels, mask) = self.build_tensors(mlm_batch)?;
 
         let logits_before = self.model.forward(&input_ids, None, Some(&attention_mask)).context("Forward pass failed")?;
@@ -125,11 +121,7 @@ impl DnaBert2Trainer {
             bail!("Loss is not finite ({}) before backward", loss_before_scalar);
         }
 
-        let scaled_loss = if (loss_scale - 1.0).abs() > f32::EPSILON {
-            (&loss_before * (loss_scale as f64))?
-        } else {
-            loss_before
-        };
+        let scaled_loss = if (loss_scale - 1.0).abs() > f32::EPSILON { (&loss_before * (loss_scale as f64))? } else { loss_before };
 
         let scaled_loss_scalar = scaled_loss.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64;
         if !scaled_loss_scalar.is_finite() {

@@ -39,7 +39,8 @@ pub async fn download_model(model_id: &str) -> Result<RawModelFiles> {
         }
     }
 
-    let weights = weights.ok_or_else(|| anyhow!("Could not download valid model.safetensors weights for {} from Hugging Face", model_id))?;
+    let weights =
+        weights.ok_or_else(|| anyhow!("Could not download valid model.safetensors weights for {} from Hugging Face", model_id))?;
 
     Ok(RawModelFiles { config, tokenizer, weights })
 }
@@ -53,7 +54,9 @@ async fn download_and_validate_weights(client: &reqwest::Client, model_id: &str,
         info!("Attempting to download model weights from {}", url);
         match download_file(client, url).await {
             Ok(data) if is_valid_weights(&data) => return Ok(data),
-            Ok(data) => warn!("Downloaded {} but content does not look like valid weights ({} bytes); will retry if possible", url, data.len()),
+            Ok(data) => {
+                warn!("Downloaded {} but content does not look like valid weights ({} bytes); will retry if possible", url, data.len())
+            }
             Err(e) => warn!("Failed to download {}: {}", url, e),
         }
     }

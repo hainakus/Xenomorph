@@ -374,8 +374,13 @@ impl DnaBert2ForMaskedLM {
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, dtype, device);
         let model = Self::new(vb, config, device)?;
-        let tensors = candle_core::safetensors::load_buffer(&weights, device)
-            .map_err(|e| candle_core::Error::Msg(format!("Failed to load safetensors weights: {}. {}", e, diagnose_weights(&weights).unwrap_or_default())))?;
+        let tensors = candle_core::safetensors::load_buffer(&weights, device).map_err(|e| {
+            candle_core::Error::Msg(format!(
+                "Failed to load safetensors weights: {}. {}",
+                e,
+                diagnose_weights(&weights).unwrap_or_default()
+            ))
+        })?;
         {
             let tensor_data = varmap.data().lock().map_err(|e| candle_core::Error::Msg(e.to_string()))?;
             for (name, tensor) in tensors.iter() {
@@ -401,7 +406,12 @@ impl DnaBert2ForMaskedLM {
     }
 
     /// Return the encoder hidden states (before the LM head) for the input token ids.
-    pub fn encode(&self, input_ids: &Tensor, token_type_ids: Option<&Tensor>, attention_mask: Option<&Tensor>) -> CandleResult<Tensor> {
+    pub fn encode(
+        &self,
+        input_ids: &Tensor,
+        token_type_ids: Option<&Tensor>,
+        attention_mask: Option<&Tensor>,
+    ) -> CandleResult<Tensor> {
         self.model.forward(input_ids, token_type_ids, attention_mask)
     }
 

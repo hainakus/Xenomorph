@@ -99,7 +99,10 @@ impl ModelManager {
                     return Ok(());
                 }
                 Ok(_) => {
-                    info!("Model {} exists locally but weights look invalid (e.g. LFS pointer); removing and re-downloading", model_id);
+                    info!(
+                        "Model {} exists locally but weights look invalid (e.g. LFS pointer); removing and re-downloading",
+                        model_id
+                    );
                 }
                 Err(_) => {
                     info!("Model {} exists locally but cannot be decrypted; removing and re-downloading", model_id);

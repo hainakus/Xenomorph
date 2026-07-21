@@ -26,11 +26,7 @@ pub struct InferenceService {
 
 impl InferenceService {
     pub fn new(model_manager: Arc<ModelManager>, xenomorph_client: Arc<XenomorphRpcClient>) -> Self {
-        Self {
-            engine: Arc::new(InferenceEngine::new(model_manager)),
-            xenomorph_client,
-            proof_generator: ProofGenerator::new(),
-        }
+        Self { engine: Arc::new(InferenceEngine::new(model_manager)), xenomorph_client, proof_generator: ProofGenerator::new() }
     }
 }
 
@@ -88,14 +84,8 @@ impl Inference for InferenceService {
         let latency_ms = start.elapsed().as_millis() as u64;
         let proof_of_service = self.proof_generator.generate_proof(&req.model_id, &req.query_id, latency_ms);
 
-        let response = EmbedResponse {
-            embeddings,
-            dimension,
-            proof_of_service,
-            model_version: "1".to_string(),
-            latency_ms,
-            signature: vec![],
-        };
+        let response =
+            EmbedResponse { embeddings, dimension, proof_of_service, model_version: "1".to_string(), latency_ms, signature: vec![] };
 
         info!("Embed completed in {}ms", latency_ms);
         Ok(Response::new(response))
@@ -123,7 +113,8 @@ impl Inference for InferenceService {
 
     #[instrument(skip(self, _request))]
     async fn list_models(&self, _request: Request<ListModelsRequest>) -> Result<Response<ListModelsResponse>, Status> {
-        let models = self.engine.model_manager().list_models().await.map_err(|e| Status::internal(format!("Failed to list models: {}", e)))?;
+        let models =
+            self.engine.model_manager().list_models().await.map_err(|e| Status::internal(format!("Failed to list models: {}", e)))?;
 
         let model_infos: Vec<ModelInfo> = models
             .iter()

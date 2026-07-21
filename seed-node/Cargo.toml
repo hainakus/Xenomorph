@@ -40,6 +40,7 @@ tokio-util = { version = "0.7", features = ["io"] }
 
 [dev-dependencies]
 tempfile = "3.9"
+tokenizers = "0.21"
 
 [build-dependencies]
 tonic-build = "0.10"
