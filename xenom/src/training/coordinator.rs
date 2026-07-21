@@ -198,6 +198,13 @@ impl Coordinator {
 
         let mut seed = [0u8; 32];
         seed.copy_from_slice(&request.genome_merkle_root);
+        // XOR the first 8 bytes with the current epoch so each accepted training
+        // block produces a different genome batch instead of repeating the same slice.
+        let epoch = self.inner.current_epoch.load(Ordering::Relaxed);
+        let epoch_bytes = epoch.to_le_bytes();
+        for i in 0..8 {
+            seed[i] ^= epoch_bytes[i];
+        }
         let mut generator = GenomeBatchGenerator::new(archive, seed);
         let mut batch = generator.generate_batch(request.preferred_batch_size.max(1), 128);
         batch.model_id = request.model_id;

@@ -192,6 +192,32 @@ mod tests {
     }
 
     #[test]
+    fn test_multi_gpu_trainer_state_persists() {
+        use crate::trainer::{MultiGpuConfig, MultiGpuTrainer};
+        let (config, weights) = build_tiny_safetensors();
+        let tokenizer = build_tiny_tokenizer();
+        let gpu_config = MultiGpuConfig {
+            gpus: vec![0],
+            micro_batch_size: 2,
+            gradient_accumulation_steps: 1,
+            use_mixed_precision: false,
+            use_gradient_checkpointing: false,
+            zero_optimization: 0,
+        };
+        let trainer =
+            MultiGpuTrainer::new("dnabert2".to_string(), config, weights, tokenizer, gpu_config, GpuBackend::Auto, 2).unwrap();
+
+        let result1 = trainer.train(&dummy_batch()).unwrap();
+        let result2 = trainer.train(&dummy_batch()).unwrap();
+        assert!(
+            result2.loss_before <= result1.loss_after,
+            "MultiGpuTrainer state did not persist: {} > {}",
+            result2.loss_before,
+            result1.loss_after
+        );
+    }
+
+    #[test]
     #[cfg(feature = "cuda")]
     fn test_cuda_available() {
         // This test only runs when the cuda feature is enabled. It will still

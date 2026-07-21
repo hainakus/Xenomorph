@@ -213,22 +213,27 @@ impl MultiGpuTrainer {
         let micro_batches =
             split_mlm_batch(mlm_batch, self.trainers.len(), self.config.gradient_accumulation_steps, self.config.micro_batch_size);
 
+        // Only the first `usable` sequences are actually used for training. Compute
+        // pre/post loss on that exact slice so the values are comparable.
+        let usable =
+            mlm_batch.batch_size.min(self.config.micro_batch_size * self.trainers.len() * self.config.gradient_accumulation_steps);
+        let used_batch = extract_mlm_batch(mlm_batch, 0, usable, mlm_batch.seq_len);
+
+        let loss_before = self.trainers[0].compute_loss_scalar(&used_batch)?;
+
         let mut accumulated_grads: Option<HashMap<String, Tensor>> = None;
-        let mut loss_sum = 0.0f64;
-        let mut loss_count = 0usize;
         let mut any_overflow = false;
 
         for step in &micro_batches {
             let mut step_grads = Vec::new();
-            let mut step_losses = Vec::new();
 
             for (gpu_idx, maybe_micro) in step.iter().enumerate() {
                 let Some(micro) = maybe_micro else { continue };
                 let trainer = &self.trainers[gpu_idx];
                 let loss_scale = self.scaler.lock().map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?.scale();
 
-                let (loss, grads) = match trainer.compute_gradients(micro, loss_scale) {
-                    Ok(v) => v,
+                let grads = match trainer.compute_gradients(micro, loss_scale) {
+                    Ok((_, grads)) => grads,
                     Err(e) => {
                         warn!("GPU {} gradient computation overflowed: {}; skipping micro-batch", gpu_idx, e);
                         any_overflow = true;
@@ -249,7 +254,6 @@ impl MultiGpuTrainer {
                     continue;
                 }
 
-                step_losses.push(loss);
                 step_grads.push(grads);
             }
 
@@ -262,9 +266,6 @@ impl MultiGpuTrainer {
                 None => avg,
                 Some(acc) => add_grad_maps(acc, avg)?,
             });
-
-            loss_sum += step_losses.iter().sum::<f64>();
-            loss_count += step_losses.len();
         }
 
         // If every micro-batch overflowed, reduce the scale and bail so the next batch can retry.
@@ -274,7 +275,6 @@ impl MultiGpuTrainer {
         }
 
         let final_grads = accumulated_grads.unwrap();
-        let avg_loss_before = loss_sum / loss_count.max(1) as f64;
 
         let flat_grads: Vec<(String, Tensor)> = final_grads.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         let had_overflow =
@@ -300,17 +300,16 @@ impl MultiGpuTrainer {
         // Update the loss scale based on overflow status.
         self.scaler.lock().map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?.update_scale(any_overflow);
 
-        // Compute post-update loss on the master replica using the first
-        // valid micro-batch.
-        let first_micro = micro_batches.iter().flat_map(|step| step.iter()).flatten().next().unwrap_or(mlm_batch);
-        let loss_after = self.trainers[0].compute_loss_scalar(first_micro)?;
+        // Compute post-update loss on the master replica using the same
+        // sequences that were actually trained.
+        let loss_after = self.trainers[0].compute_loss_scalar(&used_batch)?;
         let gradients_commitment = self.trainers[0].gradient_commitment_from_named_tensors(final_grads)?;
 
         Ok(TrainingResult {
             model_id: model_id.to_string(),
             batch_indices,
             base_checkpoint,
-            loss_before: avg_loss_before,
+            loss_before,
             loss_after,
             gradients_commitment,
             compute_time_ms: start.elapsed().as_millis() as u64,

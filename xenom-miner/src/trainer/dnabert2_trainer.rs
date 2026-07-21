@@ -469,6 +469,15 @@ mod tests {
         // The tiny model should usually reduce the loss after one AdamW step.
         // We allow equality in the very rare case where the random seed gives no improvement.
         assert!(result.loss_after <= result.loss_before);
+
+        // A second step on the same batch should start from a lower loss.
+        let result2 = trainer.train(&dummy_batch()).unwrap();
+        assert!(
+            result2.loss_before <= result.loss_after,
+            "model state did not persist: {} > {}",
+            result2.loss_before,
+            result.loss_after
+        );
     }
 
     #[test]
