@@ -107,7 +107,10 @@ impl InferenceEngine {
         let predicted_ids = logits.argmax(candle_core::D::Minus1)?; // [1, seq_len]
 
         // Gather the probability of each predicted token.
-        let gathered_probs = probs.gather(&predicted_ids, candle_core::D::Minus1)?; // [1, seq_len]
+        // candle's gather requires the index tensor to have the same rank as the input,
+        // so expand the 2D predicted_ids to [1, seq_len, 1] before gathering on the last dim.
+        let predicted_ids_expanded = predicted_ids.unsqueeze(2)?; // [1, seq_len, 1]
+        let gathered_probs = probs.gather(&predicted_ids_expanded, candle_core::D::Minus1)?; // [1, seq_len, 1]
         let gathered_probs_vec = gathered_probs
             .reshape(seq_len)?
             .to_vec1::<f32>()
