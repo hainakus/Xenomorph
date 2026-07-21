@@ -79,9 +79,11 @@ impl DnaBert2Trainer {
             }
         }
 
-        // If nothing is masked (extremely unlikely with 15% masking), return a zero loss in the logits dtype.
+        // If nothing is masked, the batch cannot produce useful gradients. Bail so the
+        // multi-GPU loop can skip this micro-batch instead of returning a constant zero
+        // tensor that yields an empty GradStore and breaks gradient averaging.
         if positions.is_empty() {
-            return Ok(Tensor::new(0.0f32, &self.device)?.to_dtype(logits.dtype())?);
+            bail!("No masked positions in micro-batch; cannot compute MLM loss");
         }
 
         let positions = Tensor::new(positions.as_slice(), &self.device)?;
@@ -130,6 +132,9 @@ impl DnaBert2Trainer {
 
         let grads = scaled_loss.backward().context("Backward pass failed")?;
         let named_grads = Self::grad_store_to_map(&grads, &self.varmap)?;
+        if named_grads.is_empty() {
+            bail!("Backward produced no named gradients; likely no trainable variables in the graph");
+        }
         Ok((loss_before_scalar, named_grads))
     }
 

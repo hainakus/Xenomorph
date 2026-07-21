@@ -235,11 +235,17 @@ impl MultiGpuTrainer {
                 let grads = match trainer.compute_gradients(micro, loss_scale) {
                     Ok((_, grads)) => grads,
                     Err(e) => {
-                        warn!("GPU {} gradient computation overflowed: {}; skipping micro-batch", gpu_idx, e);
+                        warn!("GPU {} gradient computation failed: {}; skipping micro-batch", gpu_idx, e);
                         any_overflow = true;
                         continue;
                     }
                 };
+
+                // Skip micro-batches that produced no usable gradients (e.g. no masked positions).
+                if grads.is_empty() {
+                    warn!("GPU {} produced no gradients; skipping micro-batch", gpu_idx);
+                    continue;
+                }
 
                 // Reject this micro-batch if the gradients themselves are non-finite.
                 let flat_grads: Vec<(String, Tensor)> = grads.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -450,37 +456,59 @@ fn extract_mlm_batch(batch: &MlmBatch, start: usize, end: usize, seq_len: usize)
 
 /// Average a list of per-GPU gradient maps. All tensors are expected to be on
 /// the CPU and in F32.
+///
+/// The maps may have different key sets (for example because a micro-batch had
+/// no masked positions or because tied weights produced gradients on a single
+/// tensor). Each key is averaged over the gradient maps that actually contain it.
 fn average_grad_maps(grads: &[HashMap<String, Tensor>]) -> Result<HashMap<String, Tensor>> {
     if grads.is_empty() {
         bail!("Cannot average empty gradient list");
     }
-    let n = grads.len() as f64;
-    let mut out = HashMap::new();
 
-    // Use the first map as the key set.
-    let first = &grads[0];
-    for (name, base) in first.iter() {
-        let mut sum = to_grad_dtype(base)?;
-        for other in &grads[1..] {
-            let g = other.get(name).with_context(|| format!("Gradient map missing variable {}", name))?;
-            let g = to_grad_dtype(g)?;
-            sum = (&sum + &g)?;
+    // Accumulate the sum and per-key count so missing keys do not poison the average.
+    let mut acc: HashMap<String, (Tensor, usize)> = HashMap::new();
+    for g in grads {
+        for (name, t) in g.iter() {
+            let t = to_grad_dtype(t)?;
+            match acc.get_mut(name) {
+                Some((sum, count)) => {
+                    *sum = (&*sum + &t)?;
+                    *count += 1;
+                }
+                None => {
+                    acc.insert(name.clone(), (t, 1));
+                }
+            }
         }
-        let avg = (&sum / n)?;
-        out.insert(name.clone(), avg);
+    }
+
+    let mut out = HashMap::with_capacity(acc.len());
+    for (name, (sum, count)) in acc {
+        let avg = (&sum / (count as f64))?;
+        out.insert(name, avg);
     }
 
     Ok(out)
 }
 
-/// Element-wise addition of two gradient maps with the same keys.
+/// Element-wise addition of two gradient maps. Keys present in only one map are
+/// kept unchanged, so accumulated gradients survive accumulation steps where a
+/// micro-batch did not contribute to every variable.
 fn add_grad_maps(a: HashMap<String, Tensor>, b: HashMap<String, Tensor>) -> Result<HashMap<String, Tensor>> {
-    let mut out = HashMap::with_capacity(a.len());
+    let mut out = HashMap::with_capacity(a.len().max(b.len()));
     for (name, ta) in a {
-        let tb = b.get(&name).with_context(|| format!("Missing gradient for variable {}", name))?;
-        let ta = to_grad_dtype(&ta)?;
-        let tb = to_grad_dtype(tb)?;
-        out.insert(name, (&ta + &tb)?);
+        if let Some(tb) = b.get(&name) {
+            let ta = to_grad_dtype(&ta)?;
+            let tb = to_grad_dtype(tb)?;
+            out.insert(name, (&ta + &tb)?);
+        } else {
+            out.insert(name, ta);
+        }
+    }
+    for (name, tb) in b {
+        if !out.contains_key(&name) {
+            out.insert(name, tb);
+        }
     }
     Ok(out)
 }
