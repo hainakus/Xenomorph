@@ -36,6 +36,9 @@ pub struct ModelManager {
     storage: Arc<ModelStorage>,
     models: Arc<RwLock<HashMap<String, ModelInfo>>>,
     aggregators: Arc<RwLock<HashMap<String, FedAvgAggregator>>>,
+    /// Cached trainable DNABERT-2 replicas used by the FedAvg aggregator.
+    /// Each replica keeps its AdamW optimizer state across aggregation rounds.
+    trainers: Arc<RwLock<HashMap<String, Arc<std::sync::Mutex<DnaBert2Trainer>>>>>,
     fedavg_config: FedAvgConfig,
     node_id: String,
 }
@@ -62,6 +65,7 @@ impl ModelManager {
             storage,
             models: Arc::new(RwLock::new(HashMap::new())),
             aggregators: Arc::new(RwLock::new(HashMap::new())),
+            trainers: Arc::new(RwLock::new(HashMap::new())),
             fedavg_config,
             node_id,
         })
@@ -361,26 +365,41 @@ impl ModelManager {
         self.apply_averaged_gradients(&update.model_id, averages).await
     }
 
+    /// Return a cached trainable DNABERT-2 replica for `model_id`, creating it from
+    /// the stored checkpoint if necessary. Replicas are kept in memory so their
+    /// AdamW optimizer state survives across FedAvg rounds.
+    async fn get_or_create_trainer(&self, model_id: &str) -> Result<Arc<std::sync::Mutex<DnaBert2Trainer>>> {
+        {
+            let trainers = self.trainers.read().await;
+            if let Some(trainer) = trainers.get(model_id) {
+                return Ok(trainer.clone());
+            }
+        }
+
+        let files = self.storage.load_model_files(model_id).await.map_err(|e| anyhow!("Failed to load model files: {}", e))?;
+        let config = DnaBert2Config::from_bytes(&files.config).context("Failed to parse model config")?;
+        let tokenizer = DnaTokenizer::from_bytes(&files.tokenizer).context("Failed to parse tokenizer")?;
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+
+        let trainer = DnaBert2Trainer::new(config, files.weights, tokenizer, Device::Cpu, threads, DType::F32)
+            .context("Failed to load trainable model for aggregation")?;
+
+        let mut trainers = self.trainers.write().await;
+        let trainer = trainers.entry(model_id.to_string()).or_insert_with(|| Arc::new(std::sync::Mutex::new(trainer)));
+        Ok(trainer.clone())
+    }
+
     async fn apply_averaged_gradients(&self, model_id: &str, averages: HashMap<String, Vec<f32>>) -> Result<Option<[u8; 32]>> {
         info!("Aggregating gradients for {} and producing a new checkpoint", model_id);
 
-        let files = self.storage.load_model_files(model_id).await.map_err(|e| anyhow!("Failed to load model files: {}", e))?;
-
-        let config_for_task = files.config.clone();
-        let tokenizer_for_task = files.tokenizer.clone();
+        let trainer = self.get_or_create_trainer(model_id).await?;
         let base_path = self.base_path.clone();
         let model_id_owned = model_id.to_string();
 
         let (weights, new_hash_bytes) = tokio::task::spawn_blocking(move || {
-            let config = DnaBert2Config::from_bytes(&config_for_task).context("Failed to parse model config")?;
-            let tokenizer = DnaTokenizer::from_bytes(&tokenizer_for_task).context("Failed to parse tokenizer")?;
-
-            let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-            let trainer = DnaBert2Trainer::new(config, files.weights, tokenizer, Device::Cpu, threads, DType::F32)
-                .context("Failed to load trainable model for aggregation")?;
+            let trainer = trainer.lock().map_err(|e| anyhow!("Trainer mutex poisoned: {}", e))?;
 
             let data = trainer.varmap().data().lock().map_err(|e| anyhow!("VarMap poisoned: {}", e))?;
-
             let mut named_grads: HashMap<String, Tensor> = HashMap::with_capacity(averages.len());
             for (name, avg) in averages {
                 let var = data.get(&name).ok_or_else(|| anyhow!("Model has no variable named {}", name))?;
@@ -392,9 +411,8 @@ impl ModelManager {
             }
             drop(data);
 
-            // Use the same learning-rate cap the miner uses so a single aggregated step
-            // does not destabilise the pretrained model.
-            trainer.apply_sgd_gradients(&named_grads, 1e-5f32).context("Failed to apply averaged gradients")?;
+            // Use AdamW on the server so moment estimates persist across aggregation rounds.
+            trainer.apply_gradients(&named_grads, 1e-5f32).context("Failed to apply averaged gradients")?;
 
             let tmp_name = format!("{}_fedavg_{}.safetensors", model_id_owned.replace('/', "_"), Uuid::new_v4());
             let tmp_path = std::path::Path::new(&base_path).join(&tmp_name);
@@ -408,7 +426,7 @@ impl ModelManager {
         .await
         .context("Gradient aggregation task panicked")??;
 
-        let new_hash_bytes: [u8; 32] = new_hash_bytes;
+        let files = self.storage.load_model_files(model_id).await.map_err(|e| anyhow!("Failed to load model files: {}", e))?;
         let new_files = RawModelFiles { config: files.config, tokenizer: files.tokenizer, weights };
         self.store_model_files(model_id, &new_files, ModelMetrics::default()).await?;
 

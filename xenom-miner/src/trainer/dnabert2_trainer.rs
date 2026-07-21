@@ -140,7 +140,7 @@ impl DnaBert2Trainer {
     }
 
     /// Apply named gradients to this trainer using its AdamW optimizer.
-    pub(crate) fn apply_gradients(&self, named_grads: &HashMap<String, Tensor>, learning_rate: f32) -> Result<()> {
+    pub fn apply_gradients(&self, named_grads: &HashMap<String, Tensor>, learning_rate: f32) -> Result<()> {
         let mut optimizer = self.optimizer.lock().map_err(|e| anyhow::anyhow!("Optimizer mutex poisoned: {}", e))?;
         let effective_lr = learning_rate.min(MAX_LEARNING_RATE);
         optimizer.set_learning_rate(effective_lr as f64);

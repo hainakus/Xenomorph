@@ -17,6 +17,7 @@ package-sizes.js
 smart-contracts/build/
 dump.rdb
 devnet-data/
+devnet-data-native/
 *.log
 scripts/*.tar.gz
 
