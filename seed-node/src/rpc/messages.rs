@@ -92,6 +92,7 @@ pub enum RpcRequest {
     GetDifficulty,
     Heartbeat,
     GetGenomeTrainingBatch(GetGenomeTrainingBatch),
+    GetModelCheckpointInfo(GetModelCheckpointInfo),
 }
 
 /// Response messages sent from the Xenomorph node to the miner.
@@ -107,6 +108,20 @@ pub enum RpcResponse {
     Pong,
     Error(String),
     GenomeTrainingBatch(GenomeTrainingBatchMsg),
+    ModelCheckpointInfo(ModelCheckpointInfo),
+}
+
+/// Request the lightweight metadata for the active model checkpoint.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct GetModelCheckpointInfo {
+    pub model_id: String,
+}
+
+/// Lightweight model checkpoint metadata (no weights).
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct ModelCheckpointInfo {
+    pub model_id: String,
+    pub base_checkpoint: [u8; 32],
 }
 
 /// Wire envelope used by the RPC client to tag requests.

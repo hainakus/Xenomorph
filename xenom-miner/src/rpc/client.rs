@@ -10,8 +10,8 @@ use tokio_tungstenite::{
 use tracing::{debug, info, warn};
 
 use super::messages::{
-    BlockHash, DifficultyTarget, GenomeTrainingBatchMsg, ModelCheckpoint, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch,
-    TrainingBlock,
+    BlockHash, DifficultyTarget, GenomeTrainingBatchMsg, GetModelCheckpointInfo, ModelCheckpoint, ModelCheckpointInfo, RpcEnvelope,
+    RpcRequest, RpcResponse, TrainingBatch, TrainingBlock,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -99,6 +99,19 @@ impl XenomRpcClient {
             RpcResponse::GenomeTrainingBatch(msg) => Ok(msg),
             RpcResponse::Error(msg) => bail!("Node returned error: {}", msg),
             other => bail!("Unexpected response to GetGenomeTrainingBatch: {:?}", other),
+        }
+    }
+
+    /// Request lightweight checkpoint metadata (model id + base checkpoint hash).
+    /// This is used to decide whether the local model cache is still valid.
+    pub async fn get_model_checkpoint_info(&mut self, model_id: &str) -> Result<ModelCheckpointInfo> {
+        let response =
+            self.send_request(RpcRequest::GetModelCheckpointInfo(GetModelCheckpointInfo { model_id: model_id.to_string() })).await?;
+
+        match response {
+            RpcResponse::ModelCheckpointInfo(info) => Ok(info),
+            RpcResponse::Error(msg) => bail!("Node returned error: {}", msg),
+            other => bail!("Unexpected response to GetModelCheckpointInfo: {:?}", other),
         }
     }
 

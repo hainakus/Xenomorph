@@ -14,7 +14,9 @@ use tracing::{info, warn};
 use crate::genome::{GenomeBatchGenerator, GenomeStorage};
 use crate::model::manager::ModelManager;
 use crate::rpc::client::XenomorphRpcClient;
-use crate::rpc::messages::{GenomeTrainingBatchMsg, GetGenomeTrainingBatch, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch};
+use crate::rpc::messages::{
+    GenomeTrainingBatchMsg, GetGenomeTrainingBatch, GetModelCheckpointInfo, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch,
+};
 
 /// Allow WebSocket messages up to 1 GiB so model checkpoints (config + tokenizer + weights) fit.
 const WS_MAX_MESSAGE_SIZE: usize = 1024 * 1024 * 1024;
@@ -118,6 +120,12 @@ async fn handle_request(
             }))
         }
         RpcRequest::GetGenomeTrainingBatch(request) => handle_genome_batch_request(request, genome_storage, model_manager).await,
+        RpcRequest::GetModelCheckpointInfo(GetModelCheckpointInfo { model_id }) => {
+            RpcResponse::ModelCheckpointInfo(super::messages::ModelCheckpointInfo {
+                model_id: model_id.clone(),
+                base_checkpoint: get_checkpoint(&model_manager, &model_id).await,
+            })
+        }
         RpcRequest::GetModelCheckpoint { model_id } => match model_manager.get_model_checkpoint(&model_id).await {
             Ok((checkpoint, files)) => RpcResponse::ModelCheckpoint(super::messages::ModelCheckpoint {
                 model_id,

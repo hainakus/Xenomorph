@@ -1,31 +1,52 @@
 use anyhow::Result;
+use tracing::info;
 
-use crate::rpc::messages::ModelCheckpoint;
+pub use crate::model_cache::{ModelBundle, ModelCache};
 use crate::rpc::XenomRpcClient;
 
-/// In-memory bundle returned by the seed-node. The miner does not persist these bytes.
-pub struct ModelBundle {
-    pub model_id: String,
-    pub base_checkpoint: [u8; 32],
-    pub config: Vec<u8>,
-    pub tokenizer: Vec<u8>,
-    pub weights: Vec<u8>,
-}
+/// Fetch a model checkpoint from the node, using the local cache when the
+/// active weights hash has not changed.
+///
+/// This avoids downloading ~400-500 MB of safetensors weights on every miner
+/// restart. The node only needs to send a small `GetModelCheckpointInfo`
+/// response; the full checkpoint is requested only when the cache is missing
+/// or stale.
+pub async fn fetch_model_checkpoint(rpc: &mut XenomRpcClient, model_id: &str, cache: &ModelCache) -> Result<ModelBundle> {
+    let info = rpc.get_model_checkpoint_info(model_id).await?;
 
-impl From<ModelCheckpoint> for ModelBundle {
-    fn from(cp: ModelCheckpoint) -> Self {
-        Self {
-            model_id: cp.model_id,
-            base_checkpoint: cp.base_checkpoint,
-            config: cp.config,
-            tokenizer: cp.tokenizer,
-            weights: cp.weights,
+    if cache.is_cached(model_id) {
+        match cache.read_base_checkpoint(model_id) {
+            Ok(cached_hash) if cached_hash == info.base_checkpoint => {
+                info!("Using cached model checkpoint for {} (hash {})", model_id, hex::encode(cached_hash));
+                return cache.read(model_id);
+            }
+            Ok(cached_hash) => {
+                info!(
+                    "Model checkpoint for {} changed (cached {} != current {}); re-downloading",
+                    model_id,
+                    hex::encode(cached_hash),
+                    hex::encode(info.base_checkpoint)
+                );
+            }
+            Err(e) => {
+                info!("Failed to read cached base checkpoint for {}: {}; re-downloading", model_id, e);
+            }
         }
     }
-}
 
-/// Convenience helper that fetches a model checkpoint from the seed-node and returns it in memory.
-pub async fn fetch_model_checkpoint(rpc: &mut XenomRpcClient, model_id: &str) -> Result<ModelBundle> {
+    info!("Fetching full model checkpoint for {} from node", model_id);
     let cp = rpc.get_model_checkpoint(model_id).await?;
-    Ok(cp.into())
+    let bundle = ModelBundle {
+        model_id: cp.model_id,
+        base_checkpoint: cp.base_checkpoint,
+        config: cp.config,
+        tokenizer: cp.tokenizer,
+        weights: cp.weights,
+    };
+
+    if let Err(e) = cache.write(model_id, &bundle) {
+        info!("Failed to cache model checkpoint for {}: {}; continuing with in-memory bundle", model_id, e);
+    }
+
+    Ok(bundle)
 }

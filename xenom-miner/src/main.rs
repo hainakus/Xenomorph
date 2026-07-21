@@ -14,7 +14,7 @@ use xenom_miner::block::BlockBuilder;
 use xenom_miner::cli::gpu_args::GpuArgs;
 use xenom_miner::config::MinerConfig;
 use xenom_miner::model::DnaBert2Config;
-use xenom_miner::model_client::{fetch_model_checkpoint, ModelBundle};
+use xenom_miner::model_client::{fetch_model_checkpoint, ModelBundle, ModelCache};
 use xenom_miner::prover::{PublicInputs, ZkProver};
 use xenom_miner::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch};
 use xenom_miner::rpc::XenomRpcClient;
@@ -87,6 +87,11 @@ struct Args {
     /// Directory for wallet and configuration files.
     #[arg(long, default_value = DEFAULT_DATA_DIR)]
     data_dir: String,
+
+    /// Directory to cache downloaded model checkpoints.
+    /// Defaults to `<data_dir>/models`.
+    #[arg(long)]
+    models_dir: Option<String>,
 
     /// Password used to encrypt the wallet file.
     #[arg(long, default_value = "", env = "XENOM_WALLET_PASSWORD")]
@@ -200,6 +205,7 @@ fn make_local_batch(model_id: &str, block_number: u64) -> TrainingBatch {
 async fn load_trainer(
     rpc_client: &mut Option<XenomRpcClient>,
     model_id: &str,
+    cache: &ModelCache,
     backend: GpuBackend,
     gpu_config: MultiGpuConfig,
     threads: usize,
@@ -216,7 +222,7 @@ async fn load_trainer(
     // service dependency should already guarantee this, but the retry makes
     // manual/standalone runs robust against slow model downloads.
     let ModelBundle { model_id, config, tokenizer, weights, .. } =
-        fetch_model_checkpoint_with_retry(client, model_id).await.context("Failed to fetch model checkpoint from seed-node")?;
+        fetch_model_checkpoint_with_retry(client, model_id, cache).await.context("Failed to fetch model checkpoint from seed-node")?;
 
     let config = DnaBert2Config::from_bytes(&config).context("Failed to parse DNABERT-2 config")?;
     let tokenizer = DnaTokenizer::from_bytes(&tokenizer).context("Failed to parse tokenizer")?;
@@ -228,12 +234,12 @@ async fn load_trainer(
     Ok(Arc::new(trainer))
 }
 
-async fn fetch_model_checkpoint_with_retry(client: &mut XenomRpcClient, model_id: &str) -> Result<ModelBundle> {
+async fn fetch_model_checkpoint_with_retry(client: &mut XenomRpcClient, model_id: &str, cache: &ModelCache) -> Result<ModelBundle> {
     let mut interval = tokio::time::interval(Duration::from_secs(2));
     let max_attempts = 60;
 
     for attempt in 1..=max_attempts {
-        match fetch_model_checkpoint(client, model_id).await {
+        match fetch_model_checkpoint(client, model_id, cache).await {
             Ok(bundle) => return Ok(bundle),
             Err(e) if attempt < max_attempts => {
                 warn!("Model checkpoint not ready (attempt {}/{}): {}", attempt, max_attempts, e);
@@ -274,6 +280,9 @@ async fn main() -> Result<()> {
     config.dry_run = args.dry_run;
     config.data_dir = data_dir.clone();
     config.save(&data_dir)?;
+
+    let models_dir = args.models_dir.map(|p| expand_tilde(&p)).unwrap_or_else(|| data_dir.join("models"));
+    let model_cache = ModelCache::new(&models_dir);
 
     let wallet = Arc::new(
         WalletManager::load_or_create(&data_dir, &args.password, network_type).with_context(|| "Failed to load or create wallet")?,
@@ -319,7 +328,7 @@ async fn main() -> Result<()> {
             gpu_config.validate()?;
 
             info!("Using multi-GPU DNABERT-2 trainer with {:?} backend and config {:?}", backend, gpu_config);
-            load_trainer(&mut rpc_client, &config.model_id, backend, gpu_config, config.threads, config.dry_run).await?
+            load_trainer(&mut rpc_client, &config.model_id, &model_cache, backend, gpu_config, config.threads, config.dry_run).await?
         }
         other => bail!("Unknown trainer: {}. Use mock, cpu, dnabert2, gpu, cuda, rocm, or metal.", other),
     };

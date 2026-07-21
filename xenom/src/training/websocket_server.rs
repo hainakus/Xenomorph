@@ -9,7 +9,7 @@ use anyhow::{anyhow, Result};
 use borsh::{to_vec, BorshDeserialize};
 use futures_util::{SinkExt, StreamExt};
 use kaspa_core::{info, warn};
-use seed_node::rpc::messages::{RpcEnvelope, RpcRequest, RpcResponse};
+use seed_node::rpc::messages::{GetModelCheckpointInfo, RpcEnvelope, RpcRequest, RpcResponse};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::accept_async_with_config;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
@@ -91,6 +91,9 @@ async fn handle_request(req: RpcRequest, coordinator: &Coordinator) -> RpcRespon
         RpcRequest::GetTrainingBatch { model_id } => coordinator.get_training_batch(model_id).await,
         RpcRequest::GetGenomeTrainingBatch(request) => coordinator.get_genome_training_batch(request).await,
         RpcRequest::GetModelCheckpoint { model_id } => coordinator.get_model_checkpoint(model_id).await,
+        RpcRequest::GetModelCheckpointInfo(GetModelCheckpointInfo { model_id }) => {
+            coordinator.get_model_checkpoint_info(model_id).await
+        }
         RpcRequest::SubmitBlock(block) => coordinator.submit_block(block).await,
         RpcRequest::GetBalance { .. } => RpcResponse::Balance(10_000),
         RpcRequest::GetDifficulty => RpcResponse::Difficulty([0u8; 32]),

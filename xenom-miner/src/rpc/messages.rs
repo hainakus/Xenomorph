@@ -85,8 +85,7 @@ pub struct TrainingBlock {
     pub signature: [u8; 64],
 }
 
-/// Raw model checkpoint bytes returned by the seed-node. The seed-node is the only entity that
-/// downloads and stores model weights; the miner receives them in memory and does not persist.
+/// Raw model checkpoint bytes returned by the seed-node.
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub struct ModelCheckpoint {
     pub model_id: String,
@@ -94,6 +93,19 @@ pub struct ModelCheckpoint {
     pub config: Vec<u8>,
     pub tokenizer: Vec<u8>,
     pub weights: Vec<u8>,
+}
+
+/// Request the lightweight metadata for the active model checkpoint.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct GetModelCheckpointInfo {
+    pub model_id: String,
+}
+
+/// Lightweight model checkpoint metadata (no weights).
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct ModelCheckpointInfo {
+    pub model_id: String,
+    pub base_checkpoint: [u8; 32],
 }
 
 /// Request messages sent from the miner to the Xenomorph node.
@@ -109,6 +121,7 @@ pub enum RpcRequest {
     GetDifficulty,
     Heartbeat,
     GetGenomeTrainingBatch(GetGenomeTrainingBatch),
+    GetModelCheckpointInfo(GetModelCheckpointInfo),
 }
 
 /// Response messages sent from the Xenomorph node to the miner.
@@ -124,6 +137,7 @@ pub enum RpcResponse {
     Pong,
     Error(String),
     GenomeTrainingBatch(GenomeTrainingBatchMsg),
+    ModelCheckpointInfo(ModelCheckpointInfo),
 }
 
 /// Wire envelope used by the RPC client to tag requests.

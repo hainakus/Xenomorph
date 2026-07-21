@@ -25,7 +25,8 @@ use seed_node::genome::{GenomeBatchGenerator, GenomeStorage};
 use seed_node::model::manager::ModelManager;
 use seed_node::model::storage::ModelStorage;
 use seed_node::rpc::messages::{
-    GenomeTrainingBatchMsg, GetGenomeTrainingBatch, ModelCheckpoint as RpcModelCheckpoint, RpcResponse, TrainingBatch, TrainingBlock,
+    GenomeTrainingBatchMsg, GetGenomeTrainingBatch, ModelCheckpoint as RpcModelCheckpoint,
+    ModelCheckpointInfo as RpcModelCheckpointInfo, RpcResponse, TrainingBatch, TrainingBlock,
 };
 use tokio::sync::RwLock;
 
@@ -205,6 +206,21 @@ impl Coordinator {
         RpcResponse::GenomeTrainingBatch(GenomeTrainingBatchMsg { batch, sequences, base_checkpoint })
     }
 
+    /// Return lightweight checkpoint metadata to the miner so it can check its
+    /// local cache without downloading the full weights.
+    pub async fn get_model_checkpoint_info(&self, model_id: String) -> RpcResponse {
+        if model_id != self.inner.active_model_id {
+            return RpcResponse::Error(format!("Unknown model id {} (active is {})", model_id, self.inner.active_model_id));
+        }
+
+        let base_checkpoint = match self.active_weights_hash().await {
+            Ok(hash) => hash.as_bytes(),
+            Err(e) => return RpcResponse::Error(format!("Failed to load active model: {}", e)),
+        };
+
+        RpcResponse::ModelCheckpointInfo(RpcModelCheckpointInfo { model_id, base_checkpoint })
+    }
+
     /// Return the raw model checkpoint files to the miner.
     pub async fn get_model_checkpoint(&self, model_id: String) -> RpcResponse {
         if model_id != self.inner.active_model_id {
@@ -260,7 +276,7 @@ impl Coordinator {
         let base_checkpoint = Hash::from_bytes(miner_proof.base_checkpoint);
         if base_checkpoint != active_weights_hash {
             warn!("Rejecting training block: base checkpoint {} != active weights hash {}", base_checkpoint, active_weights_hash);
-            return RpcResponse::Error(format!("Base checkpoint does not match active model weights hash"));
+            return RpcResponse::Error("Base checkpoint does not match active model weights hash".to_string());
         }
 
         // Difficulty target (lazy/optimistic: allow loss to rise by up to 1.0 on devnet).

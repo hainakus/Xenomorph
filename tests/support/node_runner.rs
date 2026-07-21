@@ -13,7 +13,7 @@ use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
-use xenom_miner::rpc::messages::{ModelCheckpoint, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch};
+use xenom_miner::rpc::messages::{ModelCheckpoint, ModelCheckpointInfo, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch};
 
 /// Anvil availability guard. Tests that need a real EVM skip gracefully when
 /// `anvil` is not installed.
@@ -185,6 +185,9 @@ async fn handle_connection(stream: tokio::net::TcpStream, state: Arc<Mutex<MockS
                         tokenizer: b"[]".to_vec(),
                         weights: vec![0u8; 64],
                     }),
+                    RpcRequest::GetModelCheckpointInfo(req) => {
+                        RpcResponse::ModelCheckpointInfo(ModelCheckpointInfo { model_id: req.model_id, base_checkpoint: [0u8; 32] })
+                    }
                     RpcRequest::GetGenomeTrainingBatch(_) => {
                         RpcResponse::Error("mock seed node does not serve genome batches".to_string())
                     }
