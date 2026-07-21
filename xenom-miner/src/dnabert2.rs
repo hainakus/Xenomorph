@@ -396,8 +396,30 @@ impl DnaBert2ForMaskedLM {
         token_type_ids: Option<&Tensor>,
         attention_mask: Option<&Tensor>,
     ) -> CandleResult<Tensor> {
-        let hidden_states = self.model.forward(input_ids, token_type_ids, attention_mask)?;
+        let hidden_states = self.encode(input_ids, token_type_ids, attention_mask)?;
         self.lm_head.forward(&hidden_states)
+    }
+
+    /// Return the encoder hidden states (before the LM head) for the input token ids.
+    pub fn encode(&self, input_ids: &Tensor, token_type_ids: Option<&Tensor>, attention_mask: Option<&Tensor>) -> CandleResult<Tensor> {
+        self.model.forward(input_ids, token_type_ids, attention_mask)
+    }
+
+    /// Compute mean-pooled sentence embeddings from the encoder hidden states.
+    /// Padding tokens (identified by `pad_token_id`) are excluded from the mean.
+    pub fn embeddings(&self, input_ids: &Tensor) -> CandleResult<Tensor> {
+        let pad_token_id = self.model.embeddings.pad_token_id as f64;
+        let attention_mask = input_ids.ne(pad_token_id)?.to_dtype(self.model.embeddings.dtype())?;
+        let hidden_states = self.model.forward(input_ids, None, Some(&attention_mask))?;
+
+        // [batch, seq, 1]
+        let mask = attention_mask.unsqueeze(2)?;
+        let masked = hidden_states.broadcast_mul(&mask)?;
+        let sum = masked.sum(1)?; // [batch, hidden]
+        let count = attention_mask.sum(1)?.unsqueeze(1)?; // [batch, 1]
+        let ones = Tensor::ones(count.dims(), count.dtype(), count.device())?;
+        let count = count.broadcast_maximum(&ones)?;
+        sum.broadcast_div(&count)
     }
 }
 

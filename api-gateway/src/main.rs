@@ -15,7 +15,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use api_gateway::governance::GovernanceClient;
-use api_gateway::handlers::{models, predict};
+use api_gateway::handlers::{models, openai, predict};
 use api_gateway::payments::verifier::PaymentVerifier;
 use api_gateway::state::AppState;
 
@@ -54,6 +54,11 @@ async fn main() -> Result<()> {
         .route("/predict/{model_id}", post(predict::predict))
         .route("/queries/{id}", get(predict::get_query_status))
         .route("/webhook/payment", post(predict::payment_webhook))
+        // OpenAI-compatible endpoints
+        .route("/v1/models", get(openai::list_models))
+        .route("/v1/models/{model_id}", get(openai::get_model))
+        .route("/v1/chat/completions", post(openai::chat_completions))
+        .route("/v1/embeddings", post(openai::embeddings))
         // Governance endpoints
         .route("/governance/proposals", get(api_gateway::governance::proposals::list_proposals).post(api_gateway::governance::proposals::create_proposal))
         .route("/governance/proposals/:id", get(api_gateway::governance::proposals::get_proposal))

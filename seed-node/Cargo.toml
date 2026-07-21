@@ -9,6 +9,9 @@ tonic = "0.10"
 borsh = { workspace = true }
 kaspa-addresses = { workspace = true }
 blake3 = "1.5"
+xenom-miner = { path = "../xenom-miner" }
+candle-core = { version = "0.3", default-features = false }
+candle-nn = { version = "0.3", default-features = false }
 futures = "0.3"
 tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
 ethers = { version = "2.0", features = ["rustls"] }

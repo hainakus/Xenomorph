@@ -6,6 +6,7 @@ use tracing::{info, instrument};
 
 use crate::model::manager::ModelManager;
 use crate::rpc::client::XenomorphRpcClient;
+use crate::serving::inference_engine::InferenceEngine;
 use crate::serving::proof::ProofGenerator;
 
 pub mod xenom {
@@ -18,14 +19,18 @@ use xenom::inference::inference_server::{Inference, InferenceServer};
 use xenom::inference::*;
 
 pub struct InferenceService {
-    model_manager: Arc<ModelManager>,
+    engine: Arc<InferenceEngine>,
     xenomorph_client: Arc<XenomorphRpcClient>,
     proof_generator: ProofGenerator,
 }
 
 impl InferenceService {
     pub fn new(model_manager: Arc<ModelManager>, xenomorph_client: Arc<XenomorphRpcClient>) -> Self {
-        Self { model_manager, xenomorph_client, proof_generator: ProofGenerator::new() }
+        Self {
+            engine: Arc::new(InferenceEngine::new(model_manager)),
+            xenomorph_client,
+            proof_generator: ProofGenerator::new(),
+        }
     }
 }
 
@@ -35,35 +40,28 @@ impl Inference for InferenceService {
     async fn predict(&self, request: Request<PredictRequest>) -> Result<Response<PredictResponse>, Status> {
         let req = request.into_inner();
         let start = Instant::now();
+        let model_id = req.model_id.clone();
+        let query_id = req.query_id.clone();
 
-        info!("Predict request for model: {}", req.model_id);
+        info!("Predict request for model: {}", model_id);
 
-        // Load model
-        let model_info = self
-            .model_manager
-            .load_model(&req.model_id)
+        let input = String::from_utf8_lossy(&req.input_data).to_string();
+        let engine = self.engine.clone();
+        let (output, confidence) = tokio::task::spawn_blocking(move || engine.predict(&model_id, &input))
             .await
-            .map_err(|e| Status::internal(format!("Failed to load model: {}", e)))?;
-
-        // Update last used
-        let _ = self.model_manager.update_last_used(&req.model_id).await;
-
-        // Simulate inference (in production, would use actual model)
-        let output_data = simulate_inference(&req.input_data, &req.model_id);
-        let confidence = 0.95 + (rand::random::<f32>() * 0.05);
-
-        // Generate proof of service
-        let proof_of_service = self.proof_generator.generate_proof(&req.model_id, &req.query_id, start.elapsed().as_millis() as u64);
+            .map_err(|e| Status::internal(format!("Inference task panicked: {}", e)))?
+            .map_err(|e| Status::internal(format!("Inference failed: {}", e)))?;
 
         let latency_ms = start.elapsed().as_millis() as u64;
+        let proof_of_service = self.proof_generator.generate_proof(&req.model_id, &query_id, latency_ms);
 
         let response = PredictResponse {
-            output_data,
+            output_data: output.into_bytes(),
             confidence,
             proof_of_service,
-            model_version: model_info.version.to_string(),
+            model_version: "1".to_string(),
             latency_ms,
-            seed_node_id: self.model_manager.node_id().to_string(),
+            seed_node_id: self.engine.node_id().to_string(),
             signature: vec![],
         };
 
@@ -75,27 +73,29 @@ impl Inference for InferenceService {
     async fn embed(&self, request: Request<EmbedRequest>) -> Result<Response<EmbedResponse>, Status> {
         let req = request.into_inner();
         let start = Instant::now();
+        let model_id = req.model_id.clone();
 
-        info!("Embed request for model: {}", req.model_id);
+        info!("Embed request for model: {}", model_id);
 
-        // Load model
-        let _ = self
-            .model_manager
-            .load_model(&req.model_id)
+        let input = String::from_utf8_lossy(&req.input_data).to_string();
+        let engine = self.engine.clone();
+        let embeddings = tokio::task::spawn_blocking(move || engine.embed(&model_id, &input))
             .await
-            .map_err(|e| Status::internal(format!("Failed to load model: {}", e)))?;
+            .map_err(|e| Status::internal(format!("Inference task panicked: {}", e)))?
+            .map_err(|e| Status::internal(format!("Inference failed: {}", e)))?;
 
-        // Simulate embedding generation
-        let embeddings = generate_embeddings(&req.input_data);
         let dimension = embeddings.len() as u32;
-
-        // Generate proof
-        let proof_of_service = self.proof_generator.generate_proof(&req.model_id, &req.query_id, start.elapsed().as_millis() as u64);
-
         let latency_ms = start.elapsed().as_millis() as u64;
+        let proof_of_service = self.proof_generator.generate_proof(&req.model_id, &req.query_id, latency_ms);
 
-        let response =
-            EmbedResponse { embeddings, dimension, proof_of_service, model_version: "1".to_string(), latency_ms, signature: vec![] };
+        let response = EmbedResponse {
+            embeddings,
+            dimension,
+            proof_of_service,
+            model_version: "1".to_string(),
+            latency_ms,
+            signature: vec![],
+        };
 
         info!("Embed completed in {}ms", latency_ms);
         Ok(Response::new(response))
@@ -123,7 +123,7 @@ impl Inference for InferenceService {
 
     #[instrument(skip(self, _request))]
     async fn list_models(&self, _request: Request<ListModelsRequest>) -> Result<Response<ListModelsResponse>, Status> {
-        let models = self.model_manager.list_models().await.map_err(|e| Status::internal(format!("Failed to list models: {}", e)))?;
+        let models = self.engine.model_manager().list_models().await.map_err(|e| Status::internal(format!("Failed to list models: {}", e)))?;
 
         let model_infos: Vec<ModelInfo> = models
             .iter()
@@ -160,24 +160,4 @@ impl InferenceService {
     pub fn into_server(self) -> InferenceServer<Self> {
         InferenceServer::new(self)
     }
-}
-
-fn simulate_inference(input_data: &[u8], _model_id: &str) -> Vec<u8> {
-    // Simulate inference by processing input
-    let mut output = Vec::with_capacity(input_data.len());
-    for byte in input_data {
-        output.push(byte.wrapping_add(1));
-    }
-    output
-}
-
-fn generate_embeddings(input_data: &[u8]) -> Vec<f32> {
-    // Generate mock embeddings (384-dimensional)
-    let dimension = 384;
-    let mut embeddings = Vec::with_capacity(dimension);
-    for i in 0..dimension {
-        let value = if i < input_data.len() { input_data[i] as f32 / 255.0 } else { rand::random::<f32>() };
-        embeddings.push(value);
-    }
-    embeddings
 }
