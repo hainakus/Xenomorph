@@ -27,7 +27,7 @@ const DEFAULT_MODEL_ID: &str = "multimolecule/dnabert2";
 const DEFAULT_THREADS: usize = 4;
 const DEFAULT_DATA_DIR: &str = "~/.xenom-miner";
 const BLOCK_REWARD: u64 = 100;
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const RETRY_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Parser, Debug)]
@@ -106,30 +106,40 @@ async fn ensure_rpc_connection(rpc_client: &mut Option<XenomRpcClient>, rpc_url:
         return Ok(());
     }
 
-    let mut client = XenomRpcClient::new(rpc_url.to_string());
-    match timeout(CONNECT_TIMEOUT, client.connect()).await {
-        Ok(Ok(())) => {
-            info!("Connected to {}", rpc_url);
-            *rpc_client = Some(client);
-            Ok(())
-        }
-        Ok(Err(e)) => {
-            if dry_run {
-                warn!("RPC not available ({}), running dry-run with local batches", e);
-                Ok(())
-            } else {
-                bail!("Failed to connect to {}: {}", rpc_url, e)
+    let max_attempts = 10;
+    let mut delay = Duration::from_secs(1);
+
+    for attempt in 1..=max_attempts {
+        let mut client = XenomRpcClient::new(rpc_url.to_string());
+        match timeout(CONNECT_TIMEOUT, client.connect()).await {
+            Ok(Ok(())) => {
+                info!("Connected to {}", rpc_url);
+                *rpc_client = Some(client);
+                return Ok(());
+            }
+            Ok(Err(e)) => {
+                if dry_run {
+                    warn!("RPC not available ({}), running dry-run with local batches", e);
+                    return Ok(());
+                }
+                warn!("Failed to connect to {} (attempt {}/{}): {}", rpc_url, attempt, max_attempts, e);
+            }
+            Err(_) => {
+                if dry_run {
+                    warn!("RPC connection timed out, running dry-run with local batches");
+                    return Ok(());
+                }
+                warn!("Timed out connecting to {} (attempt {}/{})", rpc_url, attempt, max_attempts);
             }
         }
-        Err(_) => {
-            if dry_run {
-                warn!("RPC connection timed out, running dry-run with local batches");
-                Ok(())
-            } else {
-                bail!("Timed out connecting to {}", rpc_url)
-            }
+
+        if attempt < max_attempts {
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(Duration::from_secs(30));
         }
     }
+
+    bail!("Failed to connect to {} after {} attempts", rpc_url, max_attempts)
 }
 
 async fn get_batch(rpc_client: &mut Option<XenomRpcClient>, model_id: &str) -> Option<TrainingBatch> {

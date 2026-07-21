@@ -15,6 +15,7 @@ use super::messages::{
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const MODEL_CHECKPOINT_TIMEOUT: Duration = Duration::from_secs(600);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(60);
 const MAX_SEND_ATTEMPTS: usize = 3;
@@ -102,8 +103,11 @@ impl XenomRpcClient {
     }
 
     /// Request the full model checkpoint (config + tokenizer + weights) from the seed-node.
+    /// Uses a much longer timeout because the response can be several hundred MB.
     pub async fn get_model_checkpoint(&mut self, model_id: &str) -> Result<ModelCheckpoint> {
-        let response = self.send_request(RpcRequest::GetModelCheckpoint { model_id: model_id.to_string() }).await?;
+        let response = self
+            .send_request_with_timeout(RpcRequest::GetModelCheckpoint { model_id: model_id.to_string() }, MODEL_CHECKPOINT_TIMEOUT)
+            .await?;
 
         match response {
             RpcResponse::ModelCheckpoint(cp) => Ok(cp),
@@ -169,9 +173,14 @@ impl XenomRpcClient {
         }
     }
 
-    /// Send a single Borsh request and wait for a matching response.
-    /// Retries transparently if the connection drops mid-flight.
+    /// Send a single Borsh request with the default timeout.
     async fn send_request(&mut self, request: RpcRequest) -> Result<RpcResponse> {
+        self.send_request_with_timeout(request, REQUEST_TIMEOUT).await
+    }
+
+    /// Send a single Borsh request and wait for a matching response, with a configurable timeout.
+    /// Retries transparently if the connection drops mid-flight.
+    async fn send_request_with_timeout(&mut self, request: RpcRequest, timeout_duration: Duration) -> Result<RpcResponse> {
         let request_id = self.request_counter;
         self.request_counter += 1;
 
@@ -193,7 +202,7 @@ impl XenomRpcClient {
 
             debug!("Sent RPC request {}", request_id);
 
-            let deadline = tokio::time::Instant::now() + REQUEST_TIMEOUT;
+            let deadline = tokio::time::Instant::now() + timeout_duration;
             let should_retry;
 
             loop {
