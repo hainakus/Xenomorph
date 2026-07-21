@@ -451,9 +451,12 @@ async fn main() -> Result<()> {
                             blocks_submitted += 1;
                             total_reward += BLOCK_REWARD;
                             info!(
-                                "Submitted block {}: {}",
+                                "Submitted block {}: {} | loss {:.6} -> {:.6} | improvement {:.6}",
                                 block.header.block_number,
-                                hex::encode(block_hash)
+                                hex::encode(block_hash),
+                                result.loss_before,
+                                result.loss_after,
+                                result.loss_before - result.loss_after
                             );
                         }
                         Err(e) => {

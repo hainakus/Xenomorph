@@ -60,10 +60,9 @@ async fn start_mock_server() -> u16 {
                     RpcRequest::GetBalance { .. } => RpcResponse::Balance(0),
                     RpcRequest::GetDifficulty => RpcResponse::Difficulty([0xff; 32]),
                     RpcRequest::GetGenomeTrainingBatch(_) => RpcResponse::Error("genome batch not supported in mock".to_string()),
-                    RpcRequest::GetModelCheckpointInfo(req) => RpcResponse::ModelCheckpointInfo(ModelCheckpointInfo {
-                        model_id: req.model_id,
-                        base_checkpoint: [1u8; 32],
-                    }),
+                    RpcRequest::GetModelCheckpointInfo(req) => {
+                        RpcResponse::ModelCheckpointInfo(ModelCheckpointInfo { model_id: req.model_id, base_checkpoint: [1u8; 32] })
+                    }
                 };
 
                 let payload = to_vec(&response).unwrap();
