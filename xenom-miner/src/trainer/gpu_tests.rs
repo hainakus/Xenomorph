@@ -158,6 +158,7 @@ mod tests {
                 seq_length: 8,
             },
             sequences: vec!["ATCG".to_string(), "GCTA".to_string()],
+            base_checkpoint: [1u8; 32],
         }
     }
 

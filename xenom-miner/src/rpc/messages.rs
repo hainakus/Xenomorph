@@ -35,6 +35,9 @@ pub struct GetGenomeTrainingBatch {
 pub struct GenomeTrainingBatchMsg {
     pub batch: GenomeTrainingBatch,
     pub sequences: Vec<String>,
+    /// Hash of the model weights this genome batch is based on; must be used as the
+    /// training block's `base_checkpoint`.
+    pub base_checkpoint: [u8; 32],
 }
 
 /// A batch of training data requested from the Xenomorph node.

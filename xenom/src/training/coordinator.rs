@@ -179,6 +179,11 @@ impl Coordinator {
             return RpcResponse::Error(format!("Unknown model id {} (active is {})", request.model_id, self.inner.active_model_id));
         }
 
+        let base_checkpoint = match self.active_weights_hash().await {
+            Ok(hash) => hash.as_bytes(),
+            Err(e) => return RpcResponse::Error(format!("Failed to load active model: {}", e)),
+        };
+
         let archive = {
             let mut storage = self.inner.genome_storage.write().await;
             match storage.get_or_load(request.genome_merkle_root, &self.inner.genome_source_url).await {
@@ -194,7 +199,7 @@ impl Coordinator {
         batch.model_id = request.model_id;
 
         let sequences = generator.extract_sequences(&batch);
-        RpcResponse::GenomeTrainingBatch(GenomeTrainingBatchMsg { batch, sequences })
+        RpcResponse::GenomeTrainingBatch(GenomeTrainingBatchMsg { batch, sequences, base_checkpoint })
     }
 
     /// Return the raw model checkpoint files to the miner.

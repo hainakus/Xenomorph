@@ -117,7 +117,7 @@ async fn handle_request(
                 learning_rate: 0.01,
             }))
         }
-        RpcRequest::GetGenomeTrainingBatch(request) => handle_genome_batch_request(request, genome_storage).await,
+        RpcRequest::GetGenomeTrainingBatch(request) => handle_genome_batch_request(request, genome_storage, model_manager).await,
         RpcRequest::GetModelCheckpoint { model_id } => match model_manager.get_model_checkpoint(&model_id).await {
             Ok((checkpoint, files)) => RpcResponse::ModelCheckpoint(super::messages::ModelCheckpoint {
                 model_id,
@@ -190,7 +190,11 @@ fn validate_miner_address(address: &str) -> Result<()> {
     Ok(())
 }
 
-async fn handle_genome_batch_request(request: GetGenomeTrainingBatch, genome_storage: Arc<RwLock<GenomeStorage>>) -> RpcResponse {
+async fn handle_genome_batch_request(
+    request: GetGenomeTrainingBatch,
+    genome_storage: Arc<RwLock<GenomeStorage>>,
+    model_manager: Arc<ModelManager>,
+) -> RpcResponse {
     // The seed-node auto-discovers the genome archive in its local cache or falls
     // back to the canonical GitHub Releases URL (overridable via XENO_GENOME_URL).
     let source = String::new();
@@ -208,11 +212,12 @@ async fn handle_genome_batch_request(request: GetGenomeTrainingBatch, genome_sto
 
     let mut generator = GenomeBatchGenerator::new(archive, seed);
     let mut batch = generator.generate_batch(request.preferred_batch_size, 128);
-    batch.model_id = request.model_id;
+    batch.model_id = request.model_id.clone();
 
     let sequences = generator.extract_sequences(&batch);
+    let base_checkpoint = get_checkpoint(&model_manager, &request.model_id).await;
 
-    RpcResponse::GenomeTrainingBatch(GenomeTrainingBatchMsg { batch, sequences })
+    RpcResponse::GenomeTrainingBatch(GenomeTrainingBatchMsg { batch, sequences, base_checkpoint })
 }
 
 async fn get_checkpoint(model_manager: &ModelManager, model_id: &str) -> [u8; 32] {

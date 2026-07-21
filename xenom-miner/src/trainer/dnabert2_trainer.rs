@@ -217,7 +217,7 @@ impl Trainer for DnaBert2Trainer {
 
         let batch_indices: Vec<u64> = batch.data_indices.iter().map(|slice| slice.chunk_idx).collect();
 
-        self.train_mlm_batch(&mlm_batch, &batch.model_id, batch.genome_merkle_root, batch_indices, 0.01)
+        self.train_mlm_batch(&mlm_batch, &batch.model_id, msg.base_checkpoint, batch_indices, 0.01)
     }
 
     fn device_info(&self) -> DeviceInfo {
@@ -500,6 +500,7 @@ mod tests {
                 seq_length: 8,
             },
             sequences: vec!["ATCG".to_string(), "GCTA".to_string()],
+            base_checkpoint: [1u8; 32],
         };
 
         let result = trainer.train_genome(&msg).unwrap();
