@@ -398,7 +398,7 @@ impl Trainer for MultiGpuTrainer {
             .context("Failed to generate MLM batch from genome sequences")?;
 
         let batch_indices: Vec<u64> = batch.data_indices.iter().map(|slice| slice.chunk_idx).collect();
-        self.train_mlm_batch(&mlm_batch, &batch.model_id, batch.genome_merkle_root, batch_indices, 0.01)
+        self.train_mlm_batch(&mlm_batch, &batch.model_id, msg.base_checkpoint, batch_indices, 0.01)
     }
 
     fn device_info(&self) -> DeviceInfo {
