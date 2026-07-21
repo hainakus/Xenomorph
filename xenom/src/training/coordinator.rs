@@ -51,6 +51,7 @@ struct CoordinatorInner {
     model_manager: Arc<ModelManager>,
     genome_storage: Arc<RwLock<GenomeStorage>>,
     genome_source_url: String,
+    genome_file: Option<PathBuf>,
 
     rpc_core_service: Arc<RpcCoreService>,
     genome_fragment_size_bytes: u32,
@@ -90,12 +91,14 @@ impl Coordinator {
         model_manager.ensure_model_downloaded(&active_model_id).await?;
 
         let mut genome_storage = GenomeStorage::new(&genome_cache_dir).await?;
+        let mut genome_file_path = None;
         if let Some(path) = genome_file {
             let archive = seed_node::genome::archive::GenomeArchive::load(&path)
                 .with_context(|| format!("Failed to load genome archive from {:?}", path))?;
             let merkle_root = archive.header.merkle_root;
             genome_storage.load_from_path(merkle_root, &path).await?;
             info!("Loaded genome archive {:?} with merkle root {}", path, hex::encode(merkle_root));
+            genome_file_path = Some(path);
         }
 
         let difficulty = DifficultyTarget { min_improvement: -1.0, max_loss_after: f64::MAX };
@@ -109,6 +112,7 @@ impl Coordinator {
                 model_manager,
                 genome_storage: Arc::new(RwLock::new(genome_storage)),
                 genome_source_url,
+                genome_file: genome_file_path,
                 rpc_core_service,
                 genome_fragment_size_bytes,
                 genome_pow_activation_daa_score,
@@ -321,19 +325,56 @@ impl Coordinator {
 
         let found_nonce = if header.daa_score >= self.inner.genome_pow_activation_daa_score {
             let state = kaspa_pow::genome_pow_state(&header, self.inner.genome_fragment_size_bytes);
-            let loader = kaspa_pow::genome_pow::SyntheticLoader::new(self.inner.genome_fragment_size_bytes, header.epoch_seed);
             let mut nonce = 0u64;
-            loop {
-                let fragment_idx = state.fragment_index_for(nonce);
-                let Some(fragment) = loader.load_fragment(fragment_idx) else {
-                    return RpcResponse::Error(format!("Failed to synthesize genome fragment {}", fragment_idx));
-                };
-                if state.check_pow_with_fragment(nonce, &fragment).0 {
-                    break nonce;
+
+            if let Some(ref path) = self.inner.genome_file {
+                // Real packed genome dataset is available: mine with the same memory-hard
+                // genome_mix_hash path consensus will use to validate the block.
+                match kaspa_pow::genome_file::FileGenomeLoader::open(path, self.inner.genome_fragment_size_bytes, false) {
+                    Ok(loader) => {
+                        let packed = loader.packed_dataset().unwrap_or(&[]);
+                        loop {
+                            if state.check_pow_memory_hard(nonce, packed).0 {
+                                break nonce;
+                            }
+                            nonce = nonce.wrapping_add(1);
+                            if nonce == 0 {
+                                return RpcResponse::Error("Failed to solve memory-hard Genome PoW for training block".to_string());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to open genome file {:?} for mining: {}; falling back to synthetic fragment", path, e);
+                        let loader = kaspa_pow::genome_pow::SyntheticLoader::new(self.inner.genome_fragment_size_bytes, header.epoch_seed);
+                        loop {
+                            let fragment_idx = state.fragment_index_for(nonce);
+                            let Some(fragment) = loader.load_fragment(fragment_idx) else {
+                                return RpcResponse::Error(format!("Failed to synthesize genome fragment {}", fragment_idx));
+                            };
+                            if state.check_pow_with_fragment(nonce, &fragment).0 {
+                                break nonce;
+                            }
+                            nonce = nonce.wrapping_add(1);
+                            if nonce == 0 {
+                                return RpcResponse::Error("Failed to solve Genome PoW for training block".to_string());
+                            }
+                        }
+                    }
                 }
-                nonce = nonce.wrapping_add(1);
-                if nonce == 0 {
-                    return RpcResponse::Error("Failed to solve Genome PoW for training block".to_string());
+            } else {
+                let loader = kaspa_pow::genome_pow::SyntheticLoader::new(self.inner.genome_fragment_size_bytes, header.epoch_seed);
+                loop {
+                    let fragment_idx = state.fragment_index_for(nonce);
+                    let Some(fragment) = loader.load_fragment(fragment_idx) else {
+                        return RpcResponse::Error(format!("Failed to synthesize genome fragment {}", fragment_idx));
+                    };
+                    if state.check_pow_with_fragment(nonce, &fragment).0 {
+                        break nonce;
+                    }
+                    nonce = nonce.wrapping_add(1);
+                    if nonce == 0 {
+                        return RpcResponse::Error("Failed to solve Genome PoW for training block".to_string());
+                    }
                 }
             }
         } else {
