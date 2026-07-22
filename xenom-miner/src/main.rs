@@ -324,6 +324,7 @@ async fn main() -> Result<()> {
                 use_mixed_precision: args.gpu.fp16,
                 use_gradient_checkpointing: args.gpu.gradient_checkpointing,
                 zero_optimization: args.gpu.zero,
+                gradient_top_k_ratio: args.gpu.gradient_top_k_ratio,
             };
             gpu_config.validate()?;
 

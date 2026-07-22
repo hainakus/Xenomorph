@@ -47,6 +47,8 @@ pub struct MultiGpuConfig {
     pub use_gradient_checkpointing: bool,
     /// ZeRO level (0 = none, higher values reserved).
     pub zero_optimization: u8,
+    /// Top-k gradient compression ratio for FedAvg submissions. 1.0 = dense.
+    pub gradient_top_k_ratio: f32,
 }
 
 impl Default for MultiGpuConfig {
@@ -58,6 +60,7 @@ impl Default for MultiGpuConfig {
             use_mixed_precision: false,
             use_gradient_checkpointing: false,
             zero_optimization: 0,
+            gradient_top_k_ratio: 1.0,
         }
     }
 }
@@ -75,6 +78,9 @@ impl MultiGpuConfig {
         }
         if self.zero_optimization > 0 {
             bail!("ZeRO optimization level > 0 is not yet implemented");
+        }
+        if self.gradient_top_k_ratio.is_nan() || self.gradient_top_k_ratio < 0.0 || self.gradient_top_k_ratio > 1.0 {
+            bail!("gradient-top-k-ratio must be between 0.0 and 1.0");
         }
         Ok(())
     }
@@ -359,14 +365,13 @@ impl MultiGpuTrainer {
         named_grads: HashMap<String, Tensor>,
         participant_weight: f32,
     ) -> Result<GradientUpdate> {
-        let top_k_ratio = gradient_top_k_ratio();
+        let top_k_ratio = self.config.gradient_top_k_ratio.clamp(0.0, 1.0);
 
         let mut layer_gradients = HashMap::with_capacity(named_grads.len());
         for (name, grad) in named_grads {
             let shape = grad.dims().to_vec();
             let flat = grad.flatten_all()?.to_vec1::<f32>()?;
-            let (values, indices) =
-                if top_k_ratio >= 1.0 { (flat, Vec::new()) } else { top_k_compress(&flat, top_k_ratio.clamp(0.0, 1.0)) };
+            let (values, indices) = if top_k_ratio >= 1.0 { (flat, Vec::new()) } else { top_k_compress(&flat, top_k_ratio) };
             layer_gradients.insert(name, GradientLayer { values, shape, indices });
         }
 
@@ -377,12 +382,6 @@ impl MultiGpuTrainer {
 
         Ok(GradientUpdate { model_id: model_id.to_string(), base_checkpoint, encrypted_payload, participant_weight })
     }
-}
-
-/// Read the global top-k gradient compression ratio. `1.0` means no compression
-/// (dense gradients); `0.1` keeps the top 10 % absolute values.
-fn gradient_top_k_ratio() -> f32 {
-    std::env::var("XENO_GRADIENT_TOP_K_RATIO").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or(1.0).clamp(0.0, 1.0)
 }
 
 /// Keep only the `k` largest absolute values of `flat` and return them together

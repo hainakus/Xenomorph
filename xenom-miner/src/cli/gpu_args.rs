@@ -29,6 +29,12 @@ pub struct GpuArgs {
     /// Currently only 0 is implemented; higher values are reserved.
     #[arg(long, default_value_t = 0)]
     pub zero: u8,
+
+    /// Gradient compression ratio for FedAvg submissions. 1.0 = dense gradients;
+    /// 0.1 keeps only the largest 10% of values by absolute magnitude. Lower
+    /// values drastically reduce upload size over slow remote links.
+    #[arg(long, default_value_t = 1.0)]
+    pub gradient_top_k_ratio: f32,
 }
 
 impl GpuArgs {
@@ -45,6 +51,9 @@ impl GpuArgs {
         }
         if self.zero > 0 {
             anyhow::bail!("--zero > 0 is not implemented yet");
+        }
+        if self.gradient_top_k_ratio.is_nan() || self.gradient_top_k_ratio < 0.0 || self.gradient_top_k_ratio > 1.0 {
+            anyhow::bail!("--gradient-top-k-ratio must be between 0.0 and 1.0");
         }
         Ok(())
     }

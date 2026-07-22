@@ -203,6 +203,7 @@ mod tests {
             use_mixed_precision: false,
             use_gradient_checkpointing: false,
             zero_optimization: 0,
+            gradient_top_k_ratio: 1.0,
         };
         let trainer =
             MultiGpuTrainer::new("dnabert2".to_string(), config, weights, tokenizer, gpu_config, GpuBackend::Auto, 2).unwrap();

@@ -25,6 +25,8 @@ Options:
                                   (default: \$XENO_MINER_MICRO_BATCH_SIZE or 1)
   --gradient-accumulation <n>     Number of gradient-accumulation steps
                                   (default: \$XENO_MINER_GRADIENT_ACCUMULATION or 1)
+  --gradient-top-k-ratio <f>      FedAvg gradient compression ratio (1.0 = dense, 0.1 = 10%)
+                                  (default: \$XENO_MINER_GRADIENT_TOP_K_RATIO or 1.0)
   --fp16                          Enable FP16 mixed precision
   --gradient-checkpointing        Enable gradient checkpointing (stub)
   --zero <n>                      ZeRO optimization level (stub, default 0)
@@ -42,6 +44,7 @@ FEATURES="${XENO_MINER_FEATURES:-}"
 GPUS="${XENO_MINER_GPUS:-0}"
 MICRO_BATCH_SIZE="${XENO_MINER_MICRO_BATCH_SIZE:-1}"
 GRADIENT_ACCUMULATION="${XENO_MINER_GRADIENT_ACCUMULATION:-1}"
+GRADIENT_TOP_K_RATIO="${XENO_MINER_GRADIENT_TOP_K_RATIO:-1.0}"
 FP16=0
 GRADIENT_CHECKPOINTING=0
 ZERO=0
@@ -57,6 +60,7 @@ while [[ $# -gt 0 ]]; do
         --gpus) GPUS="$2"; shift 2 ;;
         --micro-batch-size) MICRO_BATCH_SIZE="$2"; shift 2 ;;
         --gradient-accumulation) GRADIENT_ACCUMULATION="$2"; shift 2 ;;
+        --gradient-top-k-ratio) GRADIENT_TOP_K_RATIO="$2"; shift 2 ;;
         --fp16) FP16=1; shift ;;
         --gradient-checkpointing) GRADIENT_CHECKPOINTING=1; shift ;;
         --zero) ZERO="$2"; shift 2 ;;
@@ -249,6 +253,7 @@ if [[ "$TRAINER" == "dnabert2" || "$TRAINER" == "gpu" || "$TRAINER" == "cuda" ||
         --gpus "$GPUS"
         --micro-batch-size "$MICRO_BATCH_SIZE"
         --gradient-accumulation "$GRADIENT_ACCUMULATION"
+        --gradient-top-k-ratio "$GRADIENT_TOP_K_RATIO"
         --zero "$ZERO"
     )
     [[ "$FP16" == "1" ]] && MINER_EXTRA_ARGS+=(--fp16)
