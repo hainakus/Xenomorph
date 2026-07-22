@@ -171,6 +171,13 @@ impl DnaBert2Trainer {
         candle_core::safetensors::save(&tensors, path).context("Failed to save model weights")
     }
 
+    /// Serialize the current trainable weights into an in-memory SafeTensors buffer.
+    pub fn save_weights_to_bytes(&self) -> Result<Vec<u8>> {
+        let data = self.varmap.data().lock().map_err(|e| anyhow::anyhow!("VarMap poisoned: {}", e))?;
+        let tensors: Vec<(String, &Tensor)> = data.iter().map(|(k, v)| (k.clone(), v.as_tensor())).collect();
+        safetensors::tensor::serialize(tensors, &None).map_err(|e| anyhow::anyhow!("Failed to serialize model weights: {}", e))
+    }
+
     /// Access the underlying trainable variables. Used by the seed-node FedAvg
     /// aggregator to reconstruct gradient tensors with the correct shapes.
     pub fn varmap(&self) -> &candle_nn::VarMap {

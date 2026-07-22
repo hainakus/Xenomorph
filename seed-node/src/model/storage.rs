@@ -109,6 +109,17 @@ impl ModelStorage {
         Ok(RawModelFiles { config, tokenizer, weights })
     }
 
+    /// Load only the config and tokenizer for a model, without reading the
+    /// (potentially large) weights file.
+    pub async fn load_model_metadata(&self, model_id: &str) -> Result<RawModelFiles, StorageError> {
+        let model_path = self.model_path(model_id);
+
+        let config = self.read_encrypted_file(&format!("{}/config.enc", model_path)).await?;
+        let tokenizer = self.read_encrypted_file(&format!("{}/tokenizer.enc", model_path)).await?;
+
+        Ok(RawModelFiles { config, tokenizer, weights: Vec::new() })
+    }
+
     /// Read the on-disk encrypted files without decrypting them, so they can be
     /// sent over the network and decrypted by the receiver.
     pub async fn load_encrypted_model_files(&self, model_id: &str) -> Result<EncryptedModelFiles, StorageError> {

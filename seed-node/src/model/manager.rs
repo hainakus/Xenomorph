@@ -444,8 +444,6 @@ impl ModelManager {
         info!("Aggregating gradients for {} and producing a new checkpoint", model_id);
 
         let trainer = self.get_or_create_trainer(model_id).await?;
-        let base_path = self.base_path.clone();
-        let model_id_owned = model_id.to_string();
 
         let (weights, new_hash_bytes) = tokio::task::spawn_blocking(move || {
             let trainer = trainer.lock().map_err(|e| anyhow!("Trainer mutex poisoned: {}", e))?;
@@ -465,19 +463,15 @@ impl ModelManager {
             // Use AdamW on the server so moment estimates persist across aggregation rounds.
             trainer.apply_gradients(&named_grads, 1e-5f32).context("Failed to apply averaged gradients")?;
 
-            let tmp_name = format!("{}_fedavg_{}.safetensors", model_id_owned.replace('/', "_"), Uuid::new_v4());
-            let tmp_path = std::path::Path::new(&base_path).join(&tmp_name);
-            trainer.save_weights_to_path(&tmp_path).context("Failed to save updated weights")?;
-            let weights = std::fs::read(&tmp_path).context("Failed to read updated weights")?;
-            let _ = std::fs::remove_file(&tmp_path);
-
+            // Serialize weights in memory to avoid a temporary disk round-trip.
+            let weights = trainer.save_weights_to_bytes().context("Failed to serialize updated weights")?;
             let new_hash = blake3::hash(&weights);
             Ok::<_, anyhow::Error>((weights, <[u8; 32]>::from(new_hash)))
         })
         .await
         .context("Gradient aggregation task panicked")??;
 
-        let files = self.storage.load_model_files(model_id).await.map_err(|e| anyhow!("Failed to load model files: {}", e))?;
+        let files = self.storage.load_model_metadata(model_id).await.map_err(|e| anyhow!("Failed to load model metadata: {}", e))?;
         let new_files = RawModelFiles { config: files.config, tokenizer: files.tokenizer, weights };
         self.store_model_files(model_id, &new_files, ModelMetrics::default()).await?;
 
