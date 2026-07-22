@@ -363,6 +363,29 @@ impl ModelManager {
             bail!("Gradient payload contains no layers");
         }
 
+        // Reject stale gradients that were computed on a checkpoint that is no longer
+        // active. This prevents FedAvg from mixing gradients from different model
+        // versions if a new checkpoint was produced between batch request and submission.
+        let active_checkpoint = match self.get_model(&update.model_id).await {
+            Some(info) => info.checkpoint.weights_hash,
+            None => {
+                self.load_model(&update.model_id)
+                    .await
+                    .with_context(|| format!("Model {} is not loaded and could not be loaded from storage", update.model_id))?
+                    .checkpoint
+                    .weights_hash
+            }
+        };
+
+        if update.base_checkpoint != active_checkpoint {
+            bail!(
+                "Gradient for {} has base_checkpoint {} but active checkpoint is {}; rejecting stale update",
+                update.model_id,
+                hex::encode(update.base_checkpoint),
+                hex::encode(active_checkpoint)
+            );
+        }
+
         let mut aggregators = self.aggregators.write().await;
         let aggregator =
             aggregators.entry(update.model_id.clone()).or_insert_with(|| FedAvgAggregator::new(self.fedavg_config.clone()));
