@@ -208,7 +208,7 @@ impl MultiGpuTrainer {
         base_checkpoint: [u8; 32],
         batch_indices: Vec<u64>,
         learning_rate: f32,
-    ) -> Result<(TrainingResult, HashMap<String, Tensor>)> {
+    ) -> Result<(TrainingResult, HashMap<String, Tensor>, f32)> {
         let start = Instant::now();
 
         let micro_batches =
@@ -219,6 +219,7 @@ impl MultiGpuTrainer {
         let usable =
             mlm_batch.batch_size.min(self.config.micro_batch_size * self.trainers.len() * self.config.gradient_accumulation_steps);
         let used_batch = extract_mlm_batch(mlm_batch, 0, usable, mlm_batch.seq_len);
+        let participant_weight = used_batch.mask.iter().filter(|&&m| m == 1).count() as f32;
 
         let loss_before = self.trainers[0].compute_loss_scalar(&used_batch)?;
 
@@ -322,7 +323,7 @@ impl MultiGpuTrainer {
             compute_time_ms: start.elapsed().as_millis() as u64,
         };
 
-        Ok((result, final_grads))
+        Ok((result, final_grads, participant_weight))
     }
 
     /// Copy updated parameters from the master (device 0) replica to all other
@@ -356,12 +357,17 @@ impl MultiGpuTrainer {
         model_id: &str,
         base_checkpoint: [u8; 32],
         named_grads: HashMap<String, Tensor>,
+        participant_weight: f32,
     ) -> Result<GradientUpdate> {
+        let top_k_ratio = gradient_top_k_ratio();
+
         let mut layer_gradients = HashMap::with_capacity(named_grads.len());
         for (name, grad) in named_grads {
             let shape = grad.dims().to_vec();
-            let values = grad.flatten_all()?.to_vec1::<f32>()?;
-            layer_gradients.insert(name, GradientLayer { values, shape });
+            let flat = grad.flatten_all()?.to_vec1::<f32>()?;
+            let (values, indices) =
+                if top_k_ratio >= 1.0 { (flat, Vec::new()) } else { top_k_compress(&flat, top_k_ratio.clamp(0.0, 1.0)) };
+            layer_gradients.insert(name, GradientLayer { values, shape, indices });
         }
 
         let payload = GradientPayload { layer_gradients };
@@ -369,22 +375,48 @@ impl MultiGpuTrainer {
         let encrypted_payload = model_crypto::encrypt(&payload_bytes, &model_crypto::derive_encryption_key())
             .context("Failed to encrypt gradient payload")?;
 
-        Ok(GradientUpdate { model_id: model_id.to_string(), base_checkpoint, encrypted_payload, participant_weight: 1.0 })
+        Ok(GradientUpdate { model_id: model_id.to_string(), base_checkpoint, encrypted_payload, participant_weight })
     }
+}
+
+/// Read the global top-k gradient compression ratio. `1.0` means no compression
+/// (dense gradients); `0.1` keeps the top 10 % absolute values.
+fn gradient_top_k_ratio() -> f32 {
+    std::env::var("XENO_GRADIENT_TOP_K_RATIO").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or(1.0).clamp(0.0, 1.0)
+}
+
+/// Keep only the `k` largest absolute values of `flat` and return them together
+/// with their flattened indices (sorted ascending by index).
+fn top_k_compress(flat: &[f32], ratio: f32) -> (Vec<f32>, Vec<usize>) {
+    if ratio <= 0.0 || flat.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
+    let k = ((flat.len() as f32 * ratio).ceil() as usize).clamp(1, flat.len());
+
+    let mut indexed: Vec<(usize, f32)> = flat.iter().copied().enumerate().collect();
+    // Partially sort by descending absolute value and keep the top k.
+    indexed.select_nth_unstable_by(k - 1, |a, b| b.1.abs().total_cmp(&a.1.abs()).then_with(|| b.0.cmp(&a.0)));
+    let mut top: Vec<(usize, f32)> = indexed.into_iter().take(k).collect();
+    top.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let indices = top.iter().map(|(i, _)| *i).collect();
+    let values = top.iter().map(|(_, v)| *v).collect();
+    (values, indices)
 }
 
 impl Trainer for MultiGpuTrainer {
     fn train(&self, batch: &TrainingBatch) -> Result<TrainingResult> {
         let mlm_batch = self.trainers[0].generator.generate(batch).context("Failed to generate MLM batch")?;
         self.train_mlm_batch(&mlm_batch, &batch.model_id, batch.base_checkpoint, batch.data_indices.clone(), batch.learning_rate)
-            .map(|(result, _)| result)
+            .map(|(result, _, _)| result)
     }
 
     fn train_with_gradients(&self, batch: &TrainingBatch) -> Result<(TrainingResult, Option<GradientUpdate>)> {
         let mlm_batch = self.trainers[0].generator.generate(batch).context("Failed to generate MLM batch")?;
-        let (result, named_grads) =
+        let (result, named_grads, participant_weight) =
             self.train_mlm_batch(&mlm_batch, &batch.model_id, batch.base_checkpoint, batch.data_indices.clone(), batch.learning_rate)?;
-        let update = self.build_gradient_update(&batch.model_id, batch.base_checkpoint, named_grads)?;
+        let update = self.build_gradient_update(&batch.model_id, batch.base_checkpoint, named_grads, participant_weight)?;
         Ok((result, Some(update)))
     }
 
@@ -396,7 +428,7 @@ impl Trainer for MultiGpuTrainer {
             .context("Failed to generate MLM batch from genome sequences")?;
 
         let batch_indices: Vec<u64> = batch.data_indices.iter().map(|slice| slice.chunk_idx).collect();
-        self.train_mlm_batch(&mlm_batch, &batch.model_id, msg.base_checkpoint, batch_indices, 0.01).map(|(result, _)| result)
+        self.train_mlm_batch(&mlm_batch, &batch.model_id, msg.base_checkpoint, batch_indices, 0.01).map(|(result, _, _)| result)
     }
 
     fn train_genome_with_gradients(&self, msg: &GenomeTrainingBatchMsg) -> Result<(TrainingResult, Option<GradientUpdate>)> {
@@ -407,8 +439,9 @@ impl Trainer for MultiGpuTrainer {
             .context("Failed to generate MLM batch from genome sequences")?;
 
         let batch_indices: Vec<u64> = batch.data_indices.iter().map(|slice| slice.chunk_idx).collect();
-        let (result, named_grads) = self.train_mlm_batch(&mlm_batch, &batch.model_id, msg.base_checkpoint, batch_indices, 0.01)?;
-        let update = self.build_gradient_update(&batch.model_id, msg.base_checkpoint, named_grads)?;
+        let (result, named_grads, participant_weight) =
+            self.train_mlm_batch(&mlm_batch, &batch.model_id, msg.base_checkpoint, batch_indices, 0.01)?;
+        let update = self.build_gradient_update(&batch.model_id, msg.base_checkpoint, named_grads, participant_weight)?;
         Ok((result, Some(update)))
     }
 
@@ -432,6 +465,35 @@ impl DnaBert2Model {
     // Helper used by the trait impl above. Always returns false for now.
     fn checkpointing_state(&self) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_top_k_compress_keeps_largest_absolute_values() {
+        let flat = vec![1.0f32, -5.0, 2.0, 0.1, -3.0, 4.0];
+        let (values, indices) = top_k_compress(&flat, 0.5);
+        assert_eq!(values.len(), 3);
+        assert_eq!(indices.len(), 3);
+
+        let mut reconstructed = vec![0.0f32; flat.len()];
+        for (i, idx) in indices.iter().enumerate() {
+            reconstructed[*idx] = values[i];
+        }
+        // Top 3 absolute values are -5, -3 and 4.
+        assert_eq!(reconstructed, vec![0.0, -5.0, 0.0, 0.0, -3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_top_k_compress_full_ratio_returns_sorted_identity() {
+        let flat = vec![1.0f32, -5.0, 2.0, 0.1, -3.0, 4.0];
+        let (values, indices) = top_k_compress(&flat, 1.0);
+        assert_eq!(values.len(), flat.len());
+        assert_eq!(indices, (0..flat.len()).collect::<Vec<_>>());
+        assert_eq!(values, flat);
     }
 }
 

@@ -7,7 +7,33 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::consensus::fedavg::{FedAvgAggregator, FedAvgConfig, WeightingStrategy};
-use crate::rpc::messages::{GradientPayload, GradientUpdate, TrainingBatch};
+use crate::rpc::messages::{GradientLayer, GradientPayload, GradientUpdate, TrainingBatch};
+
+/// Decompress a possibly sparse `GradientLayer` into a full flattened `Vec<f32>`.
+/// Dense layers are validated and cloned; compressed layers scatter the stored
+/// values back into a zero vector of the original shape.
+fn decompress_gradient_layer(layer: &GradientLayer) -> Result<Vec<f32>> {
+    let total_len: usize = layer.shape.iter().product();
+    if layer.indices.is_empty() {
+        if layer.values.len() != total_len {
+            bail!("Dense gradient size {} does not match shape product {}", layer.values.len(), total_len);
+        }
+        return Ok(layer.values.clone());
+    }
+
+    if layer.values.len() != layer.indices.len() {
+        bail!("Compressed gradient has {} values but {} indices", layer.values.len(), layer.indices.len());
+    }
+
+    let mut full = vec![0.0f32; total_len];
+    for (idx, value) in layer.indices.iter().zip(layer.values.iter()) {
+        if *idx >= total_len {
+            bail!("Gradient index {} out of bounds for shape {:?}", idx, layer.shape);
+        }
+        full[*idx] = *value;
+    }
+    Ok(full)
+}
 
 use super::checkpoint::{ModelCheckpoint, ModelMetrics};
 use super::downloader::{download_model, is_valid_weights};
@@ -342,8 +368,10 @@ impl ModelManager {
             aggregators.entry(update.model_id.clone()).or_insert_with(|| FedAvgAggregator::new(self.fedavg_config.clone()));
 
         for (name, layer) in &payload.layer_gradients {
+            let gradient =
+                decompress_gradient_layer(layer).with_context(|| format!("Failed to decompress gradient for layer {}", name))?;
             aggregator
-                .add_gradient(name, layer.values.clone(), layer.shape.clone(), update.participant_weight)
+                .add_gradient(name, gradient, layer.shape.clone(), update.participant_weight)
                 .with_context(|| format!("Failed to add gradient for layer {}", name))?;
         }
 
@@ -495,5 +523,14 @@ mod tests {
 
         // Cleanup
         let _ = manager.delete_model("test_model").await;
+    }
+
+    #[test]
+    fn test_decompress_gradient_layer_dense_and_sparse() {
+        let dense = GradientLayer { values: vec![1.0, 2.0, 3.0, 4.0], shape: vec![2, 2], indices: vec![] };
+        assert_eq!(decompress_gradient_layer(&dense).unwrap(), vec![1.0, 2.0, 3.0, 4.0]);
+
+        let sparse = GradientLayer { values: vec![5.0, 7.0], shape: vec![4], indices: vec![0, 3] };
+        assert_eq!(decompress_gradient_layer(&sparse).unwrap(), vec![5.0, 0.0, 0.0, 7.0]);
     }
 }

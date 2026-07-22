@@ -184,7 +184,9 @@ async fn handle_connection(stream: tokio::net::TcpStream, state: Arc<Mutex<MockS
                         config: b"{}".to_vec(),
                         tokenizer: b"[]".to_vec(),
                         weights: vec![0u8; 64],
+                        encrypted: false,
                     }),
+                    RpcRequest::SubmitGradients(_) => RpcResponse::GradientAck { new_checkpoint: None },
                     RpcRequest::GetModelCheckpointInfo(req) => {
                         RpcResponse::ModelCheckpointInfo(ModelCheckpointInfo { model_id: req.model_id, base_checkpoint: [0u8; 32] })
                     }

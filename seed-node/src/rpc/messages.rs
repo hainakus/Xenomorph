@@ -84,12 +84,17 @@ pub struct GenomeTrainingBatchMsg {
     pub base_checkpoint: [u8; 32],
 }
 
-/// One layer's flattened gradient vector plus its original shape, used for
-/// FedAvg aggregation across miners.
+/// One layer's gradient vector plus its original shape, used for FedAvg
+/// aggregation across miners.
+///
+/// When `indices` is empty the layer is dense (`values` has the full flattened
+/// tensor in row-major order). When `indices` is non-empty only those flattened
+/// positions are non-zero and `values[i]` corresponds to `indices[i]`.
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub struct GradientLayer {
     pub values: Vec<f32>,
     pub shape: Vec<usize>,
+    pub indices: Vec<usize>,
 }
 
 /// Plaintext gradient payload that is serialized and then encrypted before
