@@ -229,10 +229,17 @@ impl MultiGpuTrainer {
         let participant_weight = used_batch.mask.iter().filter(|&&m| m == 1).count() as f32;
 
         let loss_before = self.trainers[0].compute_loss_scalar(&used_batch)?;
+        let loss_before_ms = start.elapsed().as_millis() as u64;
 
         let master_device = self.trainers[0].device.clone();
         let mut accumulated_grads: Option<HashMap<String, Tensor>> = None;
         let mut any_overflow = false;
+
+        let mut compute_ms: u64 = 0;
+        let mut gather_ms: u64 = 0;
+        let mut overflow_check_ms: u64 = 0;
+        let mut avg_ms: u64 = 0;
+        let mut add_ms: u64 = 0;
 
         for step in &micro_batches {
             let mut step_grads = Vec::new();
@@ -242,6 +249,7 @@ impl MultiGpuTrainer {
                 let trainer = &self.trainers[gpu_idx];
                 let loss_scale = self.scaler.lock().map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?.scale();
 
+                let step_start = Instant::now();
                 let grads = match trainer.compute_gradients(micro, loss_scale) {
                     Ok((_, grads)) => grads,
                     Err(e) => {
@@ -250,6 +258,7 @@ impl MultiGpuTrainer {
                         continue;
                     }
                 };
+                compute_ms += step_start.elapsed().as_millis() as u64;
 
                 // Skip micro-batches that produced no usable gradients (e.g. no masked positions).
                 if grads.is_empty() {
@@ -259,16 +268,20 @@ impl MultiGpuTrainer {
 
                 // Gather gradients on the master GPU to avoid cross-GPU CPU copies and
                 // to do averaging/accumulation on the accelerator.
+                let gather_start = Instant::now();
                 let grads = move_grads_to_device(grads, &master_device)
                     .with_context(|| format!("Failed to move gradients from GPU {} to master device", gpu_idx))?;
+                gather_ms += gather_start.elapsed().as_millis() as u64;
 
                 // Reject this micro-batch if the gradients themselves are non-finite.
+                let overflow_start = Instant::now();
                 let flat_grads: Vec<(String, Tensor)> = grads.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 let step_had_overflow = self
                     .scaler
                     .lock()
                     .map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?
                     .has_overflow(&flat_grads)?;
+                overflow_check_ms += overflow_start.elapsed().as_millis() as u64;
                 if step_had_overflow {
                     warn!("GPU {} produced non-finite gradients; skipping micro-batch", gpu_idx);
                     any_overflow = true;
@@ -282,11 +295,16 @@ impl MultiGpuTrainer {
                 continue;
             }
 
+            let avg_start = Instant::now();
             let avg = average_grad_maps(&step_grads).context("Failed to average gradients across GPUs for an accumulation step")?;
+            avg_ms += avg_start.elapsed().as_millis() as u64;
+
+            let add_start = Instant::now();
             accumulated_grads = Some(match accumulated_grads {
                 None => avg,
                 Some(acc) => add_grad_maps(acc, avg)?,
             });
+            add_ms += add_start.elapsed().as_millis() as u64;
         }
 
         // If every micro-batch overflowed, reduce the scale and bail so the next batch can retry.
@@ -297,9 +315,11 @@ impl MultiGpuTrainer {
 
         let final_grads = accumulated_grads.unwrap();
 
+        let final_overflow_start = Instant::now();
         let flat_grads: Vec<(String, Tensor)> = final_grads.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         let had_overflow =
             self.scaler.lock().map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?.has_overflow(&flat_grads)?;
+        overflow_check_ms += final_overflow_start.elapsed().as_millis() as u64;
 
         let effective_lr = self
             .scaler
@@ -308,6 +328,7 @@ impl MultiGpuTrainer {
             .effective_learning_rate(learning_rate, MAX_LEARNING_RATE);
 
         // Only update weights when the averaged gradients are finite.
+        let apply_start = Instant::now();
         if !had_overflow {
             self.trainers[0]
                 .apply_gradients(&final_grads, effective_lr)
@@ -317,14 +338,26 @@ impl MultiGpuTrainer {
             warn!("Averaged gradients are non-finite; skipping optimizer step and reducing loss scale");
             any_overflow = true;
         }
+        let apply_ms = apply_start.elapsed().as_millis() as u64;
 
         // Update the loss scale based on overflow status.
         self.scaler.lock().map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?.update_scale(any_overflow);
 
         // Compute post-update loss on the master replica using the same
         // sequences that were actually trained.
+        let loss_after_start = Instant::now();
         let loss_after = self.trainers[0].compute_loss_scalar(&used_batch)?;
+        let loss_after_ms = loss_after_start.elapsed().as_millis() as u64;
+
+        let commitment_start = Instant::now();
         let gradients_commitment = self.trainers[0].gradient_commitment_from_named_tensors(&final_grads)?;
+        let commitment_ms = commitment_start.elapsed().as_millis() as u64;
+
+        let total_ms = start.elapsed().as_millis() as u64;
+        info!(
+            "MultiGpuTrainer timings (ms): total={}, loss_before={}, compute={}, gather={}, overflow_check={}, avg={}, add={}, apply={}, loss_after={}, commitment={}",
+            total_ms, loss_before_ms, compute_ms, gather_ms, overflow_check_ms, avg_ms, add_ms, apply_ms, loss_after_ms, commitment_ms
+        );
 
         let result = TrainingResult {
             model_id: model_id.to_string(),
@@ -333,7 +366,7 @@ impl MultiGpuTrainer {
             loss_before,
             loss_after,
             gradients_commitment,
-            compute_time_ms: start.elapsed().as_millis() as u64,
+            compute_time_ms: total_ms,
         };
 
         Ok((result, final_grads, participant_weight))
@@ -422,7 +455,9 @@ impl Trainer for MultiGpuTrainer {
         let mlm_batch = self.trainers[0].generator.generate(batch).context("Failed to generate MLM batch")?;
         let (result, named_grads, participant_weight) =
             self.train_mlm_batch(&mlm_batch, &batch.model_id, batch.base_checkpoint, batch.data_indices.clone(), batch.learning_rate)?;
+        let build_start = Instant::now();
         let update = self.build_gradient_update(&batch.model_id, batch.base_checkpoint, named_grads, participant_weight)?;
+        info!("Gradient update build time: {} ms", build_start.elapsed().as_millis());
         Ok((result, Some(update)))
     }
 
@@ -447,7 +482,9 @@ impl Trainer for MultiGpuTrainer {
         let batch_indices: Vec<u64> = batch.data_indices.iter().map(|slice| slice.chunk_idx).collect();
         let (result, named_grads, participant_weight) =
             self.train_mlm_batch(&mlm_batch, &batch.model_id, msg.base_checkpoint, batch_indices, 0.01)?;
+        let build_start = Instant::now();
         let update = self.build_gradient_update(&batch.model_id, msg.base_checkpoint, named_grads, participant_weight)?;
+        info!("Genome gradient update build time: {} ms", build_start.elapsed().as_millis());
         Ok((result, Some(update)))
     }
 
