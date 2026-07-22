@@ -16,6 +16,9 @@ use super::messages::{
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MODEL_CHECKPOINT_TIMEOUT: Duration = Duration::from_secs(600);
+/// Gradient payloads can be as large as a model checkpoint and the seed-node has
+/// to decrypt, decompress, average and apply them before responding.
+const GRADIENT_SUBMIT_TIMEOUT: Duration = Duration::from_secs(300);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(60);
 const MAX_SEND_ATTEMPTS: usize = 3;
@@ -142,7 +145,7 @@ impl XenomRpcClient {
 
     /// Submit a gradient update for FedAvg aggregation.
     pub async fn submit_gradients(&mut self, update: GradientUpdate) -> Result<Option<[u8; 32]>> {
-        let response = self.send_request(RpcRequest::SubmitGradients(update)).await?;
+        let response = self.send_request_with_timeout(RpcRequest::SubmitGradients(update), GRADIENT_SUBMIT_TIMEOUT).await?;
 
         match response {
             RpcResponse::GradientAck { new_checkpoint } => Ok(new_checkpoint),
@@ -226,7 +229,7 @@ impl XenomRpcClient {
 
             debug!("Sent RPC request {}", request_id);
 
-            let deadline = tokio::time::Instant::now() + timeout_duration;
+            let mut deadline = tokio::time::Instant::now() + timeout_duration;
             let should_retry;
 
             loop {
@@ -247,12 +250,16 @@ impl XenomRpcClient {
                     }
                     Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Ok(Message::Text(_)))) => {
                         // Ignore text and close frames, keep waiting for binary response.
+                        deadline = tokio::time::Instant::now() + timeout_duration;
                         continue;
                     }
                     Ok(Some(Ok(Message::Ping(_)))) | Ok(Some(Ok(Message::Pong(_)))) => {
+                        // The peer is alive; extend the deadline and keep waiting.
+                        deadline = tokio::time::Instant::now() + timeout_duration;
                         continue;
                     }
                     Ok(Some(Ok(Message::Frame(_)))) => {
+                        deadline = tokio::time::Instant::now() + timeout_duration;
                         continue;
                     }
                     Ok(Some(Err(e))) => {

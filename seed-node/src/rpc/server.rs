@@ -1,11 +1,13 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use borsh::{to_vec, BorshDeserialize};
 use futures::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
+use tokio::time::interval;
 use tokio_tungstenite::accept_async_with_config;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
@@ -78,8 +80,32 @@ async fn handle_connection(
                     }
                 };
 
-                let response =
-                    handle_request(envelope.payload, model_manager.clone(), genome_storage.clone(), xenomorph_client.clone()).await;
+                // While a long-running request (e.g. SubmitGradients) is being
+                // processed, send WebSocket ping frames every 15 seconds. This
+                // keeps NATs/middleboxes from closing the connection and lets the
+                // client extend its wait timeout.
+                let mut ping_interval = interval(Duration::from_secs(15));
+                ping_interval.tick().await; // skip the immediate first tick
+
+                let mut request_fut = Box::pin(handle_request(
+                    envelope.payload,
+                    model_manager.clone(),
+                    genome_storage.clone(),
+                    xenomorph_client.clone(),
+                ));
+
+                let response = loop {
+                    tokio::select! {
+                        _ = ping_interval.tick() => {
+                            if let Err(e) = ws.send(Message::Ping(vec![])).await {
+                                warn!("Failed to send ping to miner: {}", e);
+                                return Err(e.into());
+                            }
+                        }
+                        resp = request_fut.as_mut() => break resp,
+                    }
+                };
+
                 let resp_bytes = match to_vec(&response) {
                     Ok(bytes) => bytes,
                     Err(e) => {
