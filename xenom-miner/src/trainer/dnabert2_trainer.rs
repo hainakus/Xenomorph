@@ -186,14 +186,15 @@ impl DnaBert2Trainer {
     }
 
     /// Convert a `GradStore` into a `HashMap` keyed by variable name, with gradients
-    /// moved to the CPU and cast to F32 for stable averaging across GPUs.
+    /// cast to F32 on their original device for stable averaging. The caller is
+    /// responsible for moving gradients to a common device before averaging.
     fn grad_store_to_map(grads: &candle_core::backprop::GradStore, varmap: &candle_nn::VarMap) -> Result<HashMap<String, Tensor>> {
         let mut out = HashMap::new();
         let data = varmap.data().lock().map_err(|e: PoisonError<_>| anyhow::anyhow!("VarMap poisoned: {}", e))?;
         for (name, var) in data.iter() {
             if let Some(grad) = grads.get(var.as_tensor()) {
-                let grad_cpu = grad.to_device(&Device::Cpu)?.to_dtype(DType::F32)?;
-                out.insert(name.clone(), grad_cpu);
+                let grad = grad.to_dtype(DType::F32)?;
+                out.insert(name.clone(), grad);
             }
         }
         Ok(out)

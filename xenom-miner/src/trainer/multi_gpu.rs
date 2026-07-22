@@ -2,12 +2,13 @@
 //!
 //! This implementation replicates the DNABERT-2 model on every requested GPU,
 //! splits the effective batch into micro-batches, computes gradients on each
-//! device, averages them on the CPU, applies the result to the master replica,
-//! and broadcasts the updated weights back to the other replicas.
+//! device, gathers them on the master GPU for averaging, applies the result to
+//! the master replica, and broadcasts the updated weights back to the other
+//! replicas.
 //!
 //! NCCL, ZeRO and full gradient-checkpointing are intentionally left as
-//! compile-time feature stubs; the CPU-averaging path is correct and avoids
-//! the single-GPU OOM by reducing activation memory per micro-batch.
+//! compile-time feature stubs; the master-gather path avoids the cross-GPU
+//! CPU copy bottleneck while keeping activation memory per micro-batch small.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -229,6 +230,7 @@ impl MultiGpuTrainer {
 
         let loss_before = self.trainers[0].compute_loss_scalar(&used_batch)?;
 
+        let master_device = self.trainers[0].device.clone();
         let mut accumulated_grads: Option<HashMap<String, Tensor>> = None;
         let mut any_overflow = false;
 
@@ -254,6 +256,11 @@ impl MultiGpuTrainer {
                     warn!("GPU {} produced no gradients; skipping micro-batch", gpu_idx);
                     continue;
                 }
+
+                // Gather gradients on the master GPU to avoid cross-GPU CPU copies and
+                // to do averaging/accumulation on the accelerator.
+                let grads = move_grads_to_device(grads, &master_device)
+                    .with_context(|| format!("Failed to move gradients from GPU {} to master device", gpu_idx))?;
 
                 // Reject this micro-batch if the gradients themselves are non-finite.
                 let flat_grads: Vec<(String, Tensor)> = grads.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -622,4 +629,9 @@ fn add_grad_maps(a: HashMap<String, Tensor>, b: HashMap<String, Tensor>) -> Resu
         }
     }
     Ok(out)
+}
+
+/// Move every tensor in a named gradient map to `device`.
+fn move_grads_to_device(grads: HashMap<String, Tensor>, device: &Device) -> Result<HashMap<String, Tensor>> {
+    grads.into_iter().map(|(k, v)| Ok((k, v.to_device(device)?))).collect()
 }
