@@ -1,8 +1,9 @@
 use anyhow::{anyhow, bail, Context, Result};
 use borsh::BorshDeserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::time::Instant;
+use tokio::sync::{Mutex, RwLock};
 use tracing::info;
 use uuid::Uuid;
 
@@ -57,16 +58,35 @@ pub struct ModelInfo {
     pub last_used: u64,
 }
 
+/// A cached, trainable checkpoint lineage.
+///
+/// `base_hash` is the original checkpoint hash that seeded this lineage.
+/// `head_hash` is the latest weights hash after the most recent aggregation.
+/// The `trainer` holds the live DNABERT-2 weights and AdamW optimizer state,
+/// and the `aggregator` collects gradients for the next FedAvg round.
+pub struct CachedCheckpoint {
+    pub base_hash: [u8; 32],
+    pub head_hash: [u8; 32],
+    pub trainer: DnaBert2Trainer,
+    pub aggregator: FedAvgAggregator,
+    pub last_used: Instant,
+    pub model_id: String,
+}
+
 pub struct ModelManager {
     base_path: String,
     storage: Arc<ModelStorage>,
     models: Arc<RwLock<HashMap<String, ModelInfo>>>,
-    aggregators: Arc<RwLock<HashMap<String, FedAvgAggregator>>>,
-    /// Cached trainable DNABERT-2 replicas used by the FedAvg aggregator.
-    /// Each replica keeps its AdamW optimizer state across aggregation rounds.
-    trainers: Arc<RwLock<HashMap<String, Arc<std::sync::Mutex<DnaBert2Trainer>>>>>,
+    /// Maps a checkpoint hash (either an original base or a later head) to a
+    /// shared, trainable checkpoint lineage. Multiple hashes may point to the
+    /// same `CachedCheckpoint` so that stale gradients continue the same lineage.
+    #[allow(clippy::type_complexity)]
+    checkpoint_cache: Arc<RwLock<HashMap<[u8; 32], Arc<Mutex<CachedCheckpoint>>>>>,
+    /// LRU ordering of the keys in `checkpoint_cache`, used for bounded eviction.
+    cache_order: Arc<Mutex<VecDeque<[u8; 32]>>>,
     fedavg_config: FedAvgConfig,
     node_id: String,
+    checkpoint_history_size: usize,
 }
 
 impl ModelManager {
@@ -86,14 +106,17 @@ impl ModelManager {
         let min_participants = std::env::var("FEDAVG_MIN_PARTICIPANTS").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
         let fedavg_config = FedAvgConfig { min_participants, max_participants: 10, weighting_strategy: WeightingStrategy::Uniform };
 
+        let checkpoint_history_size = std::env::var("XENO_CHECKPOINT_HISTORY_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(8);
+
         Ok(Self {
             base_path,
             storage,
             models: Arc::new(RwLock::new(HashMap::new())),
-            aggregators: Arc::new(RwLock::new(HashMap::new())),
-            trainers: Arc::new(RwLock::new(HashMap::new())),
+            checkpoint_cache: Arc::new(RwLock::new(HashMap::new())),
+            cache_order: Arc::new(Mutex::new(VecDeque::new())),
             fedavg_config,
             node_id,
+            checkpoint_history_size,
         })
     }
 
@@ -107,9 +130,15 @@ impl ModelManager {
         }
 
         // Load from storage. New checkpoints store config/tokenizer/weights; legacy ones use a single model.enc.
-        let data = match self.storage.load_model_files(model_id).await {
-            Ok(files) => files.weights,
-            Err(_) => self.storage.load_model(model_id).await.map_err(|e| anyhow!("Failed to load model: {}", e))?,
+        let (data, files_opt) = match self.storage.load_model_files(model_id).await {
+            Ok(files) => {
+                let data = files.weights.clone();
+                (data, Some(files))
+            }
+            Err(_) => {
+                let data = self.storage.load_model(model_id).await.map_err(|e| anyhow!("Failed to load model: {}", e))?;
+                (data, None)
+            }
         };
 
         // Parse checkpoint from data (simplified - in production would deserialize)
@@ -129,6 +158,18 @@ impl ModelManager {
         {
             let mut models = self.models.write().await;
             models.insert(model_id.to_string(), model_info.clone());
+        }
+
+        // Initialise the checkpoint cache for the loaded model's checkpoint, if we have the files.
+        if let Some(files) = files_opt {
+            if let Ok(entry) = self.build_cached_checkpoint(model_id, model_info.checkpoint.weights_hash, files) {
+                let mut cache = self.checkpoint_cache.write().await;
+                let mut order = self.cache_order.lock().await;
+                cache.entry(model_info.checkpoint.weights_hash).or_insert(entry);
+                if !order.contains(&model_info.checkpoint.weights_hash) {
+                    order.push_back(model_info.checkpoint.weights_hash);
+                }
+            }
         }
 
         info!("Loaded model: {}", model_id);
@@ -346,9 +387,10 @@ impl ModelManager {
 
     /// Submit an encrypted gradient update for FedAvg aggregation.
     ///
-    /// If the aggregator reaches `min_participants` for all layers, the averaged
-    /// gradient is applied to the model, a new checkpoint is stored, and its
-    /// weights hash is returned.
+    /// The update is accepted if its `base_checkpoint` is present in the bounded
+    /// checkpoint cache. The averaged gradient is applied to the matching
+    /// checkpoint lineage. A new checkpoint hash is returned only when the
+    /// updated lineage was the active model checkpoint.
     pub async fn submit_gradients(&self, update: &GradientUpdate) -> Result<Option<[u8; 32]>> {
         if update.participant_weight <= 0.0 {
             bail!("participant_weight must be positive");
@@ -363,92 +405,69 @@ impl ModelManager {
             bail!("Gradient payload contains no layers");
         }
 
-        // Reject stale gradients that were computed on a checkpoint that is no longer
-        // active. This prevents FedAvg from mixing gradients from different model
-        // versions if a new checkpoint was produced between batch request and submission.
-        let active_checkpoint = match self.get_model(&update.model_id).await {
-            Some(info) => info.checkpoint.weights_hash,
-            None => {
-                self.load_model(&update.model_id)
-                    .await
-                    .with_context(|| format!("Model {} is not loaded and could not be loaded from storage", update.model_id))?
-                    .checkpoint
-                    .weights_hash
+        // Make sure the target model and its active checkpoint are cached.
+        self.ensure_checkpoint_cached(&update.model_id).await?;
+
+        // Look up the base checkpoint in the bounded cache. If it is absent, the
+        // gradient is too stale to be accepted.
+        let entry = {
+            let cache = self.checkpoint_cache.read().await;
+            match cache.get(&update.base_checkpoint).cloned() {
+                Some(entry) => entry,
+                None => {
+                    bail!(
+                        "Gradient for {} has base_checkpoint {} but it is not in the checkpoint cache; rejecting stale update",
+                        update.model_id,
+                        hex::encode(update.base_checkpoint)
+                    );
+                }
             }
         };
 
-        if update.base_checkpoint != active_checkpoint {
-            bail!(
-                "Gradient for {} has base_checkpoint {} but active checkpoint is {}; rejecting stale update",
-                update.model_id,
-                hex::encode(update.base_checkpoint),
-                hex::encode(active_checkpoint)
-            );
-        }
+        // Update LRU ordering for the base key.
+        self.touch_cache_key(update.base_checkpoint).await;
 
-        let mut aggregators = self.aggregators.write().await;
-        let aggregator =
-            aggregators.entry(update.model_id.clone()).or_insert_with(|| FedAvgAggregator::new(self.fedavg_config.clone()));
+        let (old_head_hash, averages) = {
+            let mut entry_guard = entry.lock().await;
+            entry_guard.last_used = Instant::now();
 
-        for (name, layer) in &payload.layer_gradients {
-            let gradient =
-                decompress_gradient_layer(layer).with_context(|| format!("Failed to decompress gradient for layer {}", name))?;
-            aggregator
-                .add_gradient(name, gradient, layer.shape.clone(), update.participant_weight)
-                .with_context(|| format!("Failed to add gradient for layer {}", name))?;
-        }
-
-        if !aggregator.all_ready() {
-            let first = payload.layer_gradients.keys().next().unwrap();
-            info!(
-                "Collected gradients for {} ({} of {} participants)",
-                update.model_id,
-                aggregator.participant_count(first),
-                self.fedavg_config.min_participants
-            );
-            return Ok(None);
-        }
-
-        let averages = aggregator.compute_all_averages().context("Failed to compute averaged gradients")?;
-        aggregator.reset();
-        drop(aggregators);
-
-        self.apply_averaged_gradients(&update.model_id, averages).await
-    }
-
-    /// Return a cached trainable DNABERT-2 replica for `model_id`, creating it from
-    /// the stored checkpoint if necessary. Replicas are kept in memory so their
-    /// AdamW optimizer state survives across FedAvg rounds.
-    async fn get_or_create_trainer(&self, model_id: &str) -> Result<Arc<std::sync::Mutex<DnaBert2Trainer>>> {
-        {
-            let trainers = self.trainers.read().await;
-            if let Some(trainer) = trainers.get(model_id) {
-                return Ok(trainer.clone());
+            if entry_guard.model_id != update.model_id {
+                bail!("Gradient base checkpoint belongs to model {} not {}", entry_guard.model_id, update.model_id);
             }
-        }
 
-        let files = self.storage.load_model_files(model_id).await.map_err(|e| anyhow!("Failed to load model files: {}", e))?;
-        let config = DnaBert2Config::from_bytes(&files.config).context("Failed to parse model config")?;
-        let tokenizer = DnaTokenizer::from_bytes(&files.tokenizer).context("Failed to parse tokenizer")?;
-        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+            for (name, layer) in &payload.layer_gradients {
+                let gradient =
+                    decompress_gradient_layer(layer).with_context(|| format!("Failed to decompress gradient for layer {}", name))?;
+                entry_guard
+                    .aggregator
+                    .add_gradient(name, gradient, layer.shape.clone(), update.participant_weight)
+                    .with_context(|| format!("Failed to add gradient for layer {}", name))?;
+            }
 
-        let trainer = DnaBert2Trainer::new(config, files.weights, tokenizer, Device::Cpu, threads, DType::F32)
-            .context("Failed to load trainable model for aggregation")?;
+            if !entry_guard.aggregator.all_ready() {
+                let first = payload.layer_gradients.keys().next().unwrap();
+                info!(
+                    "Collected gradients for {} ({} of {} participants)",
+                    update.model_id,
+                    entry_guard.aggregator.participant_count(first),
+                    self.fedavg_config.min_participants
+                );
+                return Ok(None);
+            }
 
-        let mut trainers = self.trainers.write().await;
-        let trainer = trainers.entry(model_id.to_string()).or_insert_with(|| Arc::new(std::sync::Mutex::new(trainer)));
-        Ok(trainer.clone())
-    }
+            let averages = entry_guard.aggregator.compute_all_averages().context("Failed to compute averaged gradients")?;
+            let old_head = entry_guard.head_hash;
+            entry_guard.aggregator.reset();
+            (old_head, averages)
+        };
 
-    async fn apply_averaged_gradients(&self, model_id: &str, averages: HashMap<String, Vec<f32>>) -> Result<Option<[u8; 32]>> {
-        info!("Aggregating gradients for {} and producing a new checkpoint", model_id);
+        // Apply the averaged gradients on a blocking thread so the async runtime
+        // is not paused by the DNABERT-2 forward / backward pass.
+        let entry_clone = entry.clone();
+        let (weights, new_hash) = tokio::task::spawn_blocking(move || {
+            let mut entry = entry_clone.blocking_lock();
 
-        let trainer = self.get_or_create_trainer(model_id).await?;
-
-        let (weights, new_hash_bytes) = tokio::task::spawn_blocking(move || {
-            let trainer = trainer.lock().map_err(|e| anyhow!("Trainer mutex poisoned: {}", e))?;
-
-            let data = trainer.varmap().data().lock().map_err(|e| anyhow!("VarMap poisoned: {}", e))?;
+            let data = entry.trainer.varmap().data().lock().map_err(|e| anyhow!("VarMap poisoned: {}", e))?;
             let mut named_grads: HashMap<String, Tensor> = HashMap::with_capacity(averages.len());
             for (name, avg) in averages {
                 let var = data.get(&name).ok_or_else(|| anyhow!("Model has no variable named {}", name))?;
@@ -461,23 +480,149 @@ impl ModelManager {
             drop(data);
 
             // Use AdamW on the server so moment estimates persist across aggregation rounds.
-            trainer.apply_gradients(&named_grads, 1e-5f32).context("Failed to apply averaged gradients")?;
+            entry.trainer.apply_gradients(&named_grads, 1e-5f32).context("Failed to apply averaged gradients")?;
 
             // Serialize weights in memory to avoid a temporary disk round-trip.
-            let weights = trainer.save_weights_to_bytes().context("Failed to serialize updated weights")?;
+            let weights = entry.trainer.save_weights_to_bytes().context("Failed to serialize updated weights")?;
             let new_hash = blake3::hash(&weights);
-            Ok::<_, anyhow::Error>((weights, <[u8; 32]>::from(new_hash)))
+            let new_hash_bytes = <[u8; 32]>::from(new_hash);
+
+            entry.head_hash = new_hash_bytes;
+            entry.last_used = Instant::now();
+
+            Ok::<_, anyhow::Error>((weights, new_hash_bytes))
         })
         .await
         .context("Gradient aggregation task panicked")??;
 
-        let files = self.storage.load_model_metadata(model_id).await.map_err(|e| anyhow!("Failed to load model metadata: {}", e))?;
-        let new_files = RawModelFiles { config: files.config, tokenizer: files.tokenizer, weights };
-        self.store_model_files(model_id, &new_files, ModelMetrics::default()).await?;
+        // Determine whether this lineage was the active checkpoint before the update.
+        let old_active = self.get_model(&update.model_id).await.map(|info| info.checkpoint.weights_hash);
+        let promoted_to_active = old_active == Some(old_head_hash);
 
-        info!("FedAvg produced new checkpoint for {}: hash {}", model_id, hex::encode(new_hash_bytes));
+        if promoted_to_active {
+            let files = self
+                .storage
+                .load_model_metadata(&update.model_id)
+                .await
+                .map_err(|e| anyhow!("Failed to load model metadata: {}", e))?;
+            let new_files = RawModelFiles { config: files.config, tokenizer: files.tokenizer, weights };
+            self.store_model_files(&update.model_id, &new_files, ModelMetrics::default()).await?;
+            info!("FedAvg produced new active checkpoint for {}: hash {}", update.model_id, hex::encode(new_hash));
+        } else {
+            info!("FedAvg produced checkpoint for {}: hash {} (not active)", update.model_id, hex::encode(new_hash));
+        }
 
-        Ok(Some(new_hash_bytes))
+        // Insert a new cache entry keyed by the new head so that future gradients
+        // for this checkpoint continue the same lineage.
+        {
+            let mut cache = self.checkpoint_cache.write().await;
+            let mut order = self.cache_order.lock().await;
+            cache.insert(new_hash, entry.clone());
+            order.push_back(new_hash);
+            let active_for_eviction = if promoted_to_active { new_hash } else { old_active.unwrap_or(new_hash) };
+            self.evict_lru_not_active(&mut cache, &mut order, active_for_eviction);
+        }
+
+        if promoted_to_active {
+            Ok(Some(new_hash))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Ensure that the active checkpoint for `model_id` is represented in the
+    /// checkpoint cache, creating a trainable replica from storage if needed.
+    async fn ensure_checkpoint_cached(&self, model_id: &str) -> Result<()> {
+        {
+            let models = self.models.read().await;
+            if !models.contains_key(model_id) {
+                drop(models);
+                self.load_model(model_id).await?;
+            }
+        }
+
+        let active_hash = {
+            let models = self.models.read().await;
+            models.get(model_id).map(|info| info.checkpoint.weights_hash)
+        };
+
+        if let Some(active_hash) = active_hash {
+            let cache = self.checkpoint_cache.read().await;
+            if !cache.contains_key(&active_hash) {
+                drop(cache);
+                let files = self.storage.load_model_files(model_id).await.map_err(|e| anyhow!("Failed to load model files: {}", e))?;
+                let entry = self.build_cached_checkpoint(model_id, active_hash, files)?;
+                let mut cache = self.checkpoint_cache.write().await;
+                let mut order = self.cache_order.lock().await;
+                cache.entry(active_hash).or_insert(entry);
+                if !order.contains(&active_hash) {
+                    order.push_back(active_hash);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Move `key` to the back of the LRU order list.
+    async fn touch_cache_key(&self, key: [u8; 32]) {
+        let mut order = self.cache_order.lock().await;
+        if let Some(pos) = order.iter().position(|h| *h == key) {
+            order.remove(pos);
+        }
+        order.push_back(key);
+    }
+
+    /// Evict the least-recently-used cache key that is not the active checkpoint
+    /// until the cache size is within the configured history bound.
+    fn evict_lru_not_active(
+        &self,
+        cache: &mut HashMap<[u8; 32], Arc<Mutex<CachedCheckpoint>>>,
+        order: &mut VecDeque<[u8; 32]>,
+        active: [u8; 32],
+    ) {
+        while order.len() > self.checkpoint_history_size {
+            let mut victim = None;
+            for (i, key) in order.iter().enumerate() {
+                if *key != active {
+                    victim = Some(i);
+                    break;
+                }
+            }
+            match victim {
+                Some(i) => {
+                    let key = order.remove(i).expect("index valid");
+                    cache.remove(&key);
+                }
+                None => break,
+            }
+        }
+    }
+
+    /// Build a cached trainable DNABERT-2 replica from raw model files.
+    fn build_cached_checkpoint(
+        &self,
+        model_id: &str,
+        base_hash: [u8; 32],
+        files: RawModelFiles,
+    ) -> Result<Arc<Mutex<CachedCheckpoint>>> {
+        let config = DnaBert2Config::from_bytes(&files.config).context("Failed to parse model config")?;
+        let tokenizer = DnaTokenizer::from_bytes(&files.tokenizer).context("Failed to parse tokenizer")?;
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+
+        let trainer = DnaBert2Trainer::new(config, files.weights, tokenizer, Device::Cpu, threads, DType::F32)
+            .context("Failed to load trainable model for aggregation")?;
+
+        let entry = CachedCheckpoint {
+            base_hash,
+            head_hash: base_hash,
+            trainer,
+            aggregator: FedAvgAggregator::new(self.fedavg_config.clone()),
+            last_used: Instant::now(),
+            model_id: model_id.to_string(),
+        };
+
+        Ok(Arc::new(Mutex::new(entry)))
     }
 }
 
