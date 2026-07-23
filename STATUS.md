@@ -1,10 +1,10 @@
-# Estado da Implementação — branch `xenom-AI-v2`
+# Implementation Status — branch `xenom-AI-v2`
 
-Relatório gerado a partir do estado actual do repositório e da sessão de desenvolvimento.
+Report generated from the current repository state and the current development session.
 
 ---
 
-## Commits recentes
+## Recent commits
 
 ```text
 aa8419c Add bounded-staleness checkpoint cache to seed-node
@@ -19,60 +19,60 @@ e5182fd Add weighted FedAvg and top-k gradient compression
 39a84d8 Wire FedAvg gradient aggregation end-to-end (#60)
 ```
 
-Working tree: **limpa** (nenhuma alteração por commitar).
+Working tree: **clean** (no uncommitted changes).
 
 ---
 
-## Funcionalidades implementadas nesta sessão
+## Features implemented in this session
 
-### 1. Média de gradientes multi-GPU na GPU master
+### 1. Multi-GPU gradient averaging on the master GPU
 
-- **Ficheiro:** `xenom-miner/src/trainer/multi_gpu.rs`
-- **Alteração:** os gradientes deixaram de ser copiados para a CPU; são movidos para a GPU master e aí são média/accumulação.
-- **Impacto:** elimina o gargalo de round-trip CPU-GPU durante o treino.
+- **File:** `xenom-miner/src/trainer/multi_gpu.rs`
+- **Change:** gradients no longer need a CPU round-trip; they are moved to the master GPU and averaged/accumulated there.
+- **Impact:** removes the CPU-GPU round-trip bottleneck during training.
 
-### 2. Logs de timing no `MultiGpuTrainer`
+### 2. Phase timing logs in `MultiGpuTrainer`
 
-- **Ficheiro:** `xenom-miner/src/trainer/multi_gpu.rs`
-- **Alteração:** emissão de `INFO` por bloco com breakdown do tempo em:
+- **File:** `xenom-miner/src/trainer/multi_gpu.rs`
+- **Change:** emits `INFO` per block with a breakdown of time spent in:
   - `compute`, `gather`, `overflow_check`, `avg`, `add`, `apply`, `loss_after`, `commitment`
-  - e `Gradient update build time`.
-- **Impacto:** permite identificar onde o tempo está a ser gasto (CPU vs GPU, treino vs overhead).
+  - and `Gradient update build time`.
+- **Impact:** makes it easy to see where time is spent (CPU vs GPU, training vs overhead).
 
-### 3. Otimização do `submit_gradients` no seed-node
+### 3. `submit_gradients` optimization in the seed-node
 
-- **Ficheiro:** `seed-node/src/model/manager.rs`
-- **Alterações:**
-  - Adicionado `DnaBert2Trainer::save_weights_to_bytes()` para serialização em memória.
-  - Adicionado `ModelStorage::load_model_metadata()` para ler só `config.enc` e `tokenizer.enc`.
-  - FedAvg deixa de escrever ficheiro `safetensors` temporário e de reler o `weights.enc` antigo.
-- **Impacto:** reduz I/O de disco na agregação, acelerando a produção de novos checkpoints.
+- **File:** `seed-node/src/model/manager.rs`
+- **Changes:**
+  - Added `DnaBert2Trainer::save_weights_to_bytes()` for in-memory serialization.
+  - Added `ModelStorage::load_model_metadata()` to read only `config.enc` and `tokenizer.enc`.
+  - FedAvg no longer writes a temporary `safetensors` file and no longer re-reads the old `weights.enc`.
+- **Impact:** reduces disk I/O during aggregation, speeding up new checkpoint production.
 
-### 4. Cache de checkpoints com bounded staleness
+### 4. Bounded-staleness checkpoint cache
 
-- **Ficheiro:** `seed-node/src/model/manager.rs`
-- **Configuração:**
+- **File:** `seed-node/src/model/manager.rs`
+- **Configuration:**
   - `XENO_CHECKPOINT_HISTORY_SIZE=8` (default)
-  - `FEDAVG_MIN_PARTICIPANTS=4` (default devnet)
-- **Comportamento:**
-  - O seed-node guarda em memória até 8 lineages de checkpoints.
-  - Aceita gradientes cujo `base_checkpoint` esteja dentro dessa janela.
-  - Cada cache entry tem o seu próprio `DnaBert2Trainer` (CPU) e `FedAvgAggregator`.
-  - Quando o número de participantes por base atinge `FEDAVG_MIN_PARTICIPANTS`, aplica a média e avança o `head_hash` dessa lineage.
-  - Só promove o novo hash a `active_checkpoint` se o `head_hash` anterior era o ativo.
-  - Insere novo key para o novo head, permitindo que a lineage continue.
-- **Impacto:** o miner já não precisa de esperar pela agregação a cada bloco; pode submeter vários gradientes sobre o mesmo `base_checkpoint` antes de receber novo checkpoint.
+  - `FEDAVG_MIN_PARTICIPANTS=4` (default for devnet)
+- **Behavior:**
+  - The seed-node keeps up to 8 checkpoint lineages in memory.
+  - It accepts gradients whose `base_checkpoint` is inside that window.
+  - Each cache entry has its own `DnaBert2Trainer` (CPU) and `FedAvgAggregator`.
+  - When the number of participants for a given base reaches `FEDAVG_MIN_PARTICIPANTS`, it averages and advances that lineage's `head_hash`.
+  - It only promotes the new hash to `active_checkpoint` if the previous `head_hash` was the active one.
+  - It inserts a new key for the new head so the lineage can continue.
+- **Impact:** the miner no longer needs to wait for aggregation after every block; it can submit several gradients on the same `base_checkpoint` before receiving a new active checkpoint.
 
-### 5. Configuração do devnet
+### 5. Devnet configuration
 
-- **Ficheiros:** `.env.example`, `scripts/run-native-devnet.sh`
-- **Adicionado:**
+- **Files:** `.env.example`, `scripts/run-native-devnet.sh`
+- **Added:**
   - `XENO_CHECKPOINT_HISTORY_SIZE=8`
   - `FEDAVG_MIN_PARTICIPANTS=4`
 
 ---
 
-## Resultados de testes
+## Test results
 
 ```bash
 cargo test -p seed-node -p xenom-miner
@@ -83,25 +83,25 @@ cargo test -p seed-node -p xenom-miner
 - `integration_tests`: 2 tests passed
 
 `cargo fmt --all -- --check`: OK  
-`cargo clippy -p seed-node`: sem novos warnings no `manager.rs` (warnings antigos noutros ficheiros persistem).
+`cargo clippy -p seed-node`: no new warnings in `manager.rs` (pre-existing warnings in other files remain).
 
 ---
 
-## Estado da blockchain neste branch
+## Blockchain state in this branch
 
-| Aspeto | Estado |
+| Aspect | State |
 |---|---|
-| **Dificuldade / DAA** | Não alterado. Devnet mantém `target_time_per_block=1000 ms` e `max_difficulty_target=2^255-1`. Com 1× 3080 a produzir muito abaixo de 1 BPS, a dificuldade fica no piso mínimo. |
-| **Produção de blocos** | Agora limitada sobretudo por `treino + agregação`. Com `FEDAVG_MIN_PARTICIPANTS=4`, o miner submete 4 gradientes no mesmo `base_checkpoint` antes de esperar por um novo active checkpoint. |
-| **Utilização GPU** | Ainda não é contínua. Os logs de `nvidia-smi dmon` mostram picos de 38-85% `sm` seguidos de longos períodos a 0%. Para atingir ocupação elevada, é necessário: (a) aumentar `--genome-batch-size` e `--gradient-accumulation` para o treino durar mais; (b) usar `--gradient-top-k-ratio 0.1` para reduzir o tempo de agregação. |
-| **Convergência / FedAvg** | Suporta múltiplas submissões por base e stale gradients dentro da cache. A lineage ativa avança correctamente; gradientes fora da cache são rejeitados. |
-| **Finalidade** | `finality_depth=86400` blocos. Para devnet, isto continua alto se o block time subir. |
+| **Difficulty / DAA** | Unchanged. Devnet keeps `target_time_per_block=1000 ms` and `max_difficulty_target=2^255-1`. With one 3080 producing well below 1 BPS, difficulty stays at the minimum floor. |
+| **Block production** | Now mostly limited by `training + aggregation`. With `FEDAVG_MIN_PARTICIPANTS=4`, the miner submits 4 gradients on the same `base_checkpoint` before waiting for a new active checkpoint. |
+| **GPU utilization** | Still not continuous. `nvidia-smi dmon` shows bursts of 38-85% `sm` followed by long idle periods. To reach high occupancy, you need: (a) larger `--genome-batch-size` and `--gradient-accumulation` so training lasts longer; (b) `--gradient-top-k-ratio 0.1` to reduce aggregation time. |
+| **Convergence / FedAvg** | Supports multiple submissions per base and stale gradients inside the cache. The active lineage advances correctly; gradients outside the cache are rejected. |
+| **Finality** | `finality_depth=86400` blocks. For devnet this remains high if block time increases. |
 
 ---
 
-## Recomendação de execução
+## Recommended run
 
-Para testar ocupação GPU elevada e fluxo contínuo:
+To test high GPU occupancy and continuous flow:
 
 ```bash
 # seed-node / xeno-node
@@ -116,17 +116,17 @@ FEDAVG_MIN_PARTICIPANTS=4 XENO_CHECKPOINT_HISTORY_SIZE=8 ./xenom ...
   --gradient-top-k-ratio 0.1
 ```
 
-Estimativa esperada com treino de ~30 s e agregação de ~10 s:
+Expected estimate with ~30 s training and ~10 s aggregation:
 
 ```text
-tempo de round = 4 × 30 s + 10 s = 130 s
-tempo GPU ativa = 4 × 30 s = 120 s
-utilização GPU ≈ 92%
+round time = 4 × 30 s + 10 s = 130 s
+GPU active time = 4 × 30 s = 120 s
+GPU utilization ≈ 92%
 ```
 
 ---
 
-## Notas
+## Notes
 
-- O override `XENO_TARGET_BLOCK_TIME_MS` não está neste branch; foi implementado e posteriormente perdido durante a sessão. Se for necessário tornar a dificuldade sensível a 1× 3080, terá de ser reintroduzido.
-- A utilização da CPU no seed-node continua a ser o factor limitante quando `--gradient-top-k-ratio` é 1.0 (payload denso de 440 MB).
+- The `XENO_TARGET_BLOCK_TIME_MS` override is not in this branch; it was implemented and later lost during the session. If you want difficulty to be sensitive to a single 3080, it needs to be reintroduced.
+- CPU usage on the seed-node remains the limiting factor when `--gradient-top-k-ratio` is 1.0 (dense 440 MB payload).
