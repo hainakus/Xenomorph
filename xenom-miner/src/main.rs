@@ -536,6 +536,17 @@ async fn main() -> Result<()> {
                     return Ok::<_, anyhow::Error>(());
                 }
 
+                // If the seed-node moved to a new active checkpoint, the prefetched
+                // batch is stale. Discard it and refetch from the new base.
+                if trainer.current_base_checkpoint() != Some(batch.base_checkpoint()) {
+                    info!("Seed-node active checkpoint changed; discarding prefetched batch and refetching");
+                    if let Some(h) = next_batch_handle.take() {
+                        h.abort();
+                    }
+                    current_batch = None;
+                    return Ok::<_, anyhow::Error>(());
+                }
+
                 // Start fetching the next batch in the background while this one trains.
                 let pending_fetch_rpc = Arc::clone(&rpc_client);
                 let pending_model_id = config.model_id.clone();
@@ -616,11 +627,19 @@ async fn main() -> Result<()> {
 
                 // Await previous gradient submission so we don't queue
                 // unbounded gradient payloads in memory.
+                let mut stale_base = false;
                 if let Some(handle) = gradient_handle.take() {
                     match handle.await {
                         Ok(Ok(Some(new_checkpoint))) => info!("FedAvg produced new checkpoint: {}", hex::encode(new_checkpoint)),
                         Ok(Ok(None)) => info!("Gradient update accepted; waiting for more participants"),
-                        Ok(Err(e)) => warn!("Previous gradient submission failed: {}", e),
+                        Ok(Err(e)) => {
+                            if e.to_string().to_lowercase().contains("stale") {
+                                warn!("Previous gradient submission rejected (stale base): {}", e);
+                                stale_base = true;
+                            } else {
+                                warn!("Previous gradient submission failed: {}", e);
+                            }
+                        }
                         Err(e) => warn!("Gradient submission task panicked: {}", e),
                     }
                 }
@@ -632,6 +651,25 @@ async fn main() -> Result<()> {
                     gradient_handle = Some(tokio::spawn(async move {
                         submit_gradients(&gradient_client, update).await
                     }));
+                }
+
+                // If a gradient was rejected as stale, the prefetched batches are
+                // likely stale too. Discard them and refetch from the new base.
+                if stale_base {
+                    warn!("Base checkpoint moved while gradient was in flight; discarding prefetched batches and refetching");
+                    if let Some(h) = next_batch_handle.take() {
+                        h.abort();
+                    }
+                    current_batch = None;
+                    block_number += 1;
+                    let elapsed = start.elapsed().as_secs_f64().max(1.0);
+                    let blocks_per_min = block_number as f64 / elapsed * 60.0;
+                    progress.set_message(format!(
+                        "blocks {} | stale base, refetching | {:.1} blocks/min",
+                        block_number, blocks_per_min
+                    ));
+                    progress.tick();
+                    return Ok::<_, anyhow::Error>(());
                 }
 
                 // Queue the fetch for the batch after next, then advance the loop.
