@@ -85,4 +85,15 @@ pub trait Trainer: Send + Sync {
 
     /// Return information about the device being used.
     fn device_info(&self) -> DeviceInfo;
+
+    /// Return the base checkpoint this trainer is currently training from, if known.
+    fn current_base_checkpoint(&self) -> Option<[u8; 32]> {
+        None
+    }
+
+    /// Load a new base checkpoint into the trainer. Trainers that do not support
+    /// hot-reloading (e.g. mock/CPU) ignore this call.
+    fn load_base_checkpoint(&self, _base_checkpoint: [u8; 32], _weights: &[u8]) -> Result<()> {
+        Ok(())
+    }
 }

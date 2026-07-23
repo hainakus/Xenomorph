@@ -16,10 +16,12 @@ use xenom_miner::config::MinerConfig;
 use xenom_miner::model::DnaBert2Config;
 use xenom_miner::model_client::{fetch_model_checkpoint, ModelBundle, ModelCache};
 use xenom_miner::prover::{PublicInputs, ZkProver};
-use xenom_miner::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch};
+use xenom_miner::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch, TrainingBlock};
 use xenom_miner::rpc::XenomRpcClient;
 use xenom_miner::tokenizer::DnaTokenizer;
-use xenom_miner::trainer::{CpuTrainer, GpuBackend, MockTrainer, MultiGpuConfig, MultiGpuTrainer, Trainer};
+use xenom_miner::trainer::{
+    CpuTrainer, GpuBackend, GradientUpdate, MockTrainer, MultiGpuConfig, MultiGpuTrainer, Trainer, TrainingResult,
+};
 use xenom_miner::wallet::{validate_address, WalletManager};
 
 const DEFAULT_RPC_URL: &str = "ws://xeno-node:17110";
@@ -29,6 +31,10 @@ const DEFAULT_DATA_DIR: &str = "~/.xenom-miner";
 const BLOCK_REWARD: u64 = 100;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const RETRY_DELAY: Duration = Duration::from_secs(2);
+
+/// Shared, async-mutex protected RPC handle. `None` means disconnected and a
+/// reconnect should be attempted before the next call.
+type SharedRpc = Arc<tokio::sync::Mutex<Option<XenomRpcClient>>>;
 
 #[derive(Parser, Debug)]
 #[command(name = "xenom-miner", version, about = "UsefulPoW Miner for Xenomorph")]
@@ -106,9 +112,12 @@ fn expand_tilde(path: &str) -> PathBuf {
     }
 }
 
-async fn ensure_rpc_connection(rpc_client: &mut Option<XenomRpcClient>, rpc_url: &str, dry_run: bool) -> Result<()> {
-    if rpc_client.is_some() {
-        return Ok(());
+async fn ensure_rpc_connection(rpc_client: &SharedRpc, rpc_url: &str, dry_run: bool) -> Result<()> {
+    {
+        let guard = rpc_client.lock().await;
+        if guard.is_some() {
+            return Ok(());
+        }
     }
 
     let max_attempts = 10;
@@ -119,7 +128,7 @@ async fn ensure_rpc_connection(rpc_client: &mut Option<XenomRpcClient>, rpc_url:
         match timeout(CONNECT_TIMEOUT, client.connect()).await {
             Ok(Ok(())) => {
                 info!("Connected to {}", rpc_url);
-                *rpc_client = Some(client);
+                *rpc_client.lock().await = Some(client);
                 return Ok(());
             }
             Ok(Err(e)) => {
@@ -147,8 +156,9 @@ async fn ensure_rpc_connection(rpc_client: &mut Option<XenomRpcClient>, rpc_url:
     bail!("Failed to connect to {} after {} attempts", rpc_url, max_attempts)
 }
 
-async fn get_batch(rpc_client: &mut Option<XenomRpcClient>, model_id: &str) -> Option<TrainingBatch> {
-    if let Some(client) = rpc_client.as_mut() {
+async fn get_batch(rpc_client: &SharedRpc, model_id: &str) -> Option<TrainingBatch> {
+    let mut guard = rpc_client.lock().await;
+    if let Some(client) = guard.as_mut() {
         match client.get_training_batch(model_id).await {
             Ok(Some(batch)) => return Some(batch),
             Ok(None) => {
@@ -173,12 +183,13 @@ fn parse_genome_merkle(hex_str: &str) -> Result<[u8; 32]> {
 }
 
 async fn get_genome_batch(
-    rpc_client: &mut Option<XenomRpcClient>,
+    rpc_client: &SharedRpc,
     genome_merkle: [u8; 32],
     model_id: &str,
     batch_size: usize,
 ) -> Option<GenomeTrainingBatchMsg> {
-    if let Some(client) = rpc_client.as_mut() {
+    let mut guard = rpc_client.lock().await;
+    if let Some(client) = guard.as_mut() {
         match client.get_genome_training_batch(genome_merkle, model_id, batch_size).await {
             Ok(msg) => return Some(msg),
             Err(e) => {
@@ -187,6 +198,54 @@ async fn get_genome_batch(
         }
     }
     None
+}
+
+/// A training batch variant used by the main mining loop.
+enum MinerBatch {
+    Standard(TrainingBatch),
+    Genome(GenomeTrainingBatchMsg),
+}
+
+impl MinerBatch {
+    fn batch_id(&self) -> u64 {
+        match self {
+            MinerBatch::Standard(b) => b.batch_id,
+            MinerBatch::Genome(msg) => msg.batch.batch_id,
+        }
+    }
+
+    fn base_checkpoint(&self) -> [u8; 32] {
+        match self {
+            MinerBatch::Standard(b) => b.base_checkpoint,
+            MinerBatch::Genome(msg) => msg.base_checkpoint,
+        }
+    }
+
+    fn train(self, trainer: Arc<dyn Trainer>) -> Result<(TrainingResult, Option<GradientUpdate>)> {
+        match self {
+            MinerBatch::Standard(batch) => trainer.train_with_gradients(&batch),
+            MinerBatch::Genome(msg) => trainer.train_genome_with_gradients(&msg),
+        }
+    }
+}
+
+async fn fetch_miner_batch(
+    rpc_client: &SharedRpc,
+    genome_merkle: Option<[u8; 32]>,
+    model_id: &str,
+    genome_batch_size: usize,
+    block_number: u64,
+    dry_run: bool,
+) -> Option<MinerBatch> {
+    if let Some(merkle) = genome_merkle {
+        get_genome_batch(rpc_client, merkle, model_id, genome_batch_size).await.map(MinerBatch::Genome)
+    } else {
+        match get_batch(rpc_client, model_id).await {
+            Some(b) => Some(MinerBatch::Standard(b)),
+            None if dry_run => Some(MinerBatch::Standard(make_local_batch(model_id, block_number))),
+            None => None,
+        }
+    }
 }
 
 fn make_local_batch(model_id: &str, block_number: u64) -> TrainingBatch {
@@ -202,8 +261,60 @@ fn make_local_batch(model_id: &str, block_number: u64) -> TrainingBatch {
     }
 }
 
+async fn maybe_reload_base(
+    trainer: &Arc<dyn Trainer>,
+    rpc_client: &SharedRpc,
+    model_cache: &ModelCache,
+    model_id: &str,
+    base_checkpoint: [u8; 32],
+) -> Result<()> {
+    if trainer.current_base_checkpoint() == Some(base_checkpoint) {
+        return Ok(());
+    }
+
+    info!(
+        "Base checkpoint changed from {:?} to {}; reloading model",
+        trainer.current_base_checkpoint().map(hex::encode),
+        hex::encode(base_checkpoint)
+    );
+
+    let mut guard = rpc_client.lock().await;
+    let client = guard.as_mut().context("No RPC connection to reload base checkpoint")?;
+    let bundle = fetch_model_checkpoint_with_retry(client, model_id, model_cache)
+        .await
+        .context("Failed to fetch new base checkpoint from seed-node")?;
+    drop(guard);
+
+    trainer.load_base_checkpoint(bundle.base_checkpoint, &bundle.weights)?;
+    Ok(())
+}
+
+async fn submit_block(rpc_client: &SharedRpc, block: TrainingBlock) -> Result<[u8; 32]> {
+    let mut guard = rpc_client.lock().await;
+    let client = guard.as_mut().context("No RPC connection to submit block")?;
+    match client.submit_block(block).await {
+        Ok(hash) => Ok(hash),
+        Err(e) => {
+            *guard = None;
+            Err(anyhow::anyhow!("Failed to submit block: {}", e))
+        }
+    }
+}
+
+async fn submit_gradients(gradient_client: &SharedRpc, update: GradientUpdate) -> Result<Option<[u8; 32]>> {
+    let mut guard = gradient_client.lock().await;
+    let client = guard.as_mut().context("No RPC connection to submit gradients")?;
+    match client.submit_gradients(update).await {
+        Ok(res) => Ok(res),
+        Err(e) => {
+            *guard = None;
+            Err(anyhow::anyhow!("Failed to submit gradients: {}", e))
+        }
+    }
+}
+
 async fn load_trainer(
-    rpc_client: &mut Option<XenomRpcClient>,
+    rpc_client: &SharedRpc,
     model_id: &str,
     cache: &ModelCache,
     backend: GpuBackend,
@@ -211,12 +322,16 @@ async fn load_trainer(
     threads: usize,
     dry_run: bool,
 ) -> Result<Arc<dyn Trainer>> {
-    if dry_run && rpc_client.is_none() {
-        warn!("Dry-run without RPC connection; falling back to mock trainer");
-        return Ok(Arc::new(MockTrainer::new()));
+    if dry_run {
+        let guard = rpc_client.lock().await;
+        if guard.is_none() {
+            warn!("Dry-run without RPC connection; falling back to mock trainer");
+            return Ok(Arc::new(MockTrainer::new()));
+        }
     }
 
-    let client = rpc_client.as_mut().context("No RPC connection to fetch model checkpoint")?;
+    let mut guard = rpc_client.lock().await;
+    let client = guard.as_mut().context("No RPC connection to fetch model checkpoint")?;
 
     // Retry until the seed-node has the model loaded. In Docker Compose the
     // service dependency should already guarantee this, but the retry makes
@@ -295,8 +410,12 @@ async fn main() -> Result<()> {
     };
     info!("Miner address: {}", miner_address);
 
-    let mut rpc_client: Option<XenomRpcClient> = None;
-    ensure_rpc_connection(&mut rpc_client, &config.rpc_url, config.dry_run).await?;
+    let rpc_client: SharedRpc = Arc::new(tokio::sync::Mutex::new(None));
+    let gradient_client: SharedRpc = Arc::new(tokio::sync::Mutex::new(None));
+    ensure_rpc_connection(&rpc_client, &config.rpc_url, config.dry_run).await?;
+    if !config.dry_run {
+        ensure_rpc_connection(&gradient_client, &config.rpc_url, config.dry_run).await?;
+    }
 
     let trainer: Arc<dyn Trainer> = match trainer_kind.as_str() {
         "mock" => {
@@ -329,7 +448,7 @@ async fn main() -> Result<()> {
             gpu_config.validate()?;
 
             info!("Using multi-GPU DNABERT-2 trainer with {:?} backend and config {:?}", backend, gpu_config);
-            load_trainer(&mut rpc_client, &config.model_id, &model_cache, backend, gpu_config, config.threads, config.dry_run).await?
+            load_trainer(&rpc_client, &config.model_id, &model_cache, backend, gpu_config, config.threads, config.dry_run).await?
         }
         other => bail!("Unknown trainer: {}. Use mock, cpu, dnabert2, gpu, cuda, rocm, or metal.", other),
     };
@@ -367,8 +486,12 @@ async fn main() -> Result<()> {
     let mut total_reward: u64 = 0;
     let mut block_number: u64 = 0;
 
+    let mut current_batch: Option<MinerBatch> = None;
+    let mut next_batch_handle: Option<tokio::task::JoinHandle<Option<MinerBatch>>> = None;
+    let mut gradient_handle: Option<tokio::task::JoinHandle<Result<Option<[u8; 32]>>>> = None;
+
     loop {
-        progress.set_message(format!("block {} | fetching batch | reward {}", block_number, total_reward));
+        progress.set_message(format!("block {} | preparing | reward {}", block_number, total_reward));
 
         tokio::select! {
             biased;
@@ -378,56 +501,79 @@ async fn main() -> Result<()> {
             }
 
             result = async {
-                if rpc_client.is_none() && !config.dry_run {
-                    tokio::time::sleep(RETRY_DELAY).await;
-                    if let Err(e) = ensure_rpc_connection(&mut rpc_client, &config.rpc_url, config.dry_run).await {
+                // Ensure RPC connections are alive.
+                if !config.dry_run {
+                    if let Err(e) = ensure_rpc_connection(&rpc_client, &config.rpc_url, config.dry_run).await {
                         warn!("RPC reconnect failed: {}", e);
+                        tokio::time::sleep(RETRY_DELAY).await;
+                        return Ok::<_, anyhow::Error>(());
+                    }
+                    if let Err(e) = ensure_rpc_connection(&gradient_client, &config.rpc_url, config.dry_run).await {
+                        warn!("Gradient RPC reconnect failed: {}", e);
+                        tokio::time::sleep(RETRY_DELAY).await;
+                        return Ok::<_, anyhow::Error>(());
                     }
                 }
 
-                let (result, batch_id, gradient_update) = if let Some(merkle) = genome_merkle {
-                    let msg = match get_genome_batch(&mut rpc_client, merkle, &config.model_id, args.genome_batch_size).await {
-                        Some(msg) => msg,
-                        None if config.dry_run => {
-                            warn!("Dry-run with --genome-merkle but no RPC; cannot generate genome batch");
-                            tokio::time::sleep(RETRY_DELAY).await;
-                            return Ok::<_, anyhow::Error>(());
-                        }
-                        None => {
-                            warn!("No genome batch available; retrying");
-                            tokio::time::sleep(RETRY_DELAY).await;
-                            return Ok::<_, anyhow::Error>(());
-                        }
-                    };
-
-                    let batch_id = msg.batch.batch_id;
-                    let trainer = Arc::clone(&trainer);
-                    let (result, gradient_update) =
-                        tokio::task::spawn_blocking(move || trainer.train_genome_with_gradients(&msg))
-                            .await
-                            .context("Genome training task panicked")??;
-                    (result, batch_id, gradient_update)
-                } else {
-                    let batch = match get_batch(&mut rpc_client, &config.model_id).await {
-                        Some(batch) => batch,
-                        None if config.dry_run => make_local_batch(&config.model_id, block_number),
+                // Make sure we have a batch to train on.
+                let batch = match current_batch.take() {
+                    Some(b) => b,
+                    None => match fetch_miner_batch(&rpc_client, genome_merkle, &config.model_id, args.genome_batch_size, block_number, config.dry_run).await {
+                        Some(b) => b,
                         None => {
                             warn!("No batch available; retrying");
                             tokio::time::sleep(RETRY_DELAY).await;
                             return Ok::<_, anyhow::Error>(());
                         }
-                    };
-
-                    let batch_id = batch.batch_id;
-                    let batch_for_training = batch.clone();
-                    let trainer = Arc::clone(&trainer);
-                    let (result, gradient_update) =
-                        tokio::task::spawn_blocking(move || trainer.train_with_gradients(&batch_for_training))
-                            .await
-                            .context("Training task panicked")??;
-                    (result, batch_id, gradient_update)
+                    },
                 };
 
+                // Hot-reload the model if the base checkpoint changed.
+                if let Err(e) = maybe_reload_base(&trainer, &rpc_client, &model_cache, &config.model_id, batch.base_checkpoint()).await {
+                    warn!("Failed to reload base checkpoint: {}", e);
+                    current_batch = Some(batch);
+                    tokio::time::sleep(RETRY_DELAY).await;
+                    return Ok::<_, anyhow::Error>(());
+                }
+
+                // Start fetching the next batch in the background while this one trains.
+                let pending_fetch_rpc = Arc::clone(&rpc_client);
+                let pending_model_id = config.model_id.clone();
+                let pending_block_number = block_number + 1;
+                let pending_dry_run = config.dry_run;
+                let pending_genome_merkle = genome_merkle;
+                let pending_genome_batch_size = args.genome_batch_size;
+                let pending_next_batch = next_batch_handle.take().unwrap_or_else(|| {
+                    tokio::spawn(async move {
+                        fetch_miner_batch(&pending_fetch_rpc, pending_genome_merkle, &pending_model_id, pending_genome_batch_size, pending_block_number, pending_dry_run).await
+                    })
+                });
+
+                // Train the current batch off the async runtime.
+                let batch_id = batch.batch_id();
+                let trainer = Arc::clone(&trainer);
+                let train_handle = tokio::task::spawn_blocking(move || batch.train(trainer));
+
+                let train_result = train_handle.await;
+                let next_batch = pending_next_batch.await;
+
+                let (result, gradient_update) = match train_result {
+                    Ok(Ok(v)) => v,
+                    Ok(Err(e)) => {
+                        warn!("Training failed: {}", e);
+                        current_batch = next_batch.ok().flatten();
+                        return Ok::<_, anyhow::Error>(());
+                    }
+                    Err(e) => {
+                        warn!("Training task panicked: {}", e);
+                        current_batch = next_batch.ok().flatten();
+                        return Ok::<_, anyhow::Error>(());
+                    }
+                };
+
+                let next_batch = next_batch.ok().flatten();
+
+                // Build and submit the training block.
                 let public_inputs = PublicInputs {
                     model_id: config.model_id.clone(),
                     batch_id,
@@ -436,26 +582,26 @@ async fn main() -> Result<()> {
                     gradients_commitment: result.gradients_commitment,
                     base_checkpoint: result.base_checkpoint,
                 };
-
                 let zk_proof = prover.generate_proof(&result, &public_inputs)?;
                 let mut block = block_builder.build_block(&config.model_id, &result, zk_proof, [0u8; 32])?;
                 wallet.sign_block(&mut block)?;
 
+                let built_block_number = block.header.block_number;
                 if config.dry_run {
                     info!(
                         "Dry-run block {} built (merkle {})",
-                        block.header.block_number,
+                        built_block_number,
                         hex::encode(&block.header.merkle_root[..8])
                     );
-                } else if let Some(client) = rpc_client.as_mut() {
-                    match client.submit_block(block.clone()).await {
+                } else {
+                    match submit_block(&rpc_client, block).await {
                         Ok(block_hash) => {
-                            block_builder.set_prev_block(block_hash, block.header.block_number);
+                            block_builder.set_prev_block(block_hash, built_block_number);
                             blocks_submitted += 1;
                             total_reward += BLOCK_REWARD;
                             info!(
                                 "Submitted block {}: {} | loss {:.6} -> {:.6} | improvement {:.6}",
-                                block.header.block_number,
+                                built_block_number,
                                 hex::encode(block_hash),
                                 result.loss_before,
                                 result.loss_after,
@@ -464,28 +610,41 @@ async fn main() -> Result<()> {
                         }
                         Err(e) => {
                             warn!("Failed to submit block: {}", e);
-                            rpc_client = None;
                         }
                     }
                 }
 
-                // Submit the gradient update for FedAvg aggregation. This is independent of
-                // the block submission; the seed-node will aggregate and produce a new
-                // checkpoint once enough participants have contributed.
-                if let (Some(update), Some(client)) = (gradient_update, rpc_client.as_mut()) {
-                    match client.submit_gradients(update).await {
-                        Ok(Some(new_checkpoint)) => {
-                            info!("FedAvg produced new checkpoint: {}", hex::encode(new_checkpoint));
-                        }
-                        Ok(None) => {
-                            info!("Gradient update accepted; waiting for more participants");
-                        }
-                        Err(e) => {
-                            warn!("Failed to submit gradients: {}", e);
-                            rpc_client = None;
-                        }
+                // Await previous gradient submission so we don't queue
+                // unbounded gradient payloads in memory.
+                if let Some(handle) = gradient_handle.take() {
+                    match handle.await {
+                        Ok(Ok(Some(new_checkpoint))) => info!("FedAvg produced new checkpoint: {}", hex::encode(new_checkpoint)),
+                        Ok(Ok(None)) => info!("Gradient update accepted; waiting for more participants"),
+                        Ok(Err(e)) => warn!("Previous gradient submission failed: {}", e),
+                        Err(e) => warn!("Gradient submission task panicked: {}", e),
                     }
                 }
+
+                // Submit the gradient update in the background; it will overlap
+                // with the next batch's training and batch fetch.
+                if let Some(update) = gradient_update {
+                    let gradient_client = Arc::clone(&gradient_client);
+                    gradient_handle = Some(tokio::spawn(async move {
+                        submit_gradients(&gradient_client, update).await
+                    }));
+                }
+
+                // Queue the fetch for the batch after next, then advance the loop.
+                let future_fetch_rpc = Arc::clone(&rpc_client);
+                let future_model_id = config.model_id.clone();
+                let future_block_number = block_number + 2;
+                let future_dry_run = config.dry_run;
+                let future_genome_merkle = genome_merkle;
+                let future_genome_batch_size = args.genome_batch_size;
+                current_batch = next_batch;
+                next_batch_handle = Some(tokio::spawn(async move {
+                    fetch_miner_batch(&future_fetch_rpc, future_genome_merkle, &future_model_id, future_genome_batch_size, future_block_number, future_dry_run).await
+                }));
 
                 block_number += 1;
                 let elapsed = start.elapsed().as_secs_f64().max(1.0);

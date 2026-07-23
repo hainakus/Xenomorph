@@ -178,6 +178,23 @@ impl DnaBert2Trainer {
         safetensors::tensor::serialize(tensors, &None).map_err(|e| anyhow::anyhow!("Failed to serialize model weights: {}", e))
     }
 
+    /// Load trainable weights from an in-memory SafeTensors buffer into the live VarMap.
+    pub fn load_weights_from_bytes(&self, weights: &[u8]) -> Result<()> {
+        let loaded = candle_core::safetensors::load_buffer(weights, &self.device).context("Failed to load safetensors weights")?;
+        let data = self.varmap.data().lock().map_err(|e| anyhow::anyhow!("VarMap poisoned: {}", e))?;
+        for (name, var) in data.iter() {
+            let loaded_var = loaded.get(name).with_context(|| format!("Missing weight {} in checkpoint buffer", name))?;
+            let loaded_var = loaded_var.to_device(&self.device)?.to_dtype(var.as_tensor().dtype())?;
+            var.set(&loaded_var)?;
+        }
+        Ok(())
+    }
+
+    /// Reset the AdamW optimizer state (step counter and moments).
+    pub fn reset_optimizer(&self) -> Result<()> {
+        self.optimizer.lock().map_err(|e| anyhow::anyhow!("Optimizer mutex poisoned: {}", e))?.reset()
+    }
+
     /// Access the underlying trainable variables. Used by the seed-node FedAvg
     /// aggregator to reconstruct gradient tensors with the correct shapes.
     pub fn varmap(&self) -> &candle_nn::VarMap {
@@ -304,6 +321,14 @@ impl ManualAdamW {
 
     pub(crate) fn set_learning_rate(&mut self, lr: f64) {
         self.lr = lr;
+    }
+
+    /// Reset the AdamW step counter and first/second moment buffers.
+    pub(crate) fn reset(&mut self) -> Result<()> {
+        self.step_t = 0;
+        let mut moments = self.moments.lock().map_err(|e| anyhow::anyhow!("Moments mutex poisoned: {}", e))?;
+        moments.clear();
+        Ok(())
     }
 
     /// Apply named gradients (multi-GPU path where gradients are already on CPU and in F32).

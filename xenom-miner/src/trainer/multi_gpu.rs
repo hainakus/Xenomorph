@@ -16,7 +16,7 @@ use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use borsh::to_vec as borsh_to_vec;
-use candle_core::{Device, Tensor};
+use candle_core::{DType, Device, Tensor};
 use rayon::prelude::*;
 use tracing::{info, warn};
 
@@ -88,6 +88,13 @@ impl MultiGpuConfig {
     }
 }
 
+/// Snapshot of one model replica's trainable variables, used to reset all
+/// devices back to the shared base checkpoint after each local step.
+struct BaseSnapshot {
+    checkpoint: Option<[u8; 32]>,
+    per_device: Vec<HashMap<String, Tensor>>,
+}
+
 /// A data-parallel DNABERT-2 trainer that can span multiple CUDA/Metal/CPU
 /// devices.
 pub struct MultiGpuTrainer {
@@ -99,6 +106,9 @@ pub struct MultiGpuTrainer {
     scaler: Mutex<MixedPrecisionScaler>,
     /// Cached device info for logging.
     device_info: DeviceInfo,
+    /// Base checkpoint snapshot; all devices reset here before each batch so
+    /// consecutive batches train from the same FedAvg base.
+    base: Mutex<BaseSnapshot>,
 }
 
 /// Result of computing gradients for a single GPU micro-batch.
@@ -152,8 +162,9 @@ impl MultiGpuTrainer {
         }
 
         let device_info = Self::build_device_info(&devices, threads);
+        let base = Mutex::new(BaseSnapshot { checkpoint: None, per_device: Vec::new() });
 
-        Ok(Self { trainers, config: gpu_config, scaler, device_info })
+        Ok(Self { trainers, config: gpu_config, scaler, device_info, base })
     }
 
     /// Determine which physical devices to use based on the CLI config and
@@ -222,6 +233,65 @@ impl MultiGpuTrainer {
         DeviceInfo { device_type, name, threads, ..Default::default() }
     }
 
+    /// Snapshot the current weights of every replica as the base checkpoint.
+    ///
+    /// The snapshot is stored as a deep copy in F32 so that `Var::set` later
+    /// accepts it as an independent tensor.
+    fn snapshot_base(&self, checkpoint: [u8; 32]) -> Result<()> {
+        let mut per_device = Vec::with_capacity(self.trainers.len());
+        for (idx, trainer) in self.trainers.iter().enumerate() {
+            let data = trainer.varmap.data().lock().map_err(|e| anyhow::anyhow!("Replica {} VarMap poisoned: {}", idx, e))?;
+            let mut snap = HashMap::new();
+            for (name, var) in data.iter() {
+                let t = var.as_tensor();
+                let t_f32 = t.to_dtype(DType::F32).with_context(|| format!("Failed to cast {} to F32 for snapshot", name))?;
+                let flat = t_f32.flatten_all()?.to_vec1::<f32>()?;
+                let restored = Tensor::from_vec(flat, t.shape().clone(), t.device())
+                    .with_context(|| format!("Failed to recreate snapshot tensor for {}", name))?;
+                snap.insert(name.clone(), restored);
+            }
+            per_device.push(snap);
+        }
+        let mut base = self.base.lock().map_err(|e| anyhow::anyhow!("Base snapshot mutex poisoned: {}", e))?;
+        base.checkpoint = Some(checkpoint);
+        base.per_device = per_device;
+        Ok(())
+    }
+
+    /// Reset every replica to the stored base checkpoint and reset its optimizer state.
+    fn restore_base(&self) -> Result<()> {
+        let base = self.base.lock().map_err(|e| anyhow::anyhow!("Base snapshot mutex poisoned: {}", e))?;
+        if base.checkpoint.is_none() {
+            return Ok(());
+        }
+        for (idx, (trainer, snapshot)) in self.trainers.iter().zip(base.per_device.iter()).enumerate() {
+            trainer.reset_optimizer().with_context(|| format!("Failed to reset optimizer on replica {}", idx))?;
+            let data = trainer.varmap.data().lock().map_err(|e| anyhow::anyhow!("Replica {} VarMap poisoned: {}", idx, e))?;
+            for (name, var) in data.iter() {
+                if let Some(snap) = snapshot.get(name) {
+                    let target_dtype = var.as_tensor().dtype();
+                    let target_device = var.as_tensor().device();
+                    let snap = snap.to_dtype(target_dtype)?.to_device(target_device)?;
+                    var.set(&snap).with_context(|| format!("Failed to restore {} on replica {}", name, idx))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Ensure the replica weights correspond to `checkpoint`. If this is the
+    /// first time we see it, snapshot the current weights as the base. Otherwise
+    /// restore the stored base so the batch trains from the same starting point.
+    fn ensure_base(&self, checkpoint: [u8; 32]) -> Result<()> {
+        let base = self.base.lock().map_err(|e| anyhow::anyhow!("Base snapshot mutex poisoned: {}", e))?;
+        if base.checkpoint == Some(checkpoint) {
+            drop(base);
+            return self.restore_base();
+        }
+        drop(base);
+        self.snapshot_base(checkpoint)
+    }
+
     /// Train on an already-materialised `MlmBatch`.
     fn train_mlm_batch(
         &self,
@@ -232,6 +302,7 @@ impl MultiGpuTrainer {
         learning_rate: f32,
     ) -> Result<(TrainingResult, HashMap<String, Tensor>, f32)> {
         let start = Instant::now();
+        self.ensure_base(base_checkpoint).context("Failed to reset replicas to base checkpoint")?;
 
         let micro_batches =
             split_mlm_batch(mlm_batch, self.trainers.len(), self.config.gradient_accumulation_steps, self.config.micro_batch_size);
@@ -369,7 +440,8 @@ impl MultiGpuTrainer {
             self.trainers[0]
                 .apply_gradients(&final_grads, effective_lr)
                 .context("Failed to apply averaged gradients to master replica")?;
-            self.broadcast_master_to_others().context("Failed to broadcast updated weights to replica GPUs")?;
+            // No need to broadcast: the master is only used for the post-update loss
+            // and gradient commitment; all replicas are reset to the base snapshot below.
         } else {
             warn!("Averaged gradients are non-finite; skipping optimizer step and reducing loss scale");
             any_overflow = true;
@@ -390,10 +462,16 @@ impl MultiGpuTrainer {
         let gradients_commitment = self.trainers[0].gradient_commitment_from_named_tensors(&final_grads)?;
         let commitment_ms = commitment_start.elapsed().as_millis() as u64;
 
+        // Restore all replicas to the base checkpoint so the next batch starts from the same point.
+        // This keeps every GPU busy and avoids cross-GPU broadcast after every step.
+        let restore_start = Instant::now();
+        self.restore_base().context("Failed to restore replicas to base checkpoint")?;
+        let restore_ms = restore_start.elapsed().as_millis() as u64;
+
         let total_ms = start.elapsed().as_millis() as u64;
         info!(
-            "MultiGpuTrainer timings (ms): total={}, loss_before={:.6}, compute={}, gather={}, overflow_check={}, avg={}, add={}, apply={}, loss_after={}, commitment={}",
-            total_ms, loss_before, compute_ms, gather_ms, overflow_check_ms, avg_ms, add_ms, apply_ms, loss_after_ms, commitment_ms
+            "MultiGpuTrainer timings (ms): total={}, loss_before={:.6}, compute={}, gather={}, overflow_check={}, avg={}, add={}, apply={}, loss_after={}, commitment={}, restore={}",
+            total_ms, loss_before, compute_ms, gather_ms, overflow_check_ms, avg_ms, add_ms, apply_ms, loss_after_ms, commitment_ms, restore_ms
         );
 
         let result = TrainingResult {
@@ -407,49 +485,6 @@ impl MultiGpuTrainer {
         };
 
         Ok((result, final_grads, participant_weight))
-    }
-
-    /// Copy updated parameters from the master (device 0) replica to all other
-    /// replicas. This is a CPU-mediated broadcast; NCCL can replace it later.
-    fn broadcast_master_to_others(&self) -> Result<()> {
-        if self.trainers.len() <= 1 {
-            return Ok(());
-        }
-
-        let master = &self.trainers[0];
-        // Snapshot the master weights while holding the lock only briefly; each
-        // replica then copies from this snapshot in its own thread.
-        let master_pairs: Vec<(String, Tensor)> = {
-            let master_data = master.varmap.data().lock().map_err(|e| anyhow::anyhow!("VarMap poisoned: {}", e))?;
-            master_data.iter().map(|(k, v)| (k.clone(), v.as_tensor().clone())).collect()
-        };
-
-        let results: Vec<std::thread::Result<Result<()>>> = std::thread::scope(|s| {
-            let mut handles = Vec::with_capacity(self.trainers.len() - 1);
-            for (idx, replica) in self.trainers.iter().enumerate().skip(1) {
-                let replica = replica.clone();
-                let pairs = &master_pairs;
-                let handle = s.spawn(move || -> Result<()> {
-                    let replica_data =
-                        replica.varmap.data().lock().map_err(|e| anyhow::anyhow!("Replica {} VarMap poisoned: {}", idx, e))?;
-                    for (name, master_var) in pairs {
-                        let replica_var =
-                            replica_data.get(name).with_context(|| format!("Replica {} is missing variable {}", idx, name))?;
-                        let updated = master_var.to_device(&replica.device)?.contiguous()?;
-                        replica_var.set(&updated)?;
-                    }
-                    Ok(())
-                });
-                handles.push(handle);
-            }
-            handles.into_iter().map(|h| h.join()).collect()
-        });
-
-        for result in results {
-            result.map_err(|e| anyhow::anyhow!("Broadcast thread panicked: {:?}", e))??;
-        }
-
-        Ok(())
     }
 }
 
@@ -493,6 +528,22 @@ impl MultiGpuTrainer {
             .context("Failed to encrypt gradient payload")?;
 
         Ok(GradientUpdate { model_id: model_id.to_string(), base_checkpoint, encrypted_payload, participant_weight })
+    }
+
+    /// Return the currently tracked base checkpoint, if any.
+    pub fn current_base_checkpoint(&self) -> Option<[u8; 32]> {
+        self.base.lock().ok()?.checkpoint
+    }
+
+    /// Load a new base checkpoint into all replica VarMaps and snapshot it.
+    pub fn load_base_checkpoint(&self, checkpoint: [u8; 32], weights: &[u8]) -> Result<()> {
+        for (idx, trainer) in self.trainers.iter().enumerate() {
+            trainer
+                .load_weights_from_bytes(weights)
+                .with_context(|| format!("Failed to load base checkpoint into replica {}", idx))?;
+        }
+        self.snapshot_base(checkpoint)?;
+        Ok(())
     }
 }
 
@@ -558,6 +609,14 @@ impl Trainer for MultiGpuTrainer {
         let update = self.build_gradient_update(&batch.model_id, msg.base_checkpoint, named_grads, participant_weight)?;
         info!("Genome gradient update build time: {} ms", build_start.elapsed().as_millis());
         Ok((result, Some(update)))
+    }
+
+    fn current_base_checkpoint(&self) -> Option<[u8; 32]> {
+        self.current_base_checkpoint()
+    }
+
+    fn load_base_checkpoint(&self, base_checkpoint: [u8; 32], weights: &[u8]) -> Result<()> {
+        self.load_base_checkpoint(base_checkpoint, weights)
     }
 
     fn device_info(&self) -> DeviceInfo {

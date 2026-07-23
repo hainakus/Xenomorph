@@ -210,11 +210,14 @@ mod tests {
 
         let result1 = trainer.train(&dummy_batch()).unwrap();
         let result2 = trainer.train(&dummy_batch()).unwrap();
+        // Each batch trains from the same base checkpoint, then the replica is
+        // restored to that base. The second batch should therefore start from
+        // the same loss as the first batch (not from the improved state).
         assert!(
-            result2.loss_before <= result1.loss_after,
-            "MultiGpuTrainer state did not persist: {} > {}",
+            (result2.loss_before - result1.loss_before).abs() <= 1e-6,
+            "MultiGpuTrainer did not reset to base: {} != {}",
             result2.loss_before,
-            result1.loss_after
+            result1.loss_before
         );
     }
 
