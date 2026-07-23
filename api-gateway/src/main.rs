@@ -72,7 +72,9 @@ async fn main() -> Result<()> {
 
     // Start server
     let api_port = std::env::var("API_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(3000u16);
-    let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], api_port));
+    let api_host = std::env::var("API_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let addr: SocketAddr =
+        format!("{}:{}", api_host, api_port).parse().with_context(|| format!("Invalid API bind address {}:{}", api_host, api_port))?;
     info!("API Gateway listening on {}", addr);
 
     let listener = TcpListener::bind(addr).await?;

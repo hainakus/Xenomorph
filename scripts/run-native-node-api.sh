@@ -21,6 +21,8 @@ Options:
                                   (default: \$XENO_DATA_DIR or ./devnet-data-native)
   --genome-file <path>            Path to .xenom packed GRCh38 genome file
                                   (optional; enables real Genome PoW)
+  --bind-ip <ip>                  IP to bind node/seed/API sockets to
+                                  (default: \$XENO_BIND_IP or 0.0.0.0)
   -q, --quiet                     Minimal output
   -v, --verbose                   Debug output
   -h, --help                      Show this help and exit
@@ -29,6 +31,7 @@ Options:
 BUILD=1
 DATA_DIR="${XENO_DATA_DIR:-$SCRIPT_DIR/../devnet-data-native}"
 GENOME_FILE="${XENO_GENOME_FILE:-}"
+BIND_IP="${XENO_BIND_IP:-0.0.0.0}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -36,6 +39,7 @@ while [[ $# -gt 0 ]]; do
         --no-build) BUILD=0; shift ;;
         -d|--data-dir) DATA_DIR="$2"; shift 2 ;;
         --genome-file) GENOME_FILE="$2"; shift 2 ;;
+        --bind-ip) BIND_IP="$2"; shift 2 ;;
         -q|--quiet) XENO_QUIET=1; shift ;;
         -v|--verbose) XENO_VERBOSE=1; shift ;;
         -h|--help) print_help_and_exit "$USAGE" 0 ;;
@@ -47,6 +51,9 @@ load_env
 
 export XENO_QUIET="${XENO_QUIET:-0}"
 export XENO_VERBOSE="${XENO_VERBOSE:-0}"
+
+# Honour XENO_BIND_IP from .env/env, but keep --bind-ip as fallback.
+BIND_IP="${XENO_BIND_IP:-$BIND_IP}"
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
@@ -89,6 +96,18 @@ SEED_MINER_WS_PORT="${XENO_SEED_MINER_WS_PORT:-17111}"
 API_PORT="${XENO_API_PORT:-3000}"
 REDIS_PORT="${XENO_REDIS_PORT:-6379}"
 MODEL_ID="${XENO_MODEL_ID:-multimolecule/dnabert2}"
+
+# When binding to a specific IP, health-check waits on that IP; otherwise use localhost.
+WAIT_HOST="127.0.0.1"
+if [[ "$BIND_IP" != "0.0.0.0" && "$BIND_IP" != "127.0.0.1" ]]; then
+    WAIT_HOST="$BIND_IP"
+fi
+
+# Local clients connect via localhost when binding to all interfaces, otherwise via the bound IP.
+CONNECT_HOST="127.0.0.1"
+if [[ "$BIND_IP" != "0.0.0.0" && "$BIND_IP" != "127.0.0.1" ]]; then
+    CONNECT_HOST="$BIND_IP"
+fi
 
 if ! is_port_free "$NODE_RPC_PORT" || ! is_port_free "$NODE_P2P_PORT" || \
    ! is_port_free "$MINER_WS_PORT" || ! is_port_free "$SEED_GRPC_PORT" || \
@@ -181,9 +200,9 @@ NODE_ARGS=(
     --utxoindex
     --appdir="$NODE_DATA_DIR"
     --logdir="$LOG_DIR/node"
-    --rpclisten="0.0.0.0:$NODE_RPC_PORT"
-    --listen="0.0.0.0:$NODE_P2P_PORT"
-    --miner-ws-listen="0.0.0.0:$MINER_WS_PORT"
+    --rpclisten="$BIND_IP:$NODE_RPC_PORT"
+    --listen="$BIND_IP:$NODE_P2P_PORT"
+    --miner-ws-listen="$BIND_IP:$MINER_WS_PORT"
     --models-dir="$SEED_DATA_DIR"
     --disable-upnp
     --nodnsseed
@@ -196,8 +215,8 @@ NODE_PID=$!
 PIDS+=("$NODE_PID")
 qlog "xeno-node started (pid $NODE_PID)"
 
-wait_for_port 127.0.0.1 "$NODE_RPC_PORT" 600 "$NODE_PID"
-wait_for_port 127.0.0.1 "$MINER_WS_PORT" 600 "$NODE_PID"
+wait_for_port "$WAIT_HOST" "$NODE_RPC_PORT" 600 "$NODE_PID"
+wait_for_port "$WAIT_HOST" "$MINER_WS_PORT" 600 "$NODE_PID"
 
 # -----------------------------------------------------------------------------
 # seed-node (inference gRPC for the API gateway)
@@ -206,9 +225,9 @@ wait_for_port 127.0.0.1 "$MINER_WS_PORT" 600 "$NODE_PID"
 # not collide with the xeno-node miner websocket.
 qlog "Starting seed-node (inference gRPC on port $SEED_GRPC_PORT)..."
 XENO_MODELS_DIR="$SEED_DATA_DIR" \
-XENO_NODE_RPC="127.0.0.1:$NODE_RPC_PORT" \
-XENO_GRPC_ADDR="0.0.0.0:$SEED_GRPC_PORT" \
-XENO_MINER_WS_ADDR="0.0.0.0:$SEED_MINER_WS_PORT" \
+XENO_NODE_RPC="$CONNECT_HOST:$NODE_RPC_PORT" \
+XENO_GRPC_ADDR="$BIND_IP:$SEED_GRPC_PORT" \
+XENO_MINER_WS_ADDR="$BIND_IP:$SEED_MINER_WS_PORT" \
 XENO_DEFAULT_MODEL_ID="$MODEL_ID" \
 RUST_LOG="${RUST_LOG:-info}" "$BIN_PREFIX/seed-node" \
     > "$LOG_DIR/seed-node.log" 2>&1 &
@@ -216,13 +235,14 @@ SEED_PID=$!
 PIDS+=("$SEED_PID")
 qlog "seed-node started (pid $SEED_PID)"
 
-wait_for_port 127.0.0.1 "$SEED_GRPC_PORT" 120 "$SEED_PID"
+wait_for_port "$WAIT_HOST" "$SEED_GRPC_PORT" 120 "$SEED_PID"
 
 # -----------------------------------------------------------------------------
 # api-gateway (OpenAI-compatible HTTP API)
 # -----------------------------------------------------------------------------
 qlog "Starting api-gateway on port $API_PORT..."
-SEED_NODE_ADDR="http://127.0.0.1:$SEED_GRPC_PORT" \
+SEED_NODE_ADDR="http://$CONNECT_HOST:$SEED_GRPC_PORT" \
+API_HOST="$BIND_IP" \
 API_PORT="$API_PORT" \
 USDT_CONTRACT_ADDRESS="${USDT_CONTRACT_ADDRESS:-0x0000000000000000000000000000000000000000}" \
 RPC_URL="${RPC_URL:-https://polygon-mumbai.infura.io/v3/YOUR_KEY}" \
@@ -234,11 +254,13 @@ API_PID=$!
 PIDS+=("$API_PID")
 qlog "api-gateway started (pid $API_PID)"
 
+wait_for_port "$WAIT_HOST" "$API_PORT" 60 "$API_PID"
+
 qok "Node + seed + API gateway running."
-qok "  Miner websocket:  ws://$(hostname -I | awk '{print $1}'):$MINER_WS_PORT"
-qok "  OpenAI API:       http://$(hostname -I | awk '{print $1}'):$API_PORT"
-qok "  Seed gRPC:        http://127.0.0.1:$SEED_GRPC_PORT"
-qok "  Kaspa RPC:        http://127.0.0.1:$NODE_RPC_PORT"
+qok "  Miner websocket:  ws://$BIND_IP:$MINER_WS_PORT"
+qok "  OpenAI API:       http://$BIND_IP:$API_PORT"
+qok "  Seed gRPC:        http://$BIND_IP:$SEED_GRPC_PORT"
+qok "  Kaspa RPC:        http://$BIND_IP:$NODE_RPC_PORT"
 qok "  Logs:             $LOG_DIR"
 qok "Press Ctrl+C to stop."
 
