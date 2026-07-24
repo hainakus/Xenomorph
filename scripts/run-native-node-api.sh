@@ -203,6 +203,7 @@ NODE_ARGS=(
     --models-dir="$MODELS_DIR"
     --disable-upnp
     --nodnsseed
+    --addpeer="94.237.108.145:16111"
 )
 [[ -n "$GENOME_FILE" ]] && NODE_ARGS+=(--genome-file="$GENOME_FILE")
 
