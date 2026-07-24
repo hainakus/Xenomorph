@@ -2,6 +2,7 @@ use self::{
     address::{ReceiveAddressesFlow, SendAddressesFlow},
     blockrelay::{flow::HandleRelayInvsFlow, handle_requests::HandleRelayBlockRequests},
     ibd::IbdFlow,
+    model_gossip::ModelGossipFlow,
     ping::{ReceivePingsFlow, SendPingsFlow},
     request_antipast::HandleAntipastRequests,
     request_block_locator::RequestBlockLocatorFlow,
@@ -22,6 +23,7 @@ use std::sync::Arc;
 pub(crate) mod address;
 pub(crate) mod blockrelay;
 pub(crate) mod ibd;
+pub(crate) mod model_gossip;
 pub(crate) mod ping;
 pub(crate) mod request_antipast;
 pub(crate) mod request_block_locator;
@@ -138,9 +140,14 @@ pub fn register(ctx: FlowContext, router: Arc<Router>) -> Vec<Box<dyn Flow>> {
             router.subscribe(vec![KaspadMessagePayloadType::RequestAddresses]),
         )),
         Box::new(RequestBlockLocatorFlow::new(
-            ctx,
+            ctx.clone(),
             router.clone(),
             router.subscribe(vec![KaspadMessagePayloadType::RequestBlockLocator]),
+        )),
+        Box::new(ModelGossipFlow::new(
+            ctx,
+            router.clone(),
+            router.subscribe(vec![KaspadMessagePayloadType::CheckpointAnnouncement, KaspadMessagePayloadType::RequestCheckpoint]),
         )),
     ];
 

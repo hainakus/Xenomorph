@@ -93,8 +93,7 @@ pub struct GossipIdentity {
 impl GossipIdentity {
     /// Create an identity from a BIP39 mnemonic phrase.
     pub fn from_mnemonic(phrase: &str, network_type: NetworkType) -> Result<Self, ModelCryptoError> {
-        let mnemonic = Mnemonic::parse_in(Language::English, phrase)
-            .map_err(|e| ModelCryptoError::InvalidKey(e.to_string()))?;
+        let mnemonic = Mnemonic::parse_in(Language::English, phrase).map_err(|e| ModelCryptoError::InvalidKey(e.to_string()))?;
         let seed = mnemonic.to_seed("");
         Self::from_secret_key_bytes(&seed[..32], network_type)
     }
@@ -186,9 +185,7 @@ pub fn verify_announcement(announcement: &Announcement, network_type: NetworkTyp
     let signature = secp256k1::ecdsa::Signature::from_compact(&announcement.signature)
         .map_err(|e| ModelCryptoError::InvalidKey(format!("invalid signature: {e}")))?;
 
-    signature
-        .verify(&message, &public_key)
-        .map_err(|_| ModelCryptoError::InvalidKey("signature verification failed".to_string()))
+    signature.verify(&message, &public_key).map_err(|_| ModelCryptoError::InvalidKey("signature verification failed".to_string()))
 }
 
 fn derive_address(public_key: &PublicKey, network_type: NetworkType) -> String {
@@ -228,8 +225,7 @@ impl GossipRegistry {
         let list = self.entries.entry(key).or_default();
 
         let is_duplicate = list.iter().any(|entry| {
-            entry.announcement.public_key == announcement.public_key
-                && entry.announcement.timestamp == announcement.timestamp
+            entry.announcement.public_key == announcement.public_key && entry.announcement.timestamp == announcement.timestamp
         });
 
         if is_duplicate {

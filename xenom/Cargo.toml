@@ -41,6 +41,8 @@ kaspa-utils.workspace = true
 kaspa-utils-tower.workspace = true
 kaspa-utxoindex.workspace = true
 kaspa-wrpc-server.workspace = true
+model-crypto = { path = "../crypto/model-crypto" }
+parking_lot.workspace = true
 
 anyhow = "1.0"
 async-channel.workspace = true

@@ -23,6 +23,7 @@ kaspa-addressmanager.workspace = true
 kaspa-consensusmanager.workspace = true
 kaspa-mining.workspace = true
 kaspa-notify.workspace = true
+model-crypto = { path = "../../crypto/model-crypto" }
 
 async-trait.workspace = true
 futures = { workspace = true, features = ["alloc"] }

@@ -29,7 +29,7 @@ impl From<ModelCryptoError> for StorageError {
         match err {
             ModelCryptoError::EncryptionError(msg) => StorageError::EncryptionError(msg),
             ModelCryptoError::DecryptionError(msg) => StorageError::DecryptionError(msg),
-            ModelCryptoError::InvalidKey => StorageError::InvalidKey,
+            ModelCryptoError::InvalidKey(_) => StorageError::InvalidKey,
         }
     }
 }

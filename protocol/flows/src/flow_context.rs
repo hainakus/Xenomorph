@@ -37,6 +37,7 @@ use kaspa_p2p_lib::{
 };
 use kaspa_utils::iter::IterExtensions;
 use kaspa_utils::networking::PeerId;
+use model_crypto::gossip::{GossipIdentity, GossipRegistry};
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -225,6 +226,9 @@ pub struct FlowContextInner {
     pub(crate) tick_service: Arc<TickService>,
     notification_root: Arc<ConsensusNotificationRoot>,
 
+    pub gossip_identity: Option<Arc<GossipIdentity>>,
+    pub gossip_registry: Arc<Mutex<GossipRegistry>>,
+
     // Special sampling logger used only for high-bps networks where logs must be throttled
     block_event_logger: Option<BlockEventLogger>,
 
@@ -303,6 +307,8 @@ impl FlowContext {
         mining_manager: MiningManagerProxy,
         tick_service: Arc<TickService>,
         notification_root: Arc<ConsensusNotificationRoot>,
+        gossip_identity: Option<Arc<GossipIdentity>>,
+        gossip_registry: Arc<Mutex<GossipRegistry>>,
     ) -> Self {
         let hub = Hub::new();
 
@@ -327,6 +333,8 @@ impl FlowContext {
                 mining_manager,
                 tick_service,
                 notification_root,
+                gossip_identity,
+                gossip_registry,
                 block_event_logger: if config.bps() > 1 { Some(BlockEventLogger::new(config.bps() as usize)) } else { None },
                 orphan_resolution_range,
                 max_orphans,

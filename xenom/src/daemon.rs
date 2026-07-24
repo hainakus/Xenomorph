@@ -34,6 +34,8 @@ use kaspa_mining::{
     MiningCounters,
 };
 use kaspa_p2p_flows::{flow_context::FlowContext, service::P2pService};
+use model_crypto::gossip::{GossipIdentity, GossipRegistry};
+use parking_lot::Mutex;
 
 use kaspa_perf_monitor::{builder::Builder as PerfMonitorBuilder, counters::CountersSnapshot};
 use kaspa_utxoindex::{api::UtxoIndexProxy, UtxoIndex};
@@ -522,6 +524,18 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
     let mining_monitor =
         Arc::new(MiningMonitor::new(mining_manager.clone(), mining_counters, tx_script_cache_counters.clone(), tick_service.clone()));
 
+    let gossip_identity = match GossipIdentity::from_env(network.network_type) {
+        Ok(identity) => {
+            info!("P2P gossip identity: {}", identity.address());
+            Some(Arc::new(identity))
+        }
+        Err(e) => {
+            info!("No P2P gossip identity configured: {e}");
+            None
+        }
+    };
+    let gossip_registry = Arc::new(Mutex::new(GossipRegistry::new()));
+
     let flow_context = Arc::new(FlowContext::new(
         consensus_manager.clone(),
         address_manager,
@@ -529,6 +543,8 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
         mining_manager.clone(),
         tick_service.clone(),
         notification_root,
+        gossip_identity,
+        gossip_registry,
     ));
     let p2p_service = Arc::new(P2pService::new(
         flow_context.clone(),

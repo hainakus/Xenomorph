@@ -62,7 +62,8 @@ service P2P {
 }
 
 // Metadata gossip announcement for a model or genome checkpoint.
-// The signature covers model_id || weights_hash || cid || timestamp || is_genome.
+// The signature covers model_id || weights_hash || cid || timestamp || is_genome ||
+// node_address || public_key || listen_addr.
 message CheckpointAnnouncementMessage {
   string model_id = 1;
   bytes weights_hash = 2;
@@ -72,6 +73,7 @@ message CheckpointAnnouncementMessage {
   bytes signature = 6;
   NetAddress listen_addr = 7;
   bool is_genome = 8;
+  bytes public_key = 9;
 }
 
 // Request known announcements for a given checkpoint.

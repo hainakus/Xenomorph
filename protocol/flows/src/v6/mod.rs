@@ -2,6 +2,7 @@ use crate::v5::{
     address::{ReceiveAddressesFlow, SendAddressesFlow},
     blockrelay::{flow::HandleRelayInvsFlow, handle_requests::HandleRelayBlockRequests},
     ibd::IbdFlow,
+    model_gossip::ModelGossipFlow,
     ping::{ReceivePingsFlow, SendPingsFlow},
     request_antipast::HandleAntipastRequests,
     request_block_locator::RequestBlockLocatorFlow,
@@ -122,6 +123,11 @@ pub fn register(ctx: FlowContext, router: Arc<Router>) -> Vec<Box<dyn Flow>> {
             ctx.clone(),
             router.clone(),
             router.subscribe(vec![KaspadMessagePayloadType::RequestBlockLocator]),
+        )),
+        Box::new(ModelGossipFlow::new(
+            ctx.clone(),
+            router.clone(),
+            router.subscribe(vec![KaspadMessagePayloadType::CheckpointAnnouncement, KaspadMessagePayloadType::RequestCheckpoint]),
         )),
     ];
 
