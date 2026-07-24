@@ -9,7 +9,9 @@ use anyhow::{anyhow, Result};
 use borsh::{to_vec, BorshDeserialize};
 use futures_util::{SinkExt, StreamExt};
 use kaspa_core::{info, warn};
+use kaspa_p2p_flows::flow_context::FlowContext;
 use seed_node::rpc::messages::{GetModelCheckpointInfo, RpcEnvelope, RpcRequest, RpcResponse};
+use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::accept_async_with_config;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
@@ -32,15 +34,16 @@ fn ws_config() -> WebSocketConfig {
 }
 
 /// Run the miner WebSocket server on `addr` using `coordinator` for state.
-pub async fn run_miner_server(addr: &str, coordinator: Coordinator) -> Result<()> {
+pub async fn run_miner_server(addr: &str, coordinator: Coordinator, flow_context: Option<Arc<FlowContext>>) -> Result<()> {
     let listener = TcpListener::bind(addr).await.map_err(|e| anyhow!("Failed to bind miner server {}: {}", addr, e))?;
     let bound: SocketAddr = listener.local_addr()?;
     info!("Unified miner WebSocket server listening on {}", bound);
 
     while let Ok((stream, peer)) = listener.accept().await {
         let coord = coordinator.clone();
+        let ctx = flow_context.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, peer, coord).await {
+            if let Err(e) = handle_connection(stream, peer, coord, ctx).await {
                 warn!("Miner WebSocket connection from {} closed: {}", peer, e);
             }
         });
@@ -49,7 +52,12 @@ pub async fn run_miner_server(addr: &str, coordinator: Coordinator) -> Result<()
     Ok(())
 }
 
-async fn handle_connection(stream: TcpStream, peer: SocketAddr, coordinator: Coordinator) -> Result<()> {
+async fn handle_connection(
+    stream: TcpStream,
+    peer: SocketAddr,
+    coordinator: Coordinator,
+    flow_context: Option<Arc<FlowContext>>,
+) -> Result<()> {
     let mut ws = accept_async_with_config(stream, Some(ws_config())).await?;
 
     while let Some(msg) = ws.next().await {
@@ -64,7 +72,7 @@ async fn handle_connection(stream: TcpStream, peer: SocketAddr, coordinator: Coo
                     }
                 };
 
-                let response = handle_request(envelope.payload, &coordinator).await;
+                let response = handle_request(envelope.payload, &coordinator, flow_context.clone()).await;
                 let resp_bytes = match to_vec(&response) {
                     Ok(bytes) => bytes,
                     Err(e) => {
@@ -86,7 +94,7 @@ async fn handle_connection(stream: TcpStream, peer: SocketAddr, coordinator: Coo
     Ok(())
 }
 
-async fn handle_request(req: RpcRequest, coordinator: &Coordinator) -> RpcResponse {
+async fn handle_request(req: RpcRequest, coordinator: &Coordinator, flow_context: Option<Arc<FlowContext>>) -> RpcResponse {
     match req {
         RpcRequest::GetTrainingBatch { model_id } => coordinator.get_training_batch(model_id).await,
         RpcRequest::GetGenomeTrainingBatch(request) => coordinator.get_genome_training_batch(request).await,
@@ -96,7 +104,16 @@ async fn handle_request(req: RpcRequest, coordinator: &Coordinator) -> RpcRespon
         }
         RpcRequest::SubmitBlock(block) => coordinator.submit_block(block).await,
         RpcRequest::SubmitGradients(update) => match coordinator.submit_gradients(&update).await {
-            Ok(new_checkpoint) => RpcResponse::GradientAck { new_checkpoint },
+            Ok(Some(new_checkpoint)) => {
+                if let Some(ctx) = flow_context {
+                    // Announce the new active checkpoint over P2P gossip so other nodes
+                    // (e.g. standalone seed-nodes) can discover it.  `cid` is currently a
+                    // placeholder equal to the weights hash until IPFS/HTTP content IDs are wired.
+                    ctx.announce_checkpoint(update.model_id.clone(), new_checkpoint, new_checkpoint, None).await;
+                }
+                RpcResponse::GradientAck { new_checkpoint: Some(new_checkpoint) }
+            }
+            Ok(None) => RpcResponse::GradientAck { new_checkpoint: None },
             Err(e) => {
                 warn!("Failed to submit gradients for {}: {}", update.model_id, e);
                 RpcResponse::Error(format!("Failed to submit gradients: {}", e))

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use kaspa_consensus_core::network::NetworkType;
 use kaspa_core::task::service::{AsyncService, AsyncServiceError, AsyncServiceFuture};
 use kaspa_core::{info, trace, warn};
+use kaspa_p2p_flows::flow_context::FlowContext;
 use kaspa_rpc_service::service::RpcCoreService;
 use kaspa_utils::networking::ContextualNetAddress;
 use kaspa_utils::triggers::SingleTrigger;
@@ -26,6 +27,7 @@ pub struct MinerWebsocketService {
     rpc_core_service: Arc<RpcCoreService>,
     genome_fragment_size_bytes: u32,
     genome_pow_activation_daa_score: u64,
+    flow_context: Option<Arc<FlowContext>>,
     shutdown: SingleTrigger,
 }
 
@@ -41,6 +43,7 @@ impl MinerWebsocketService {
         rpc_core_service: Arc<RpcCoreService>,
         genome_fragment_size_bytes: u32,
         genome_pow_activation_daa_score: u64,
+        flow_context: Option<Arc<FlowContext>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             listen_address,
@@ -53,6 +56,7 @@ impl MinerWebsocketService {
             rpc_core_service,
             genome_fragment_size_bytes,
             genome_pow_activation_daa_score,
+            flow_context,
             shutdown: SingleTrigger::new(),
         })
     }
@@ -87,7 +91,9 @@ impl AsyncService for MinerWebsocketService {
             };
 
             let listen = self.listen_address.to_string();
-            let mut server_task = tokio::spawn(async move { websocket_server::run_miner_server(&listen, coordinator).await });
+            let flow_context = self.flow_context.clone();
+            let mut server_task =
+                tokio::spawn(async move { websocket_server::run_miner_server(&listen, coordinator, flow_context).await });
             let shutdown_signal = self.shutdown.listener.clone();
 
             tokio::select! {

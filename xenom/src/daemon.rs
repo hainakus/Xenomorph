@@ -564,7 +564,7 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
         notify_service.notifier(),
         index_service.as_ref().map(|x| x.notifier()),
         mining_manager,
-        flow_context,
+        flow_context.clone(),
         subscription_context,
         index_service.as_ref().map(|x| x.utxoindex().unwrap()),
         config.clone(),
@@ -675,6 +675,7 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
             rpc_core_service.clone(),
             config.genome_fragment_size_bytes,
             config.genome_pow_activation_daa_score,
+            Some(flow_context.clone()),
         ));
     }
 
