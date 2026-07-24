@@ -73,6 +73,15 @@ impl ModelCache {
         Ok(())
     }
 
+    /// Remove the cached model directory entirely.
+    pub fn clear(&self, model_id: &str) -> Result<()> {
+        let dir = self.model_dir(model_id);
+        if dir.is_dir() {
+            fs::remove_dir_all(&dir).with_context(|| format!("Failed to clear cache directory {:?}", dir))?;
+        }
+        Ok(())
+    }
+
     /// Read the cached base checkpoint hash.
     pub fn read_base_checkpoint(&self, model_id: &str) -> Result<[u8; 32]> {
         let path = self.model_dir(model_id).join(HASH_FILE);
