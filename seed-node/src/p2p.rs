@@ -143,13 +143,54 @@ impl ConnectionInitializer for GossipInitializer {
         handshake.handshake(version_message).await?;
         handshake.exchange_ready_messages().await?;
 
-        // Subscribe to gossip messages plus the minimal peer-maintenance messages.
+        // Subscribe to all message types so the router never logs "no flow registered".
+        // Gossip and peer-maintenance messages are handled explicitly; everything else is dropped.
         let mut incoming_route = router.subscribe(vec![
-            KaspadMessagePayloadType::CheckpointAnnouncement,
-            KaspadMessagePayloadType::RequestCheckpoint,
+            KaspadMessagePayloadType::Addresses,
+            KaspadMessagePayloadType::Block,
+            KaspadMessagePayloadType::Transaction,
+            KaspadMessagePayloadType::BlockLocator,
             KaspadMessagePayloadType::RequestAddresses,
+            KaspadMessagePayloadType::RequestRelayBlocks,
+            KaspadMessagePayloadType::RequestTransactions,
+            KaspadMessagePayloadType::IbdBlock,
+            KaspadMessagePayloadType::InvRelayBlock,
+            KaspadMessagePayloadType::InvTransactions,
             KaspadMessagePayloadType::Ping,
             KaspadMessagePayloadType::Pong,
+            KaspadMessagePayloadType::Verack,
+            KaspadMessagePayloadType::Version,
+            KaspadMessagePayloadType::TransactionNotFound,
+            KaspadMessagePayloadType::Reject,
+            KaspadMessagePayloadType::PruningPointUtxoSetChunk,
+            KaspadMessagePayloadType::RequestIbdBlocks,
+            KaspadMessagePayloadType::UnexpectedPruningPoint,
+            KaspadMessagePayloadType::IbdBlockLocator,
+            KaspadMessagePayloadType::IbdBlockLocatorHighestHash,
+            KaspadMessagePayloadType::RequestNextPruningPointUtxoSetChunk,
+            KaspadMessagePayloadType::DonePruningPointUtxoSetChunks,
+            KaspadMessagePayloadType::IbdBlockLocatorHighestHashNotFound,
+            KaspadMessagePayloadType::BlockWithTrustedData,
+            KaspadMessagePayloadType::DoneBlocksWithTrustedData,
+            KaspadMessagePayloadType::RequestPruningPointAndItsAnticone,
+            KaspadMessagePayloadType::BlockHeaders,
+            KaspadMessagePayloadType::RequestNextHeaders,
+            KaspadMessagePayloadType::DoneHeaders,
+            KaspadMessagePayloadType::RequestPruningPointUtxoSet,
+            KaspadMessagePayloadType::RequestHeaders,
+            KaspadMessagePayloadType::RequestBlockLocator,
+            KaspadMessagePayloadType::PruningPoints,
+            KaspadMessagePayloadType::RequestPruningPointProof,
+            KaspadMessagePayloadType::PruningPointProof,
+            KaspadMessagePayloadType::Ready,
+            KaspadMessagePayloadType::BlockWithTrustedDataV4,
+            KaspadMessagePayloadType::TrustedData,
+            KaspadMessagePayloadType::RequestIbdChainBlockLocator,
+            KaspadMessagePayloadType::IbdChainBlockLocator,
+            KaspadMessagePayloadType::RequestAntipast,
+            KaspadMessagePayloadType::RequestNextPruningPointAndItsAnticoneBlocks,
+            KaspadMessagePayloadType::CheckpointAnnouncement,
+            KaspadMessagePayloadType::RequestCheckpoint,
         ]);
 
         tokio::spawn(async move {
@@ -199,8 +240,8 @@ impl ConnectionInitializer for GossipInitializer {
                         // The seed-node does not send pings, so ignore pongs.
                     }
                     _ => {
-                        warn!("P2P gossip: unexpected payload");
-                        break;
+                        // Other consensus/relay traffic is intentionally ignored by this client-only
+                        // gossip peer.
                     }
                 }
             }
