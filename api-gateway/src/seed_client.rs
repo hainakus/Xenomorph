@@ -1,6 +1,7 @@
 use crate::proto::xenomorph::inference::{
     inference_client::InferenceClient, EmbedRequest as GrpcEmbedRequest, EmbedResponse as GrpcEmbedResponse,
-    ListModelsRequest as GrpcListModelsRequest, ListModelsResponse as GrpcListModelsResponse, PredictRequest as GrpcPredictRequest,
+    ListModelsRequest as GrpcListModelsRequest, ListModelsResponse as GrpcListModelsResponse,
+    ModelInfoRequest as GrpcModelInfoRequest, ModelInfoResponse as GrpcModelInfoResponse, PredictRequest as GrpcPredictRequest,
     PredictResponse as GrpcPredictResponse,
 };
 use anyhow::{anyhow, Result};
@@ -51,6 +52,14 @@ impl SeedNodeClient {
             tonic::Request::new(GrpcListModelsRequest { category: String::new(), active_only: false, limit: 100, offset: 0 });
 
         let response = self.client.list_models(request).await.map_err(|e| anyhow!("Seed node list_models failed: {}", e))?;
+
+        Ok(response.into_inner())
+    }
+
+    pub async fn get_model_info(&mut self, model_id: &str) -> Result<GrpcModelInfoResponse> {
+        let request = tonic::Request::new(GrpcModelInfoRequest { model_id: model_id.to_string() });
+
+        let response = self.client.get_model_info(request).await.map_err(|e| anyhow!("Seed node get_model_info failed: {}", e))?;
 
         Ok(response.into_inner())
     }

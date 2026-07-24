@@ -91,20 +91,29 @@ impl Inference for InferenceService {
         Ok(Response::new(response))
     }
 
-    #[instrument(skip(self, _request))]
-    async fn get_model_info(&self, _request: Request<ModelInfoRequest>) -> Result<Response<ModelInfoResponse>, Status> {
-        // Implementation would fetch actual model info
+    #[instrument(skip(self, request))]
+    async fn get_model_info(&self, request: Request<ModelInfoRequest>) -> Result<Response<ModelInfoResponse>, Status> {
+        let req = request.into_inner();
+        let model_id = req.model_id;
+
+        let model_info = self
+            .engine
+            .model_manager()
+            .get_model(&model_id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("Model {} not found", model_id)))?;
+
         let response = ModelInfoResponse {
-            model_id: "default".to_string(),
-            name: "Default Model".to_string(),
-            description: "Default inference model".to_string(),
-            version: "1.0".to_string(),
-            category: "NLP".to_string(),
-            model_hash: vec![0u8; 32],
-            total_queries: 0,
-            active: true,
+            model_id: model_info.id,
+            name: model_info.name,
+            description: format!("{} sequence analysis model", model_info.category),
+            version: model_info.version.to_string(),
+            category: model_info.category,
+            model_hash: model_info.checkpoint.weights_hash.to_vec(),
+            total_queries: model_info.last_used,
+            active: model_info.loaded,
             verified: true,
-            last_updated: chrono::Utc::now().timestamp() as u64,
+            last_updated: model_info.last_used,
             metadata: Default::default(),
         };
 
