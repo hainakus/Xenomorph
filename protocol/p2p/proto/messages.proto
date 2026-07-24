@@ -52,9 +52,31 @@ message KaspadMessage {
     IbdChainBlockLocatorMessage ibdChainBlockLocator = 54;
     RequestAntipastMessage requestAntipast = 55;
     RequestNextPruningPointAndItsAnticoneBlocksMessage requestNextPruningPointAndItsAnticoneBlocks = 56;
+    CheckpointAnnouncementMessage checkpointAnnouncement = 57;
+    RequestCheckpointMessage requestCheckpoint = 58;
   }
 }
 
 service P2P {
   rpc MessageStream (stream KaspadMessage) returns (stream KaspadMessage) {}
+}
+
+// Metadata gossip announcement for a model or genome checkpoint.
+// The signature covers model_id || weights_hash || cid || timestamp || is_genome.
+message CheckpointAnnouncementMessage {
+  string model_id = 1;
+  bytes weights_hash = 2;
+  bytes cid = 3;
+  uint64 timestamp = 4;
+  string node_address = 5;
+  bytes signature = 6;
+  NetAddress listen_addr = 7;
+  bool is_genome = 8;
+}
+
+// Request known announcements for a given checkpoint.
+message RequestCheckpointMessage {
+  string model_id = 1;
+  bytes weights_hash = 2;
+  bool is_genome = 3;
 }

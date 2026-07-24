@@ -46,6 +46,8 @@ pub enum KaspadMessagePayloadType {
     IbdChainBlockLocator,
     RequestAntipast,
     RequestNextPruningPointAndItsAnticoneBlocks,
+    CheckpointAnnouncement,
+    RequestCheckpoint,
 }
 
 impl From<&KaspadMessagePayload> for KaspadMessagePayloadType {
@@ -100,6 +102,8 @@ impl From<&KaspadMessagePayload> for KaspadMessagePayloadType {
             KaspadMessagePayload::RequestNextPruningPointAndItsAnticoneBlocks(_) => {
                 KaspadMessagePayloadType::RequestNextPruningPointAndItsAnticoneBlocks
             }
+            KaspadMessagePayload::CheckpointAnnouncement(_) => KaspadMessagePayloadType::CheckpointAnnouncement,
+            KaspadMessagePayload::RequestCheckpoint(_) => KaspadMessagePayloadType::RequestCheckpoint,
         }
     }
 }
