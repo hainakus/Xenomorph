@@ -1,7 +1,7 @@
 # ADR 001: P2P Model and Genome Metadata Gossip
 
 ## Status
-Accepted — implementation in progress.
+Implemented.
 
 ## Context
 `seed-node` is currently the single source of model/genome checkpoints for `xenom-miner`.
@@ -32,7 +32,10 @@ weights_hash      : [u8; 32]      (active/base checkpoint hash)
 cid               : [u8; 32]      (content identifier / multihash, placeholder for IPFS/libp2p CID)
 timestamp         : u64           (unix seconds, for TTL and replay protection)
 node_address      : String        (xenom/kaspa address of the announcing node)
-signature         : [u8; 64]      (secp256k1 signature over the above fields)
+public_key        : [u8; 33]      (secp256k1 compressed public key of the signer)
+listen_addr       : NetAddress    (optional P2P/WS address where the checkpoint can be fetched)
+is_genome         : bool          (true for genome archives)
+signature         : [u8; 64]      (secp256k1 signature over all preceding fields)
 ```
 
 `genome` archives use the same message with `model_id` replaced by the genome
@@ -53,15 +56,20 @@ Corresponding `KaspadMessagePayloadType` variants are added in
 updated.
 
 ### 3. Flows
-New flows live under `protocol/flows/src/v5/model_gossip.rs` and are registered
-in both `protocol/flows/src/v5/mod.rs` and `protocol/flows/src/v6/mod.rs`:
+A single `ModelGossipFlow` lives under `protocol/flows/src/v5/model_gossip.rs`
+and is registered in both `protocol/flows/src/v5/mod.rs` and
+`protocol/flows/src/v6/mod.rs`:
 
-- `ReceiveAnnouncementsFlow` — subscribes to `CheckpointAnnouncementMessage`,
-  validates signature/address/TTL, and inserts into the local registry.
-- `SendAnnouncementsFlow` — subscribes to `RequestCheckpointMessage` and replies
-  with known announcements for the requested checkpoint.
-- `AnnounceCheckpointFlow` — triggered locally; broadcasts a new signed
-  announcement to all connected peers.
+- subscribes to `CheckpointAnnouncementMessage` and `RequestCheckpointMessage`;
+- validates signatures and inserts valid announcements into the local
+  `GossipRegistry`;
+- answers checkpoint requests with known announcements from the registry;
+- exposes `FlowContext::announce_checkpoint` for broadcasting locally-signed
+  announcements.
+
+`seed-node` runs a client-only P2P gossip peer in `seed-node/src/p2p.rs`
+(`P2pGossipHandle`) that performs the same handshake, receives/verifies
+announcements, answers requests, and broadcasts its own checkpoint metadata.
 
 ### 4. Registry
 A `GossipRegistry` is shared through `FlowContext`:
@@ -99,17 +107,21 @@ pub struct GossipRegistry {
   registries.  Changes must keep binary compatibility with older nodes.
 
 ## Implementation slices
-1. Messages — protobuf definitions, payload types and conversion.
-2. Registry and signing — `Announcement`, `GossipRegistry`, validation.
-3. Flows and broadcast — receive/request/announce flows, `seed-node`/`xenom-node`
-   integration.
-4. Miner discovery — `xenom-miner` queries the gossip registry (preparation for
-   #59 B2 direct P2P transfer).
+1. Messages — protobuf definitions, payload types and conversion. Done.
+2. Registry and signing — `Announcement`, `GossipRegistry`, `GossipIdentity`,
+   validation. Done.
+3. Flows and broadcast — `ModelGossipFlow` and `FlowContext` helpers on
+   `xenom-node`. Done.
+4. Seed-node P2P gossip — `P2pGossipHandle` joins the network and announces
+   active checkpoints. Done.
+5. Miner discovery — `xenom-miner` queries the gossip registry (issue #59 B2).
 
 ## References
 - Issue #58 B1: P2P model and genome metadata gossip
 - Issue #59 B2: Direct P2P transfer of model checkpoints
 - `protocol/p2p/proto/messages.proto`
 - `protocol/p2p/src/core/payload_type.rs`
-- `protocol/flows/src/v5/`
+- `protocol/flows/src/v5/model_gossip.rs`
+- `seed-node/src/p2p.rs`
+- `crypto/model-crypto/src/gossip.rs`
 - `seed-node/src/model/manager.rs`
