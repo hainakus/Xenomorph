@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Xenom Science Interface</title>
+  <style>
+    :root {
+      --bg: #05050a;
+      --panel: #0b0d14;
+      --panel-2: #11131c;
+      --border: #1f2937;
+      --border-accent: #2d3748;
+      --text: #e2e8f0;
+      --text-dim: #94a3b8;
+      --accent: #00ff9d;
+      --accent-dim: #00c97a;
+      --accent-2: #60a5fa;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --radius: 8px;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    body {
+      background:
+        radial-gradient(circle at 10% 20%, rgba(0, 255, 157, 0.04), transparent 25%),
+        radial-gradient(circle at 90% 80%, rgba(96, 165, 250, 0.04), transparent 25%),
+        var(--bg);
+    }
+
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.75rem 1.25rem;
+      background: rgba(11, 13, 20, 0.95);
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(6px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .brand-logo {
+      width: 32px;
+      height: 32px;
+      border: 1px solid var(--accent);
+      border-radius: var(--radius);
+      display: grid;
+      place-items: center;
+      color: var(--accent);
+      font-family: var(--font-mono);
+      font-weight: 700;
+      font-size: 0.85rem;
+      box-shadow: 0 0 12px rgba(0, 255, 157, 0.15);
+    }
+
+    .brand-title {
+      font-family: var(--font-mono);
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: var(--text);
+    }
+
+    .brand-subtitle {
+      font-size: 0.7rem;
+      color: var(--accent-dim);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-dim);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--warning);
+      box-shadow: 0 0 8px currentColor;
+    }
+
+    .status-dot.connected { background: var(--accent); }
+    .status-dot.error { background: var(--danger); }
+
+    .layout {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    aside {
+      width: 300px;
+      min-width: 260px;
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    .panel {
+      padding: 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .panel-title {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-dim);
+      margin-bottom: 0.75rem;
+    }
+
+    .model-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .model-card {
+      padding: 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--panel-2);
+      cursor: pointer;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+
+    .model-card:hover { border-color: var(--border-accent); }
+    .model-card.active {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px rgba(0, 255, 157, 0.15) inset;
+    }
+
+    .model-card .id {
+      font-family: var(--font-mono);
+      font-weight: 600;
+      color: var(--accent);
+      margin-bottom: 0.25rem;
+    }
+
+    .model-card .desc {
+      font-size: 0.8rem;
+      color: var(--text-dim);
+      line-height: 1.4;
+    }
+
+    .model-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      margin-top: 0.5rem;
+    }
+
+    .tag {
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      padding: 0.15rem 0.4rem;
+      border-radius: 999px;
+      background: rgba(96, 165, 250, 0.1);
+      color: var(--accent-2);
+      border: 1px solid rgba(96, 165, 250, 0.2);
+    }
+
+    .tag.success {
+      background: rgba(0, 255, 157, 0.08);
+      color: var(--accent);
+      border-color: rgba(0, 255, 157, 0.2);
+    }
+
+    .details-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+    }
+
+    .detail {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0.6rem;
+    }
+
+    .detail-label {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+      margin-bottom: 0.25rem;
+    }
+
+    .detail-value {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      color: var(--text);
+      word-break: break-word;
+    }
+
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .chat {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .empty {
+      margin: auto;
+      text-align: center;
+      color: var(--text-dim);
+      max-width: 420px;
+    }
+
+    .empty h2 {
+      font-family: var(--font-mono);
+      color: var(--accent);
+      margin-bottom: 0.5rem;
+    }
+
+    .message {
+      display: flex;
+      flex-direction: column;
+      max-width: 80%;
+      animation: fadeIn 0.2s ease-out;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .message.user { align-self: flex-end; align-items: flex-end; }
+    .message.assistant { align-self: flex-start; align-items: flex-start; }
+    .message.system { align-self: center; align-items: center; max-width: 90%; }
+
+    .bubble {
+      padding: 0.85rem 1rem;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      font-size: 0.9rem;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .message.user .bubble {
+      background: rgba(0, 255, 157, 0.08);
+      border-color: rgba(0, 255, 157, 0.25);
+      color: var(--text);
+    }
+
+    .message.assistant .bubble {
+      background: var(--panel-2);
+      border-color: var(--border-accent);
+      color: var(--text);
+    }
+
+    .message.system .bubble {
+      background: rgba(239, 68, 68, 0.06);
+      border-color: rgba(239, 68, 68, 0.25);
+      color: var(--danger);
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+    }
+
+    .message-role {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-dim);
+      margin-bottom: 0.25rem;
+    }
+
+    .input-area {
+      padding: 1rem 1.25rem;
+      border-top: 1px solid var(--border);
+      background: var(--panel);
+      display: flex;
+      gap: 0.75rem;
+      align-items: flex-end;
+    }
+
+    textarea {
+      flex: 1;
+      min-height: 52px;
+      max-height: 160px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      padding: 0.75rem;
+      font-family: var(--font-mono);
+      font-size: 0.9rem;
+      line-height: 1.45;
+      resize: vertical;
+      outline: none;
+    }
+
+    textarea:focus { border-color: var(--accent); }
+
+    button {
+      padding: 0 1.25rem;
+      height: 52px;
+      background: transparent;
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      border-radius: var(--radius);
+      font-family: var(--font-mono);
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+
+    button:hover:not(:disabled) {
+      background: rgba(0, 255, 157, 0.1);
+      color: var(--text);
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      border-color: var(--border-accent);
+      color: var(--text-dim);
+    }
+
+    .typing {
+      display: flex;
+      gap: 0.3rem;
+      padding: 0.75rem 1rem;
+      align-items: center;
+    }
+
+    .typing span {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: blink 1.4s infinite both;
+      opacity: 0.4;
+    }
+
+    .typing span:nth-child(2) { animation-delay: 0.2s; }
+    .typing span:nth-child(3) { animation-delay: 0.4s; }
+
+    @keyframes blink {
+      0%, 80%, 100% { transform: scale(0.7); opacity: 0.4; }
+      40% { transform: scale(1); opacity: 1; }
+    }
+
+    .hidden { display: none !important; }
+
+    @media (max-width: 760px) {
+      aside { width: 220px; min-width: 200px; }
+      .message { max-width: 92%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="brand">
+        <div class="brand-logo">X</div>
+        <div>
+          <div class="brand-title">Xenom Science Interface</div>
+          <div class="brand-subtitle">OpenAI-Compatible Gateway</div>
+        </div>
+      </div>
+      <div class="status">
+        <span class="status-dot" id="status-dot"></span>
+        <span id="status-text">connecting...</span>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside>
+        <div class="panel">
+          <div class="panel-title">Models</div>
+          <div class="model-list" id="model-list"></div>
+        </div>
+        <div class="panel" id="model-details">
+          <div class="panel-title">Selected Model</div>
+          <div class="details-grid">
+            <div class="detail"><div class="detail-label">ID</div><div class="detail-value" id="detail-id">-</div></div>
+            <div class="detail"><div class="detail-label">Version</div><div class="detail-value" id="detail-version">-</div></div>
+            <div class="detail"><div class="detail-label">Category</div><div class="detail-value" id="detail-category">-</div></div>
+            <div class="detail"><div class="detail-label">Status</div><div class="detail-value" id="detail-status">-</div></div>
+            <div class="detail"><div class="detail-label">Verified</div><div class="detail-value" id="detail-verified">-</div></div>
+            <div class="detail"><div class="detail-label">Queries</div><div class="detail-value" id="detail-queries">-</div></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">About</div>
+          <div style="color:var(--text-dim);font-size:0.8rem;line-height:1.45;">
+            Specialized chat interface for Xenomorph scientific models. Compatible with standard OpenAI clients on <code>/v1/chat/completions</code>.
+          </div>
+        </div>
+      </aside>
+
+      <main>
+        <div class="chat" id="chat">
+          <div class="empty">
+            <h2>XENOMORPH SCIENCE EXPLORER</h2>
+            <p>Select a model and enter a DNA or protein sequence. The gateway translates your query into an OpenAI-compatible <code>/v1/chat/completions</code> request.</p>
+          </div>
+        </div>
+
+        <div class="input-area">
+          <textarea id="input" placeholder="Paste a DNA/protein sequence or scientific query..." rows="2"></textarea>
+          <button id="send" disabled>Send</button>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    const API = '';
+    let models = [];
+    let selectedModel = null;
+    let history = [];
+    let busy = false;
+
+    const $ = (id) => document.getElementById(id);
+    const chat = $('chat');
+    const input = $('input');
+    const sendBtn = $('send');
+    const statusDot = $('status-dot');
+    const statusText = $('status-text');
+    const modelList = $('model-list');
+
+    function setStatus(state, text) {
+      statusDot.className = 'status-dot ' + state;
+      statusText.textContent = text;
+    }
+
+    function renderDetails(model) {
+      if (!model) return;
+      $('detail-id').textContent = model.id;
+      $('detail-version').textContent = model.version || '-';
+      $('detail-category').textContent = model.category || '-';
+      $('detail-status').textContent = model.active ? 'active' : 'inactive';
+      $('detail-status').style.color = model.active ? 'var(--accent)' : 'var(--text-dim)';
+      $('detail-verified').textContent = model.verified ? 'yes' : 'no';
+      $('detail-verified').style.color = model.verified ? 'var(--accent)' : 'var(--warning)';
+      $('detail-queries').textContent = model.total_queries ?? '-';
+    }
+
+    function selectModel(model) {
+      selectedModel = model;
+      document.querySelectorAll('.model-card').forEach(el => el.classList.remove('active'));
+      const el = document.getElementById('model-' + model.id);
+      if (el) el.classList.add('active');
+      renderDetails(model);
+      sendBtn.disabled = false;
+      if (history.length === 1 && history[0].role === 'system') {
+        chat.innerHTML = '';
+        history = [];
+      }
+    }
+
+    function renderModelList() {
+      modelList.innerHTML = '';
+      models.forEach(m => {
+        const card = document.createElement('div');
+        card.className = 'model-card';
+        card.id = 'model-' + m.id;
+        card.innerHTML = `
+          <div class="id">${escapeHtml(m.id)}</div>
+          <div class="desc">${escapeHtml(m.description || '')}</div>
+          <div class="model-meta">
+            <span class="tag">${escapeHtml(m.category || 'model')}</span>
+            ${m.active ? '<span class="tag success">active</span>' : ''}
+            ${m.verified ? '<span class="tag success">verified</span>' : ''}
+          </div>
+        `;
+        card.addEventListener('click', () => selectModel(m));
+        modelList.appendChild(card);
+      });
+    }
+
+    function escapeHtml(str) {
+      if (str === undefined || str === null) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function appendMessage(role, content) {
+      const msg = document.createElement('div');
+      msg.className = 'message ' + role;
+      const label = role === 'system' ? 'system' : role;
+      msg.innerHTML = `
+        <div class="message-role">${label}</div>
+        <div class="bubble">${escapeHtml(content)}</div>
+      `;
+      chat.appendChild(msg);
+      chat.scrollTop = chat.scrollHeight;
+      return msg;
+    }
+
+    function removeTyping() {
+      document.querySelectorAll('.typing').forEach(el => el.closest('.message').remove());
+    }
+
+    async function loadModels() {
+      try {
+        const res = await fetch(API + '/models');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        models = data.models || [];
+        if (models.length === 0) throw new Error('no models returned');
+        renderModelList();
+        setStatus('connected', models.length + ' model(s) available');
+        selectModel(models[0]);
+      } catch (err) {
+        setStatus('error', 'models unavailable: ' + err.message);
+        sendBtn.disabled = true;
+      }
+    }
+
+    async function sendMessage() {
+      const text = input.value.trim();
+      if (!text || !selectedModel || busy) return;
+
+      busy = true;
+      sendBtn.disabled = true;
+      input.value = '';
+
+      appendMessage('user', text);
+      history.push({ role: 'user', content: text });
+
+      const typing = appendMessage('assistant', '');
+      typing.querySelector('.bubble').innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
+      typing.querySelector('.message-role').textContent = selectedModel.id;
+
+      try {
+        const body = {
+          model: selectedModel.id,
+          messages: history.slice(-6),
+          stream: false
+        };
+
+        const res = await fetch(API + '/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+
+        removeTyping();
+
+        if (!res.ok) {
+          const errText = await res.text().catch(() => res.statusText);
+          appendMessage('system', `Request failed (${res.status}): ${errText}`);
+          return;
+        }
+
+        const data = await res.json();
+        const content = data.choices?.[0]?.message?.content ?? JSON.stringify(data, null, 2);
+        appendMessage('assistant', content);
+        history.push({ role: 'assistant', content });
+      } catch (err) {
+        removeTyping();
+        appendMessage('system', 'Network error: ' + err.message);
+      } finally {
+        busy = false;
+        sendBtn.disabled = false;
+        input.focus();
+      }
+    }
+
+    sendBtn.addEventListener('click', sendMessage);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+
+    loadModels();
+  </script>
+</body>
+</html>

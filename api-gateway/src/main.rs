@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use axum::{
     http::StatusCode,
-    response::Json,
+    response::{Html, Json},
     routing::{get, post},
     Router,
 };
@@ -49,6 +49,8 @@ async fn main() -> Result<()> {
 
     // Build router
     let app = Router::new()
+        .route("/", get(chat_ui))
+        .route("/chat", get(chat_ui))
         .route("/models", get(models::list_models))
         .route("/models/{id}", get(models::get_model))
         .route("/predict/{model_id}", post(predict::predict))
@@ -89,4 +91,9 @@ async fn health_check() -> Result<Json<serde_json::Value>, StatusCode> {
         "version": "0.1.0",
         "timestamp": chrono::Utc::now().to_rfc3339()
     })))
+}
+
+/// Embedded Xenomorph science chat UI.
+async fn chat_ui() -> Html<&'static str> {
+    Html(include_str!("../static/index.html"))
 }
