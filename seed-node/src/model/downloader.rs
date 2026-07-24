@@ -9,7 +9,7 @@ const HF_HUB_URL: &str = "https://huggingface.co";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Download a complete model checkpoint (config.json, tokenizer.json, weights) from Hugging Face.
-/// Only `model.safetensors` is supported by the miner; PyTorch `.bin` files are rejected.
+/// Prefers `model.safetensors`; falls back to `pytorch_model.bin` (zip format) if needed.
 pub async fn download_model(model_id: &str) -> Result<RawModelFiles> {
     let client = reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
@@ -26,7 +26,7 @@ pub async fn download_model(model_id: &str) -> Result<RawModelFiles> {
     info!("Downloaded tokenizer.json for {}", model_id);
 
     let mut weights: Option<Vec<u8>> = None;
-    for filename in ["model.safetensors"] {
+    for filename in ["model.safetensors", "pytorch_model.bin"] {
         match download_and_validate_weights(&client, model_id, filename).await {
             Ok(data) => {
                 info!("Downloaded {} ({:.2} MB) for {}", filename, data.len() as f64 / 1_048_576.0, model_id);
@@ -39,8 +39,9 @@ pub async fn download_model(model_id: &str) -> Result<RawModelFiles> {
         }
     }
 
-    let weights =
-        weights.ok_or_else(|| anyhow!("Could not download valid model.safetensors weights for {} from Hugging Face", model_id))?;
+    let weights = weights.ok_or_else(|| {
+        anyhow!("Could not download valid safetensors or pytorch_model.bin weights for {} from Hugging Face", model_id)
+    })?;
 
     Ok(RawModelFiles { config, tokenizer, weights })
 }
@@ -64,17 +65,18 @@ async fn download_and_validate_weights(client: &reqwest::Client, model_id: &str,
     Err(anyhow!("{} from {} is not a valid weights file", filename, model_id))
 }
 
-/// Validate that `data` is a real `model.safetensors` file.
+/// Validate that `data` is a real checkpoint file.
 ///
-/// Uses the `safetensors` crate to parse the header and tensor metadata, which
-/// rejects git-lfs pointers, HTML error pages, PyTorch .bin files, truncated
-/// data, and corrupt/invalid safetensors buffers more reliably than heuristics.
+/// Accepts `model.safetensors` (validated with `safetensors`) and zip-format
+/// PyTorch `.bin` / `.pth` files (PK magic bytes). Legacy pickle-only `.bin`
+/// files (0x80) are not supported by the Rust loader and are rejected so they
+/// can be re-downloaded as safetensors.
 pub fn is_valid_weights(data: &[u8]) -> bool {
     if data.is_empty() {
         return false;
     }
 
-    // Fast reject of the most common non-safetensors payloads before invoking the parser.
+    // Fast reject of the most common non-checkpoint payloads.
     if data.starts_with(b"version https://git-lfs.github.com/spec/v1")
         || data.starts_with(b"<!DOCTYPE")
         || data.starts_with(b"<html")
@@ -83,6 +85,12 @@ pub fn is_valid_weights(data: &[u8]) -> bool {
         return false;
     }
 
+    // Accept zip-format PyTorch .bin/.pth (torch.save default since PyTorch 1.6).
+    if data.starts_with(b"PK\x03\x04") {
+        return true;
+    }
+
+    // Otherwise require a valid safetensors buffer.
     safetensors::SafeTensors::deserialize(data).is_ok()
 }
 

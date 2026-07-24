@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use model_crypto::{decrypt, derive_encryption_key};
-use safetensors::SafeTensors;
 use tracing::{info, warn};
 
 pub use crate::model_cache::{ModelBundle, ModelCache};
@@ -26,19 +25,26 @@ fn decrypt_model_files(cp: &crate::rpc::messages::ModelCheckpoint) -> Result<Mod
     Ok(ModelBundle { model_id: cp.model_id.clone(), base_checkpoint: cp.base_checkpoint, config, tokenizer, weights })
 }
 
-/// Return a human-readable error if `weights` is not a valid safetensors buffer.
-fn validate_safetensors(weights: &[u8]) -> Result<()> {
-    if weights.starts_with(b"PK\x03\x04") || weights.first() == Some(&0x80) {
-        anyhow::bail!("weights look like a PyTorch .bin/.pth file; only safetensors is supported");
+/// Return a human-readable error if `weights` is clearly a bad payload (HTML page,
+/// git-lfs pointer, empty). Both safetensors and PyTorch .bin/.pth are accepted;
+/// the trainer/inference engine validates the concrete format.
+fn validate_weights_payload(weights: &[u8]) -> Result<()> {
+    if weights.is_empty() {
+        anyhow::bail!("weights buffer is empty");
     }
-    SafeTensors::deserialize(weights).context("weights are not a valid safetensors file")?;
+    if weights.starts_with(b"version https://git-lfs.github.com/spec/v1") {
+        anyhow::bail!("weights look like a git-lfs pointer instead of a checkpoint file");
+    }
+    if weights.starts_with(b"<!DOCTYPE") || weights.starts_with(b"<html") || weights.starts_with(b"<HTML") {
+        anyhow::bail!("weights look like an HTML error page instead of a checkpoint file");
+    }
     Ok(())
 }
 
 /// Fetch a model checkpoint from the node, using the local cache when the
 /// active weights hash has not changed.
 ///
-/// This avoids downloading ~400-500 MB of safetensors weights on every miner
+/// This avoids downloading ~400-500 MB of model weights on every miner
 /// restart. The node only needs to send a small `GetModelCheckpointInfo`
 /// response; the full checkpoint is requested only when the cache is missing
 /// or stale.
@@ -53,8 +59,8 @@ pub async fn fetch_model_checkpoint(rpc: &mut XenomRpcClient, model_id: &str, ca
             Ok(cached_hash) if cached_hash == info.base_checkpoint => {
                 info!("Using cached model checkpoint for {} (hash {})", model_id, hex::encode(cached_hash));
                 let bundle = cache.read(model_id)?;
-                if let Err(e) = validate_safetensors(&bundle.weights) {
-                    warn!("Cached checkpoint for {} is invalid ({}); clearing local cache and re-downloading", model_id, e);
+                if let Err(e) = validate_weights_payload(&bundle.weights) {
+                    warn!("Cached checkpoint for {} looks invalid ({}); clearing local cache and re-downloading", model_id, e);
                     cache.clear(model_id)?;
                 } else {
                     return Ok(bundle);
@@ -78,13 +84,12 @@ pub async fn fetch_model_checkpoint(rpc: &mut XenomRpcClient, model_id: &str, ca
     let cp = rpc.get_model_checkpoint(model_id).await?;
     let bundle = decrypt_model_files(&cp)?;
 
-    if let Err(e) = validate_safetensors(&bundle.weights) {
+    if let Err(e) = validate_weights_payload(&bundle.weights) {
         anyhow::bail!(
-            "Node returned non-safetensors weights for {}: {}. \
-             Clear the model cache on the node ({} -> models/<model>) and restart it so it re-downloads model.safetensors from Hugging Face.",
+            "Node returned an invalid payload for {}: {}. \
+             Clear the model cache on the node and restart it.",
             model_id,
-            e,
-            std::env::var("XENO_MODELS_DIR").as_deref().unwrap_or("<XENO_MODELS_DIR>")
+            e
         );
     }
 

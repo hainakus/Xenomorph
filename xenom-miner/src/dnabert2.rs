@@ -1,3 +1,8 @@
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use candle_core::{DType, Device, Module, ModuleT, Result as CandleResult, Tensor};
 use candle_nn::{
     embedding, layer_norm, linear, linear_no_bias, Activation, Dropout, Embedding, LayerNorm, Linear, VarBuilder, VarMap,
@@ -358,14 +363,14 @@ impl DnaBert2ForMaskedLM {
         Ok(Self { model, lm_head })
     }
 
-    /// Load a `DnaBert2ForMaskedLM` from raw `model.safetensors` bytes (inference only).
+    /// Load a `DnaBert2ForMaskedLM` from raw weights bytes (safetensors or PyTorch .bin/.pth).
     pub fn load(config: DnaBert2Config, weights: Vec<u8>, dtype: DType, device: &Device) -> CandleResult<Self> {
-        let vb = VarBuilder::from_buffered_safetensors(weights, dtype, device)?;
-        Self::new(vb, config, device)
+        let (model, _) = Self::load_for_training(config, weights, dtype, device)?;
+        Ok(model)
     }
 
-    /// Load a trainable model from raw `model.safetensors` bytes, returning it together with
-    /// the underlying `VarMap` so that an optimizer can be created.
+    /// Load a trainable model from raw weights bytes (safetensors or PyTorch .bin/.pth zip),
+    /// returning it together with the underlying `VarMap` so that an optimizer can be created.
     pub fn load_for_training(config: DnaBert2Config, weights: Vec<u8>, dtype: DType, device: &Device) -> CandleResult<(Self, VarMap)> {
         if let Some(hint) = diagnose_weights(&weights) {
             return Err(candle_core::Error::Msg(hint));
@@ -374,19 +379,15 @@ impl DnaBert2ForMaskedLM {
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, dtype, device);
         let model = Self::new(vb, config, device)?;
-        let tensors = candle_core::safetensors::load_buffer(&weights, device).map_err(|e| {
-            candle_core::Error::Msg(format!(
-                "Failed to load safetensors weights: {}. {}",
-                e,
-                diagnose_weights(&weights).unwrap_or_default()
-            ))
+        let tensors = load_weights(&weights, device).map_err(|e| {
+            candle_core::Error::Msg(format!("Failed to load weights: {}. {}", e, diagnose_weights(&weights).unwrap_or_default()))
         })?;
         {
             let tensor_data = varmap.data().lock().map_err(|e| candle_core::Error::Msg(e.to_string()))?;
             for (name, tensor) in tensors.iter() {
                 if let Some(var) = tensor_data.get(name) {
-                    // Safetensors weights are typically F32; cast to the requested training dtype.
-                    let tensor = tensor.to_dtype(dtype)?;
+                    // Weights are typically F32; cast to the requested training dtype and device.
+                    let tensor = tensor.to_device(device)?.to_dtype(dtype)?;
                     var.set(&tensor)?;
                 }
                 // Unknown keys are ignored so that tied/decoded weights do not break loading.
@@ -433,28 +434,57 @@ impl DnaBert2ForMaskedLM {
     }
 }
 
-/// Return a human-readable diagnostic if `weights` is clearly not a `model.safetensors` file.
+/// Load tensors from a safetensors buffer or a PyTorch .bin/.pth (zip) buffer.
+fn load_weights(weights: &[u8], device: &Device) -> CandleResult<HashMap<String, Tensor>> {
+    // Fast path: safetensors.
+    if let Ok(tensors) = candle_core::safetensors::load_buffer(weights, device) {
+        return Ok(tensors);
+    }
+
+    // PyTorch zip-format .bin / .pth files start with the ZIP local file header.
+    // Legacy pickle-format files (0x80) are not supported by candle's pickle loader.
+    if weights.starts_with(b"PK\x03\x04") {
+        let path = write_temp_pth(weights)?;
+        let result = candle_core::pickle::read_all(&path);
+        let _ = fs::remove_file(&path);
+        let tensors = result?;
+        return Ok(tensors.into_iter().collect());
+    }
+
+    Err(candle_core::Error::Msg("weights are neither safetensors nor a supported PyTorch .bin/.pth file".to_string()))
+}
+
+/// Write `weights` (a PyTorch zip file in memory) to a temporary file so that
+/// `candle_core::pickle` can read it.
+fn write_temp_pth(weights: &[u8]) -> CandleResult<PathBuf> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let path = std::env::temp_dir().join(format!("xenom_miner_{}_{}.pth", std::process::id(), now));
+    fs::write(&path, weights).map_err(|e| candle_core::Error::Msg(format!("Failed to write temporary .pth file: {}", e)))?;
+    Ok(path)
+}
+
+/// Return a human-readable diagnostic if `weights` is clearly not a valid checkpoint.
 fn diagnose_weights(weights: &[u8]) -> Option<String> {
     if weights.is_empty() {
         return Some("weights buffer is empty".to_string());
     }
     if weights.starts_with(b"version https://git-lfs.github.com/spec/v1") {
         return Some(
-            "weights look like a git-lfs pointer instead of a safetensors file. \
+            "weights look like a git-lfs pointer instead of a checkpoint file. \
              Delete the local model cache and re-download."
                 .to_string(),
         );
     }
     if weights.starts_with(b"<!DOCTYPE") || weights.starts_with(b"<html") || weights.starts_with(b"<HTML") {
-        return Some("weights look like an HTML error page instead of a safetensors file".to_string());
+        return Some("weights look like an HTML error page instead of a checkpoint file".to_string());
     }
     if weights.len() < 16 {
-        return Some(format!("weights buffer is too small to be a safetensors file ({} bytes)", weights.len()));
+        return Some(format!("weights buffer is too small to be a checkpoint file ({} bytes)", weights.len()));
     }
-    if weights.starts_with(b"PK\x03\x04") || weights[0] == 0x80 {
+    if weights.first() == Some(&0x80) {
         return Some(
-            "weights look like a PyTorch .bin / .pth file. Only safetensors is supported by this miner; \
-             delete the local model cache and re-download the safetensors variant."
+            "weights look like a legacy PyTorch pickle .bin file (starts with 0x80). \
+             Only safetensors and zip-format PyTorch .pth/.bin files are supported."
                 .to_string(),
         );
     }
