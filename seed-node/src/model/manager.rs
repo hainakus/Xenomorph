@@ -189,10 +189,13 @@ impl ModelManager {
                     info!("Model {} already exists locally; skipping download", model_id);
                     return Ok(());
                 }
-                Ok(_) => {
+                Ok(files) => {
+                    let first_bytes: String = files.weights.iter().take(32).map(|b| format!("{:02x}", b)).collect();
                     info!(
-                        "Model {} exists locally but weights look invalid (e.g. LFS pointer); removing and re-downloading",
-                        model_id
+                        "Model {} exists locally but weights do not look like a valid safetensors file ({} bytes, first bytes: {}); removing and re-downloading",
+                        model_id,
+                        files.weights.len(),
+                        first_bytes
                     );
                 }
                 Err(_) => {

@@ -388,7 +388,7 @@ mod tests {
                 }
             }
             let start = Instant::now();
-            let (output, _) = engine.predict_masked_lm(&loaded, &input).unwrap();
+            let (output, _, _, _) = engine.predict_masked_lm(&loaded, &input).unwrap();
             let elapsed = start.elapsed();
             assert!(!output.contains('<'));
             assert!(!output.contains(' '));

@@ -64,36 +64,26 @@ async fn download_and_validate_weights(client: &reqwest::Client, model_id: &str,
     Err(anyhow!("{} from {} is not a valid weights file", filename, model_id))
 }
 
-/// Heuristic validation that `data` is a real `model.safetensors` file.
-/// Rejects git-lfs pointers, HTML error pages, PyTorch .bin files, and truncated data.
+/// Validate that `data` is a real `model.safetensors` file.
+///
+/// Uses the `safetensors` crate to parse the header and tensor metadata, which
+/// rejects git-lfs pointers, HTML error pages, PyTorch .bin files, truncated
+/// data, and corrupt/invalid safetensors buffers more reliably than heuristics.
 pub fn is_valid_weights(data: &[u8]) -> bool {
-    if data.len() < 9 {
+    if data.is_empty() {
         return false;
     }
 
-    // git-lfs pointer files start with "version https://git-lfs.github.com/spec/v1"
-    if data.starts_with(b"version https://git-lfs.github.com/spec/v1") {
+    // Fast reject of the most common non-safetensors payloads before invoking the parser.
+    if data.starts_with(b"version https://git-lfs.github.com/spec/v1")
+        || data.starts_with(b"<!DOCTYPE")
+        || data.starts_with(b"<html")
+        || data.starts_with(b"<HTML")
+    {
         return false;
     }
 
-    // HTML error pages start with "<!DOCTYPE" or "<html".
-    if data.starts_with(b"<!DOCTYPE") || data.starts_with(b"<html") || data.starts_with(b"<HTML") {
-        return false;
-    }
-
-    // PyTorch zip pickle (new torch.save): starts with PK\x03\x04 or PK\x05\x06 or PK\x07\x08.
-    if data.starts_with(b"PK\x03\x04") || data.starts_with(b"PK\x05\x06") || data.starts_with(b"PK\x07\x08") {
-        return false;
-    }
-
-    // Old PyTorch pickle (protocol 2+): first byte is the pickle opcode 0x80.
-    if data[0] == 0x80 {
-        return false;
-    }
-
-    // Safetensors: first 8 bytes are a little-endian u64 header length, followed by JSON.
-    let header_len = u64::from_le_bytes(data[0..8].try_into().expect("8 bytes")) as usize;
-    header_len + 8 <= data.len() && header_len <= 1_000_000_000 && data[8] == b'{'
+    safetensors::SafeTensors::deserialize(data).is_ok()
 }
 
 /// Build a canonical Hugging Face resolve URL for a file in a model repo.
