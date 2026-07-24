@@ -158,8 +158,6 @@ impl ConnectionInitializer for GossipInitializer {
             KaspadMessagePayloadType::InvTransactions,
             KaspadMessagePayloadType::Ping,
             KaspadMessagePayloadType::Pong,
-            KaspadMessagePayloadType::Verack,
-            KaspadMessagePayloadType::Version,
             KaspadMessagePayloadType::TransactionNotFound,
             KaspadMessagePayloadType::Reject,
             KaspadMessagePayloadType::PruningPointUtxoSetChunk,
