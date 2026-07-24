@@ -16,22 +16,31 @@ use kaspa_p2p_lib::{
 };
 use kaspa_utils_tower::counters::TowerConnectionCounters;
 use model_crypto::gossip::{verify_announcement, Announcement, GossipIdentity, GossipRegistry};
-use std::path::Path;
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{net::SocketAddr, path::Path, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 use tracing::{debug, info, trace, warn};
 use uuid::Uuid;
+
+const MAX_CONNECT_RETRIES: u8 = 60;
+const CONNECT_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Handle to the seed-node P2P gossip client.
 pub struct P2pGossipHandle {
     inner: Arc<P2pGossipInner>,
     hub: Hub,
+    adaptor: Arc<Adaptor>,
+    peer_address: String,
 }
 
 struct P2pGossipInner {
     identity: GossipIdentity,
     registry: Mutex<GossipRegistry>,
     network_type: NetworkType,
+}
+
+/// Per-connection initializer: handshakes, subscribes and spawns the receive loop.
+struct GossipInitializer {
+    inner: Arc<P2pGossipInner>,
 }
 
 impl P2pGossipHandle {
@@ -42,17 +51,36 @@ impl P2pGossipHandle {
 
         let inner = Arc::new(P2pGossipInner { identity, registry: Mutex::new(GossipRegistry::new()), network_type });
         let hub = Hub::new();
-        let handle: Arc<P2pGossipHandle> = Arc::new(Self { inner: inner.clone(), hub: hub.clone() });
-        let initializer: Arc<dyn ConnectionInitializer> = handle.clone();
+        let initializer: Arc<dyn ConnectionInitializer> = Arc::new(GossipInitializer { inner: inner.clone() });
         let counters = Arc::new(TowerConnectionCounters::default());
         let adaptor = Adaptor::client_only(hub.clone(), initializer, counters);
 
-        adaptor
-            .connect_peer_with_retries(peer_address, 16, Duration::from_secs(1))
-            .await
-            .map_err(|e| anyhow::anyhow!("P2P gossip: failed to connect to peer: {e}"))?;
+        let handle = Arc::new(Self { inner: inner.clone(), hub: hub.clone(), adaptor: adaptor.clone(), peer_address });
+
+        // Block startup while trying to connect.  This gives xeno-node time to finish
+        // its own P2P startup without failing immediately.
+        handle.connect_with_backoff().await?;
 
         Ok(handle)
+    }
+
+    async fn connect_with_backoff(&self) -> Result<()> {
+        for attempt in 1..=MAX_CONNECT_RETRIES {
+            info!("P2P gossip: connecting to {} (attempt {}/{})", self.peer_address, attempt, MAX_CONNECT_RETRIES);
+            match self.adaptor.connect_peer(self.peer_address.clone()).await {
+                Ok(_) => {
+                    info!("P2P gossip: connected to {}", self.peer_address);
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!("P2P gossip: connection attempt {} to {} failed: {}", attempt, self.peer_address, e);
+                    if attempt < MAX_CONNECT_RETRIES {
+                        tokio::time::sleep(CONNECT_RETRY_INTERVAL).await;
+                    }
+                }
+            }
+        }
+        Err(anyhow::anyhow!("failed to connect to {} after {} attempts", self.peer_address, MAX_CONNECT_RETRIES))
     }
 
     /// Sign and broadcast a checkpoint announcement.
@@ -89,7 +117,7 @@ impl P2pGossipHandle {
 }
 
 #[tonic::async_trait]
-impl ConnectionInitializer for P2pGossipHandle {
+impl ConnectionInitializer for GossipInitializer {
     async fn initialize_connection(&self, router: Arc<Router>) -> Result<(), ProtocolError> {
         let inner = self.inner.clone();
 
