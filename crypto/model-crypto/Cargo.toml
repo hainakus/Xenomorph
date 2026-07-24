@@ -5,10 +5,15 @@ edition = "2021"
 
 [dependencies]
 aes-gcm = "0.10"
+bip39 = "2.0"
 hex = "0.4"
 rand = "0.8"
+secp256k1 = { workspace = true, features = ["global-context", "rand-std"] }
 sha2 = "0.10"
 thiserror = "1.0"
+
+kaspa-addresses = { workspace = true }
+kaspa-consensus-core = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.9"

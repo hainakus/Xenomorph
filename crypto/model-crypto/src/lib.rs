@@ -3,6 +3,8 @@
 //! This crate is shared between `seed-node` and `xenom-miner` so both sides can
 //! derive the same key and encrypt/decrypt model payloads without duplication.
 
+pub mod gossip;
+
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
@@ -19,8 +21,8 @@ pub enum ModelCryptoError {
     EncryptionError(String),
     #[error("Decryption failed: {0}")]
     DecryptionError(String),
-    #[error("Invalid key material")]
-    InvalidKey,
+    #[error("Invalid key material: {0}")]
+    InvalidKey(String),
 }
 
 /// Derive the 32-byte AES key used to encrypt/decrypt model files.
