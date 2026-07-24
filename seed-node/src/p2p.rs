@@ -11,7 +11,7 @@ use kaspa_core::time::unix_now;
 use kaspa_p2p_lib::{
     common::ProtocolError,
     make_message, make_response,
-    pb::{kaspad_message::Payload, CheckpointAnnouncementMessage, NetAddress, VersionMessage},
+    pb::{kaspad_message::Payload, AddressesMessage, CheckpointAnnouncementMessage, NetAddress, PongMessage, VersionMessage},
     Adaptor, ConnectionInitializer, Hub, KaspadHandshake, KaspadMessagePayloadType, Router,
 };
 use kaspa_utils_tower::counters::TowerConnectionCounters;
@@ -143,13 +143,19 @@ impl ConnectionInitializer for GossipInitializer {
         handshake.handshake(version_message).await?;
         handshake.exchange_ready_messages().await?;
 
-        // Subscribe to gossip messages and handle them in a background task.
-        let mut incoming_route =
-            router.subscribe(vec![KaspadMessagePayloadType::CheckpointAnnouncement, KaspadMessagePayloadType::RequestCheckpoint]);
+        // Subscribe to gossip messages plus the minimal peer-maintenance messages.
+        let mut incoming_route = router.subscribe(vec![
+            KaspadMessagePayloadType::CheckpointAnnouncement,
+            KaspadMessagePayloadType::RequestCheckpoint,
+            KaspadMessagePayloadType::RequestAddresses,
+            KaspadMessagePayloadType::Ping,
+            KaspadMessagePayloadType::Pong,
+        ]);
 
         tokio::spawn(async move {
             debug!("P2P gossip: receive loop started");
             while let Some(msg) = incoming_route.recv().await {
+                let request_id = msg.request_id;
                 match msg.payload {
                     Some(Payload::CheckpointAnnouncement(announcement_msg)) => {
                         if let Some(announcement) = proto_to_announcement(announcement_msg) {
@@ -168,7 +174,6 @@ impl ConnectionInitializer for GossipInitializer {
                             Vec::new()
                         };
 
-                        let request_id = msg.request_id;
                         for ann in response {
                             let proto = announcement_to_proto(&ann);
                             let response_msg = make_response!(Payload::CheckpointAnnouncement, proto, request_id);
@@ -177,6 +182,21 @@ impl ConnectionInitializer for GossipInitializer {
                                 break;
                             }
                         }
+                    }
+                    Some(Payload::RequestAddresses(_)) => {
+                        let response = make_response!(Payload::Addresses, AddressesMessage { address_list: vec![] }, request_id);
+                        if let Err(e) = router.enqueue(response).await {
+                            debug!("P2P gossip: failed to send addresses response: {e}");
+                        }
+                    }
+                    Some(Payload::Ping(ping)) => {
+                        let pong = make_message!(Payload::Pong, PongMessage { nonce: ping.nonce });
+                        if let Err(e) = router.enqueue(pong).await {
+                            debug!("P2P gossip: failed to send pong: {e}");
+                        }
+                    }
+                    Some(Payload::Pong(_)) => {
+                        // The seed-node does not send pings, so ignore pongs.
                     }
                     _ => {
                         warn!("P2P gossip: unexpected payload");
