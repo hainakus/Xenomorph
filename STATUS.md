@@ -101,11 +101,15 @@ cargo test -p seed-node -p xenom-miner
 
 ## Recommended run
 
-To test high GPU occupancy and continuous flow:
+To test high GPU occupancy and continuous flow, start the unified `xenom` node (which now includes the miner WebSocket and gRPC inference):
 
 ```bash
-# seed-node / xeno-node
-FEDAVG_MIN_PARTICIPANTS=4 XENO_CHECKPOINT_HISTORY_SIZE=8 ./xenom ...
+# unified xeno-node
+FEDAVG_MIN_PARTICIPANTS=4 XENO_CHECKPOINT_HISTORY_SIZE=8 \
+  ./target/release/xenom --devnet --utxoindex \
+  --miner-ws-listen=0.0.0.0:17110 \
+  --inference-grpc-listen=0.0.0.0:50051 \
+  --models-dir=./devnet-data-native/models
 
 # miner
 ./target/release/xenom-miner --trainer dnabert2 \
@@ -129,4 +133,4 @@ GPU utilization ≈ 92%
 ## Notes
 
 - The `XENO_TARGET_BLOCK_TIME_MS` override is not in this branch; it was implemented and later lost during the session. If you want difficulty to be sensitive to a single 3080, it needs to be reintroduced.
-- CPU usage on the seed-node remains the limiting factor when `--gradient-top-k-ratio` is 1.0 (dense 440 MB payload).
+- CPU usage on the unified `xenom` node (where gradient aggregation runs) remains the limiting factor when `--gradient-top-k-ratio` is 1.0 (dense 440 MB payload). The standalone `seed-node` is no longer required in the unified devnet.

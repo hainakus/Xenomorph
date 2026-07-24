@@ -40,6 +40,8 @@ pub struct Args {
     pub training_rpc_listen: Option<ContextualNetAddress>,
     #[serde_as(as = "Option<DisplayFromStr>")]
     pub miner_ws_listen: Option<ContextualNetAddress>,
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    pub inference_grpc_listen: Option<ContextualNetAddress>,
     #[serde(rename = "unsaferpc")]
     pub unsafe_rpc: bool,
     pub wrpc_verbose: bool,
@@ -129,6 +131,7 @@ impl Default for Args {
             rpclisten: None,
             training_rpc_listen: None,
             miner_ws_listen: None,
+            inference_grpc_listen: None,
             wrpc_verbose: false,
             log_level: "INFO".into(),
             connect_peers: vec![],
@@ -286,6 +289,15 @@ pub fn cli() -> Command {
                 .require_equals(true)
                 .value_parser(clap::value_parser!(ContextualNetAddress))
                 .help("Interface:port to listen for miner WebSocket connections (default port: 17110)."),
+        )
+        .arg(
+            Arg::new("inference-grpc-listen")
+                .long("inference-grpc-listen")
+                .value_name("IP[:PORT]")
+                .num_args(0..=1)
+                .require_equals(true)
+                .value_parser(clap::value_parser!(ContextualNetAddress))
+                .help("Interface:port to listen for gRPC model inference (default port: 50051)."),
         )
         .arg(arg!(--unsaferpc "Enable RPC commands which affect the state of the node"))
         .arg(
@@ -502,6 +514,10 @@ impl Args {
             rpclisten_json: m.get_one::<WrpcNetAddress>("rpclisten-json").cloned().or(defaults.rpclisten_json),
             training_rpc_listen: m.get_one::<ContextualNetAddress>("training-rpc-listen").cloned().or(defaults.training_rpc_listen),
             miner_ws_listen: m.get_one::<ContextualNetAddress>("miner-ws-listen").cloned().or(defaults.miner_ws_listen),
+            inference_grpc_listen: m
+                .get_one::<ContextualNetAddress>("inference-grpc-listen")
+                .cloned()
+                .or(defaults.inference_grpc_listen),
             unsafe_rpc: arg_match_unwrap_or::<bool>(&m, "unsaferpc", defaults.unsafe_rpc),
             wrpc_verbose: false,
             log_level: arg_match_unwrap_or::<String>(&m, "log_level", defaults.log_level),

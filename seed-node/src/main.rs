@@ -67,7 +67,7 @@ async fn main() -> Result<()> {
     let xenomorph_client = Arc::new(XenomorphRpcClient::new(&node_rpc).await?);
 
     // Initialize inference service
-    let inference_service = InferenceService::new(model_manager.clone(), xenomorph_client.clone());
+    let inference_service = InferenceService::new(model_manager.clone());
 
     // Start gRPC server in the background
     let addr: SocketAddr = grpc_addr.parse()?;

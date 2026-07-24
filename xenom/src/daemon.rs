@@ -51,6 +51,9 @@ pub const DESIRED_DAEMON_SOFT_FD_LIMIT: u64 = 8 * 1024;
 pub const MINIMUM_DAEMON_SOFT_FD_LIMIT: u64 = 4 * 1024;
 
 use crate::args::Args;
+use crate::training::coordinator::Coordinator;
+use crate::training::inference_service::InferenceGrpcService;
+use crate::training::service::MinerWebsocketService;
 use crate::training_block_service::{ActiveModel, TrainingBlockService};
 use core::str::FromStr;
 use kaspa_hashes::Hash;
@@ -657,26 +660,41 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
         ));
     }
 
-    // Unified training WebSocket server (replaces the standalone seed-node).
-    if let Some(miner_ws_listen) = args.miner_ws_listen {
+    // Unified training and inference services (merge seed-node responsibilities into the full node).
+    let enable_training = args.miner_ws_listen.is_some();
+    let enable_inference_grpc = args.inference_grpc_listen.is_some();
+    if enable_training || enable_inference_grpc {
         let models_dir = args.models_dir.as_ref().map(PathBuf::from).unwrap_or_else(|| app_dir.join("models"));
         let genome_cache_dir = args.genome_cache_dir.as_ref().map(PathBuf::from).unwrap_or_else(|| app_dir.join("genome"));
         let genome_source_url = args.genome_url.clone().unwrap_or_default();
         let genome_file = genome_file_path.as_ref().map(PathBuf::from);
 
-        async_runtime.register(crate::training::service::MinerWebsocketService::new(
-            miner_ws_listen,
-            network.network_type,
-            args.active_model_id.clone(),
-            models_dir,
-            genome_cache_dir,
-            genome_file,
-            genome_source_url,
-            rpc_core_service.clone(),
-            config.genome_fragment_size_bytes,
-            config.genome_pow_activation_daa_score,
-            Some(flow_context.clone()),
-        ));
+        let coordinator = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("Failed to build temporary runtime for training coordinator initialization")
+                .block_on(Coordinator::new(
+                    network.network_type,
+                    args.active_model_id.clone(),
+                    models_dir,
+                    genome_cache_dir,
+                    genome_file,
+                    genome_source_url,
+                    rpc_core_service.clone(),
+                    config.genome_fragment_size_bytes,
+                    config.genome_pow_activation_daa_score,
+                ))
+                .expect("Failed to initialize training coordinator"),
+        );
+
+        if let Some(miner_ws_listen) = args.miner_ws_listen {
+            async_runtime.register(MinerWebsocketService::new(miner_ws_listen, coordinator.clone(), Some(flow_context.clone())));
+        }
+
+        if let Some(inference_grpc_listen) = args.inference_grpc_listen {
+            async_runtime.register(InferenceGrpcService::new(inference_grpc_listen, coordinator));
+        }
     }
 
     // Consensus must start first in order to init genesis in stores

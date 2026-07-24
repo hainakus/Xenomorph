@@ -4,15 +4,16 @@ This document describes the architecture of the Xenomorph AI devnet branch as cu
 
 ## 1. High-level overview
 
-The devnet is composed of several Rust binaries and a set of deployment scripts. The core idea is that miners perform AI model training as proof-of-work instead of pure hash grinding, and submit a `TrainingProof` attached to a block. A seed node coordinates miners, serves model inference via gRPC, and downloads models from Hugging Face. An API gateway provides HTTP access to model inference and governance operations.
+The devnet is composed of several Rust binaries and a set of deployment scripts. The core idea is that miners perform AI model training as proof-of-work instead of pure hash grinding, and submit a `TrainingProof` attached to a block. The unified `xenom` node coordinates miners, serves model inference via gRPC, downloads models from Hugging Face, validates proofs, and reaches consensus. An API gateway provides HTTP access to model inference and governance operations.
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                              Host / Docker                                    │
-│  ┌─────────────┐    gRPC     ┌─────────────────┐    WebSocket   ┌──────────┐ │
-│  │  xenom-node │◄───────────►│   seed-node     │◄──────────────►│xenom-miner│ │
-│  │  :16110/11  │   TCP       │ :50051 / :17110 │   Borsh        │           │ │
-│  └─────────────┘             │  + HF download  │                └───────────┘ │
+│                              ┌─────────────────┐    WebSocket   ┌──────────┐ │
+│                              │   xenom-node    │◄──────────────►│xenom-miner│ │
+│                              │ :16110/11/17110 │   Borsh        │           │ │
+│                              │  + HF download  │                └───────────┘ │
+│                              │  + gRPC :50051  │                              │
 │                              └────────┬────────┘                              │
 │                                       │ HTTP gRPC :50051                      │
 │                                       ▼                                       │
@@ -33,26 +34,29 @@ The devnet is composed of several Rust binaries and a set of deployment scripts.
 
 The devnet follows these ownership rules:
 
-- **Only `seed-node` downloads models from Hugging Face.**
-- **Only `seed-node` stores model weights**, encrypted with AES-256-GCM under `XENO_MODELS_DIR`.
-- **`xenom-miner` does not download from Hugging Face and does not persist model weights.** It may, however, request the checkpoint from `seed-node` and hold it in memory while training.
+- **`xenom` is the unified node.** It validates proofs, reaches consensus, downloads models from Hugging Face, stores model weights encrypted with AES-256-GCM under `XENO_MODELS_DIR`, serves miner training batches over WebSocket, and serves model inference over gRPC.
+- **`xenom-miner` does not download from Hugging Face and does not persist model weights.** It requests the checkpoint from `xenom` and holds it in memory while training.
 - **Only `xenom-miner` trains.**
-- **`xenom-node` validates proofs and reaches consensus;** it does not hold or train models.
+- **`seed-node` is a legacy standalone binary** that combines the same model/inference services without the Kaspa full node. It is kept for standalone deployments and tests but is no longer required in the unified devnet.
 
 ## 2. Core binaries and crates
 
-### `xenom` — full node
+### `xenom` — unified full node
 
 - **Entry point:** `xenom/src/main.rs`
-- **Role:** Kaspa-derived full node with UsefulPoW support.
+- **Role:** Kaspa-derived full node with UsefulPoW support, plus the AI training/inference services formerly provided by `seed-node`.
 - **Notable features:** `heap`, `devnet-prealloc`, `semaphore-trace`.
-- **Exposes:** RPC on `XENO_NODE_RPC_PORT` (default 16110) and P2P on `XENO_NODE_P2P_PORT` (default 16111).
-- **Key integration:** block header can carry a `TrainingProof` (`consensus/core/src/pow/training_proof.rs`).
+- **Exposes:**
+  - Kaspa RPC on `XENO_NODE_RPC_PORT` (default 16110).
+  - P2P on `XENO_NODE_P2P_PORT` (default 16111).
+  - Miner WebSocket on `XENO_MINER_WS_PORT` (default 17110) via `--miner-ws-listen`.
+  - gRPC inference on `XENO_INFERENCE_GRPC_PORT` (default 50051) via `--inference-grpc-listen`.
+- **Key integration:** block header can carry a `TrainingProof` (`consensus/core/src/pow/training_proof.rs`); `xenom/src/training/` merges model management, genome batching, miner WebSocket coordination, and inference into the full node.
 
-### `seed-node` — model serving & miner coordination
+### `seed-node` — standalone model serving & miner coordination (legacy)
 
 - **Entry point:** `seed-node/src/main.rs`
-- **Role:** Sits between the blockchain node and miners. It downloads AI models from Hugging Face, exposes them through a gRPC inference service, and distributes training batches to miners over WebSocket.
+- **Role:** A standalone binary that provides the same model/inference services as the unified `xenom` node, but without the Kaspa full node. It downloads AI models from Hugging Face, exposes them through a gRPC inference service, and distributes training batches to miners over WebSocket.
 - **Runtime flow:**
   1. Reads `XENO_NODE_RPC`, `XENO_GRPC_ADDR`, `XENO_MINER_WS_ADDR`, `XENO_MODELS_DIR`, `XENO_DEFAULT_MODEL_ID` from the environment.
   2. Builds a `ModelManager` for encrypted local model storage.
@@ -60,21 +64,21 @@ The devnet follows these ownership rules:
   4. Starts a gRPC inference service (`seed-node/src/serving/inference.rs`) on `XENO_GRPC_ADDR`.
   5. Starts a WebSocket miner server (`seed-node/src/rpc/server.rs`) on `XENO_MINER_WS_ADDR`.
 - **Key modules:**
-  - `seed-node/src/model/manager.rs` — loads/stores/caches models.
+  - `seed-node/src/model/manager.rs` — loads/stores/caches models (also used by `xenom/src/training/coordinator.rs`).
   - `seed-node/src/model/storage.rs` — AES-256-GCM encrypted model storage.
-  - `seed-node/src/model/downloader.rs` — downloads `model.safetensors` / `pytorch_model.bin` from Hugging Face.
+  - `seed-node/src/model/downloader.rs` — downloads `model.safetensors` from Hugging Face.
   - `seed-node/src/rpc/client.rs` — TCP/Borsh client to the `xenom` node.
   - `seed-node/src/rpc/server.rs` — WebSocket/Borsh server for miners.
-  - `seed-node/src/serving/inference.rs` — gRPC `Predict`, `Embed`, `GetModelInfo`, `ListModels`, `HealthCheck`.
+  - `seed-node/src/serving/inference.rs` — gRPC `Predict`, `Embed`, `GetModelInfo`, `ListModels`, `HealthCheck` (also served by `xenom` via `--inference-grpc-listen`).
   - `seed-node/src/serving/proof.rs` — proof-of-service generator.
 
 ### `xenom-miner` — UsefulPoW miner
 
 - **Entry point:** `xenom-miner/src/main.rs`
-- **Role:** Connects to the seed node, fetches `TrainingBatch`es, trains a model, generates a ZK proof commitment, builds/sings a block, and submits it.
+- **Role:** Connects to the unified `xenom` node, fetches `TrainingBatch`es, trains a model, generates a ZK proof commitment, builds/sings a block, and submits it.
 - **Runtime flow:**
   1. Loads or creates a BIP39 wallet (`xenom-miner/src/wallet/manager.rs`).
-  2. Connects to `seed-node` via WebSocket (`xenom-miner/src/rpc/client.rs`).
+  2. Connects to `xenom` via WebSocket (`xenom-miner/src/rpc/client.rs`).
   3. In a loop: fetch batch → train (in `tokio::task::spawn_blocking`) → generate proof → build and sign block → submit.
 - **Trainer backends:**
   - `MockTrainer` (`xenom-miner/src/trainer/mock_trainer.rs`) — deterministic fake training, default in devnet.
@@ -123,17 +127,17 @@ The devnet follows these ownership rules:
 
 ## 3. Data flow
 
-### Miner ↔ Seed node (WebSocket, Borsh)
+### Miner ↔ `xenom` node (WebSocket, Borsh)
 
-- **Port:** 17110
-- **Messages:** `xenom-miner/src/rpc/messages.rs` and `seed-node/src/rpc/messages.rs`.
+- **Port:** 17110 (`--miner-ws-listen`)
+- **Messages:** `xenom-miner/src/rpc/messages.rs` and `xenom/src/training/websocket_server.rs` (which reuses the `seed-node` Borsh message types).
 - **Requests from miner:**
   - `GetTrainingBatch { model_id }`
   - `SubmitBlock(TrainingBlock)`
   - `GetBalance { address }`
   - `GetDifficulty`
   - `Heartbeat`
-- **Responses from seed node:**
+- **Responses from `xenom` node:**
   - `TrainingBatch(Option<TrainingBatch>)`
   - `BlockHash([u8; 32])`
   - `Balance(u64)`
@@ -154,16 +158,10 @@ pub struct TrainingBatch {
 }
 ```
 
-### Seed node ↔ Xenom node (TCP, Borsh)
+### API Gateway ↔ `xenom` node (gRPC / protobuf)
 
-- **Port:** 16110
-- **Purpose:** seed node fetches the latest model checkpoint and submits training blocks to the full node.
-- `seed-node/src/rpc/client.rs` defines `RpcMessage` variants such as `GetModelCheckpoint`, `SubmitTrainingBlock`, and `Ping`.
-
-### API Gateway ↔ Seed node (gRPC / protobuf)
-
-- **Port:** 50051
-- **Service:** `xenom.inference.Inference` (proto compiled in `seed-node/src/serving/inference.rs`).
+- **Port:** 50051 (`--inference-grpc-listen`)
+- **Service:** `xenom.inference.Inference` (proto compiled in `seed-node/src/serving/inference.rs` and reused by `xenom/src/training/inference_service.rs`).
 - Used for inference requests that may be gated by USDT payments verified by the gateway.
 
 ## 4. Configuration and environment variables
@@ -172,19 +170,22 @@ All AI/devnet services are configured through environment variables. The `.env.e
 
 | Variable | Used by | Default | Purpose |
 |----------|---------|---------|---------|
-| `XENO_NODE_RPC` | seed-node | `xeno-node:16110` | Address of the Xenomorph full node |
-| `XENO_GRPC_ADDR` | seed-node | `0.0.0.0:50051` | gRPC inference bind address |
-| `XENO_MINER_WS_ADDR` | seed-node | `0.0.0.0:17110` | WebSocket miner server bind address |
-| `XENO_MODELS_DIR` | seed-node | `/data/models` | Local encrypted model storage |
-| `XENO_DEFAULT_MODEL_ID` | seed-node | `multimolecule/dnabert2` | Hugging Face model to download |
-| `XENO_MINER_RPC_URL` | xenom-miner | `ws://xeno-seed:17110` | WebSocket URL of seed node |
-| `XENO_MINER_MODEL_ID` | xenom-miner | `multimolecule/dnabert2` | Model id to train |
-| `XENO_MINER_THREADS` | xenom-miner | `4` | CPU threads for Candle trainer |
-| `XENO_MINER_MOCK_MODE` | xenom-miner | `true` | Use fast mock trainer |
-| `XENO_WALLET_PASSWORD` | xenom-miner | `devnet-password` | Wallet encryption |
+| `XENO_NODE_RPC_PORT` | `xenom` | `16110` | Kaspa RPC / Borsh port |
+| `XENO_NODE_P2P_PORT` | `xenom` | `16111` | P2P listening port |
+| `XENO_MINER_WS_PORT` | `xenom` | `17110` | Miner WebSocket port (`--miner-ws-listen`) |
+| `XENO_INFERENCE_GRPC_PORT` | `xenom` | `50051` | gRPC inference port (`--inference-grpc-listen`) |
+| `XENO_MODELS_DIR` | `xenom` | `appdir/models` | Local encrypted model storage |
+| `XENO_MODEL_ID` | `xenom` / `xenom-miner` | `multimolecule/dnabert2` | Hugging Face model to download/train |
+| `XENO_MINER_RPC_URL` | `xenom-miner` | `ws://127.0.0.1:17110` | WebSocket URL of the `xenom` node |
+| `XENO_MINER_MODEL_ID` | `xenom-miner` | `multimolecule/dnabert2` | Model id to train |
+| `XENO_MINER_THREADS` | `xenom-miner` | `4` | CPU threads for Candle trainer |
+| `XENO_MINER_MOCK_MODE` | `xenom-miner` | `true` | Use fast mock trainer |
+| `XENO_WALLET_PASSWORD` | `xenom-miner` | `devnet-password` | Wallet encryption |
 | `USDT_CONTRACT_ADDRESS` | api-gateway | (Mumbai) | USDT token for payment verification |
 | `GOVERNANCE_CONTRACT_ADDRESS` | api-gateway | (Mumbai) | `ModelGovernance` contract |
 | `GOVERNANCE_OPERATOR_KEY` | api-gateway | - | Operator private key |
+
+The `seed-node` binary still reads `XENO_NODE_RPC`, `XENO_GRPC_ADDR`, `XENO_MINER_WS_ADDR`, `XENO_MODELS_DIR`, and `XENO_DEFAULT_MODEL_ID` for standalone deployments, but is not required when `xenom` is run with `--miner-ws-listen` and `--inference-grpc-listen`.
 
 ## 5. Devnet deployment workflow
 

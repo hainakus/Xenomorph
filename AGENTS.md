@@ -49,13 +49,13 @@ cargo test --test integration
 - `GenomeArchive` parses `.xenom` archives (2-bit DNA encoding: A=00, C=01, G=10, T=11; four bases per byte, MSB-first).
 - `GenomeBatchGenerator` produces deterministic `GenomeTrainingBatch` slices from a 32-byte seed.
 - `GenomeStorage` caches archives locally and downloads missing ones via HTTP or an IPFS gateway. The default fallback is the canonical GitHub Release `grch38.xenom` (override with `XENO_GENOME_URL`).
-- The seed-node WebSocket server handles `RpcRequest::GetGenomeTrainingBatch` and replies with `RpcResponse::GenomeTrainingBatch` (extracted DNA sequences).
+- The unified `xenom` WebSocket server (`xenom/src/training/websocket_server.rs`) handles `RpcRequest::GetGenomeTrainingBatch` and replies with `RpcResponse::GenomeTrainingBatch` (extracted DNA sequences). The standalone `seed-node` provides the same handler for legacy deployments.
 - New RPC enum variants are appended at the end to keep binary compatibility with older miners.
 
 ### Build & test
 
 ```bash
-cargo build -p seed-node -p xenom-miner
+cargo build -p xenom -p seed-node -p xenom-miner
 cargo test -p seed-node -p xenom-miner
 ```
 
@@ -99,24 +99,24 @@ Examples:
 
 ```bash
 # Devnet (mock)
-./target/debug/xenom-miner --rpc-url ws://xeno-seed:17110 --trainer mock --dry-run
+./target/debug/xenom-miner --rpc-url ws://xeno-node:17110 --trainer mock --dry-run
 
 # Real DNABERT-2 training (auto GPU)
-./target/debug/xenom-miner --rpc-url ws://xeno-seed:17110 --trainer dnabert2
+./target/debug/xenom-miner --rpc-url ws://xeno-node:17110 --trainer dnabert2
 
 # Force CUDA with FP16 on a specific GPU
-./target/release/xenom-miner --rpc-url ws://xeno-seed:17110 --trainer cuda --gpus 0 --fp16 --micro-batch-size 1
+./target/release/xenom-miner --rpc-url ws://xeno-node:17110 --trainer cuda --gpus 0 --fp16 --micro-batch-size 1
 
 # Multi-GPU CUDA with FP16 and gradient accumulation
-./target/release/xenom-miner --rpc-url ws://xeno-seed:17110 \
+./target/release/xenom-miner --rpc-url ws://xeno-node:17110 \
   --trainer cuda --gpus 0,1 --micro-batch-size 1 --gradient-accumulation 2 --fp16
 
-# DNABERT-2 training on a genome archive served by the seed-node
+# DNABERT-2 training on a genome archive served by the unified xeno-node
 # --network derives the canonical genome merkle root from consensus Params.
-./target/debug/xenom-miner --rpc-url ws://xeno-seed:17110 --trainer dnabert2 --network mainnet
+./target/debug/xenom-miner --rpc-url ws://xeno-node:17110 --trainer dnabert2 --network mainnet
 
 # Override the genome merkle root explicitly
-./target/debug/xenom-miner --rpc-url ws://xeno-seed:17110 --trainer dnabert2 --genome-merkle <64-hex-chars>
+./target/debug/xenom-miner --rpc-url ws://xeno-node:17110 --trainer dnabert2 --genome-merkle <64-hex-chars>
 ```
 
 ### End-to-end DNABERT-2 devnet test
@@ -131,7 +131,7 @@ Examples:
 - Location: `scripts/`
 - Compose: `docker-compose.devnet.yml`
 - Config template: `.env.example`
-- Native (no Docker): `scripts/run-native-devnet.sh` — builds/starts `xenom`, `seed-node` and `xenom-miner` directly from `target/release`.
+- Native (no Docker): `scripts/run-native-devnet.sh` — builds/starts the unified `xenom` node and `xenom-miner` directly from `target/release`.
   - GPU auto-detection: when `XENO_MINER_TRAINER` is `dnabert2`, `gpu`, or `cuda` and both `nvidia-smi` and `nvcc` are present, the script compiles `xenom-miner` with `--features cuda`.
   - Override with `--features <features>` or `XENO_MINER_FEATURES` (e.g. `XENO_MINER_FEATURES=cuda ./scripts/run-native-devnet.sh --trainer cuda`).
   - Multi-GPU options are forwarded to the miner: `--gpus`, `--micro-batch-size`, `--gradient-accumulation`, `--fp16`, `--gradient-checkpointing`, `--zero`.
@@ -156,10 +156,10 @@ make clean  # cleanup-devnet.sh
 
 ### Notes
 
-- `build-devnet.sh` compiles `xenom`, `seed-node`, and `xenom-miner` binaries locally on Linux, or inside Docker on macOS via `--docker-build`.
+- `build-devnet.sh` compiles `xenom` and `xenom-miner` binaries locally on Linux, or inside Docker on macOS via `--docker-build`. `seed-node` is still built for standalone/legacy deployments but is no longer required in the unified devnet.
 - `build-devnet-macos.sh` is a macOS wrapper around `build-devnet.sh` that forces Docker builds and sets `DOCKER_DEFAULT_PLATFORM` to `linux/arm64` (Apple Silicon) or `linux/amd64` (Intel) so images are built for the native host architecture.
-- `seed-node/src/main.rs` reads `XENO_NODE_RPC`, `XENO_GRPC_ADDR`, `XENO_MODELS_DIR`, `XENO_MINER_WS_ADDR`, and `XENO_DEFAULT_MODEL_ID` from the environment so it can reach the node in Docker networking.
-- The seed-node downloads the default Hugging Face model (`multimolecule/dnabert2`) into `XENO_MODELS_DIR` on startup if it is not already present.
+- The unified `xenom` node reads `--models-dir`, `--miner-ws-listen`, and `--inference-grpc-listen` (or the corresponding `XENO_*` environment variables in scripts) and downloads the default Hugging Face model (`multimolecule/dnabert2`) into `XENO_MODELS_DIR` on startup if it is not already present.
+- `seed-node/src/main.rs` still reads `XENO_NODE_RPC`, `XENO_GRPC_ADDR`, `XENO_MODELS_DIR`, `XENO_MINER_WS_ADDR`, and `XENO_DEFAULT_MODEL_ID` for standalone/legacy deployments, but is not needed when `xenom` is run with `--miner-ws-listen` and `--inference-grpc-listen`.
 
 ## Wallet addresses and network prefixes
 
@@ -168,22 +168,24 @@ make clean  # cleanup-devnet.sh
 - If `--wallet` is supplied, it is validated against the selected network. An address with the wrong prefix is rejected before training/submission starts.
 - The same mnemonic produces a different address string for each network; only the prefix changes.
 
-## Seed-node -> Xenom node block forwarding
+## Training block submission
 
-- `seed-node/src/rpc/server.rs` forwards `SubmitBlock` training proofs to the Xenomorph full node over the Borsh `XenomorphRpcClient` (`XENO_NODE_RPC`, default `xeno-node:16112`).
-- The `xenom` full node now implements `TrainingBlockService` (`xenom/src/training_block_service.rs`), a dedicated Borsh listener that:
+There are two equivalent paths for a miner to submit a `TrainingBlock`:
+
+1. **Unified `xenom` node (preferred):** `xenom/src/training/websocket_server.rs` accepts `SubmitBlock` over the miner WebSocket, and `xenom/src/training/coordinator.rs` validates it and submits the mined block through the local `RpcCoreService`.
+2. **Legacy `seed-node` forwarding:** `seed-node/src/rpc/server.rs` forwards `SubmitBlock` training proofs to the Xenomorph full node over the Borsh `XenomorphRpcClient` (`XENO_NODE_RPC`, default `xeno-node:16112`). The `xenom` full node implements `TrainingBlockService` (`xenom/src/training_block_service.rs`) for this path.
+
+In both cases the `xenom` full node:
   1. Validates the miner address and prefix against the running network.
-  2. Deserializes the `TrainingProof` from the seed-node.
+  2. Deserializes the `TrainingProof`.
   3. Validates the proof against the active model: model id, base checkpoint, and loss improvement (`DifficultyTarget`).
   4. Builds a compact `CoinbaseExtraData` payload and requests a block template from the local consensus.
   5. Solves the block PoW with `kaspa_pow::State`.
-  6. Submits the solved block via `submit_block_call` and returns `accepted` + `block_hash` to the seed-node.
-- The listener is enabled with `--training-rpc-listen=<IP:PORT>` and is wired into `daemon.rs` as an `AsyncService`.
+  6. Submits the solved block via `submit_block_call` and returns `accepted` + `block_hash`.
+
+- `--training-rpc-listen=<IP:PORT>` enables the legacy Borsh listener for standalone `seed-node` deployments.
 - The active model defaults to `multimolecule/dnabert2` and its weights hash defaults to the network's `genome_merkle_root` (because the devnet miner uses the genome merkle root as the base checkpoint). Override with `--active-model-id` and `--active-model-weights-hash`.
-- Native devnet and Docker `.env.example` point `XENO_NODE_RPC` to the training RPC port (`16112` by default) and expose/forward that port.
-- If `--training-rpc-listen` is not provided, the listener is disabled and the seed-node will fail to connect as before.
 - This is full-node-side training proof validation (the block is rejected before being built/submitted if the proof is invalid). Consensus-level validation in `Header`/`UsefulPoW` is still dead code and not yet wired into the block pipeline.
-- The `model_id` field is now included in `TrainingBlock` so the seed-node can include it in the forwarded request.
-- `xenom-miner` `DnaBert2Trainer` clamps the batch `learning_rate` to `1e-5` for AdamW; the seed-node still sends `0.01`, but a full transformer diverges at that rate in a single step.
+- `xenom-miner` `DnaBert2Trainer` clamps the batch `learning_rate` to `1e-5` for AdamW.
 - `TrainingBlockService` devnet `DifficultyTarget` allows the loss to increase by up to `1.0` per batch; with synthetic/random devnet batches a pre-trained model may not improve in a single step.
 - `TrainingBlockService` now mines the correct PoW for the active network: legacy KHeavyHash before `genome_pow_activation_daa_score`, and Genome PoW (with synthetic fragments) after it. This fixes the `block has invalid proof-of-work` rejections on devnet.

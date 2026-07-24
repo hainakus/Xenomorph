@@ -9,7 +9,12 @@ xenom-ecosystem/
 ├── smart-contracts/          # Solidity smart contracts
 │   ├── InferencePayments.sol # USDT payment contract
 │   └── ModelRegistry.sol     # Model registry contract
-├── seed-node/               # Rust seed node with gRPC
+├── xenom/                   # Unified full node (Kaspa node + AI training + gRPC inference)
+│   ├── src/
+│   │   ├── training/        # Model management, miner WebSocket, gRPC inference
+│   │   └── ...
+│   └── Cargo.toml
+├── seed-node/               # Standalone model/inference server (legacy, optional)
 │   ├── src/
 │   │   ├── consensus/       # UsefulPoW and FedAvg
 │   │   ├── model/          # Model management
@@ -51,7 +56,25 @@ npx hardhat compile
 npx hardhat run scripts/deploy.js --network mumbai
 ```
 
-### Seed Node
+### Xenom Node (Unified full node + AI training + gRPC inference)
+
+```bash
+cd xenom
+
+# Build
+cargo build --release
+
+# Run devnet with miner WebSocket and gRPC inference
+./target/release/xenom --devnet --utxoindex \
+  --miner-ws-listen=0.0.0.0:17110 \
+  --inference-grpc-listen=0.0.0.0:50051 \
+  --models-dir=/data/models
+
+# Run tests
+cargo test
+```
+
+### Seed Node (legacy standalone model/inference server)
 
 ```bash
 cd seed-node
@@ -59,7 +82,7 @@ cd seed-node
 # Build
 cargo build --release
 
-# Run
+# Run standalone
 ./target/release/seed-node
 
 # Run tests

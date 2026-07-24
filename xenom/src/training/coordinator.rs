@@ -65,6 +65,12 @@ struct CoordinatorInner {
 }
 
 impl Coordinator {
+    /// Return a handle to the model manager so other services (e.g. gRPC inference)
+    /// can share the same encrypted model cache.
+    pub fn model_manager(&self) -> Arc<ModelManager> {
+        self.inner.model_manager.clone()
+    }
+
     pub async fn new(
         network_type: NetworkType,
         active_model_id: String,

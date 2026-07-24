@@ -5,7 +5,6 @@ use tonic::{Request, Response, Status};
 use tracing::{info, instrument};
 
 use crate::model::manager::ModelManager;
-use crate::rpc::client::XenomorphRpcClient;
 use crate::serving::inference_engine::InferenceEngine;
 use crate::serving::proof::ProofGenerator;
 
@@ -20,13 +19,12 @@ use xenom::inference::*;
 
 pub struct InferenceService {
     engine: Arc<InferenceEngine>,
-    xenomorph_client: Arc<XenomorphRpcClient>,
     proof_generator: ProofGenerator,
 }
 
 impl InferenceService {
-    pub fn new(model_manager: Arc<ModelManager>, xenomorph_client: Arc<XenomorphRpcClient>) -> Self {
-        Self { engine: Arc::new(InferenceEngine::new(model_manager)), xenomorph_client, proof_generator: ProofGenerator::new() }
+    pub fn new(model_manager: Arc<ModelManager>) -> Self {
+        Self { engine: Arc::new(InferenceEngine::new(model_manager)), proof_generator: ProofGenerator::new() }
     }
 }
 

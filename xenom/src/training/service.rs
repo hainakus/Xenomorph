@@ -1,13 +1,10 @@
 //! Async service wrapper for the unified miner WebSocket server.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use kaspa_consensus_core::network::NetworkType;
 use kaspa_core::task::service::{AsyncService, AsyncServiceError, AsyncServiceFuture};
 use kaspa_core::{info, trace, warn};
 use kaspa_p2p_flows::flow_context::FlowContext;
-use kaspa_rpc_service::service::RpcCoreService;
 use kaspa_utils::networking::ContextualNetAddress;
 use kaspa_utils::triggers::SingleTrigger;
 
@@ -18,15 +15,7 @@ const MINER_WEBSOCKET_SERVICE: &str = "miner-websocket-service";
 
 pub struct MinerWebsocketService {
     listen_address: ContextualNetAddress,
-    network_type: NetworkType,
-    active_model_id: String,
-    models_dir: PathBuf,
-    genome_cache_dir: PathBuf,
-    genome_file: Option<PathBuf>,
-    genome_source_url: String,
-    rpc_core_service: Arc<RpcCoreService>,
-    genome_fragment_size_bytes: u32,
-    genome_pow_activation_daa_score: u64,
+    coordinator: Arc<Coordinator>,
     flow_context: Option<Arc<FlowContext>>,
     shutdown: SingleTrigger,
 }
@@ -34,31 +23,10 @@ pub struct MinerWebsocketService {
 impl MinerWebsocketService {
     pub fn new(
         listen_address: ContextualNetAddress,
-        network_type: NetworkType,
-        active_model_id: String,
-        models_dir: PathBuf,
-        genome_cache_dir: PathBuf,
-        genome_file: Option<PathBuf>,
-        genome_source_url: String,
-        rpc_core_service: Arc<RpcCoreService>,
-        genome_fragment_size_bytes: u32,
-        genome_pow_activation_daa_score: u64,
+        coordinator: Arc<Coordinator>,
         flow_context: Option<Arc<FlowContext>>,
     ) -> Arc<Self> {
-        Arc::new(Self {
-            listen_address,
-            network_type,
-            active_model_id,
-            models_dir,
-            genome_cache_dir,
-            genome_file,
-            genome_source_url,
-            rpc_core_service,
-            genome_fragment_size_bytes,
-            genome_pow_activation_daa_score,
-            flow_context,
-            shutdown: SingleTrigger::new(),
-        })
+        Arc::new(Self { listen_address, coordinator, flow_context, shutdown: SingleTrigger::new() })
     }
 }
 
@@ -71,26 +39,8 @@ impl AsyncService for MinerWebsocketService {
         Box::pin(async move {
             info!("{} starting", MINER_WEBSOCKET_SERVICE);
 
-            let coordinator = match Coordinator::new(
-                self.network_type,
-                self.active_model_id.clone(),
-                self.models_dir.clone(),
-                self.genome_cache_dir.clone(),
-                self.genome_file.clone(),
-                self.genome_source_url.clone(),
-                self.rpc_core_service.clone(),
-                self.genome_fragment_size_bytes,
-                self.genome_pow_activation_daa_score,
-            )
-            .await
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    return Err(AsyncServiceError::Service(format!("Failed to initialize training coordinator: {}", e)));
-                }
-            };
-
             let listen = self.listen_address.to_string();
+            let coordinator = self.coordinator.as_ref().clone();
             let flow_context = self.flow_context.clone();
             let mut server_task =
                 tokio::spawn(async move { websocket_server::run_miner_server(&listen, coordinator, flow_context).await });
