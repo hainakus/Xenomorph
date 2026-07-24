@@ -18,6 +18,7 @@ use std::{
 use crate::ModelCryptoError;
 
 const GOSSIP_MNEMONIC_ENV: &str = "XENO_GOSSIP_MNEMONIC";
+const FUND_MNEMONIC_ENV: &str = "XENO_FUND_MNEMONIC";
 const GOSSIP_KEY_ENV: &str = "XENO_GOSSIP_KEY";
 const DEFAULT_GOSSIP_TTL: Duration = Duration::from_secs(300);
 
@@ -113,9 +114,11 @@ impl GossipIdentity {
 
     /// Try to load an identity from environment variables.
     ///
-    /// Falls back through:
+    /// Priority:
     /// 1. `XENO_GOSSIP_KEY` (64-char hex) -> use as raw secp256k1 secret key.
-    /// 2. `XENO_GOSSIP_MNEMONIC` -> BIP39 phrase.
+    /// 2. `XENO_GOSSIP_MNEMONIC` -> explicit BIP39 phrase.
+    /// 3. `XENO_FUND_MNEMONIC` -> development fee wallet mnemonic, from which the
+    ///    gossip identity / node wallet is derived.
     pub fn from_env(network_type: NetworkType) -> Result<Self, ModelCryptoError> {
         if let Ok(key_hex) = std::env::var(GOSSIP_KEY_ENV) {
             let key_hex = key_hex.trim();
@@ -129,6 +132,10 @@ impl GossipIdentity {
         }
 
         if let Ok(phrase) = std::env::var(GOSSIP_MNEMONIC_ENV) {
+            return Self::from_mnemonic(&phrase, network_type);
+        }
+
+        if let Ok(phrase) = std::env::var(FUND_MNEMONIC_ENV) {
             return Self::from_mnemonic(&phrase, network_type);
         }
 
