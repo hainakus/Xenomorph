@@ -180,7 +180,6 @@ impl ConnectionInitializer for GossipInitializer {
             KaspadMessagePayloadType::PruningPoints,
             KaspadMessagePayloadType::RequestPruningPointProof,
             KaspadMessagePayloadType::PruningPointProof,
-            KaspadMessagePayloadType::Ready,
             KaspadMessagePayloadType::BlockWithTrustedDataV4,
             KaspadMessagePayloadType::TrustedData,
             KaspadMessagePayloadType::RequestIbdChainBlockLocator,
