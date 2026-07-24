@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
 
     let model_key = ModelStorage::derive_encryption_key();
     let model_manager = Arc::new(ModelManager::new_with_key(models_dir.clone(), model_key).await?);
-    let genome_storage = Arc::new(RwLock::new(GenomeStorage::new(PathBuf::from(models_dir).join("genomes")).await?));
+    let genome_storage = Arc::new(RwLock::new(GenomeStorage::new(PathBuf::from(models_dir.clone()).join("genomes")).await?));
 
     // The seed-node is only considered ready once the default model is available.
     // Block startup until the model is downloaded and stored locally.
@@ -46,7 +46,8 @@ async fn main() -> Result<()> {
     info!("Default model {} is ready", default_model_id);
 
     // Join the P2P gossip network and announce the active checkpoint.
-    let p2p_gossip = match P2pGossipHandle::connect(node_p2p, network_type).await {
+    let gossip_key_path = PathBuf::from(&models_dir).join("gossip.key");
+    let p2p_gossip = match P2pGossipHandle::connect(node_p2p, network_type, &gossip_key_path).await {
         Ok(gossip) => {
             if let Some(model_info) = model_manager.get_model(&default_model_id).await {
                 let weights_hash = model_info.checkpoint.weights_hash;

@@ -12,14 +12,12 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
+    path::Path,
     time::{Duration, Instant},
 };
 
 use crate::ModelCryptoError;
 
-const GOSSIP_MNEMONIC_ENV: &str = "XENO_GOSSIP_MNEMONIC";
-const FUND_MNEMONIC_ENV: &str = "XENO_FUND_MNEMONIC";
-const GOSSIP_KEY_ENV: &str = "XENO_GOSSIP_KEY";
 const DEFAULT_GOSSIP_TTL: Duration = Duration::from_secs(300);
 
 /// A signed checkpoint announcement.
@@ -112,34 +110,45 @@ impl GossipIdentity {
         Self { secret_key, public_key, address, network_type }
     }
 
-    /// Try to load an identity from environment variables.
+    /// Generate a fresh random gossip identity.
+    pub fn generate(network_type: NetworkType) -> Self {
+        let secret_key = SecretKey::new(&mut rand::thread_rng());
+        Self::from_secret_key(secret_key, network_type)
+    }
+
+    /// Load an identity from a persistent key file, or generate and persist a
+    /// new one if the file does not exist.
     ///
-    /// Priority:
-    /// 1. `XENO_GOSSIP_KEY` (64-char hex) -> use as raw secp256k1 secret key.
-    /// 2. `XENO_GOSSIP_MNEMONIC` -> explicit BIP39 phrase.
-    /// 3. `XENO_FUND_MNEMONIC` -> development fee wallet mnemonic, from which the
-    ///    gossip identity / node wallet is derived.
-    pub fn from_env(network_type: NetworkType) -> Result<Self, ModelCryptoError> {
-        if let Ok(key_hex) = std::env::var(GOSSIP_KEY_ENV) {
-            let key_hex = key_hex.trim();
-            if key_hex.len() == 64 {
-                if let Ok(decoded) = hex::decode(key_hex) {
-                    if decoded.len() == 32 {
-                        return Self::from_secret_key_bytes(&decoded, network_type);
+    /// The file is stored as lower-case hex of the 32-byte secp256k1 secret key.
+    /// Parent directories are created automatically.
+    pub fn load_or_generate<P: AsRef<Path>>(path: P, network_type: NetworkType) -> Result<Self, ModelCryptoError> {
+        let path = path.as_ref();
+        if path.exists() {
+            match std::fs::read_to_string(path) {
+                Ok(hex_str) => {
+                    let hex_str = hex_str.trim();
+                    if hex_str.len() == 64 {
+                        if let Ok(decoded) = hex::decode(hex_str) {
+                            if decoded.len() == 32 {
+                                if let Ok(identity) = Self::from_secret_key_bytes(&decoded, network_type) {
+                                    return Ok(identity);
+                                }
+                            }
+                        }
                     }
                 }
+                Err(_) => {}
             }
         }
 
-        if let Ok(phrase) = std::env::var(GOSSIP_MNEMONIC_ENV) {
-            return Self::from_mnemonic(&phrase, network_type);
+        // Generate a new identity and persist it.
+        let identity = Self::generate(network_type);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| ModelCryptoError::InvalidKey(e.to_string()))?;
         }
-
-        if let Ok(phrase) = std::env::var(FUND_MNEMONIC_ENV) {
-            return Self::from_mnemonic(&phrase, network_type);
-        }
-
-        Err(ModelCryptoError::InvalidKey("no gossip key configured".to_string()))
+        let hex_str = hex::encode(identity.secret_key.secret_bytes());
+        std::fs::write(path, hex_str).map_err(|e| ModelCryptoError::InvalidKey(e.to_string()))?;
+        Ok(identity)
     }
 
     pub fn address(&self) -> &str {

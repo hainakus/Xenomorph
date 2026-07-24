@@ -16,6 +16,7 @@ use kaspa_p2p_lib::{
 };
 use kaspa_utils_tower::counters::TowerConnectionCounters;
 use model_crypto::gossip::{verify_announcement, Announcement, GossipIdentity, GossipRegistry};
+use std::path::Path;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 use tracing::{debug, info, trace, warn};
@@ -34,9 +35,9 @@ struct P2pGossipInner {
 }
 
 impl P2pGossipHandle {
-    pub async fn connect(peer_address: String, network_type: NetworkType) -> Result<Arc<Self>> {
-        let identity = GossipIdentity::from_env(network_type)
-            .context("Failed to load gossip identity from XENO_GOSSIP_MNEMONIC/XENO_GOSSIP_KEY")?;
+    pub async fn connect<P: AsRef<Path>>(peer_address: String, network_type: NetworkType, key_path: P) -> Result<Arc<Self>> {
+        let identity =
+            GossipIdentity::load_or_generate(key_path, network_type).context("Failed to load or generate gossip identity")?;
         info!("P2P gossip identity: {}", identity.address());
 
         let inner = Arc::new(P2pGossipInner { identity, registry: Mutex::new(GossipRegistry::new()), network_type });

@@ -524,13 +524,14 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
     let mining_monitor =
         Arc::new(MiningMonitor::new(mining_manager.clone(), mining_counters, tx_script_cache_counters.clone(), tick_service.clone()));
 
-    let gossip_identity = match GossipIdentity::from_env(network.network_type) {
+    let gossip_key_path = db_dir.join("gossip.key");
+    let gossip_identity = match GossipIdentity::load_or_generate(&gossip_key_path, network.network_type) {
         Ok(identity) => {
-            info!("P2P gossip identity: {}", identity.address());
+            info!("P2P gossip identity: {} (key file: {:?})", identity.address(), gossip_key_path);
             Some(Arc::new(identity))
         }
         Err(e) => {
-            info!("No P2P gossip identity configured: {e}");
+            info!("No P2P gossip identity available: {e}");
             None
         }
     };
