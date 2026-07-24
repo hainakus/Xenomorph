@@ -40,6 +40,8 @@ message PredictResponse {
   uint64 latency_ms = 5;
   string seed_node_id = 6;
   bytes signature = 7;
+  uint32 prompt_tokens = 8;
+  uint32 completion_tokens = 9;
 }
 
 // Embed request

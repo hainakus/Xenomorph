@@ -149,10 +149,23 @@ pub async fn chat_completions(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let response = if let Some(mut client) = state.seed_client.clone() {
+    let (response, prompt_tokens, completion_tokens) = if let Some(mut client) = state.seed_client.clone() {
         let query_id = Uuid::new_v4().to_string();
         match client.predict(&model_id, sanitized.as_bytes(), &query_id).await {
-            Ok(grpc_response) => String::from_utf8_lossy(&grpc_response.output_data).to_string(),
+            Ok(grpc_response) => {
+                let text = String::from_utf8_lossy(&grpc_response.output_data).to_string();
+                let prompt_tokens = if grpc_response.prompt_tokens > 0 {
+                    grpc_response.prompt_tokens
+                } else {
+                    sanitized.split_whitespace().count() as u32
+                };
+                let completion_tokens = if grpc_response.completion_tokens > 0 {
+                    grpc_response.completion_tokens
+                } else {
+                    text.split_whitespace().count() as u32
+                };
+                (text, prompt_tokens, completion_tokens)
+            }
             Err(e) => {
                 error!("Seed node predict failed for OpenAI chat: {}", e);
                 return Err(StatusCode::BAD_GATEWAY);
@@ -162,9 +175,6 @@ pub async fn chat_completions(
         error!("No seed node configured for OpenAI chat completions");
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     };
-
-    let prompt_tokens = sanitized.split_whitespace().count() as u32;
-    let completion_tokens = response.split_whitespace().count() as u32;
 
     Ok(Json(ChatCompletionsResponse {
         id: format!("chatcmpl-{}", Uuid::new_v4()),

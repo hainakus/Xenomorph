@@ -43,10 +43,11 @@ impl Inference for InferenceService {
 
         let input = String::from_utf8_lossy(&req.input_data).to_string();
         let engine = self.engine.clone();
-        let (output, confidence) = tokio::task::spawn_blocking(move || engine.predict(&model_id, &input))
-            .await
-            .map_err(|e| Status::internal(format!("Inference task panicked: {}", e)))?
-            .map_err(|e| Status::internal(format!("Inference failed: {}", e)))?;
+        let (output, confidence, prompt_tokens, completion_tokens) =
+            tokio::task::spawn_blocking(move || engine.predict(&model_id, &input))
+                .await
+                .map_err(|e| Status::internal(format!("Inference task panicked: {}", e)))?
+                .map_err(|e| Status::internal(format!("Inference failed: {}", e)))?;
 
         let latency_ms = start.elapsed().as_millis() as u64;
         let proof_of_service = self.proof_generator.generate_proof(&req.model_id, &query_id, latency_ms);
@@ -59,6 +60,8 @@ impl Inference for InferenceService {
             latency_ms,
             seed_node_id: self.engine.node_id().to_string(),
             signature: vec![],
+            prompt_tokens: prompt_tokens as u32,
+            completion_tokens: completion_tokens as u32,
         };
 
         info!("Predict completed in {}ms", latency_ms);

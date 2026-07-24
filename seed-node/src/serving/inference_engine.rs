@@ -112,7 +112,9 @@ impl InferenceEngine {
     }
 
     /// Public prediction entry point.
-    pub fn predict(&self, model_id: &str, input: &str) -> Result<(String, f32)> {
+    ///
+    /// Returns `(output, confidence, prompt_tokens, completion_tokens)`.
+    pub fn predict(&self, model_id: &str, input: &str) -> Result<(String, f32, usize, usize)> {
         let loaded = self.get_or_load(model_id)?;
         match loaded.kind {
             ModelKind::MaskedLM => self.predict_masked_lm(&loaded, input),
@@ -132,7 +134,7 @@ impl InferenceEngine {
     /// * Runs `DnaBert2ForMaskedLM::forward` once.
     /// * Replaces each mask with the argmax-predicted token.
     /// * Decodes by concatenating raw token strings, producing a continuous DNA sequence.
-    fn predict_masked_lm(&self, loaded: &LoadedModel, input: &str) -> Result<(String, f32)> {
+    fn predict_masked_lm(&self, loaded: &LoadedModel, input: &str) -> Result<(String, f32, usize, usize)> {
         let mask_token = loaded.tokenizer.mask_token();
 
         // Normalize common aliases to the tokenizer's mask token, but never hardcode `<mask>`.
@@ -159,16 +161,18 @@ impl InferenceEngine {
 
         let normalized = with_placeholder.replace(placeholder, mask_token);
 
-        if !normalized.contains(mask_token) {
-            // No mask token in the prompt; return the input unchanged.
-            return Ok((normalized, 0.0));
-        }
-
         // Encode without special tokens so the token sequence maps 1:1 to the DNA sequence.
         let input_ids_vec = loaded.tokenizer.encode(&normalized, false)?;
         if input_ids_vec.is_empty() {
             return Err(anyhow!("Tokenizer produced no tokens for input"));
         }
+        let prompt_tokens = input_ids_vec.len();
+
+        if !normalized.contains(mask_token) {
+            // No mask token in the prompt; return the input unchanged.
+            return Ok((normalized, 0.0, prompt_tokens, prompt_tokens));
+        }
+
         let seq_len = input_ids_vec.len();
         let mask_token_id = loaded.tokenizer.mask_token_id();
 
@@ -205,11 +209,13 @@ impl InferenceEngine {
             }
         }
 
+        let completion_tokens = output_ids.len();
+
         // Decode by concatenating raw token strings; this avoids the default decoder which
         // joins tokens with spaces for DNABERT-2 style BPE tokenizers.
         let output = loaded.tokenizer.decode_to_sequence(&output_ids, true)?;
         let confidence = if mask_count == 0 { 0.0 } else { total_confidence / mask_count as f32 };
-        Ok((output, confidence.clamp(0.0, 1.0)))
+        Ok((output, confidence.clamp(0.0, 1.0), prompt_tokens, completion_tokens))
     }
 
     /// Compute mean-pooled sequence embeddings for a DNA sequence.
@@ -329,7 +335,7 @@ mod tests {
     fn test_single_mask_reconstruction() {
         let engine = test_engine();
         let loaded = build_loaded_model();
-        let (output, confidence) = engine.predict_masked_lm(&loaded, "ATCG<mask>GTA").unwrap();
+        let (output, confidence, _, _) = engine.predict_masked_lm(&loaded, "ATCG<mask>GTA").unwrap();
 
         assert!(!output.contains('<'), "output should not contain any special token: {}", output);
         assert!(!output.contains(' '), "output should not contain spaces: {}", output);
@@ -341,7 +347,7 @@ mod tests {
     fn test_multiple_mask_reconstruction() {
         let engine = test_engine();
         let loaded = build_loaded_model();
-        let (output, confidence) = engine.predict_masked_lm(&loaded, "AT<mask>G<mask>TA<mask>C").unwrap();
+        let (output, confidence, _, _) = engine.predict_masked_lm(&loaded, "AT<mask>G<mask>TA<mask>C").unwrap();
 
         assert!(!output.contains('<'), "output should not contain any special token: {}", output);
         assert!(!output.contains(' '), "output should not contain spaces: {}", output);
@@ -353,7 +359,7 @@ mod tests {
     fn test_no_mask_returns_input() {
         let engine = test_engine();
         let loaded = build_loaded_model();
-        let (output, confidence) = engine.predict_masked_lm(&loaded, "ATCGGTA").unwrap();
+        let (output, confidence, _, _) = engine.predict_masked_lm(&loaded, "ATCGGTA").unwrap();
         assert_eq!(output, "ATCGGTA");
         assert_eq!(confidence, 0.0);
     }
@@ -362,7 +368,7 @@ mod tests {
     fn test_bracket_mask_alias() {
         let engine = test_engine();
         let loaded = build_loaded_model();
-        let (output, _confidence) = engine.predict_masked_lm(&loaded, "ATCG[MASK]GTA").unwrap();
+        let (output, _confidence, _, _) = engine.predict_masked_lm(&loaded, "ATCG[MASK]GTA").unwrap();
         assert!(!output.contains('<'), "output should not contain any special token: {}", output);
         assert!(!output.contains(' '), "output should not contain spaces: {}", output);
         assert_eq!(output.len(), 8);
