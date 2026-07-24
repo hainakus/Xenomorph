@@ -40,9 +40,10 @@ async fn main() -> Result<()> {
     let genome_storage = Arc::new(RwLock::new(GenomeStorage::new(PathBuf::from(models_dir.clone()).join("genomes")).await?));
 
     // The seed-node is only considered ready once the default model is available.
-    // Block startup until the model is downloaded and stored locally.
+    // Block startup until the model is downloaded, stored locally and loaded into memory.
     info!("Ensuring default model {} is available...", default_model_id);
     model_manager.ensure_model_downloaded(&default_model_id).await?;
+    model_manager.load_model(&default_model_id).await?;
     info!("Default model {} is ready", default_model_id);
 
     // Join the P2P gossip network and announce the active checkpoint.
