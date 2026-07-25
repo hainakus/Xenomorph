@@ -23,6 +23,11 @@ Options:
                                   (optional; enables real Genome PoW)
   --bind-ip <ip>                  IP to bind node/API sockets to
                                   (default: \$XENO_BIND_IP or 0.0.0.0)
+  --lora                          Enable LoRA for the training coordinator
+  --lora-rank <n>                 LoRA rank (default: \$XENO_LORA_RANK or 8)
+  --lora-alpha <n>                LoRA alpha (default: \$XENO_LORA_ALPHA or 16)
+  --lora-dropout <f>              LoRA dropout (default: \$XENO_LORA_DROPOUT or 0)
+  --lora-target-modules <list>    Comma-separated LoRA target modules
   -q, --quiet                     Minimal output
   -v, --verbose                   Debug output
   -h, --help                      Show this help and exit
@@ -32,6 +37,11 @@ BUILD=1
 DATA_DIR="${XENO_DATA_DIR:-$SCRIPT_DIR/../devnet-data-native}"
 GENOME_FILE="${XENO_GENOME_FILE:-}"
 BIND_IP="${XENO_BIND_IP:-0.0.0.0}"
+LORA=0
+LORA_RANK="${XENO_LORA_RANK:-8}"
+LORA_ALPHA="${XENO_LORA_ALPHA:-16}"
+LORA_DROPOUT="${XENO_LORA_DROPOUT:-0}"
+LORA_TARGET_MODULES=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -40,6 +50,11 @@ while [[ $# -gt 0 ]]; do
         -d|--data-dir) DATA_DIR="$2"; shift 2 ;;
         --genome-file) GENOME_FILE="$2"; shift 2 ;;
         --bind-ip) BIND_IP="$2"; shift 2 ;;
+        --lora) LORA=1; shift ;;
+        --lora-rank) LORA_RANK="$2"; shift 2 ;;
+        --lora-alpha) LORA_ALPHA="$2"; shift 2 ;;
+        --lora-dropout) LORA_DROPOUT="$2"; shift 2 ;;
+        --lora-target-modules) LORA_TARGET_MODULES="$2"; shift 2 ;;
         -q|--quiet) XENO_QUIET=1; shift ;;
         -v|--verbose) XENO_VERBOSE=1; shift ;;
         -h|--help) print_help_and_exit "$USAGE" 0 ;;
@@ -190,6 +205,16 @@ export REDIS_URL
 # -----------------------------------------------------------------------------
 # xeno-node (full node + training coordinator + inference gRPC)
 # -----------------------------------------------------------------------------
+# If LoRA is requested, export the LoRA env vars so the node's ModelManager
+# builds a LoRA-capable model and can aggregate LoRA gradients from miners.
+if [[ "$LORA" == "1" ]]; then
+    export XENO_LORA=1
+    export XENO_LORA_RANK="$LORA_RANK"
+    export XENO_LORA_ALPHA="$LORA_ALPHA"
+    export XENO_LORA_DROPOUT="$LORA_DROPOUT"
+    [[ -n "$LORA_TARGET_MODULES" ]] && export XENO_LORA_TARGET_MODULES="$LORA_TARGET_MODULES"
+fi
+
 qlog "Starting xeno-node..."
 NODE_ARGS=(
     --devnet
