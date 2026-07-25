@@ -37,7 +37,7 @@ pub struct GpuArgs {
     /// Gradient compression ratio for FedAvg submissions. 1.0 = dense gradients;
     /// 0.1 keeps only the largest 10% of values by absolute magnitude. Lower
     /// values drastically reduce upload size over slow remote links.
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(long, default_value_t = 1.0, env = "XENO_GRADIENT_TOP_K_RATIO")]
     pub gradient_top_k_ratio: f32,
 
     /// Enable LoRA (Low-Rank Adaptation) fine-tuning instead of full fine-tuning.

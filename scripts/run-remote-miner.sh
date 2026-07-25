@@ -31,6 +31,13 @@ Options:
   --fp16                          Enable FP16 mixed precision
   --gradient-checkpointing        Enable gradient checkpointing (stub)
   --zero <n>                      ZeRO optimization level (stub, default 0)
+  --max-seq-len <n>               Cap sequence length to save VRAM (default: 512)
+  --lora                          Enable LoRA (Low-Rank Adaptation) fine-tuning
+  --lora-rank <n>                 LoRA rank (default: \$XENO_LORA_RANK or 8)
+  --lora-alpha <n>                LoRA alpha (default: \$XENO_LORA_ALPHA or 16)
+  --lora-dropout <f>              LoRA dropout (default: \$XENO_LORA_DROPOUT or 0)
+  --lora-target-modules <list>    Comma-separated LoRA target modules
+  --gradient-top-k-ratio <f>      Gradient compression ratio for uploads (default: 1.0)
   -d, --data-dir <dir>            Base data directory
                                   (default: \$XENO_DATA_DIR or ./miner-data)
   --miner-ws-port <port>          Miner websocket port on the remote node
@@ -49,6 +56,13 @@ GRADIENT_ACCUMULATION="${XENO_MINER_GRADIENT_ACCUMULATION:-2}"
 FP16=0
 GRADIENT_CHECKPOINTING=0
 ZERO=0
+MAX_SEQ_LEN=512
+LORA=0
+LORA_RANK="${XENO_LORA_RANK:-8}"
+LORA_ALPHA="${XENO_LORA_ALPHA:-16}"
+LORA_DROPOUT="${XENO_LORA_DROPOUT:-0}"
+LORA_TARGET_MODULES=""
+GRADIENT_TOP_K_RATIO="${XENO_GRADIENT_TOP_K_RATIO:-1.0}"
 DATA_DIR="${XENO_DATA_DIR:-$SCRIPT_DIR/../miner-data}"
 MINER_WS_PORT="${XENO_MINER_WS_PORT:-17110}"
 NODE_HOST="${XENO_NODE_HOST:-}"
@@ -65,6 +79,13 @@ while [[ $# -gt 0 ]]; do
         --fp16) FP16=1; shift ;;
         --gradient-checkpointing) GRADIENT_CHECKPOINTING=1; shift ;;
         --zero) ZERO="$2"; shift 2 ;;
+        --max-seq-len) MAX_SEQ_LEN="$2"; shift 2 ;;
+        --lora) LORA=1; shift ;;
+        --lora-rank) LORA_RANK="$2"; shift 2 ;;
+        --lora-alpha) LORA_ALPHA="$2"; shift 2 ;;
+        --lora-dropout) LORA_DROPOUT="$2"; shift 2 ;;
+        --lora-target-modules) LORA_TARGET_MODULES="$2"; shift 2 ;;
+        --gradient-top-k-ratio) GRADIENT_TOP_K_RATIO="$2"; shift 2 ;;
         -d|--data-dir) DATA_DIR="$2"; shift 2 ;;
         --miner-ws-port) MINER_WS_PORT="$2"; shift 2 ;;
         --node) NODE_HOST="$2"; shift 2 ;;
@@ -143,12 +164,21 @@ if [[ "$TRAINER" == "dnabert2" || "$TRAINER" == "gpu" || "$TRAINER" == "cuda" ||
         --micro-batch-size "$MICRO_BATCH_SIZE"
         --gradient-accumulation "$GRADIENT_ACCUMULATION"
         --zero "$ZERO"
+        --max-seq-len "$MAX_SEQ_LEN"
+        --gradient-top-k-ratio "$GRADIENT_TOP_K_RATIO"
     )
     [[ "$FP16" == "1" ]] && MINER_EXTRA_ARGS+=(--fp16)
     [[ "$GRADIENT_CHECKPOINTING" == "1" ]] && MINER_EXTRA_ARGS+=(--gradient-checkpointing)
+    if [[ "$LORA" == "1" ]]; then
+        MINER_EXTRA_ARGS+=(--lora)
+        MINER_EXTRA_ARGS+=(--lora-rank "$LORA_RANK")
+        MINER_EXTRA_ARGS+=(--lora-alpha "$LORA_ALPHA")
+        MINER_EXTRA_ARGS+=(--lora-dropout "$LORA_DROPOUT")
+        [[ -n "$LORA_TARGET_MODULES" ]] && MINER_EXTRA_ARGS+=(--lora-target-modules "$LORA_TARGET_MODULES")
+    fi
 fi
 
-qlog "Starting xenom-miner against $RPC_URL (trainer=$TRAINER, gpus=$GPUS, micro_batch=$MICRO_BATCH_SIZE, acc=$GRADIENT_ACCUMULATION, fp16=$FP16)..."
+qlog "Starting xenom-miner against $RPC_URL (trainer=$TRAINER, gpus=$GPUS, micro_batch=$MICRO_BATCH_SIZE, acc=$GRADIENT_ACCUMULATION, max_seq_len=$MAX_SEQ_LEN, lora=$LORA, fp16=$FP16)..."
 XENO_WALLET_PASSWORD="${XENO_WALLET_PASSWORD:-devnet-password}" \
 RUST_LOG="${RUST_LOG:-info}" \
     "$BIN_PREFIX/xenom-miner" \
