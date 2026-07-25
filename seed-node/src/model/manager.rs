@@ -117,8 +117,19 @@ impl ModelManager {
 
         let node_id = Uuid::new_v4().to_string();
 
-        let min_participants = std::env::var("FEDAVG_MIN_PARTICIPANTS").ok().and_then(|s| s.parse().ok()).unwrap_or(4);
-        let fedavg_config = FedAvgConfig { min_participants, max_participants: 10, weighting_strategy: WeightingStrategy::Uniform };
+        // Epoch size: how many miners must contribute before a new checkpoint is produced.
+        // Defaults to 64 for stable epochs; can be overridden via XENO_FEDAVG_EPOCH_SIZE
+        // or the legacy FEDAVG_MIN_PARTICIPANTS variable.
+        let epoch_size: u32 = std::env::var("XENO_FEDAVG_EPOCH_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .or_else(|| std::env::var("FEDAVG_MIN_PARTICIPANTS").ok().and_then(|s| s.parse().ok()))
+            .unwrap_or(64);
+        let fedavg_config = FedAvgConfig {
+            min_participants: epoch_size,
+            max_participants: epoch_size.max(10),
+            weighting_strategy: WeightingStrategy::Uniform,
+        };
 
         let checkpoint_history_size = std::env::var("XENO_CHECKPOINT_HISTORY_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(8);
 
