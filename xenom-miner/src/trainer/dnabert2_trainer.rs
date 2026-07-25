@@ -217,11 +217,24 @@ impl DnaBert2Trainer {
     }
 
     /// Load trainable weights from an in-memory SafeTensors buffer into the live VarMap.
+    ///
+    /// For LoRA training, missing `*.lora_a` / `*.lora_b` keys are ignored so that a
+    /// base (non-LoRA) checkpoint can be hot-reloaded; the LoRA matrices were already
+    /// initialized to zero when the model was built.
     pub fn load_weights_from_bytes(&self, weights: &[u8]) -> Result<()> {
         let loaded = candle_core::safetensors::load_buffer(weights, &self.device).context("Failed to load safetensors weights")?;
         let data = self.varmap.data().lock().map_err(|e| anyhow::anyhow!("VarMap poisoned: {}", e))?;
+        let is_lora = !self.base_weights.is_empty();
         for (name, var) in data.iter() {
-            let loaded_var = loaded.get(name).with_context(|| format!("Missing weight {} in checkpoint buffer", name))?;
+            let loaded_var = match loaded.get(name) {
+                Some(v) => v,
+                None => {
+                    if is_lora && (name.ends_with(".lora_a") || name.ends_with(".lora_b")) {
+                        continue;
+                    }
+                    anyhow::bail!("Missing weight {} in checkpoint buffer", name);
+                }
+            };
             let loaded_var = loaded_var.to_device(&self.device)?.to_dtype(var.as_tensor().dtype())?;
             var.set(&loaded_var)?;
         }

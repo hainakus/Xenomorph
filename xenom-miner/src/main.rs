@@ -548,7 +548,7 @@ async fn main() -> Result<()> {
 
                 // Hot-reload the model if the base checkpoint changed.
                 if let Err(e) = maybe_reload_base(&trainer, &rpc_client, &model_cache, &config.model_id, batch.base_checkpoint()).await {
-                    warn!("Failed to reload base checkpoint: {}", e);
+                    warn!("Failed to reload base checkpoint: {:#}", e);
                     current_batch = Some(batch);
                     tokio::time::sleep(RETRY_DELAY).await;
                     return Ok::<_, anyhow::Error>(());
