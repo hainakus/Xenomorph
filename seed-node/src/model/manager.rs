@@ -10,6 +10,21 @@ use uuid::Uuid;
 use crate::consensus::fedavg::{FedAvgAggregator, FedAvgConfig, WeightingStrategy};
 use crate::rpc::messages::{GradientLayer, GradientPayload, GradientUpdate, TrainingBatch};
 
+/// Build a `HashMap` of named gradient tensors from averaged gradient vectors,
+/// using the trainer's variable shapes and casting to F32 on CPU.
+fn build_named_grads(trainer: &DnaBert2Trainer, averages: HashMap<String, Vec<f32>>) -> Result<HashMap<String, Tensor>> {
+    let data = trainer.varmap().data().lock().map_err(|e| anyhow!("VarMap poisoned: {}", e))?;
+    let mut named_grads = HashMap::with_capacity(averages.len());
+    for (name, avg) in averages {
+        let var = data.get(&name).ok_or_else(|| anyhow!("Model has no variable named {}", name))?;
+        let shape = var.as_tensor().shape().clone();
+        let grad =
+            Tensor::from_vec(avg, shape, &Device::Cpu).with_context(|| format!("Failed to build gradient tensor for {}", name))?;
+        named_grads.insert(name, grad.to_dtype(DType::F32)?);
+    }
+    Ok(named_grads)
+}
+
 /// Decompress a possibly sparse `GradientLayer` into a full flattened `Vec<f32>`.
 /// Dense layers are validated and cloned; compressed layers scatter the stored
 /// values back into a zero vector of the original shape.
@@ -54,7 +69,7 @@ use model_crypto;
 use xenom_miner::lora::LoraConfig;
 use xenom_miner::model::DnaBert2Config;
 use xenom_miner::tokenizer::DnaTokenizer;
-use xenom_miner::trainer::DnaBert2Trainer;
+use xenom_miner::trainer::{DnaBert2Trainer, ManualAdamW};
 
 #[derive(Debug, Clone)]
 pub struct ModelInfo {
@@ -66,6 +81,31 @@ pub struct ModelInfo {
     pub loaded: bool,
     pub last_used: u64,
     pub lora_config: Option<LoraConfig>,
+}
+
+/// A snapshot of a checkpoint's trainable weights and optimizer state.
+/// Kept per-head so that stale-but-related gradients can be rebased onto the
+/// active checkpoint using the exact base they were computed against.
+#[derive(Clone)]
+pub struct CheckpointSnapshot {
+    pub weights: HashMap<String, Tensor>,
+    pub optimizer: ManualAdamW,
+}
+
+/// A pending rebase for a stale base that is still in the active lineage.
+/// Gradients for this base are aggregated separately and flushed onto the
+/// active checkpoint when the rebase epoch expires or its cap is reached.
+pub struct PendingRebase {
+    pub epoch_started: Option<Instant>,
+    pub aggregator: FedAvgAggregator,
+    pub epoch_duration: Duration,
+    pub epoch_size_cap: u32,
+}
+
+impl PendingRebase {
+    pub fn new(fedavg_config: FedAvgConfig, epoch_duration: Duration, epoch_size_cap: u32) -> Self {
+        Self { epoch_started: None, aggregator: FedAvgAggregator::new(fedavg_config), epoch_duration, epoch_size_cap }
+    }
 }
 
 /// A cached, trainable checkpoint lineage.
@@ -91,6 +131,13 @@ pub struct CachedCheckpoint {
     pub epoch_duration: Duration,
     /// Optional hard cap on the number of gradients per epoch (0 = disabled).
     pub epoch_size_cap: u32,
+    /// Snapshots of previous heads in this lineage. The key is the head hash
+    /// and the value holds the trainable weights and optimizer state at that point.
+    pub snapshots: HashMap<[u8; 32], CheckpointSnapshot>,
+    /// Gradients for stale-but-related bases that are waiting to be rebased.
+    pub pending_rebases: HashMap<[u8; 32], PendingRebase>,
+    /// FedAvg configuration shared by this checkpoint's aggregators.
+    pub fedavg_config: FedAvgConfig,
 }
 
 pub struct ModelManager {
@@ -455,6 +502,11 @@ impl ModelManager {
         models.get(model_id).cloned()
     }
 
+    /// Return the active checkpoint hash for `model_id`, if known.
+    pub async fn active_hash(&self, model_id: &str) -> Option<[u8; 32]> {
+        self.get_model(model_id).await.map(|info| info.checkpoint.weights_hash)
+    }
+
     /// Check whether `ancestor` is in the active checkpoint lineage for `model_id`.
     /// This allows stale-but-related bases to be accepted for block rewards and
     /// rebased onto the current active checkpoint.
@@ -542,9 +594,11 @@ impl ModelManager {
     /// Submit an encrypted gradient update for FedAvg aggregation.
     ///
     /// The update is accepted if its `base_checkpoint` is present in the bounded
-    /// checkpoint cache. The averaged gradient is applied to the matching
-    /// checkpoint lineage. A new checkpoint hash is returned only when the
-    /// updated lineage was the active model checkpoint.
+    /// checkpoint cache or is an ancestor of the active checkpoint. When the base
+    /// is the active checkpoint, the averaged gradient is applied directly. When
+    /// the base is a stale but related checkpoint, the averaged gradient is first
+    /// applied to the snapshot of that base to compute a delta; the delta is then
+    /// added to the active checkpoint (delta rebase).
     pub async fn submit_gradients(&self, update: &GradientUpdate) -> Result<Option<[u8; 32]>> {
         if update.participant_weight <= 0.0 {
             bail!("participant_weight must be positive");
@@ -563,7 +617,7 @@ impl ModelManager {
         self.ensure_checkpoint_cached(&update.model_id).await?;
 
         // Look up the base checkpoint in the bounded cache. If it is absent, the
-        // gradient is too stale to be accepted.
+        // gradient may still be valid if it is an ancestor of the active checkpoint.
         let entry = {
             let cache = self.checkpoint_cache.read().await;
             match cache.get(&update.base_checkpoint).cloned() {
@@ -581,7 +635,22 @@ impl ModelManager {
         // Update LRU ordering for the base key.
         self.touch_cache_key(update.base_checkpoint).await;
 
-        let (old_head_hash, averages) = {
+        let active_hash =
+            self.active_hash(&update.model_id).await.ok_or_else(|| anyhow!("No active checkpoint for {}", update.model_id))?;
+        let base = update.base_checkpoint;
+        let is_active = base == active_hash;
+
+        if !is_active && !self.is_ancestor_of_active(&update.model_id, base).await {
+            bail!(
+                "Gradient base {} is not active nor an ancestor of active {} for {}",
+                hex::encode(base),
+                hex::encode(active_hash),
+                update.model_id
+            );
+        }
+
+        let first_layer = payload.layer_gradients.keys().next().unwrap().clone();
+        let (old_head, averages) = {
             let mut entry_guard = entry.lock().await;
             entry_guard.last_used = Instant::now();
 
@@ -589,107 +658,168 @@ impl ModelManager {
                 bail!("Gradient base checkpoint belongs to model {} not {}", entry_guard.model_id, update.model_id);
             }
 
-            for (name, layer) in &payload.layer_gradients {
-                let gradient =
-                    decompress_gradient_layer(layer).with_context(|| format!("Failed to decompress gradient for layer {}", name))?;
-                entry_guard
-                    .aggregator
-                    .add_gradient(name, gradient, layer.shape.clone(), update.participant_weight)
-                    .with_context(|| format!("Failed to add gradient for layer {}", name))?;
+            if is_active {
+                // Active checkpoint: aggregate directly into the main aggregator.
+                for (name, layer) in &payload.layer_gradients {
+                    let gradient = decompress_gradient_layer(layer)
+                        .with_context(|| format!("Failed to decompress gradient for layer {}", name))?;
+                    entry_guard
+                        .aggregator
+                        .add_gradient(name, gradient, layer.shape.clone(), update.participant_weight)
+                        .with_context(|| format!("Failed to add gradient for layer {}", name))?;
+                }
+
+                if entry_guard.epoch_started.is_none() {
+                    entry_guard.epoch_started = Some(Instant::now());
+                }
+                let participant_count = entry_guard.aggregator.participant_count(&first_layer);
+                let elapsed = entry_guard.epoch_started.unwrap().elapsed();
+                let ready_by_time = elapsed >= entry_guard.epoch_duration;
+                let ready_by_count = entry_guard.epoch_size_cap > 0 && participant_count >= entry_guard.epoch_size_cap;
+
+                if !ready_by_time && !ready_by_count {
+                    info!(
+                        "Collected gradients for {} ({} participants, {}/{}s elapsed)",
+                        update.model_id,
+                        participant_count,
+                        elapsed.as_secs(),
+                        entry_guard.epoch_duration.as_secs()
+                    );
+                    return Ok(None);
+                }
+
+                let averages = entry_guard.aggregator.compute_all_averages().context("Failed to compute averaged gradients")?;
+                let old_head = entry_guard.head_hash;
+                entry_guard.aggregator.reset();
+                entry_guard.epoch_started = None;
+                (old_head, averages)
+            } else {
+                // Stale-but-related base: aggregate into a separate pending rebase.
+                let config = entry_guard.fedavg_config.clone();
+                let duration = entry_guard.epoch_duration;
+                let cap = entry_guard.epoch_size_cap;
+                let pending = entry_guard.pending_rebases.entry(base).or_insert_with(|| PendingRebase::new(config, duration, cap));
+
+                for (name, layer) in &payload.layer_gradients {
+                    let gradient = decompress_gradient_layer(layer)
+                        .with_context(|| format!("Failed to decompress gradient for layer {}", name))?;
+                    pending
+                        .aggregator
+                        .add_gradient(name, gradient, layer.shape.clone(), update.participant_weight)
+                        .with_context(|| format!("Failed to add gradient for layer {}", name))?;
+                }
+
+                if pending.epoch_started.is_none() {
+                    pending.epoch_started = Some(Instant::now());
+                }
+                let participant_count = pending.aggregator.participant_count(&first_layer);
+                let elapsed = pending.epoch_started.unwrap().elapsed();
+                let ready_by_time = elapsed >= pending.epoch_duration;
+                let ready_by_count = pending.epoch_size_cap > 0 && participant_count >= pending.epoch_size_cap;
+
+                if !ready_by_time && !ready_by_count {
+                    info!(
+                        "Collected rebase gradients for {} base {} ({} participants, {}/{}s elapsed)",
+                        update.model_id,
+                        hex::encode(base),
+                        participant_count,
+                        elapsed.as_secs(),
+                        pending.epoch_duration.as_secs()
+                    );
+                    return Ok(None);
+                }
+
+                let averages = pending.aggregator.compute_all_averages().context("Failed to compute averaged gradients")?;
+                entry_guard.pending_rebases.remove(&base);
+                (entry_guard.head_hash, averages)
             }
-
-            // Start the epoch timer on the first gradient of a new epoch.
-            let first_layer = payload.layer_gradients.keys().next().unwrap();
-            if entry_guard.epoch_started.is_none() {
-                entry_guard.epoch_started = Some(Instant::now());
-            }
-            let participant_count = entry_guard.aggregator.participant_count(first_layer);
-
-            // Decide whether the epoch has ended: either the time window expired
-            // or the optional hard cap on gradients was reached.
-            let elapsed = entry_guard.epoch_started.unwrap().elapsed();
-            let ready_by_time = elapsed >= entry_guard.epoch_duration;
-            let ready_by_count = entry_guard.epoch_size_cap > 0 && participant_count >= entry_guard.epoch_size_cap;
-
-            if !ready_by_time && !ready_by_count {
-                info!(
-                    "Collected gradients for {} ({} participants, {}/{}s elapsed)",
-                    update.model_id,
-                    participant_count,
-                    elapsed.as_secs(),
-                    entry_guard.epoch_duration.as_secs()
-                );
-                return Ok(None);
-            }
-
-            let averages = entry_guard.aggregator.compute_all_averages().context("Failed to compute averaged gradients")?;
-            let old_head = entry_guard.head_hash;
-            entry_guard.aggregator.reset();
-            entry_guard.epoch_started = None;
-            (old_head, averages)
         };
 
         // Apply the averaged gradients on a blocking thread so the async runtime
         // is not paused by the DNABERT-2 forward / backward pass.
         let entry_clone = entry.clone();
         let is_lora = self.lora_config.is_some();
+        let rebase_base = if is_active { None } else { Some(base) };
         let (weights, new_hash) = tokio::task::spawn_blocking(move || {
             let mut entry = entry_clone.blocking_lock();
 
-            let data = entry.trainer.varmap().data().lock().map_err(|e| anyhow!("VarMap poisoned: {}", e))?;
-            let mut named_grads: HashMap<String, Tensor> = HashMap::with_capacity(averages.len());
-            for (name, avg) in averages {
-                let var = data.get(&name).ok_or_else(|| anyhow!("Model has no variable named {}", name))?;
-                let shape = var.as_tensor().shape().clone();
-                let grad = Tensor::from_vec(avg, shape, &Device::Cpu)
-                    .with_context(|| format!("Failed to build gradient tensor for {}", name))?
-                    .to_dtype(DType::F32)?;
-                named_grads.insert(name, grad);
+            if let Some(rebase_base) = rebase_base {
+                // Delta rebase: apply the gradient to the stale base snapshot, then
+                // add the resulting weight-space delta to the active checkpoint.
+                let snapshot = entry
+                    .snapshots
+                    .get(&rebase_base)
+                    .cloned()
+                    .ok_or_else(|| anyhow!("Missing snapshot for rebase base {}", hex::encode(rebase_base)))?;
+                let named_grads = build_named_grads(&entry.trainer, averages)?;
+
+                let old_active_snapshot = CheckpointSnapshot {
+                    weights: entry.trainer.trainable_weights().context("Failed to snapshot active weights")?,
+                    optimizer: entry.trainer.clone_optimizer().context("Failed to snapshot active optimizer")?,
+                };
+
+                let delta = entry
+                    .trainer
+                    .compute_delta_from_snapshot(&snapshot.weights, &snapshot.optimizer, &named_grads, 1e-5f32)
+                    .context("Failed to compute rebase delta")?;
+                entry.trainer.apply_weight_delta(&delta).context("Failed to apply rebase delta")?;
+
+                let weights = entry.trainer.save_weights_to_bytes().context("Failed to serialize rebased weights")?;
+                let new_hash = <[u8; 32]>::from(blake3::hash(&weights));
+                entry.snapshots.insert(old_head, old_active_snapshot);
+                entry.head_hash = new_hash;
+                entry.last_used = Instant::now();
+                if is_lora {
+                    entry.adapter_bytes = entry.trainer.save_adapter_to_bytes().ok();
+                }
+                Ok::<_, anyhow::Error>((weights, new_hash))
+            } else {
+                // Active checkpoint: apply the gradient directly and persist the new state.
+                let named_grads = build_named_grads(&entry.trainer, averages)?;
+
+                let old_snapshot = CheckpointSnapshot {
+                    weights: entry.trainer.trainable_weights().context("Failed to snapshot active weights")?,
+                    optimizer: entry.trainer.clone_optimizer().context("Failed to snapshot active optimizer")?,
+                };
+
+                entry.trainer.apply_gradients(&named_grads, 1e-5f32).context("Failed to apply averaged gradients")?;
+
+                let weights = entry.trainer.save_weights_to_bytes().context("Failed to serialize updated weights")?;
+                let new_hash = <[u8; 32]>::from(blake3::hash(&weights));
+                entry.snapshots.insert(old_head, old_snapshot);
+                entry.head_hash = new_hash;
+                entry.last_used = Instant::now();
+                if is_lora {
+                    entry.adapter_bytes = entry.trainer.save_adapter_to_bytes().ok();
+                }
+                Ok::<_, anyhow::Error>((weights, new_hash))
             }
-            drop(data);
-
-            // Use AdamW on the server so moment estimates persist across aggregation rounds.
-            entry.trainer.apply_gradients(&named_grads, 1e-5f32).context("Failed to apply averaged gradients")?;
-
-            // Serialize weights in memory to avoid a temporary disk round-trip.
-            let weights = entry.trainer.save_weights_to_bytes().context("Failed to serialize updated weights")?;
-            let new_hash = blake3::hash(&weights);
-            let new_hash_bytes = <[u8; 32]>::from(new_hash);
-
-            entry.head_hash = new_hash_bytes;
-            entry.last_used = Instant::now();
-
-            // Refresh the in-memory adapter bytes for Phase 2 adapter-only sync.
-            if is_lora {
-                entry.adapter_bytes = entry.trainer.save_adapter_to_bytes().ok();
-            }
-
-            Ok::<_, anyhow::Error>((weights, new_hash_bytes))
         })
         .await
         .context("Gradient aggregation task panicked")??;
 
-        // Determine whether this lineage was the active checkpoint before the update.
-        let old_active = self.get_model(&update.model_id).await.map(|info| info.checkpoint.weights_hash);
-        let promoted_to_active = old_active == Some(old_head_hash);
+        self.finalize_new_head(&update.model_id, weights, old_head, new_hash, entry.clone()).await?;
+        info!("FedAvg produced new active checkpoint for {}: hash {}", update.model_id, hex::encode(new_hash));
+        Ok(Some(new_hash))
+    }
 
-        if promoted_to_active {
-            let files = self
-                .storage
-                .load_model_metadata(&update.model_id)
-                .await
-                .map_err(|e| anyhow!("Failed to load model metadata: {}", e))?;
-            let new_files = RawModelFiles { config: files.config, tokenizer: files.tokenizer, weights };
-            self.store_model_files(&update.model_id, &new_files, ModelMetrics::default()).await?;
-            info!("FedAvg produced new active checkpoint for {}: hash {}", update.model_id, hex::encode(new_hash));
-        } else {
-            info!("FedAvg produced checkpoint for {}: hash {} (not active)", update.model_id, hex::encode(new_hash));
-        }
+    /// Store a new head as the active checkpoint, update lineage, and refresh the cache.
+    async fn finalize_new_head(
+        &self,
+        model_id: &str,
+        weights: Vec<u8>,
+        old_head: [u8; 32],
+        new_hash: [u8; 32],
+        entry: Arc<Mutex<CachedCheckpoint>>,
+    ) -> Result<()> {
+        let files = self.storage.load_model_metadata(model_id).await.map_err(|e| anyhow!("Failed to load model metadata: {}", e))?;
+        let new_files = RawModelFiles { config: files.config, tokenizer: files.tokenizer, weights };
+        self.store_model_files(model_id, &new_files, ModelMetrics::default()).await?;
 
         // Track the lineage so we can rebase or accept stale-but-related blocks later.
         {
             let mut lineage = self.lineage.write().await;
-            lineage.insert(new_hash, old_head_hash);
+            lineage.insert(new_hash, old_head);
         }
 
         // Insert a new cache entry keyed by the new head so that future gradients
@@ -697,17 +827,12 @@ impl ModelManager {
         {
             let mut cache = self.checkpoint_cache.write().await;
             let mut order = self.cache_order.lock().await;
-            cache.insert(new_hash, entry.clone());
+            cache.insert(new_hash, entry);
             order.push_back(new_hash);
-            let active_for_eviction = if promoted_to_active { new_hash } else { old_active.unwrap_or(new_hash) };
-            self.evict_lru_not_active(&mut cache, &mut order, active_for_eviction);
+            self.evict_lru_not_active(&mut cache, &mut order, new_hash);
         }
 
-        if promoted_to_active {
-            Ok(Some(new_hash))
-        } else {
-            Ok(None)
-        }
+        Ok(())
     }
 
     /// Ensure that the active checkpoint for `model_id` is represented in the
@@ -803,6 +928,11 @@ impl ModelManager {
             None
         };
 
+        let mut snapshots = HashMap::new();
+        let initial_weights = trainer.trainable_weights().context("Failed to snapshot initial trainable weights")?;
+        let initial_optimizer = trainer.clone_optimizer().context("Failed to snapshot initial optimizer")?;
+        snapshots.insert(active_hash, CheckpointSnapshot { weights: initial_weights, optimizer: initial_optimizer });
+
         let entry = CachedCheckpoint {
             base_hash,
             head_hash: active_hash,
@@ -814,6 +944,9 @@ impl ModelManager {
             epoch_started: None,
             epoch_duration: self.epoch_duration,
             epoch_size_cap: self.epoch_size_cap,
+            snapshots,
+            pending_rebases: HashMap::new(),
+            fedavg_config: self.fedavg_config.clone(),
         };
 
         Ok(Arc::new(Mutex::new(entry)))
@@ -888,5 +1021,160 @@ mod tests {
 
         let sparse = GradientLayer { values: vec![5.0, 7.0], shape: vec![4], indices: vec![0, 3] };
         assert_eq!(decompress_gradient_layer(&sparse).unwrap(), vec![5.0, 0.0, 0.0, 7.0]);
+    }
+
+    fn build_test_tokenizer() -> Vec<u8> {
+        use tokenizers::models::bpe::{Vocab, BPE};
+        use tokenizers::tokenizer::AddedToken;
+
+        let mut vocab: Vocab = Vocab::new();
+        vocab.insert("<pad>".to_string(), 0);
+        vocab.insert("A".to_string(), 1);
+        vocab.insert("T".to_string(), 2);
+        vocab.insert("C".to_string(), 3);
+        vocab.insert("G".to_string(), 4);
+        vocab.insert("<mask>".to_string(), 5);
+
+        let bpe = BPE::new(vocab, vec![]);
+        let mut tokenizer = tokenizers::Tokenizer::new(bpe);
+        tokenizer.add_special_tokens(&[AddedToken::from("<mask>", true), AddedToken::from("<pad>", true)]);
+
+        serde_json::to_vec(&tokenizer).expect("failed to serialize test tokenizer")
+    }
+
+    fn insert_weight(map: &mut HashMap<String, Tensor>, name: &str, shape: &[usize]) {
+        let n = shape.iter().product();
+        let data: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.01).sin() + 0.001).collect();
+        let t = Tensor::from_vec(data, shape, &Device::Cpu).unwrap();
+        map.insert(name.to_string(), t);
+    }
+
+    fn build_tiny_dnabert2_files() -> RawModelFiles {
+        let config = DnaBert2Config {
+            vocab_size: 8,
+            hidden_size: 4,
+            num_hidden_layers: 1,
+            num_attention_heads: 2,
+            intermediate_size: 8,
+            max_position_embeddings: 16,
+            type_vocab_size: 2,
+            hidden_dropout: 0.0,
+            attention_dropout: 0.0,
+            layer_norm_eps: 1e-12,
+            hidden_act: "gelu".to_string(),
+            position_embedding_type: "alibi".to_string(),
+            alibi_starting_size: Some(16),
+            tie_word_embeddings: true,
+            pad_token_id: 0,
+            mask_token_id: 5,
+            bos_token_id: 1,
+            eos_token_id: 2,
+            num_labels: None,
+        };
+
+        let mut tensors: HashMap<String, Tensor> = HashMap::new();
+        insert_weight(&mut tensors, "model.embeddings.word_embeddings.weight", &[config.vocab_size, config.hidden_size]);
+        insert_weight(&mut tensors, "model.embeddings.token_type_embeddings.weight", &[config.type_vocab_size, config.hidden_size]);
+        insert_weight(&mut tensors, "model.embeddings.layer_norm.weight", &[config.hidden_size]);
+        insert_weight(&mut tensors, "model.embeddings.layer_norm.bias", &[config.hidden_size]);
+
+        for i in 0..config.num_hidden_layers {
+            let prefix = format!("model.encoder.layer.{}", i);
+            insert_weight(&mut tensors, &format!("{}.attention.self.query.weight", prefix), &[config.hidden_size, config.hidden_size]);
+            insert_weight(&mut tensors, &format!("{}.attention.self.query.bias", prefix), &[config.hidden_size]);
+            insert_weight(&mut tensors, &format!("{}.attention.self.key.weight", prefix), &[config.hidden_size, config.hidden_size]);
+            insert_weight(&mut tensors, &format!("{}.attention.self.key.bias", prefix), &[config.hidden_size]);
+            insert_weight(&mut tensors, &format!("{}.attention.self.value.weight", prefix), &[config.hidden_size, config.hidden_size]);
+            insert_weight(&mut tensors, &format!("{}.attention.self.value.bias", prefix), &[config.hidden_size]);
+            insert_weight(
+                &mut tensors,
+                &format!("{}.attention.output.dense.weight", prefix),
+                &[config.hidden_size, config.hidden_size],
+            );
+            insert_weight(&mut tensors, &format!("{}.attention.output.dense.bias", prefix), &[config.hidden_size]);
+            insert_weight(&mut tensors, &format!("{}.attention.output.layer_norm.weight", prefix), &[config.hidden_size]);
+            insert_weight(&mut tensors, &format!("{}.attention.output.layer_norm.bias", prefix), &[config.hidden_size]);
+            insert_weight(
+                &mut tensors,
+                &format!("{}.mlp.up_proj.weight", prefix),
+                &[config.intermediate_size * 2, config.hidden_size],
+            );
+            insert_weight(&mut tensors, &format!("{}.mlp.down_proj.weight", prefix), &[config.hidden_size, config.intermediate_size]);
+            insert_weight(&mut tensors, &format!("{}.mlp.down_proj.bias", prefix), &[config.hidden_size]);
+            insert_weight(&mut tensors, &format!("{}.mlp.layer_norm.weight", prefix), &[config.hidden_size]);
+            insert_weight(&mut tensors, &format!("{}.mlp.layer_norm.bias", prefix), &[config.hidden_size]);
+        }
+
+        insert_weight(&mut tensors, "lm_head.transform.dense.weight", &[config.hidden_size, config.hidden_size]);
+        insert_weight(&mut tensors, "lm_head.transform.dense.bias", &[config.hidden_size]);
+        insert_weight(&mut tensors, "lm_head.transform.layer_norm.weight", &[config.hidden_size]);
+        insert_weight(&mut tensors, "lm_head.transform.layer_norm.bias", &[config.hidden_size]);
+        insert_weight(&mut tensors, "lm_head.bias", &[config.vocab_size]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.safetensors");
+        candle_core::safetensors::save(&tensors, &path).unwrap();
+        let weights = std::fs::read(&path).unwrap();
+
+        let config_bytes = serde_json::to_vec(&config).unwrap();
+        let tokenizer_bytes = build_test_tokenizer();
+
+        RawModelFiles { config: config_bytes, tokenizer: tokenizer_bytes, weights }
+    }
+
+    fn encrypted_update(model_id: &str, base: [u8; 32], payload: GradientPayload, key: &[u8; 32]) -> GradientUpdate {
+        let plaintext = borsh::to_vec(&payload).unwrap();
+        let encrypted_payload = model_crypto::encrypt(&plaintext, key).unwrap();
+        GradientUpdate { model_id: model_id.to_string(), base_checkpoint: base, encrypted_payload, participant_weight: 1.0 }
+    }
+
+    #[tokio::test]
+    async fn test_delta_rebase_produces_new_active_checkpoint() {
+        // Force single-gradient epochs so the test does not have to wait.
+        std::env::set_var("XENO_EPOCH_DURATION_SECS", "0");
+        std::env::set_var("XENO_FEDAVG_EPOCH_SIZE", "1");
+
+        let dir = tempfile::tempdir().unwrap();
+        let key = [0u8; 32];
+        let manager = ModelManager::new_with_key(dir.path().to_string_lossy().to_string(), key, None).await.unwrap();
+        let model_id = "dnabert2-tiny";
+
+        let files = build_tiny_dnabert2_files();
+        manager.store_model_files(model_id, &files, ModelMetrics::default()).await.unwrap();
+        manager.load_model(model_id).await.unwrap();
+
+        let base = manager.active_hash(model_id).await.unwrap();
+
+        // Active update: produces H1.
+        let payload = GradientPayload {
+            layer_gradients: HashMap::from([(
+                "lm_head.bias".to_string(),
+                GradientLayer { values: vec![0.1; 8], shape: vec![8], indices: vec![] },
+            )]),
+        };
+        let h1 = manager
+            .submit_gradients(&encrypted_update(model_id, base, payload.clone(), &key))
+            .await
+            .unwrap()
+            .expect("active update should produce a new checkpoint");
+        assert_ne!(h1, base);
+        assert_eq!(manager.active_hash(model_id).await.unwrap(), h1);
+
+        // Stale-but-related update: computed against base A, rebased onto active H1.
+        let h2 = manager
+            .submit_gradients(&encrypted_update(model_id, base, payload, &key))
+            .await
+            .unwrap()
+            .expect("stale update should be rebased onto active checkpoint");
+        assert_ne!(h2, h1);
+        assert_ne!(h2, base);
+        assert_eq!(manager.active_hash(model_id).await.unwrap(), h2);
+
+        // Ensure the resulting checkpoint can be loaded without corruption.
+        let (checkpoint, loaded) = manager.get_model_checkpoint(model_id).await.unwrap();
+        assert_eq!(checkpoint.weights_hash, h2);
+        assert!(!loaded.weights.is_empty());
+        assert!(loaded.weights.len() > 8);
+        assert_eq!(loaded.weights[8], b'{'); // SafeTensors header starts with JSON
     }
 }

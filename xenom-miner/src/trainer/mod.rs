@@ -15,7 +15,7 @@ use crate::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch};
 use anyhow::Result;
 
 pub use cpu_trainer::CpuTrainer;
-pub use dnabert2_trainer::DnaBert2Trainer;
+pub use dnabert2_trainer::{DnaBert2Trainer, ManualAdamW};
 pub use gpu_trainer::{GpuBackend, GpuTrainer};
 pub use mixed_precision::MixedPrecisionScaler;
 pub use mock_trainer::MockTrainer;

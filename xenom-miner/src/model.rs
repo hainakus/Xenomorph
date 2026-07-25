@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Configuration for `multimolecule/dnabert2` and compatible DNABERT-2 checkpoints.
 ///
 /// Mirrors the Hugging Face `config.json` fields that are relevant for the Rust
 /// implementation. Unknown or unused keys are ignored on deserialization.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DnaBert2Config {
     pub vocab_size: usize,
     pub hidden_size: usize,

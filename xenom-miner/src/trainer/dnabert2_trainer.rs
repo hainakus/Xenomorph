@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Device, Tensor, Var};
 use candle_nn::loss;
 
 use crate::data::{MlmBatch, MlmBatchGenerator};
@@ -283,6 +283,65 @@ impl DnaBert2Trainer {
         &self.varmap
     }
 
+    /// Return a copy of the current trainable weights keyed by variable name.
+    pub fn trainable_weights(&self) -> Result<HashMap<String, Tensor>> {
+        let data = self.varmap.data().lock().map_err(|e| anyhow::anyhow!("VarMap poisoned: {}", e))?;
+        Ok(data.iter().map(|(k, v)| (k.clone(), v.as_tensor().clone())).collect())
+    }
+
+    /// Return a clone of the AdamW optimizer state.
+    pub fn clone_optimizer(&self) -> Result<ManualAdamW> {
+        let optimizer = self.optimizer.lock().map_err(|e| anyhow::anyhow!("Optimizer mutex poisoned: {}", e))?;
+        Ok(optimizer.clone())
+    }
+
+    /// Apply a raw weight-space delta to the current trainable variables.
+    /// This is used for delta rebase: B' = B + delta.
+    pub fn apply_weight_delta(&self, delta: &HashMap<String, Tensor>) -> Result<()> {
+        let data = self.varmap.data().lock().map_err(|e| anyhow::anyhow!("VarMap poisoned: {}", e))?;
+        for (name, var) in data.iter() {
+            if let Some(d) = delta.get(name) {
+                let current = var.as_tensor();
+                let updated = current.broadcast_add(d).with_context(|| format!("Failed to apply delta to {}", name))?;
+                var.set(&updated).with_context(|| format!("Failed to set updated tensor for {}", name))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Compute the weight-space delta `A' - A` that results from applying the
+    /// averaged gradients to a snapshot of base `A` using `A`'s optimizer state.
+    /// The returned delta can be added to the active checkpoint `B` to produce `B'`.
+    pub fn compute_delta_from_snapshot(
+        &self,
+        snapshot_weights: &HashMap<String, Tensor>,
+        snapshot_optimizer: &ManualAdamW,
+        named_grads: &HashMap<String, Tensor>,
+        learning_rate: f32,
+    ) -> Result<HashMap<String, Tensor>> {
+        let temp_varmap = candle_nn::VarMap::new();
+        {
+            let mut data = temp_varmap.data().lock().map_err(|e| anyhow::anyhow!("VarMap poisoned: {}", e))?;
+            for (name, tensor) in snapshot_weights {
+                let var = Var::from_tensor(tensor).with_context(|| format!("Failed to create Var for {}", name))?;
+                data.insert(name.clone(), var);
+            }
+        }
+
+        let mut optimizer = snapshot_optimizer.clone();
+        optimizer.set_learning_rate(learning_rate.min(MAX_LEARNING_RATE) as f64);
+        optimizer.step(&temp_varmap, named_grads).context("Failed to apply gradients to snapshot")?;
+
+        let updated = temp_varmap.data().lock().map_err(|e| anyhow::anyhow!("VarMap poisoned: {}", e))?;
+        let mut delta = HashMap::with_capacity(snapshot_weights.len());
+        for (name, var) in updated.iter() {
+            let snapshot_tensor = snapshot_weights.get(name).ok_or_else(|| anyhow::anyhow!("Missing snapshot weight for {}", name))?;
+            let d = var.as_tensor().sub(snapshot_tensor).with_context(|| format!("Failed to compute delta for {}", name))?;
+            delta.insert(name.clone(), d);
+        }
+        Ok(delta)
+    }
+
     /// Compute the scalar loss for a batch without taking gradients.
     pub(crate) fn compute_loss_scalar(&self, mlm_batch: &MlmBatch) -> Result<f64> {
         let (input_ids, attention_mask, labels, mask) = self.build_tensors(mlm_batch)?;
@@ -378,7 +437,7 @@ impl Trainer for DnaBert2Trainer {
 /// gradient map. This exists because `candle_core::backprop::GradStore` cannot
 /// be constructed from outside the crate, which prevents feeding averaged
 /// multi-GPU gradients into `candle_nn::AdamW`.
-pub(crate) struct ManualAdamW {
+pub struct ManualAdamW {
     step_t: usize,
     lr: f64,
     beta1: f64,
@@ -389,8 +448,29 @@ pub(crate) struct ManualAdamW {
     moments: Mutex<HashMap<String, (Tensor, Tensor)>>,
 }
 
+impl Clone for ManualAdamW {
+    fn clone(&self) -> Self {
+        let moments = self
+            .moments
+            .lock()
+            .expect("ManualAdamW moments mutex poisoned during clone")
+            .iter()
+            .map(|(k, (m, v))| (k.clone(), (m.clone(), v.clone())))
+            .collect();
+        Self {
+            step_t: self.step_t,
+            lr: self.lr,
+            beta1: self.beta1,
+            beta2: self.beta2,
+            eps: self.eps,
+            weight_decay: self.weight_decay,
+            moments: Mutex::new(moments),
+        }
+    }
+}
+
 impl ManualAdamW {
-    pub(crate) fn new(learning_rate: f64) -> Self {
+    pub fn new(learning_rate: f64) -> Self {
         Self {
             step_t: 0,
             lr: learning_rate,
@@ -402,12 +482,12 @@ impl ManualAdamW {
         }
     }
 
-    pub(crate) fn set_learning_rate(&mut self, lr: f64) {
+    pub fn set_learning_rate(&mut self, lr: f64) {
         self.lr = lr;
     }
 
     /// Reset the AdamW step counter and first/second moment buffers.
-    pub(crate) fn reset(&mut self) -> Result<()> {
+    pub fn reset(&mut self) -> Result<()> {
         self.step_t = 0;
         let mut moments = self.moments.lock().map_err(|e| anyhow::anyhow!("Moments mutex poisoned: {}", e))?;
         moments.clear();
@@ -415,7 +495,7 @@ impl ManualAdamW {
     }
 
     /// Apply named gradients (multi-GPU path where gradients are already on CPU and in F32).
-    pub(crate) fn step(&mut self, varmap: &candle_nn::VarMap, named_grads: &HashMap<String, Tensor>) -> Result<()> {
+    pub fn step(&mut self, varmap: &candle_nn::VarMap, named_grads: &HashMap<String, Tensor>) -> Result<()> {
         self.step_t += 1;
         let lr = self.lr;
         let lambda = self.weight_decay;
@@ -691,5 +771,40 @@ mod tests {
         assert_eq!(result.batch_indices, vec![0, 1]);
         assert!(!result.gradients_commitment.iter().all(|&b| b == 0));
         assert!(result.loss_after <= result.loss_before);
+    }
+
+    #[test]
+    fn test_delta_rebase_matches_direct_training() {
+        let (config, weights) = build_tiny_safetensors();
+        let tokenizer = build_tiny_tokenizer();
+        let base_trainer =
+            DnaBert2Trainer::new(config.clone(), weights.clone(), tokenizer.clone(), Device::Cpu, 2, DType::F32, None).unwrap();
+
+        let batch = base_trainer.generator.generate(&dummy_batch()).unwrap();
+        let (_, named_grads) = base_trainer.compute_gradients(&batch, 1.0).unwrap();
+
+        // Snapshot the base before any update.
+        let snapshot_weights = base_trainer.trainable_weights().unwrap();
+        let snapshot_optimizer = base_trainer.clone_optimizer().unwrap();
+
+        // Directly train a copy of the base and capture its new weights.
+        let direct_trainer =
+            DnaBert2Trainer::new(config.clone(), weights.clone(), tokenizer.clone(), Device::Cpu, 2, DType::F32, None).unwrap();
+        direct_trainer.apply_gradients(&named_grads, 1e-5f32).unwrap();
+        let direct_weights = direct_trainer.trainable_weights().unwrap();
+
+        // Rebase: compute delta from the base snapshot and apply it to another copy.
+        let rebased_trainer = DnaBert2Trainer::new(config, weights, tokenizer, Device::Cpu, 2, DType::F32, None).unwrap();
+        let delta =
+            rebased_trainer.compute_delta_from_snapshot(&snapshot_weights, &snapshot_optimizer, &named_grads, 1e-5f32).unwrap();
+        rebased_trainer.apply_weight_delta(&delta).unwrap();
+        let rebased_weights = rebased_trainer.trainable_weights().unwrap();
+
+        // The rebased weights should match the directly trained weights.
+        for (name, direct) in direct_weights {
+            let rebased = rebased_weights.get(&name).expect("rebased weights missing variable");
+            let diff = direct.sub(rebased).unwrap().abs().unwrap().mean_all().unwrap().to_vec0::<f32>().unwrap();
+            assert!(diff < 1e-6, "delta rebase mismatch for {}: {}", name, diff);
+        }
     }
 }
