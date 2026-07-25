@@ -54,6 +54,8 @@ pub struct MultiGpuConfig {
     pub gradient_top_k_ratio: f32,
     /// Optional LoRA configuration. If `None`, full fine-tuning is performed.
     pub lora_config: Option<LoraConfig>,
+    /// Maximum sequence length per sample; capped at the model's position limit to save VRAM.
+    pub max_seq_len: usize,
 }
 
 impl Default for MultiGpuConfig {
@@ -67,6 +69,7 @@ impl Default for MultiGpuConfig {
             zero_optimization: 0,
             gradient_top_k_ratio: 1.0,
             lora_config: None,
+            max_seq_len: 512,
         }
     }
 }
@@ -81,6 +84,9 @@ impl MultiGpuConfig {
         }
         if self.gradient_accumulation_steps == 0 {
             bail!("gradient-accumulation-steps must be > 0");
+        }
+        if self.max_seq_len == 0 {
+            bail!("max-seq-len must be > 0");
         }
         if self.zero_optimization > 0 {
             bail!("ZeRO optimization level > 0 is not yet implemented");
@@ -158,6 +164,14 @@ impl MultiGpuTrainer {
         if devices.is_empty() {
             bail!("No usable devices for multi-GPU training");
         }
+
+        // Cap sequence length at the requested maximum to control VRAM usage.
+        let mut config = config;
+        config.max_position_embeddings = config.max_position_embeddings.min(gpu_config.max_seq_len);
+        if config.max_position_embeddings == 0 {
+            config.max_position_embeddings = 1;
+        }
+        info!("Using effective sequence length: {}", config.max_position_embeddings);
 
         let scaler = Mutex::new(MixedPrecisionScaler::new(gpu_config.use_mixed_precision));
         let dtype = match scaler.lock() {
@@ -382,7 +396,14 @@ impl MultiGpuTrainer {
                         let (loss, grads) = match trainer.compute_gradients(&micro, loss_scale) {
                             Ok(v) => v,
                             Err(e) => {
-                                warn!("GPU {} gradient computation failed: {}; skipping micro-batch", gpu_idx, e);
+                                let error_string = e.to_string().to_lowercase();
+                                warn!("GPU {} gradient computation failed: {:?}; skipping micro-batch", gpu_idx, e);
+                                if error_string.contains("out of memory")
+                                    || error_string.contains("oom")
+                                    || error_string.contains("cuda")
+                                {
+                                    return Err(e);
+                                }
                                 return Ok(MicroResult { loss: 0.0, weight, grads: None, compute_ms: 0, gather_ms: 0 });
                             }
                         };

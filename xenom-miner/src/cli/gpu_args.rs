@@ -17,6 +17,10 @@ pub struct GpuArgs {
     #[arg(long, default_value_t = 1)]
     pub gradient_accumulation: usize,
 
+    /// Maximum sequence length per sample. The model config is capped at this value to save VRAM.
+    #[arg(long, default_value_t = 512)]
+    pub max_seq_len: usize,
+
     /// Enable FP16 mixed precision on CUDA/Metal backends.
     #[arg(long)]
     pub fp16: bool,
@@ -68,6 +72,9 @@ impl GpuArgs {
         }
         if self.gradient_accumulation == 0 {
             anyhow::bail!("--gradient-accumulation must be > 0");
+        }
+        if self.max_seq_len == 0 {
+            anyhow::bail!("--max-seq-len must be > 0");
         }
         if self.zero > 0 {
             anyhow::bail!("--zero > 0 is not implemented yet");

@@ -14,7 +14,8 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
 use xenom_miner::rpc::messages::{
-    ModelCheckpoint, ModelCheckpointInfo, ModelCheckpointInfoV2, ModelCheckpointV2, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch,
+    ModelCheckpoint, ModelCheckpointInfo, ModelCheckpointInfoV2, ModelCheckpointV2, RpcEnvelope, RpcRequest, RpcResponse,
+    TrainingBatch,
 };
 
 /// Anvil availability guard. Tests that need a real EVM skip gracefully when
@@ -192,13 +193,11 @@ async fn handle_connection(stream: tokio::net::TcpStream, state: Arc<Mutex<MockS
                     RpcRequest::GetModelCheckpointInfo(req) => {
                         RpcResponse::ModelCheckpointInfo(ModelCheckpointInfo { model_id: req.model_id, base_checkpoint: [0u8; 32] })
                     }
-                    RpcRequest::GetModelCheckpointInfoV2(req) => {
-                        RpcResponse::ModelCheckpointInfoV2(ModelCheckpointInfoV2 {
-                            model_id: req.model_id,
-                            base_checkpoint: [0u8; 32],
-                            base_hash: [0u8; 32],
-                        })
-                    }
+                    RpcRequest::GetModelCheckpointInfoV2(req) => RpcResponse::ModelCheckpointInfoV2(ModelCheckpointInfoV2 {
+                        model_id: req.model_id,
+                        base_checkpoint: [0u8; 32],
+                        base_hash: [0u8; 32],
+                    }),
                     RpcRequest::GetModelCheckpointV2(req) => RpcResponse::ModelCheckpointV2(ModelCheckpointV2 {
                         model_id: req.model_id,
                         base_checkpoint: [0u8; 32],

@@ -461,6 +461,7 @@ async fn main() -> Result<()> {
                 zero_optimization: args.gpu.zero,
                 gradient_top_k_ratio: args.gpu.gradient_top_k_ratio,
                 lora_config,
+                max_seq_len: args.gpu.max_seq_len,
             };
             gpu_config.validate()?;
 

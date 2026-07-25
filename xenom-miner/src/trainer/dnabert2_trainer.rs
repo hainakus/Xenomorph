@@ -125,7 +125,8 @@ impl DnaBert2Trainer {
     pub(crate) fn compute_gradients(&self, mlm_batch: &MlmBatch, loss_scale: f32) -> Result<(f64, HashMap<String, Tensor>)> {
         let (input_ids, attention_mask, labels, mask) = self.build_tensors(mlm_batch)?;
 
-        let logits_before = self.model.forward(&input_ids, None, Some(&attention_mask)).context("Forward pass failed")?;
+        let logits_before =
+            self.model.forward(&input_ids, None, Some(&attention_mask)).map_err(|e| anyhow::anyhow!("Forward pass failed: {}", e))?;
         let loss_before = self.compute_loss(&logits_before, &labels, &mask)?;
         let loss_before_scalar = loss_before.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64;
         if !loss_before_scalar.is_finite() {
@@ -241,7 +242,8 @@ impl DnaBert2Trainer {
     /// Compute the scalar loss for a batch without taking gradients.
     pub(crate) fn compute_loss_scalar(&self, mlm_batch: &MlmBatch) -> Result<f64> {
         let (input_ids, attention_mask, labels, mask) = self.build_tensors(mlm_batch)?;
-        let logits = self.model.forward(&input_ids, None, Some(&attention_mask)).context("Forward pass failed")?;
+        let logits =
+            self.model.forward(&input_ids, None, Some(&attention_mask)).map_err(|e| anyhow::anyhow!("Forward pass failed: {}", e))?;
         let loss = self.compute_loss(&logits, &labels, &mask)?;
         Ok(loss.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64)
     }

@@ -205,6 +205,7 @@ mod tests {
             zero_optimization: 0,
             gradient_top_k_ratio: 1.0,
             lora_config: None,
+            max_seq_len: 512,
         };
         let trainer =
             MultiGpuTrainer::new("dnabert2".to_string(), config, weights, tokenizer, gpu_config, GpuBackend::Auto, 2).unwrap();
