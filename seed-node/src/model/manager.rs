@@ -113,6 +113,9 @@ pub struct ModelManager {
     epoch_duration: Duration,
     /// Optional hard cap on the number of gradients per epoch (0 = disabled).
     epoch_size_cap: u32,
+    /// Maps a checkpoint hash to the hash of its direct parent, tracking the
+    /// lineage of active checkpoints so stale-but-related bases can be rebased.
+    lineage: Arc<RwLock<HashMap<[u8; 32], [u8; 32]>>>,
 }
 
 impl ModelManager {
@@ -165,6 +168,7 @@ impl ModelManager {
             lora_config,
             epoch_duration,
             epoch_size_cap,
+            lineage: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -451,6 +455,29 @@ impl ModelManager {
         models.get(model_id).cloned()
     }
 
+    /// Check whether `ancestor` is in the active checkpoint lineage for `model_id`.
+    /// This allows stale-but-related bases to be accepted for block rewards and
+    /// rebased onto the current active checkpoint.
+    pub async fn is_ancestor_of_active(&self, model_id: &str, ancestor: [u8; 32]) -> bool {
+        let active = match self.get_model(model_id).await {
+            Some(info) => info.checkpoint.weights_hash,
+            None => return false,
+        };
+        if ancestor == active {
+            return true;
+        }
+        let lineage = self.lineage.read().await;
+        let mut current = active;
+        for _ in 0..self.checkpoint_history_size.saturating_add(1) {
+            match lineage.get(&current) {
+                Some(parent) if *parent == ancestor => return true,
+                Some(parent) => current = *parent,
+                None => break,
+            }
+        }
+        false
+    }
+
     pub async fn update_last_used(&self, model_id: &str) -> Result<()> {
         let mut models = self.models.write().await;
         if let Some(model) = models.get_mut(model_id) {
@@ -657,6 +684,12 @@ impl ModelManager {
             info!("FedAvg produced new active checkpoint for {}: hash {}", update.model_id, hex::encode(new_hash));
         } else {
             info!("FedAvg produced checkpoint for {}: hash {} (not active)", update.model_id, hex::encode(new_hash));
+        }
+
+        // Track the lineage so we can rebase or accept stale-but-related blocks later.
+        {
+            let mut lineage = self.lineage.write().await;
+            lineage.insert(new_hash, old_head_hash);
         }
 
         // Insert a new cache entry keyed by the new head so that future gradients

@@ -337,8 +337,17 @@ impl Coordinator {
         let miner_proof = &block.training_proof;
         let base_checkpoint = Hash::from_bytes(miner_proof.base_checkpoint);
         if base_checkpoint != active_weights_hash {
-            warn!("Rejecting training block: base checkpoint {} != active weights hash {}", base_checkpoint, active_weights_hash);
-            return RpcResponse::Error("Base checkpoint does not match active model weights hash".to_string());
+            // Accept blocks whose base is a stale but direct ancestor of the active
+            // checkpoint. The gradient will be rebased onto the active lineage.
+            if self.inner.model_manager.is_ancestor_of_active(&block.model_id, miner_proof.base_checkpoint).await {
+                warn!(
+                    "Accepting training block with stale base {} (active {}); rebasing onto active lineage",
+                    base_checkpoint, active_weights_hash
+                );
+            } else {
+                warn!("Rejecting training block: base checkpoint {} != active weights hash {}", base_checkpoint, active_weights_hash);
+                return RpcResponse::Error("Base checkpoint does not match active model weights hash".to_string());
+            }
         }
 
         if !miner_proof.loss_before.is_finite() || !miner_proof.loss_after.is_finite() {
