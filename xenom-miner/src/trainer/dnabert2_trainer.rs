@@ -95,9 +95,14 @@ impl DnaBert2Trainer {
             bail!("No masked positions in micro-batch; cannot compute MLM loss");
         }
 
-        let positions = Tensor::new(positions.as_slice(), &self.device)?;
-        let masked_logits = logits_flat.index_select(&positions, 0)?;
-        let masked_labels = labels_flat.index_select(&positions, 0)?;
+        let positions_t = Tensor::new(positions.as_slice(), &self.device)?;
+        let masked_logits = logits_flat.index_select(&positions_t, 0)?;
+
+        // Metal does not implement index_select on U32 source tensors, so gather the
+        // masked labels on the CPU and copy them to the device.
+        let labels_vec = labels_flat.to_vec1::<u32>()?;
+        let masked_labels: Vec<u32> = positions.iter().map(|&i| labels_vec[i as usize]).collect();
+        let masked_labels = Tensor::new(masked_labels.as_slice(), &self.device)?;
 
         loss::cross_entropy(&masked_logits, &masked_labels).context("Failed to compute cross-entropy loss")
     }
