@@ -18,6 +18,11 @@ services:
       - XENO_MINER_RPC_PORT=${XENO_MINER_RPC_PORT:-17110}
       - XENO_NODE_EXTRA_ARGS=${XENO_NODE_EXTRA_ARGS:---devnet --utxoindex}
       - XENO_NODE_ADDPEERS=${XENO_NODE_ADDPEERS:-}
+      - XENO_LORA=${XENO_LORA:-}
+      - XENO_LORA_RANK=${XENO_LORA_RANK:-8}
+      - XENO_LORA_ALPHA=${XENO_LORA_ALPHA:-16}
+      - XENO_LORA_DROPOUT=${XENO_LORA_DROPOUT:-0}
+      - XENO_LORA_TARGET_MODULES=${XENO_LORA_TARGET_MODULES:-query,key,value,transform_dense,up_proj,down_proj}
     command:
       - --devnet
       - --utxoindex

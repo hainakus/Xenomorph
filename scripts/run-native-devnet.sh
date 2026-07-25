@@ -30,6 +30,12 @@ Options:
   --fp16                          Enable FP16 mixed precision
   --gradient-checkpointing        Enable gradient checkpointing (stub)
   --zero <n>                      ZeRO optimization level (stub, default 0)
+  --max-seq-len <n>               Cap sequence length to save VRAM (default: 512)
+  --lora                          Enable LoRA (node + miner)
+  --lora-rank <n>                 LoRA rank (default: \$XENO_LORA_RANK or 8)
+  --lora-alpha <n>                LoRA alpha (default: \$XENO_LORA_ALPHA or 16)
+  --lora-dropout <f>              LoRA dropout (default: \$XENO_LORA_DROPOUT or 0)
+  --lora-target-modules <list>    Comma-separated LoRA target modules
   -d, --data-dir <dir>            Base data directory
                                   (default: \$XENO_DATA_DIR or ./devnet-data-native)
   --anvil                         Start a local anvil instance for EVM/governance tests
@@ -48,6 +54,12 @@ GRADIENT_TOP_K_RATIO="${XENO_MINER_GRADIENT_TOP_K_RATIO:-1.0}"
 FP16=0
 GRADIENT_CHECKPOINTING=0
 ZERO=0
+MAX_SEQ_LEN=512
+LORA=0
+LORA_RANK="${XENO_LORA_RANK:-8}"
+LORA_ALPHA="${XENO_LORA_ALPHA:-16}"
+LORA_DROPOUT="${XENO_LORA_DROPOUT:-0}"
+LORA_TARGET_MODULES=""
 DATA_DIR="${XENO_DATA_DIR:-$SCRIPT_DIR/../devnet-data-native}"
 START_ANVIL=0
 
@@ -64,6 +76,12 @@ while [[ $# -gt 0 ]]; do
         --fp16) FP16=1; shift ;;
         --gradient-checkpointing) GRADIENT_CHECKPOINTING=1; shift ;;
         --zero) ZERO="$2"; shift 2 ;;
+        --max-seq-len) MAX_SEQ_LEN="$2"; shift 2 ;;
+        --lora) LORA=1; shift ;;
+        --lora-rank) LORA_RANK="$2"; shift 2 ;;
+        --lora-alpha) LORA_ALPHA="$2"; shift 2 ;;
+        --lora-dropout) LORA_DROPOUT="$2"; shift 2 ;;
+        --lora-target-modules) LORA_TARGET_MODULES="$2"; shift 2 ;;
         -d|--data-dir) DATA_DIR="$2"; shift 2 ;;
         --anvil) START_ANVIL=1; shift ;;
         -q|--quiet) XENO_QUIET=1; shift ;;
@@ -223,6 +241,16 @@ fi
 # -----------------------------------------------------------------------------
 # xeno-node
 # -----------------------------------------------------------------------------
+# If LoRA is requested, export the LoRA env vars so the node's ModelManager
+# builds a LoRA-capable model and can aggregate LoRA gradients from miners.
+if [[ "$LORA" == "1" ]]; then
+    export XENO_LORA=1
+    export XENO_LORA_RANK="$LORA_RANK"
+    export XENO_LORA_ALPHA="$LORA_ALPHA"
+    export XENO_LORA_DROPOUT="$LORA_DROPOUT"
+    [[ -n "$LORA_TARGET_MODULES" ]] && export XENO_LORA_TARGET_MODULES="$LORA_TARGET_MODULES"
+fi
+
 qlog "Starting xeno-node..."
 RUST_LOG="${RUST_LOG:-info}" "$BIN_PREFIX/xenom" \
     --devnet \
@@ -257,12 +285,20 @@ if [[ "$TRAINER" == "dnabert2" || "$TRAINER" == "gpu" || "$TRAINER" == "cuda" ||
         --gradient-accumulation "$GRADIENT_ACCUMULATION"
         --gradient-top-k-ratio "$GRADIENT_TOP_K_RATIO"
         --zero "$ZERO"
+        --max-seq-len "$MAX_SEQ_LEN"
     )
     [[ "$FP16" == "1" ]] && MINER_EXTRA_ARGS+=(--fp16)
     [[ "$GRADIENT_CHECKPOINTING" == "1" ]] && MINER_EXTRA_ARGS+=(--gradient-checkpointing)
+    if [[ "$LORA" == "1" ]]; then
+        MINER_EXTRA_ARGS+=(--lora)
+        MINER_EXTRA_ARGS+=(--lora-rank "$LORA_RANK")
+        MINER_EXTRA_ARGS+=(--lora-alpha "$LORA_ALPHA")
+        MINER_EXTRA_ARGS+=(--lora-dropout "$LORA_DROPOUT")
+        [[ -n "$LORA_TARGET_MODULES" ]] && MINER_EXTRA_ARGS+=(--lora-target-modules "$LORA_TARGET_MODULES")
+    fi
 fi
 
-qlog "Starting xeno-miner (trainer=$TRAINER, gpus=$GPUS, micro_batch=$MICRO_BATCH_SIZE, acc=$GRADIENT_ACCUMULATION, fp16=$FP16)..."
+qlog "Starting xeno-miner (trainer=$TRAINER, gpus=$GPUS, micro_batch=$MICRO_BATCH_SIZE, acc=$GRADIENT_ACCUMULATION, max_seq_len=$MAX_SEQ_LEN, lora=$LORA, fp16=$FP16)..."
 XENO_WALLET_PASSWORD="${XENO_WALLET_PASSWORD:-devnet-password}" \
 RUST_LOG="${RUST_LOG:-info}" \
     "$BIN_PREFIX/xenom-miner" \
