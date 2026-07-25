@@ -7,6 +7,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use candle_core::{DType, Device, Module, ModuleT, Result as CandleResult, Tensor};
 use candle_nn::{Activation, Dropout, Embedding, LayerNorm, Linear, VarMap};
 
+/// Cast a tensor to `dtype` using F32 as an intermediate step when needed.
+/// This works around backends (e.g. Metal) that do not implement direct
+/// integer-to-FP16 casts.
+fn cast_to_dtype(t: &Tensor, dtype: DType) -> CandleResult<Tensor> {
+    if t.dtype() == dtype {
+        return Ok(t.clone());
+    }
+    let t = t.to_dtype(DType::F32)?;
+    if dtype == DType::F32 {
+        Ok(t)
+    } else {
+        t.to_dtype(dtype)
+    }
+}
+
 use crate::lora::{LinearLayer, LoraConfig, ModelBuilder};
 use crate::model::DnaBert2Config;
 
@@ -141,13 +156,13 @@ impl DnaBert2SelfAttention {
         let query_layer = self.transpose_for_scores(&mixed_query, batch, seq)?;
 
         let scale = 1.0 / (self.attention_head_size as f64).sqrt();
-        let scale_t = Tensor::new(scale as f32, hidden_states.device())?.to_dtype(hidden_states.dtype())?;
+        let scale_t = cast_to_dtype(&Tensor::new(scale as f32, hidden_states.device())?, hidden_states.dtype())?;
 
         let key_t = key_layer.transpose(2, 3)?.contiguous()?;
         let mut attention_scores = query_layer.matmul(&key_t)?;
         attention_scores = attention_scores.broadcast_mul(&scale_t)?;
 
-        let alibi = self.alibi.bias(seq)?.to_dtype(hidden_states.dtype())?.unsqueeze(0)?; // [1, heads, seq, seq]
+        let alibi = cast_to_dtype(&self.alibi.bias(seq)?, hidden_states.dtype())?.unsqueeze(0)?; // [1, heads, seq, seq]
         attention_scores = attention_scores.broadcast_add(&alibi)?;
         attention_scores = attention_scores.broadcast_add(attention_mask)?;
 
@@ -333,13 +348,13 @@ impl DnaBert2Model {
         // Run the model in the dtype of the embedding weights (F32 or F16/mixed precision).
         let model_dtype = self.embeddings.dtype();
         let attention_mask = match attention_mask {
-            Some(mask) => mask.to_dtype(model_dtype)?,
-            None => input_ids.ne(self.embeddings.pad_token_id as f64)?.to_dtype(model_dtype)?,
+            Some(mask) => cast_to_dtype(mask, model_dtype)?,
+            None => cast_to_dtype(&input_ids.ne(self.embeddings.pad_token_id as f64)?, model_dtype)?,
         };
 
         let ones = Tensor::ones(attention_mask.dims(), model_dtype, attention_mask.device())?;
         let additive = ones.broadcast_sub(&attention_mask)?;
-        let scale = Tensor::new(-10000.0f32, attention_mask.device())?.to_dtype(model_dtype)?;
+        let scale = cast_to_dtype(&Tensor::new(-10000.0f32, attention_mask.device())?, model_dtype)?;
         let additive = additive.broadcast_mul(&scale)?;
         let additive = additive.unsqueeze(1)?.unsqueeze(1)?; // [batch, 1, 1, seq]
 
@@ -454,7 +469,7 @@ impl DnaBert2ForMaskedLM {
     /// Padding tokens (identified by `pad_token_id`) are excluded from the mean.
     pub fn embeddings(&self, input_ids: &Tensor) -> CandleResult<Tensor> {
         let pad_token_id = self.model.embeddings.pad_token_id as f64;
-        let attention_mask = input_ids.ne(pad_token_id)?.to_dtype(self.model.embeddings.dtype())?;
+        let attention_mask = cast_to_dtype(&input_ids.ne(pad_token_id)?, self.model.embeddings.dtype())?;
         let hidden_states = self.model.forward(input_ids, None, Some(&attention_mask))?;
 
         // [batch, seq, 1]
