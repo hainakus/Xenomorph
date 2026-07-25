@@ -2,7 +2,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use borsh::BorshDeserialize;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
 use tracing::info;
 use uuid::Uuid;
@@ -84,6 +84,13 @@ pub struct CachedCheckpoint {
     pub model_id: String,
     /// Plaintext LoRA adapter bytes, kept in memory to serve adapter-only sync.
     pub adapter_bytes: Option<Vec<u8>>,
+    /// When the current epoch started. `None` means no gradients have been
+    /// collected yet for the next checkpoint.
+    pub epoch_started: Option<Instant>,
+    /// How long an epoch lasts before the collected gradients are aggregated.
+    pub epoch_duration: Duration,
+    /// Optional hard cap on the number of gradients per epoch (0 = disabled).
+    pub epoch_size_cap: u32,
 }
 
 pub struct ModelManager {
@@ -101,6 +108,11 @@ pub struct ModelManager {
     node_id: String,
     checkpoint_history_size: usize,
     lora_config: Option<LoraConfig>,
+    /// Duration of a training epoch. Gradients submitted during an epoch are
+    /// aggregated into a single new checkpoint when the epoch ends.
+    epoch_duration: Duration,
+    /// Optional hard cap on the number of gradients per epoch (0 = disabled).
+    epoch_size_cap: u32,
 }
 
 impl ModelManager {
@@ -117,17 +129,25 @@ impl ModelManager {
 
         let node_id = Uuid::new_v4().to_string();
 
-        // Epoch size: how many miners must contribute before a new checkpoint is produced.
-        // Defaults to 64 for stable epochs; can be overridden via XENO_FEDAVG_EPOCH_SIZE
-        // or the legacy FEDAVG_MIN_PARTICIPANTS variable.
-        let epoch_size: u32 = std::env::var("XENO_FEDAVG_EPOCH_SIZE")
+        // Epoch duration: how long the node collects gradients before producing a new
+        // checkpoint. Defaults to 60s; set XENO_EPOCH_DURATION_SECS=0 to disable time-based
+        // epochs and fall back to count-based aggregation.
+        let epoch_duration_secs: u64 = std::env::var("XENO_EPOCH_DURATION_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(60);
+        let epoch_duration = Duration::from_secs(epoch_duration_secs);
+
+        // Optional hard cap on the number of gradients per epoch (0 = disabled).
+        // Reads XENO_FEDAVG_EPOCH_SIZE first, then the legacy FEDAVG_MIN_PARTICIPANTS.
+        let epoch_size_cap: u32 = std::env::var("XENO_FEDAVG_EPOCH_SIZE")
             .ok()
             .and_then(|s| s.parse().ok())
             .or_else(|| std::env::var("FEDAVG_MIN_PARTICIPANTS").ok().and_then(|s| s.parse().ok()))
-            .unwrap_or(64);
+            .unwrap_or(0);
+
+        // The FedAvg aggregator only needs a minimum of 1 participant to compute an
+        // average; the epoch window / cap controls when aggregation is triggered.
         let fedavg_config = FedAvgConfig {
-            min_participants: epoch_size,
-            max_participants: epoch_size.max(10),
+            min_participants: 1,
+            max_participants: epoch_size_cap.max(10).max(1),
             weighting_strategy: WeightingStrategy::Uniform,
         };
 
@@ -143,6 +163,8 @@ impl ModelManager {
             node_id,
             checkpoint_history_size,
             lora_config,
+            epoch_duration,
+            epoch_size_cap,
         })
     }
 
@@ -549,13 +571,26 @@ impl ModelManager {
                     .with_context(|| format!("Failed to add gradient for layer {}", name))?;
             }
 
-            if !entry_guard.aggregator.all_ready() {
-                let first = payload.layer_gradients.keys().next().unwrap();
+            // Start the epoch timer on the first gradient of a new epoch.
+            let first_layer = payload.layer_gradients.keys().next().unwrap();
+            if entry_guard.epoch_started.is_none() {
+                entry_guard.epoch_started = Some(Instant::now());
+            }
+            let participant_count = entry_guard.aggregator.participant_count(first_layer);
+
+            // Decide whether the epoch has ended: either the time window expired
+            // or the optional hard cap on gradients was reached.
+            let elapsed = entry_guard.epoch_started.unwrap().elapsed();
+            let ready_by_time = elapsed >= entry_guard.epoch_duration;
+            let ready_by_count = entry_guard.epoch_size_cap > 0 && participant_count >= entry_guard.epoch_size_cap;
+
+            if !ready_by_time && !ready_by_count {
                 info!(
-                    "Collected gradients for {} ({} of {} participants)",
+                    "Collected gradients for {} ({} participants, {}/{}s elapsed)",
                     update.model_id,
-                    entry_guard.aggregator.participant_count(first),
-                    self.fedavg_config.min_participants
+                    participant_count,
+                    elapsed.as_secs(),
+                    entry_guard.epoch_duration.as_secs()
                 );
                 return Ok(None);
             }
@@ -563,6 +598,7 @@ impl ModelManager {
             let averages = entry_guard.aggregator.compute_all_averages().context("Failed to compute averaged gradients")?;
             let old_head = entry_guard.head_hash;
             entry_guard.aggregator.reset();
+            entry_guard.epoch_started = None;
             (old_head, averages)
         };
 
@@ -742,6 +778,9 @@ impl ModelManager {
             last_used: Instant::now(),
             model_id: model_id.to_string(),
             adapter_bytes,
+            epoch_started: None,
+            epoch_duration: self.epoch_duration,
+            epoch_size_cap: self.epoch_size_cap,
         };
 
         Ok(Arc::new(Mutex::new(entry)))
