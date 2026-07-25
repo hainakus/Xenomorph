@@ -124,20 +124,17 @@ impl GossipIdentity {
     pub fn load_or_generate<P: AsRef<Path>>(path: P, network_type: NetworkType) -> Result<Self, ModelCryptoError> {
         let path = path.as_ref();
         if path.exists() {
-            match std::fs::read_to_string(path) {
-                Ok(hex_str) => {
-                    let hex_str = hex_str.trim();
-                    if hex_str.len() == 64 {
-                        if let Ok(decoded) = hex::decode(hex_str) {
-                            if decoded.len() == 32 {
-                                if let Ok(identity) = Self::from_secret_key_bytes(&decoded, network_type) {
-                                    return Ok(identity);
-                                }
+            if let Ok(hex_str) = std::fs::read_to_string(path) {
+                let hex_str = hex_str.trim();
+                if hex_str.len() == 64 {
+                    if let Ok(decoded) = hex::decode(hex_str) {
+                        if decoded.len() == 32 {
+                            if let Ok(identity) = Self::from_secret_key_bytes(&decoded, network_type) {
+                                return Ok(identity);
                             }
                         }
                     }
                 }
-                Err(_) => {}
             }
         }
 

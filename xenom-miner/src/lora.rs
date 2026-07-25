@@ -34,10 +34,7 @@ impl LoraConfig {
     /// - `XENO_LORA_DROPOUT` (default 0.0)
     /// - `XENO_LORA_TARGET_MODULES` comma-separated (default `query,key,value,transform_dense,up_proj,down_proj`)
     pub fn from_env() -> Option<Self> {
-        let enabled = match std::env::var("XENO_LORA").ok().as_deref() {
-            Some("0") | Some("false") | Some("no") | Some("off") => false,
-            _ => true,
-        };
+        let enabled = !matches!(std::env::var("XENO_LORA").ok().as_deref(), Some("0") | Some("false") | Some("no") | Some("off"));
         if !enabled {
             return None;
         }
