@@ -220,7 +220,6 @@ fi
 qlog "Starting xeno-node..."
 NODE_ARGS=(
     --devnet
-    --utxoindex
     --appdir="$NODE_DATA_DIR"
     --logdir="$LOG_DIR/node"
     --rpclisten="$BIND_IP:$NODE_RPC_PORT"

@@ -106,7 +106,7 @@ To test high GPU occupancy and continuous flow, start the unified `xenom` node (
 ```bash
 # unified xeno-node
 FEDAVG_MIN_PARTICIPANTS=4 XENO_CHECKPOINT_HISTORY_SIZE=8 \
-  ./target/release/xenom --devnet --utxoindex \
+  ./target/release/xenom --devnet \
   --miner-ws-listen=0.0.0.0:17110 \
   --inference-grpc-listen=0.0.0.0:50051 \
   --models-dir=./devnet-data-native/models

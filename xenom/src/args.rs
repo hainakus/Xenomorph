@@ -114,7 +114,7 @@ impl Default for Args {
             rpclisten_json: None,
             unsafe_rpc: false,
             async_threads: num_cpus::get(),
-            utxoindex: false,
+            utxoindex: true,
             reset_db: false,
             outbound_target: 8,
             inbound_limit: 128,
@@ -358,7 +358,12 @@ pub fn cli() -> Command {
                 .hide(true)
                 .help("Allow mainnet mining (currently enabled by default while the flag is kept for backwards compatibility)"),
         )
-        .arg(arg!(--utxoindex "Enable the UTXO index"))
+        .arg(
+            Arg::new("utxoindex")
+                .long("utxoindex")
+                .action(ArgAction::SetTrue)
+                .help("Enable the UTXO index (enabled by default)."),
+        )
         .arg(
             Arg::new("max-tracked-addresses")
                 .long("max-tracked-addresses")

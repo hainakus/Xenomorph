@@ -254,7 +254,6 @@ fi
 qlog "Starting xeno-node..."
 RUST_LOG="${RUST_LOG:-info}" "$BIN_PREFIX/xenom" \
     --devnet \
-    --utxoindex \
     --appdir="$NODE_DATA_DIR" \
     --logdir="$LOG_DIR/node" \
     --rpclisten="0.0.0.0:$NODE_RPC_PORT" \

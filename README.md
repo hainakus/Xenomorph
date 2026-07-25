@@ -65,7 +65,7 @@ cd xenom
 cargo build --release
 
 # Run devnet with miner WebSocket and gRPC inference
-./target/release/xenom --devnet --utxoindex \
+./target/release/xenom --devnet \
   --miner-ws-listen=0.0.0.0:17110 \
   --inference-grpc-listen=0.0.0.0:50051 \
   --models-dir=/data/models

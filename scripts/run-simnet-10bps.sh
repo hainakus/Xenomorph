@@ -168,7 +168,6 @@ trap cleanup INT TERM EXIT
 qlog "Starting simnet node 1 (RPC $NODE1_RPC_PORT, P2P $NODE1_P2P_PORT, miner WS $NODE1_MINER_WS_PORT)..."
 RUST_LOG="${RUST_LOG:-info}" "$BIN_PREFIX/xenom" \
     --simnet \
-    --utxoindex \
     --appdir="$NODE1_DATA_DIR" \
     --logdir="$LOG_DIR/node1" \
     --rpclisten="0.0.0.0:$NODE1_RPC_PORT" \
@@ -193,7 +192,6 @@ wait_for_port "$NODE1_MINER_WS_PORT" 600 "$NODE1_PID"
 qlog "Starting simnet node 2 as peer (P2P $NODE2_P2P_PORT -> 127.0.0.1:$NODE1_P2P_PORT)..."
 RUST_LOG="${RUST_LOG:-info}" "$BIN_PREFIX/xenom" \
     --simnet \
-    --utxoindex \
     --appdir="$NODE2_DATA_DIR" \
     --logdir="$LOG_DIR/node2" \
     --rpclisten="0.0.0.0:$NODE2_RPC_PORT" \
