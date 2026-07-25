@@ -53,7 +53,31 @@ impl DnaBert2Trainer {
         let seq_len = config.max_position_embeddings.min(512);
         let generator = MlmBatchGenerator::new(tokenizer, seq_len);
         let optimizer = ManualAdamW::new(0.0);
-        Ok(Self { model, varmap, base_weights, generator, device, threads, optimizer: Mutex::new(optimizer) })
+        let trainer = Self { model, varmap, base_weights, generator, device, threads, optimizer: Mutex::new(optimizer) };
+        trainer.sanity_check().context("Loaded checkpoint failed sanity check; weights may contain NaN/Inf")?;
+        Ok(trainer)
+    }
+
+    /// Run a tiny forward pass on a synthetic batch to verify the loaded weights do
+    /// not immediately produce NaN/Inf losses. This catches corrupted checkpoints
+    /// before the mining loop starts.
+    fn sanity_check(&self) -> Result<()> {
+        let batch = self
+            .generator
+            .generate(&TrainingBatch {
+                batch_id: 0,
+                model_id: "sanity".to_string(),
+                base_checkpoint: [0u8; 32],
+                data_indices: vec![0],
+                target_improvement: 0.01,
+                learning_rate: 0.01,
+            })
+            .context("Failed to generate sanity batch")?;
+        let loss = self.compute_loss_scalar(&batch).context("Sanity-check forward failed")?;
+        if !loss.is_finite() {
+            bail!("Sanity-check loss is not finite ({}); checkpoint weights may be corrupted", loss);
+        }
+        Ok(())
     }
 
     fn build_tensors(&self, batch: &MlmBatch) -> Result<(Tensor, Tensor, Tensor, Tensor)> {

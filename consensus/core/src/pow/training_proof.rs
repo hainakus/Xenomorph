@@ -95,6 +95,10 @@ pub struct TrainingProof {
 impl TrainingProof {
     /// Verify proof meets difficulty target
     pub fn verify(&self, target: &DifficultyTarget) -> bool {
+        if !self.loss_before.is_finite() || !self.loss_after.is_finite() {
+            return false;
+        }
+
         let improvement = self.loss_before - self.loss_after;
 
         // Check loss improvement meets minimum

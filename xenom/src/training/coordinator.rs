@@ -341,6 +341,14 @@ impl Coordinator {
             return RpcResponse::Error("Base checkpoint does not match active model weights hash".to_string());
         }
 
+        if !miner_proof.loss_before.is_finite() || !miner_proof.loss_after.is_finite() {
+            warn!(
+                "Rejecting training block: non-finite loss values (before={}, after={})",
+                miner_proof.loss_before, miner_proof.loss_after
+            );
+            return RpcResponse::Error("Training proof contains non-finite loss values".to_string());
+        }
+
         // Difficulty target (lazy/optimistic: allow loss to rise by up to 1.0 on devnet).
         let consensus_proof = ConsensusTrainingProof {
             model_id: ModelId(block.model_id.clone()),

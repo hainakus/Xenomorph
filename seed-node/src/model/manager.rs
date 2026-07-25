@@ -15,6 +15,14 @@ use crate::rpc::messages::{GradientLayer, GradientPayload, GradientUpdate, Train
 /// values back into a zero vector of the original shape.
 fn decompress_gradient_layer(layer: &GradientLayer) -> Result<Vec<f32>> {
     let total_len: usize = layer.shape.iter().product();
+
+    // Reject gradients containing NaN/Inf before they can corrupt the model.
+    for v in layer.values.iter() {
+        if !v.is_finite() {
+            bail!("Gradient value {} is not finite; rejecting update", v);
+        }
+    }
+
     if layer.indices.is_empty() {
         if layer.values.len() != total_len {
             bail!("Dense gradient size {} does not match shape product {}", layer.values.len(), total_len);
