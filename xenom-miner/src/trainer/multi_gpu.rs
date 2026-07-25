@@ -275,8 +275,9 @@ impl MultiGpuTrainer {
 
     /// Snapshot the current weights of every replica as the base checkpoint.
     ///
-    /// The snapshot is stored as a deep copy in F32 so that `Var::set` later
-    /// accepts it as an independent tensor.
+    /// The snapshot is stored as a deep copy in F32 on the same device so that
+    /// `Var::set` later accepts it as an independent tensor. This avoids a host
+    /// memory round-trip that can OOM on multi-GPU hosts.
     fn snapshot_base(&self, checkpoint: [u8; 32]) -> Result<()> {
         let mut per_device = Vec::with_capacity(self.trainers.len());
         for (idx, trainer) in self.trainers.iter().enumerate() {
@@ -285,9 +286,7 @@ impl MultiGpuTrainer {
             for (name, var) in data.iter() {
                 let t = var.as_tensor();
                 let t_f32 = t.to_dtype(DType::F32).with_context(|| format!("Failed to cast {} to F32 for snapshot", name))?;
-                let flat = t_f32.flatten_all()?.to_vec1::<f32>()?;
-                let restored = Tensor::from_vec(flat, t.shape().clone(), t.device())
-                    .with_context(|| format!("Failed to recreate snapshot tensor for {}", name))?;
+                let restored = t_f32.copy().with_context(|| format!("Failed to copy snapshot tensor for {}", name))?;
                 snap.insert(name.clone(), restored);
             }
             per_device.push(snap);
