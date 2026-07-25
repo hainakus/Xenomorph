@@ -8,3 +8,5 @@ pub mod model;
 pub mod p2p;
 pub mod rpc;
 pub mod serving;
+
+pub use xenom_miner::lora::LoraConfig;

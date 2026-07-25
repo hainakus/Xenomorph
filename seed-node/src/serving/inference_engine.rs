@@ -87,7 +87,8 @@ impl InferenceEngine {
             .with_context(|| format!("Failed to parse config for model {}", model_id))?;
         let tokenizer = xenom_miner::tokenizer::DnaTokenizer::from_bytes(&tokenizer)
             .with_context(|| format!("Failed to parse tokenizer for model {}", model_id))?;
-        let model = xenom_miner::dnabert2::DnaBert2ForMaskedLM::load(config.clone(), weights, DType::F32, &self.device)
+        let lora_config = self.model_manager.lora_config();
+        let model = xenom_miner::dnabert2::DnaBert2ForMaskedLM::load(config.clone(), weights, DType::F32, &self.device, lora_config)
             .with_context(|| format!("Failed to load DNABERT-2 weights for model {}", model_id))?;
 
         let kind = kind_for_model_id(model_id);
@@ -292,7 +293,7 @@ mod tests {
     fn test_engine() -> InferenceEngine {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("failed to build tokio runtime");
         let manager = rt
-            .block_on(ModelManager::new_with_key("/tmp/seed_node_test_models".to_string(), [0u8; 32]))
+            .block_on(ModelManager::new_with_key("/tmp/seed_node_test_models".to_string(), [0u8; 32], None))
             .expect("failed to create test ModelManager");
         InferenceEngine::new(Arc::new(manager))
     }
@@ -316,8 +317,10 @@ mod tests {
         varmap.get(vocab_size, "lm_head.bias", candle_nn::Init::Const(0.0), DType::F32, &device).unwrap();
         varmap.set_one("lm_head.bias", &bias_tensor).unwrap();
 
-        let vb = candle_nn::VarBuilder::from_varmap(&varmap, DType::F32, &device);
-        let model = xenom_miner::dnabert2::DnaBert2ForMaskedLM::new(vb, config.clone(), &device).unwrap();
+        let base_weights = Arc::new(HashMap::<String, Tensor>::new());
+        let varmap = Arc::new(varmap);
+        let builder = xenom_miner::lora::ModelBuilder::new(varmap, base_weights, None, DType::F32, device.clone());
+        let model = xenom_miner::dnabert2::DnaBert2ForMaskedLM::new(&builder, config.clone(), &device).unwrap();
         LoadedModel { model, tokenizer, config, kind: ModelKind::MaskedLM }
     }
 

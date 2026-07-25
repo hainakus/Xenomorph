@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
@@ -9,6 +9,7 @@ use candle_nn::loss;
 
 use crate::data::{MlmBatch, MlmBatchGenerator};
 use crate::dnabert2::DnaBert2ForMaskedLM;
+use crate::lora::LoraConfig;
 use crate::model::DnaBert2Config;
 use crate::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch};
 use crate::tokenizer::DnaTokenizer;
@@ -24,6 +25,8 @@ const MAX_LEARNING_RATE: f32 = 1e-5;
 pub struct DnaBert2Trainer {
     pub(crate) model: DnaBert2ForMaskedLM,
     pub(crate) varmap: candle_nn::VarMap,
+    /// Frozen base weights used when merging LoRA adapters for serialization.
+    pub(crate) base_weights: Arc<HashMap<String, Tensor>>,
     pub(crate) generator: MlmBatchGenerator,
     pub(crate) device: Device,
     pub(crate) threads: usize,
@@ -39,13 +42,18 @@ impl DnaBert2Trainer {
         device: Device,
         threads: usize,
         dtype: DType,
+        lora_config: Option<LoraConfig>,
     ) -> Result<Self> {
-        let (model, varmap) = DnaBert2ForMaskedLM::load_for_training(config.clone(), weights, dtype, &device)
-            .context("Failed to load DNABERT-2 model for training")?;
+        let (model, varmap, base_weights) =
+            DnaBert2ForMaskedLM::load_for_training(config.clone(), weights, dtype, &device, lora_config.as_ref())
+                .context("Failed to load DNABERT-2 model for training")?;
+        // Only LoRA training needs the frozen base weights for merging the adapter
+        // back into a full checkpoint.
+        let base_weights = if lora_config.is_some() { base_weights } else { Arc::new(HashMap::new()) };
         let seq_len = config.max_position_embeddings.min(512);
         let generator = MlmBatchGenerator::new(tokenizer, seq_len);
         let optimizer = ManualAdamW::new(0.0);
-        Ok(Self { model, varmap, generator, device, threads, optimizer: Mutex::new(optimizer) })
+        Ok(Self { model, varmap, base_weights, generator, device, threads, optimizer: Mutex::new(optimizer) })
     }
 
     fn build_tensors(&self, batch: &MlmBatch) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
@@ -172,10 +180,27 @@ impl DnaBert2Trainer {
     }
 
     /// Serialize the current trainable weights into an in-memory SafeTensors buffer.
+    ///
+    /// For LoRA, this merges the frozen base weights with the trainable adapter so the
+    /// result is a full checkpoint compatible with existing storage and inference paths.
     pub fn save_weights_to_bytes(&self) -> Result<Vec<u8>> {
+        let mut tensors: HashMap<String, Tensor> = HashMap::new();
+        for (k, v) in self.base_weights.iter() {
+            tensors.insert(k.clone(), v.clone());
+        }
+        let data = self.varmap.data().lock().map_err(|e| anyhow::anyhow!("VarMap poisoned: {}", e))?;
+        for (k, v) in data.iter() {
+            tensors.insert(k.clone(), v.as_tensor().clone());
+        }
+        let tensors: Vec<(String, &Tensor)> = tensors.iter().map(|(k, v)| (k.clone(), v)).collect();
+        safetensors::tensor::serialize(tensors, &None).map_err(|e| anyhow::anyhow!("Failed to serialize model weights: {}", e))
+    }
+
+    /// Serialize only the trainable adapter weights (LoRA A/B) into a SafeTensors buffer.
+    pub fn save_adapter_to_bytes(&self) -> Result<Vec<u8>> {
         let data = self.varmap.data().lock().map_err(|e| anyhow::anyhow!("VarMap poisoned: {}", e))?;
         let tensors: Vec<(String, &Tensor)> = data.iter().map(|(k, v)| (k.clone(), v.as_tensor())).collect();
-        safetensors::tensor::serialize(tensors, &None).map_err(|e| anyhow::anyhow!("Failed to serialize model weights: {}", e))
+        safetensors::tensor::serialize(tensors, &None).map_err(|e| anyhow::anyhow!("Failed to serialize adapter weights: {}", e))
     }
 
     /// Load trainable weights from an in-memory SafeTensors buffer into the live VarMap.
@@ -528,7 +553,7 @@ mod tests {
     fn test_dna_bert2_trainer_runs_and_improves() {
         let (config, weights) = build_tiny_safetensors();
         let tokenizer = build_tiny_tokenizer();
-        let trainer = DnaBert2Trainer::new(config, weights, tokenizer, Device::Cpu, 2, DType::F32).unwrap();
+        let trainer = DnaBert2Trainer::new(config, weights, tokenizer, Device::Cpu, 2, DType::F32, None).unwrap();
 
         let result = trainer.train(&dummy_batch()).unwrap();
 
@@ -549,12 +574,42 @@ mod tests {
     }
 
     #[test]
+    fn test_dna_bert2_trainer_lora_runs_and_improves() {
+        let (config, weights) = build_tiny_safetensors();
+        let tokenizer = build_tiny_tokenizer();
+        let lora_config = crate::lora::LoraConfig {
+            rank: 2,
+            alpha: 4.0,
+            dropout: 0.0,
+            target_modules: crate::lora::LoraConfig::default_target_modules(),
+        };
+        let trainer = DnaBert2Trainer::new(config, weights, tokenizer, Device::Cpu, 2, DType::F32, Some(lora_config)).unwrap();
+
+        let result = trainer.train(&dummy_batch()).unwrap();
+
+        assert_eq!(result.model_id, "dnabert2");
+        assert!(!result.gradients_commitment.iter().all(|&b| b == 0));
+        assert!(result.loss_after <= result.loss_before);
+
+        // The adapter checkpoint should only contain LoRA A/B tensors.
+        let adapter_bytes = trainer.save_adapter_to_bytes().unwrap();
+        let adapter = candle_core::safetensors::load_buffer(&adapter_bytes, &Device::Cpu).unwrap();
+        assert!(adapter.keys().all(|k| k.ends_with(".lora_a") || k.ends_with(".lora_b")));
+
+        // The merged checkpoint must contain both base and LoRA keys.
+        let merged_bytes = trainer.save_weights_to_bytes().unwrap();
+        let merged = candle_core::safetensors::load_buffer(&merged_bytes, &Device::Cpu).unwrap();
+        assert!(merged.keys().any(|k| k.ends_with(".lora_a") || k.ends_with(".lora_b")));
+        assert!(merged.keys().any(|k| k.ends_with(".weight") && !k.ends_with(".lora_a") && !k.ends_with(".lora_b")));
+    }
+
+    #[test]
     fn test_dna_bert2_trainer_train_genome() {
         use crate::rpc::messages::{GenomeSlice, GenomeTrainingBatch};
 
         let (config, weights) = build_tiny_safetensors();
         let tokenizer = build_tiny_tokenizer();
-        let trainer = DnaBert2Trainer::new(config, weights, tokenizer, Device::Cpu, 2, DType::F32).unwrap();
+        let trainer = DnaBert2Trainer::new(config, weights, tokenizer, Device::Cpu, 2, DType::F32, None).unwrap();
 
         let msg = GenomeTrainingBatchMsg {
             batch: GenomeTrainingBatch {

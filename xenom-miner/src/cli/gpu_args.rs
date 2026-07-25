@@ -35,6 +35,26 @@ pub struct GpuArgs {
     /// values drastically reduce upload size over slow remote links.
     #[arg(long, default_value_t = 1.0)]
     pub gradient_top_k_ratio: f32,
+
+    /// Enable LoRA (Low-Rank Adaptation) fine-tuning instead of full fine-tuning.
+    #[arg(long, env = "XENO_LORA")]
+    pub lora: bool,
+
+    /// LoRA rank.
+    #[arg(long, default_value_t = 8, env = "XENO_LORA_RANK")]
+    pub lora_rank: usize,
+
+    /// LoRA alpha scaling factor.
+    #[arg(long, default_value_t = 16.0, env = "XENO_LORA_ALPHA")]
+    pub lora_alpha: f32,
+
+    /// LoRA dropout probability (currently unused).
+    #[arg(long, default_value_t = 0.0, env = "XENO_LORA_DROPOUT")]
+    pub lora_dropout: f32,
+
+    /// Comma-separated LoRA target module names (default: query,key,value,transform_dense,up_proj,down_proj).
+    #[arg(long, value_delimiter = ',', num_args = 1.., env = "XENO_LORA_TARGET_MODULES")]
+    pub lora_target_modules: Vec<String>,
 }
 
 impl GpuArgs {
@@ -54,6 +74,17 @@ impl GpuArgs {
         }
         if self.gradient_top_k_ratio.is_nan() || self.gradient_top_k_ratio < 0.0 || self.gradient_top_k_ratio > 1.0 {
             anyhow::bail!("--gradient-top-k-ratio must be between 0.0 and 1.0");
+        }
+        if self.lora {
+            if self.lora_rank == 0 {
+                anyhow::bail!("--lora-rank must be > 0");
+            }
+            if self.lora_alpha <= 0.0 {
+                anyhow::bail!("--lora-alpha must be > 0");
+            }
+            if self.lora_dropout.is_nan() || self.lora_dropout < 0.0 || self.lora_dropout > 1.0 {
+                anyhow::bail!("--lora-dropout must be between 0.0 and 1.0");
+            }
         }
         Ok(())
     }

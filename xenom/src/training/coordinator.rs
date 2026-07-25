@@ -28,6 +28,7 @@ use seed_node::rpc::messages::{
     GenomeTrainingBatchMsg, GetGenomeTrainingBatch, GradientUpdate, ModelCheckpoint as RpcModelCheckpoint,
     ModelCheckpointInfo as RpcModelCheckpointInfo, RpcResponse, TrainingBatch, TrainingBlock,
 };
+use seed_node::LoraConfig;
 use tokio::sync::RwLock;
 
 /// Compact training summary embedded into the coinbase extra-data payload.
@@ -88,8 +89,10 @@ impl Coordinator {
         // Use a stable key for the local model cache so restarts do not force a re-download.
         // The same derivation is used by the seed-node so they can share a model cache directory.
         let encryption_key = ModelStorage::derive_encryption_key();
+        let lora_config = LoraConfig::from_env();
 
-        let model_manager = Arc::new(ModelManager::new_with_key(models_dir.to_string_lossy().to_string(), encryption_key).await?);
+        let model_manager =
+            Arc::new(ModelManager::new_with_key(models_dir.to_string_lossy().to_string(), encryption_key, lora_config).await?);
 
         // Pre-download the active model before accepting miner connections. This avoids the
         // 30s RPC request timeout in xenom-miner while the full node is still downloading.

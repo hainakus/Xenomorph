@@ -13,6 +13,7 @@ use tracing::{error, info, warn};
 use xenom_miner::block::BlockBuilder;
 use xenom_miner::cli::gpu_args::GpuArgs;
 use xenom_miner::config::MinerConfig;
+use xenom_miner::lora::LoraConfig;
 use xenom_miner::model::DnaBert2Config;
 use xenom_miner::model_client::{fetch_model_checkpoint, ModelBundle, ModelCache};
 use xenom_miner::prover::{PublicInputs, ZkProver};
@@ -436,6 +437,21 @@ async fn main() -> Result<()> {
             };
 
             let gpus = if args.gpu.gpus.is_empty() { vec![args.gpu_device] } else { args.gpu.gpus.clone() };
+            let lora_config = if args.gpu.lora {
+                let target_modules = if args.gpu.lora_target_modules.is_empty() {
+                    LoraConfig::default_target_modules()
+                } else {
+                    args.gpu.lora_target_modules.iter().cloned().collect()
+                };
+                Some(LoraConfig {
+                    rank: args.gpu.lora_rank,
+                    alpha: args.gpu.lora_alpha,
+                    dropout: args.gpu.lora_dropout,
+                    target_modules,
+                })
+            } else {
+                None
+            };
             let gpu_config = MultiGpuConfig {
                 gpus,
                 micro_batch_size: args.gpu.micro_batch_size,
@@ -444,6 +460,7 @@ async fn main() -> Result<()> {
                 use_gradient_checkpointing: args.gpu.gradient_checkpointing,
                 zero_optimization: args.gpu.zero,
                 gradient_top_k_ratio: args.gpu.gradient_top_k_ratio,
+                lora_config,
             };
             gpu_config.validate()?;
 

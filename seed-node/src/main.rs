@@ -16,6 +16,7 @@ use tokio::sync::RwLock;
 use tonic::transport::Server;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
+use xenom_miner::lora::LoraConfig;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -36,7 +37,8 @@ async fn main() -> Result<()> {
     let network_type = NetworkType::from_str(&network_str).unwrap_or(NetworkType::Devnet);
 
     let model_key = ModelStorage::derive_encryption_key();
-    let model_manager = Arc::new(ModelManager::new_with_key(models_dir.clone(), model_key).await?);
+    let lora_config = LoraConfig::from_env();
+    let model_manager = Arc::new(ModelManager::new_with_key(models_dir.clone(), model_key, lora_config).await?);
     let genome_storage = Arc::new(RwLock::new(GenomeStorage::new(PathBuf::from(models_dir.clone()).join("genomes")).await?));
 
     // The seed-node is only considered ready once the default model is available.

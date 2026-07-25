@@ -22,6 +22,7 @@ use tracing::{info, warn};
 
 use crate::data::MlmBatch;
 use crate::dnabert2::DnaBert2Model;
+use crate::lora::LoraConfig;
 use crate::model::DnaBert2Config;
 use crate::models::checkpointed_forward::CheckpointedForward;
 use crate::rpc::messages::{GenomeTrainingBatchMsg, GradientLayer, GradientPayload, GradientUpdate, TrainingBatch};
@@ -51,6 +52,8 @@ pub struct MultiGpuConfig {
     pub zero_optimization: u8,
     /// Top-k gradient compression ratio for FedAvg submissions. 1.0 = dense.
     pub gradient_top_k_ratio: f32,
+    /// Optional LoRA configuration. If `None`, full fine-tuning is performed.
+    pub lora_config: Option<LoraConfig>,
 }
 
 impl Default for MultiGpuConfig {
@@ -63,6 +66,7 @@ impl Default for MultiGpuConfig {
             use_gradient_checkpointing: false,
             zero_optimization: 0,
             gradient_top_k_ratio: 1.0,
+            lora_config: None,
         }
     }
 }
@@ -83,6 +87,20 @@ impl MultiGpuConfig {
         }
         if self.gradient_top_k_ratio.is_nan() || self.gradient_top_k_ratio < 0.0 || self.gradient_top_k_ratio > 1.0 {
             bail!("gradient-top-k-ratio must be between 0.0 and 1.0");
+        }
+        if let Some(lora) = &self.lora_config {
+            if lora.rank == 0 {
+                bail!("LoRA rank must be > 0");
+            }
+            if lora.alpha <= 0.0 {
+                bail!("LoRA alpha must be > 0");
+            }
+            if lora.dropout.is_nan() || lora.dropout < 0.0 || lora.dropout > 1.0 {
+                bail!("LoRA dropout must be between 0.0 and 1.0");
+            }
+            if lora.target_modules.is_empty() {
+                bail!("LoRA target_modules must not be empty");
+            }
         }
         Ok(())
     }
@@ -155,8 +173,16 @@ impl MultiGpuTrainer {
             // Each replica needs its own copy of the weights so it can build a
             // VarMap on its device.
             let replica_weights = weights.clone();
-            let trainer = DnaBert2Trainer::new(config.clone(), replica_weights, tokenizer.clone(), device.clone(), threads, dtype)
-                .with_context(|| format!("Failed to load DNABERT-2 replica on device {:?}", device))?;
+            let trainer = DnaBert2Trainer::new(
+                config.clone(),
+                replica_weights,
+                tokenizer.clone(),
+                device.clone(),
+                threads,
+                dtype,
+                gpu_config.lora_config.clone(),
+            )
+            .with_context(|| format!("Failed to load DNABERT-2 replica on device {:?}", device))?;
             info!("Loaded DNABERT-2 replica {}/{} on device {:?}", idx + 1, devices.len(), device);
             trainers.push(Arc::new(trainer));
         }

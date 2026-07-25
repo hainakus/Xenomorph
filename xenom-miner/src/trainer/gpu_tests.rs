@@ -166,7 +166,7 @@ mod tests {
     fn test_gpu_trainer_cpu_fallback() {
         let (config, weights) = build_tiny_safetensors();
         let tokenizer = build_tiny_tokenizer();
-        let trainer = GpuTrainer::new(config, weights, tokenizer, GpuBackend::Auto, 0, false, 2).unwrap();
+        let trainer = GpuTrainer::new(config, weights, tokenizer, GpuBackend::Auto, 0, false, 2, None).unwrap();
 
         let info = trainer.device_info();
         assert_eq!(info.device_type, DeviceType::Cpu);
@@ -182,7 +182,7 @@ mod tests {
     fn test_gpu_trainer_genome_fallback() {
         let (config, weights) = build_tiny_safetensors();
         let tokenizer = build_tiny_tokenizer();
-        let trainer = GpuTrainer::new(config, weights, tokenizer, GpuBackend::Auto, 0, false, 2).unwrap();
+        let trainer = GpuTrainer::new(config, weights, tokenizer, GpuBackend::Auto, 0, false, 2, None).unwrap();
 
         let result = trainer.train_genome(&dummy_genome_msg()).unwrap();
         assert_eq!(result.model_id, "dnabert2");
@@ -204,6 +204,7 @@ mod tests {
             use_gradient_checkpointing: false,
             zero_optimization: 0,
             gradient_top_k_ratio: 1.0,
+            lora_config: None,
         };
         let trainer =
             MultiGpuTrainer::new("dnabert2".to_string(), config, weights, tokenizer, gpu_config, GpuBackend::Auto, 2).unwrap();

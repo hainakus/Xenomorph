@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use candle_core::{DType, Device, Module, ModuleT, Result as CandleResult, Tensor};
-use candle_nn::{
-    embedding, layer_norm, linear, linear_no_bias, Activation, Dropout, Embedding, LayerNorm, Linear, VarBuilder, VarMap,
-};
+use candle_nn::{Activation, Dropout, Embedding, LayerNorm, Linear, VarMap};
 
+use crate::lora::{LinearLayer, LoraConfig, ModelBuilder};
 use crate::model::DnaBert2Config;
 
 /// DNABERT-2 / MosaicBERT embeddings: word + token_type, no positional embeddings (ALiBi).
@@ -20,10 +20,10 @@ struct DnaBert2Embeddings {
 }
 
 impl DnaBert2Embeddings {
-    fn new(vb: VarBuilder, config: &DnaBert2Config) -> CandleResult<Self> {
-        let word_embeddings = embedding(config.vocab_size, config.hidden_size, vb.pp("word_embeddings"))?;
-        let token_type_embeddings = embedding(config.type_vocab_size, config.hidden_size, vb.pp("token_type_embeddings"))?;
-        let layer_norm = layer_norm(config.hidden_size, config.layer_norm_eps, vb.pp("layer_norm"))?;
+    fn new(builder: &ModelBuilder, config: &DnaBert2Config) -> CandleResult<Self> {
+        let word_embeddings = builder.pp("word_embeddings").embedding(config.vocab_size, config.hidden_size)?;
+        let token_type_embeddings = builder.pp("token_type_embeddings").embedding(config.type_vocab_size, config.hidden_size)?;
+        let layer_norm = builder.pp("layer_norm").layer_norm(config.hidden_size, config.layer_norm_eps)?;
         let dropout = Dropout::new(config.hidden_dropout);
         Ok(Self { word_embeddings, token_type_embeddings, layer_norm, dropout, pad_token_id: config.pad_token_id })
     }
@@ -94,9 +94,9 @@ impl AlibiSlopes {
 
 /// DNABERT-2 self-attention with separate Q/K/V projections and ALiBi.
 struct DnaBert2SelfAttention {
-    query: Linear,
-    key: Linear,
-    value: Linear,
+    query: LinearLayer,
+    key: LinearLayer,
+    value: LinearLayer,
     dropout: Dropout,
     num_attention_heads: usize,
     attention_head_size: usize,
@@ -105,13 +105,13 @@ struct DnaBert2SelfAttention {
 }
 
 impl DnaBert2SelfAttention {
-    fn new(vb: VarBuilder, config: &DnaBert2Config, device: &Device) -> CandleResult<Self> {
+    fn new(builder: &ModelBuilder, config: &DnaBert2Config, device: &Device) -> CandleResult<Self> {
         let all_head_size = config.hidden_size;
         let attention_head_size = config.hidden_size / config.num_attention_heads;
 
-        let query = linear(config.hidden_size, all_head_size, vb.pp("query"))?;
-        let key = linear(config.hidden_size, all_head_size, vb.pp("key"))?;
-        let value = linear(config.hidden_size, all_head_size, vb.pp("value"))?;
+        let query = builder.pp("query").linear(config.hidden_size, all_head_size)?;
+        let key = builder.pp("key").linear(config.hidden_size, all_head_size)?;
+        let value = builder.pp("value").linear(config.hidden_size, all_head_size)?;
         let dropout = Dropout::new(config.attention_dropout);
         let alibi = AlibiSlopes::new(config.num_attention_heads, device)?;
 
@@ -161,15 +161,15 @@ impl DnaBert2SelfAttention {
 
 /// Post-attention dense + residual LayerNorm.
 struct DnaBert2SelfOutput {
-    dense: Linear,
+    dense: LinearLayer,
     dropout: Dropout,
     layer_norm: LayerNorm,
 }
 
 impl DnaBert2SelfOutput {
-    fn new(vb: VarBuilder, config: &DnaBert2Config) -> CandleResult<Self> {
-        let dense = linear(config.hidden_size, config.hidden_size, vb.pp("dense"))?;
-        let layer_norm = layer_norm(config.hidden_size, config.layer_norm_eps, vb.pp("layer_norm"))?;
+    fn new(builder: &ModelBuilder, config: &DnaBert2Config) -> CandleResult<Self> {
+        let dense = builder.pp("dense").linear(config.hidden_size, config.hidden_size)?;
+        let layer_norm = builder.pp("layer_norm").layer_norm(config.hidden_size, config.layer_norm_eps)?;
         let dropout = Dropout::new(config.hidden_dropout);
         Ok(Self { dense, dropout, layer_norm })
     }
@@ -188,10 +188,10 @@ struct DnaBert2Attention {
 }
 
 impl DnaBert2Attention {
-    fn new(vb: VarBuilder, config: &DnaBert2Config, device: &Device) -> CandleResult<Self> {
+    fn new(builder: &ModelBuilder, config: &DnaBert2Config, device: &Device) -> CandleResult<Self> {
         Ok(Self {
-            self_attn: DnaBert2SelfAttention::new(vb.pp("self"), config, device)?,
-            output: DnaBert2SelfOutput::new(vb.pp("output"), config)?,
+            self_attn: DnaBert2SelfAttention::new(&builder.pp("self"), config, device)?,
+            output: DnaBert2SelfOutput::new(&builder.pp("output"), config)?,
         })
     }
 
@@ -203,8 +203,8 @@ impl DnaBert2Attention {
 
 /// Gated GeLU MLP as in MosaicBERT.
 struct DnaBert2GatedMlp {
-    up_proj: Linear,
-    down_proj: Linear,
+    up_proj: LinearLayer,
+    down_proj: LinearLayer,
     dropout: Dropout,
     layer_norm: LayerNorm,
     activation: Activation,
@@ -212,10 +212,10 @@ struct DnaBert2GatedMlp {
 }
 
 impl DnaBert2GatedMlp {
-    fn new(vb: VarBuilder, config: &DnaBert2Config) -> CandleResult<Self> {
-        let up_proj = linear_no_bias(config.hidden_size, config.intermediate_size * 2, vb.pp("up_proj"))?;
-        let down_proj = linear(config.intermediate_size, config.hidden_size, vb.pp("down_proj"))?;
-        let layer_norm = layer_norm(config.hidden_size, config.layer_norm_eps, vb.pp("layer_norm"))?;
+    fn new(builder: &ModelBuilder, config: &DnaBert2Config) -> CandleResult<Self> {
+        let up_proj = builder.pp("up_proj").linear_no_bias(config.hidden_size, config.intermediate_size * 2)?;
+        let down_proj = builder.pp("down_proj").linear(config.intermediate_size, config.hidden_size)?;
+        let layer_norm = builder.pp("layer_norm").layer_norm(config.hidden_size, config.layer_norm_eps)?;
         let dropout = Dropout::new(config.hidden_dropout);
         let activation = Activation::Gelu;
         Ok(Self { up_proj, down_proj, dropout, layer_norm, activation, intermediate_size: config.intermediate_size })
@@ -243,10 +243,10 @@ struct DnaBert2Layer {
 }
 
 impl DnaBert2Layer {
-    fn new(vb: VarBuilder, config: &DnaBert2Config, device: &Device) -> CandleResult<Self> {
+    fn new(builder: &ModelBuilder, config: &DnaBert2Config, device: &Device) -> CandleResult<Self> {
         Ok(Self {
-            attention: DnaBert2Attention::new(vb.pp("attention"), config, device)?,
-            mlp: DnaBert2GatedMlp::new(vb.pp("mlp"), config)?,
+            attention: DnaBert2Attention::new(&builder.pp("attention"), config, device)?,
+            mlp: DnaBert2GatedMlp::new(&builder.pp("mlp"), config)?,
         })
     }
 
@@ -262,10 +262,10 @@ struct DnaBert2Encoder {
 }
 
 impl DnaBert2Encoder {
-    fn new(vb: VarBuilder, config: &DnaBert2Config, device: &Device) -> CandleResult<Self> {
+    fn new(builder: &ModelBuilder, config: &DnaBert2Config, device: &Device) -> CandleResult<Self> {
         let mut layers = Vec::with_capacity(config.num_hidden_layers);
         for i in 0..config.num_hidden_layers {
-            layers.push(DnaBert2Layer::new(vb.pp(format!("layer.{}", i)), config, device)?);
+            layers.push(DnaBert2Layer::new(&builder.pp(format!("layer.{}", i)), config, device)?);
         }
         Ok(Self { layers })
     }
@@ -281,19 +281,20 @@ impl DnaBert2Encoder {
 
 /// Masked LM head: transform (dense + gelu + LN) then decoder tied to word embeddings.
 struct DnaBert2LMPredictionHead {
-    transform_dense: Linear,
+    transform_dense: LinearLayer,
     transform_layer_norm: LayerNorm,
     transform_act: Activation,
     decoder: Linear,
 }
 
 impl DnaBert2LMPredictionHead {
-    fn new(vb: VarBuilder, config: &DnaBert2Config, word_embeddings: &Embedding) -> CandleResult<Self> {
-        let lm_vb = vb.pp("lm_head");
-        let transform_dense = linear(config.hidden_size, config.hidden_size, lm_vb.pp("transform").pp("dense"))?;
-        let transform_layer_norm = layer_norm(config.hidden_size, config.layer_norm_eps, lm_vb.pp("transform").pp("layer_norm"))?;
+    fn new(builder: &ModelBuilder, config: &DnaBert2Config, word_embeddings: &Embedding) -> CandleResult<Self> {
+        let lm_builder = builder.pp("lm_head");
+        let transform_dense = lm_builder.pp("transform").pp("dense").linear(config.hidden_size, config.hidden_size)?;
+        let transform_layer_norm =
+            lm_builder.pp("transform").pp("layer_norm").layer_norm(config.hidden_size, config.layer_norm_eps)?;
         let decoder_weight = word_embeddings.embeddings().clone();
-        let decoder_bias = lm_vb.get(config.vocab_size, "bias")?;
+        let decoder_bias = lm_builder.get(config.vocab_size, "bias")?;
         let decoder = Linear::new(decoder_weight, Some(decoder_bias));
         Ok(Self { transform_dense, transform_layer_norm, transform_act: Activation::Gelu, decoder })
     }
@@ -314,9 +315,9 @@ pub struct DnaBert2Model {
 }
 
 impl DnaBert2Model {
-    fn new(vb: VarBuilder, config: DnaBert2Config, device: &Device) -> CandleResult<Self> {
-        let embeddings = DnaBert2Embeddings::new(vb.pp("model").pp("embeddings"), &config)?;
-        let encoder = DnaBert2Encoder::new(vb.pp("model").pp("encoder"), &config, device)?;
+    fn new(builder: &ModelBuilder, config: DnaBert2Config, device: &Device) -> CandleResult<Self> {
+        let embeddings = DnaBert2Embeddings::new(&builder.pp("model").pp("embeddings"), &config)?;
+        let encoder = DnaBert2Encoder::new(&builder.pp("model").pp("encoder"), &config, device)?;
         Ok(Self { embeddings, encoder, config })
     }
 
@@ -355,45 +356,78 @@ pub struct DnaBert2ForMaskedLM {
 }
 
 impl DnaBert2ForMaskedLM {
-    /// Build a model from an existing `VarBuilder` (e.g. `VarMap` for training or
-    /// `from_buffered_safetensors` for inference).
-    pub fn new(vb: VarBuilder, config: DnaBert2Config, device: &Device) -> CandleResult<Self> {
-        let model = DnaBert2Model::new(vb.clone(), config, device)?;
-        let lm_head = DnaBert2LMPredictionHead::new(vb, &model.config, &model.embeddings.word_embeddings)?;
+    /// Build a model from an existing `ModelBuilder`.
+    pub fn new(builder: &ModelBuilder, config: DnaBert2Config, device: &Device) -> CandleResult<Self> {
+        let model = DnaBert2Model::new(builder, config, device)?;
+        let lm_head = DnaBert2LMPredictionHead::new(builder, &model.config, &model.embeddings.word_embeddings)?;
         Ok(Self { model, lm_head })
     }
 
     /// Load a `DnaBert2ForMaskedLM` from raw weights bytes (safetensors or PyTorch .bin/.pth).
-    pub fn load(config: DnaBert2Config, weights: Vec<u8>, dtype: DType, device: &Device) -> CandleResult<Self> {
-        let (model, _) = Self::load_for_training(config, weights, dtype, device)?;
+    pub fn load(
+        config: DnaBert2Config,
+        weights: Vec<u8>,
+        dtype: DType,
+        device: &Device,
+        lora_config: Option<&LoraConfig>,
+    ) -> CandleResult<Self> {
+        let (model, _, _) = Self::load_for_training(config, weights, dtype, device, lora_config)?;
         Ok(model)
     }
 
     /// Load a trainable model from raw weights bytes (safetensors or PyTorch .bin/.pth zip),
-    /// returning it together with the underlying `VarMap` so that an optimizer can be created.
-    pub fn load_for_training(config: DnaBert2Config, weights: Vec<u8>, dtype: DType, device: &Device) -> CandleResult<(Self, VarMap)> {
+    /// returning the model, the `VarMap` for the trainable parameters, and the frozen base weights
+    /// (empty for full fine-tuning, populated for LoRA).
+    #[allow(clippy::type_complexity)]
+    pub fn load_for_training(
+        config: DnaBert2Config,
+        weights: Vec<u8>,
+        dtype: DType,
+        device: &Device,
+        lora_config: Option<&LoraConfig>,
+    ) -> CandleResult<(Self, VarMap, Arc<HashMap<String, Tensor>>)> {
         if let Some(hint) = diagnose_weights(&weights) {
             return Err(candle_core::Error::Msg(hint));
         }
 
-        let varmap = VarMap::new();
-        let vb = VarBuilder::from_varmap(&varmap, dtype, device);
-        let model = Self::new(vb, config, device)?;
-        let tensors = load_weights(&weights, device).map_err(|e| {
+        let all_tensors = load_weights(&weights, device).map_err(|e| {
             candle_core::Error::Msg(format!("Failed to load weights: {}. {}", e, diagnose_weights(&weights).unwrap_or_default()))
         })?;
+
+        let (base_weights, lora_weights): (HashMap<String, Tensor>, HashMap<String, Tensor>) = if lora_config.is_some() {
+            let mut base = HashMap::with_capacity(all_tensors.len());
+            let mut lora = HashMap::new();
+            for (name, tensor) in all_tensors {
+                if name.ends_with(".lora_a") || name.ends_with(".lora_b") {
+                    lora.insert(name, tensor);
+                } else {
+                    base.insert(name, tensor);
+                }
+            }
+            (base, lora)
+        } else {
+            (all_tensors, HashMap::new())
+        };
+
+        let base_weights = Arc::new(base_weights);
+        let varmap = VarMap::new();
+        let builder = ModelBuilder::new(Arc::new(varmap.clone()), base_weights.clone(), lora_config.cloned(), dtype, device.clone());
+        let model = Self::new(&builder, config, device)?;
+
         {
             let tensor_data = varmap.data().lock().map_err(|e| candle_core::Error::Msg(e.to_string()))?;
-            for (name, tensor) in tensors.iter() {
+            let to_set = if lora_config.is_some() { &lora_weights } else { &*base_weights };
+            for (name, tensor) in to_set.iter() {
                 if let Some(var) = tensor_data.get(name) {
-                    // Weights are typically F32; cast to the requested training dtype and device.
                     let tensor = tensor.to_device(device)?.to_dtype(dtype)?;
                     var.set(&tensor)?;
                 }
-                // Unknown keys are ignored so that tied/decoded weights do not break loading.
             }
         }
-        Ok((model, varmap))
+
+        // For LoRA, base_weights returned to the trainer is the base-only map.
+        // For full fine-tuning it is the full map, but it will not be used.
+        Ok((model, varmap, base_weights))
     }
 
     pub fn forward(
@@ -617,7 +651,22 @@ mod tests {
         let device = Device::Cpu;
         let weights = build_tiny_safetensors();
         let config = build_tiny_config();
-        let model = DnaBert2ForMaskedLM::load(config, weights, DType::F32, &device).unwrap();
+        let model = DnaBert2ForMaskedLM::load(config, weights, DType::F32, &device, None).unwrap();
+
+        let input_ids = Tensor::new(&[[1u32, 2, 3, 4, 5]], &device).unwrap();
+        let attention_mask = Tensor::new(&[[1u32, 1, 1, 1, 1]], &device).unwrap();
+        let logits = model.forward(&input_ids, None, Some(&attention_mask)).unwrap();
+
+        assert_eq!(logits.dims().to_vec(), vec![1, 5, 8]);
+    }
+
+    #[test]
+    fn test_forward_shapes_lora() {
+        let device = Device::Cpu;
+        let weights = build_tiny_safetensors();
+        let config = build_tiny_config();
+        let lora_config = LoraConfig { rank: 2, alpha: 4.0, dropout: 0.0, target_modules: LoraConfig::default_target_modules() };
+        let model = DnaBert2ForMaskedLM::load(config, weights, DType::F32, &device, Some(&lora_config)).unwrap();
 
         let input_ids = Tensor::new(&[[1u32, 2, 3, 4, 5]], &device).unwrap();
         let attention_mask = Tensor::new(&[[1u32, 1, 1, 1, 1]], &device).unwrap();

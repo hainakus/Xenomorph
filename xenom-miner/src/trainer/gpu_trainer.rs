@@ -3,6 +3,7 @@ use candle_core::{DType, Device};
 use tracing::{info, warn};
 
 use crate::gpu::monitor::GpuMonitor;
+use crate::lora::LoraConfig;
 use crate::model::DnaBert2Config;
 use crate::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch};
 use crate::tokenizer::DnaTokenizer;
@@ -43,6 +44,7 @@ impl GpuTrainer {
         device_index: usize,
         fp16: bool,
         threads: usize,
+        lora_config: Option<LoraConfig>,
     ) -> Result<Self> {
         let (device, device_type, device_name) = Self::select_device(backend, device_index)?;
 
@@ -56,7 +58,7 @@ impl GpuTrainer {
             DType::F32
         };
 
-        let inner = DnaBert2Trainer::new(config, weights, tokenizer, device, threads, dtype)
+        let inner = DnaBert2Trainer::new(config, weights, tokenizer, device, threads, dtype, lora_config)
             .context("Failed to initialize DNABERT-2 trainer on selected device")?;
 
         Ok(Self { inner, device_type, device_name, device_index, threads })

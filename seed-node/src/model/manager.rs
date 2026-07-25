@@ -43,6 +43,7 @@ use super::{EncryptedModelFiles, RawModelFiles};
 
 use candle_core::{DType, Device, Tensor};
 use model_crypto;
+use xenom_miner::lora::LoraConfig;
 use xenom_miner::model::DnaBert2Config;
 use xenom_miner::tokenizer::DnaTokenizer;
 use xenom_miner::trainer::DnaBert2Trainer;
@@ -56,6 +57,7 @@ pub struct ModelInfo {
     pub checkpoint: ModelCheckpoint,
     pub loaded: bool,
     pub last_used: u64,
+    pub lora_config: Option<LoraConfig>,
 }
 
 /// A cached, trainable checkpoint lineage.
@@ -87,15 +89,16 @@ pub struct ModelManager {
     fedavg_config: FedAvgConfig,
     node_id: String,
     checkpoint_history_size: usize,
+    lora_config: Option<LoraConfig>,
 }
 
 impl ModelManager {
     pub async fn new(base_path: String) -> Result<Self> {
         let key = ModelStorage::generate_key();
-        Self::new_with_key(base_path, key).await
+        Self::new_with_key(base_path, key, LoraConfig::from_env()).await
     }
 
-    pub async fn new_with_key(base_path: String, encryption_key: [u8; 32]) -> Result<Self> {
+    pub async fn new_with_key(base_path: String, encryption_key: [u8; 32], lora_config: Option<LoraConfig>) -> Result<Self> {
         let storage = Arc::new(ModelStorage::new(base_path.clone(), encryption_key));
 
         // Create base directory if it doesn't exist
@@ -117,7 +120,13 @@ impl ModelManager {
             fedavg_config,
             node_id,
             checkpoint_history_size,
+            lora_config,
         })
+    }
+
+    /// Return the LoRA configuration used by this manager.
+    pub fn lora_config(&self) -> Option<&LoraConfig> {
+        self.lora_config.as_ref()
     }
 
     pub async fn load_model(&self, model_id: &str) -> Result<ModelInfo> {
@@ -152,6 +161,7 @@ impl ModelManager {
             checkpoint,
             loaded: true,
             last_used: chrono::Utc::now().timestamp() as u64,
+            lora_config: self.lora_config.clone(),
         };
 
         // Cache the model
@@ -228,6 +238,7 @@ impl ModelManager {
             checkpoint,
             loaded: false,
             last_used: 0,
+            lora_config: self.lora_config.clone(),
         };
 
         {
@@ -252,6 +263,7 @@ impl ModelManager {
             checkpoint,
             loaded: false,
             last_used: 0,
+            lora_config: self.lora_config.clone(),
         };
 
         {
@@ -613,8 +625,9 @@ impl ModelManager {
         let tokenizer = DnaTokenizer::from_bytes(&files.tokenizer).context("Failed to parse tokenizer")?;
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
 
-        let trainer = DnaBert2Trainer::new(config, files.weights, tokenizer, Device::Cpu, threads, DType::F32)
-            .context("Failed to load trainable model for aggregation")?;
+        let trainer =
+            DnaBert2Trainer::new(config, files.weights, tokenizer, Device::Cpu, threads, DType::F32, self.lora_config.clone())
+                .context("Failed to load trainable model for aggregation")?;
 
         let entry = CachedCheckpoint {
             base_hash,

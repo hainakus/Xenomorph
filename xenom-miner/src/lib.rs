@@ -5,6 +5,7 @@ pub mod data;
 pub mod dnabert2;
 pub mod governance;
 pub mod gpu;
+pub mod lora;
 pub mod model;
 pub mod model_cache;
 pub mod model_client;
