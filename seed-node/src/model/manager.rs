@@ -117,7 +117,7 @@ impl ModelManager {
 
         let node_id = Uuid::new_v4().to_string();
 
-        let min_participants = std::env::var("FEDAVG_MIN_PARTICIPANTS").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+        let min_participants = std::env::var("FEDAVG_MIN_PARTICIPANTS").ok().and_then(|s| s.parse().ok()).unwrap_or(4);
         let fedavg_config = FedAvgConfig { min_participants, max_participants: 10, weighting_strategy: WeightingStrategy::Uniform };
 
         let checkpoint_history_size = std::env::var("XENO_CHECKPOINT_HISTORY_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(8);

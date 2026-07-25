@@ -66,6 +66,8 @@ load_env
 
 export XENO_QUIET="${XENO_QUIET:-0}"
 export XENO_VERBOSE="${XENO_VERBOSE:-0}"
+export FEDAVG_MIN_PARTICIPANTS="${FEDAVG_MIN_PARTICIPANTS:-4}"
+export XENO_CHECKPOINT_HISTORY_SIZE="${XENO_CHECKPOINT_HISTORY_SIZE:-8}"
 
 # Honour XENO_BIND_IP from .env/env, but keep --bind-ip as fallback.
 BIND_IP="${XENO_BIND_IP:-$BIND_IP}"
