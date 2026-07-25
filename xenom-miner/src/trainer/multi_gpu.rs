@@ -478,25 +478,24 @@ impl MultiGpuTrainer {
         };
         overflow_check_ms += final_overflow_start.elapsed().as_millis() as u64;
 
-        let effective_lr = scaler.effective_learning_rate(learning_rate, MAX_LEARNING_RATE);
-
-        // Only update weights when the averaged gradients are finite.
-        let apply_start = Instant::now();
-        if !had_overflow {
-            self.trainers[0]
-                .apply_gradients(&final_grads, effective_lr)
-                .context("Failed to apply averaged gradients to master replica")?;
-            // No need to broadcast: the master is only used for the post-update loss
-            // and gradient commitment; all replicas are reset to the base snapshot below.
-        } else {
-            warn!("Averaged gradients are non-finite; skipping optimizer step and reducing loss scale");
-            any_overflow = true;
-        }
-        let apply_ms = apply_start.elapsed().as_millis() as u64;
-
-        // Update the loss scale based on overflow status.
+        // Update the loss scale based on overflow status before deciding whether to
+        // apply the step. If the averaged gradients are non-finite, skip the optimizer
+        // step entirely and bail; the caller will retry with the reduced scale.
+        any_overflow = any_overflow || had_overflow;
         scaler.update_scale(any_overflow);
         *self.scaler.lock().map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))? = scaler;
+
+        if had_overflow {
+            bail!("Averaged gradients are non-finite; loss scale reduced to {}. Will retry on next batch.", scaler.scale());
+        }
+
+        let effective_lr = scaler.effective_learning_rate(learning_rate, MAX_LEARNING_RATE);
+
+        let apply_start = Instant::now();
+        self.trainers[0]
+            .apply_gradients(&final_grads, effective_lr)
+            .context("Failed to apply averaged gradients to master replica")?;
+        let apply_ms = apply_start.elapsed().as_millis() as u64;
 
         // Compute post-update loss on the master replica using the same
         // sequences that were actually trained.
