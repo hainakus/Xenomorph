@@ -32,10 +32,10 @@ Options:
   --gradient-checkpointing        Enable gradient checkpointing (stub)
   --zero <n>                      ZeRO optimization level (stub, default 0)
   --max-seq-len <n>               Cap sequence length to save VRAM (default: 512)
-  --lora                          Enable LoRA (Low-Rank Adaptation) fine-tuning
-  --lora-rank <n>                 LoRA rank (default: \$XENO_LORA_RANK or 8)
-  --lora-alpha <n>                LoRA alpha (default: \$XENO_LORA_ALPHA or 16)
-  --lora-dropout <f>              LoRA dropout (default: \$XENO_LORA_DROPOUT or 0)
+  --lora                          Enable LoRA (default: on)
+  --lora-rank <n>                 LoRA rank (default: 8)
+  --lora-alpha <n>                LoRA alpha (default: 16)
+  --lora-dropout <f>              LoRA dropout (default: 0)
   --lora-target-modules <list>    Comma-separated LoRA target modules
   --gradient-top-k-ratio <f>      Gradient compression ratio for uploads (default: 1.0)
   -d, --data-dir <dir>            Base data directory
@@ -57,7 +57,7 @@ FP16=0
 GRADIENT_CHECKPOINTING=0
 ZERO=0
 MAX_SEQ_LEN=512
-LORA=0
+LORA=1
 LORA_RANK="${XENO_LORA_RANK:-8}"
 LORA_ALPHA="${XENO_LORA_ALPHA:-16}"
 LORA_DROPOUT="${XENO_LORA_DROPOUT:-0}"

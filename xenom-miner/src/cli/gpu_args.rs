@@ -41,7 +41,7 @@ pub struct GpuArgs {
     pub gradient_top_k_ratio: f32,
 
     /// Enable LoRA (Low-Rank Adaptation) fine-tuning instead of full fine-tuning.
-    #[arg(long, env = "XENO_LORA")]
+    #[arg(long, env = "XENO_LORA", default_value_t = true)]
     pub lora: bool,
 
     /// LoRA rank.

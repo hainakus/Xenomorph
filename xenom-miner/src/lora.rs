@@ -27,17 +27,17 @@ impl LoraConfig {
 
     /// Parse LoRA configuration from environment variables.
     ///
-    /// Variables:
-    /// - `XENO_LORA`: set to `1` or `true` to enable.
+    /// LoRA is enabled by default. Set `XENO_LORA` to `0`, `false`, `no`, or `off`
+    /// to disable it. Other variables override the defaults:
     /// - `XENO_LORA_RANK` (default 8)
     /// - `XENO_LORA_ALPHA` (default 16.0)
     /// - `XENO_LORA_DROPOUT` (default 0.0)
     /// - `XENO_LORA_TARGET_MODULES` comma-separated (default `query,key,value,transform_dense,up_proj,down_proj`)
     pub fn from_env() -> Option<Self> {
-        let enabled = matches!(
-            std::env::var("XENO_LORA").ok(),
-            Some(v) if v == "1" || v.to_lowercase() == "true"
-        );
+        let enabled = match std::env::var("XENO_LORA").ok().as_deref() {
+            Some("0") | Some("false") | Some("no") | Some("off") => false,
+            _ => true,
+        };
         if !enabled {
             return None;
         }

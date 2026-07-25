@@ -23,10 +23,10 @@ Options:
                                   (optional; enables real Genome PoW)
   --bind-ip <ip>                  IP to bind node/API sockets to
                                   (default: \$XENO_BIND_IP or 0.0.0.0)
-  --lora                          Enable LoRA for the training coordinator
-  --lora-rank <n>                 LoRA rank (default: \$XENO_LORA_RANK or 8)
-  --lora-alpha <n>                LoRA alpha (default: \$XENO_LORA_ALPHA or 16)
-  --lora-dropout <f>              LoRA dropout (default: \$XENO_LORA_DROPOUT or 0)
+  --lora                          Enable LoRA (default: on)
+  --lora-rank <n>                 LoRA rank (default: 8)
+  --lora-alpha <n>                LoRA alpha (default: 16)
+  --lora-dropout <f>              LoRA dropout (default: 0)
   --lora-target-modules <list>    Comma-separated LoRA target modules
   -q, --quiet                     Minimal output
   -v, --verbose                   Debug output
@@ -37,7 +37,7 @@ BUILD=1
 DATA_DIR="${XENO_DATA_DIR:-$SCRIPT_DIR/../devnet-data-native}"
 GENOME_FILE="${XENO_GENOME_FILE:-}"
 BIND_IP="${XENO_BIND_IP:-0.0.0.0}"
-LORA=0
+LORA=1
 LORA_RANK="${XENO_LORA_RANK:-8}"
 LORA_ALPHA="${XENO_LORA_ALPHA:-16}"
 LORA_DROPOUT="${XENO_LORA_DROPOUT:-0}"
@@ -66,8 +66,6 @@ load_env
 
 export XENO_QUIET="${XENO_QUIET:-0}"
 export XENO_VERBOSE="${XENO_VERBOSE:-0}"
-export FEDAVG_MIN_PARTICIPANTS="${FEDAVG_MIN_PARTICIPANTS:-4}"
-export XENO_CHECKPOINT_HISTORY_SIZE="${XENO_CHECKPOINT_HISTORY_SIZE:-8}"
 
 # Honour XENO_BIND_IP from .env/env, but keep --bind-ip as fallback.
 BIND_IP="${XENO_BIND_IP:-$BIND_IP}"
