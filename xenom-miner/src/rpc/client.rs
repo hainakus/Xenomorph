@@ -10,8 +10,9 @@ use tokio_tungstenite::{
 use tracing::{debug, info, warn};
 
 use super::messages::{
-    BlockHash, DifficultyTarget, GenomeTrainingBatchMsg, GetModelCheckpointInfo, GradientUpdate, ModelCheckpoint, ModelCheckpointInfo,
-    RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch, TrainingBlock,
+    BlockHash, DifficultyTarget, GenomeTrainingBatchMsg, GetModelCheckpointInfo, GetModelCheckpointInfoV2, GetModelCheckpointV2,
+    GradientUpdate, ModelCheckpoint, ModelCheckpointInfo, ModelCheckpointInfoV2, ModelCheckpointV2, RpcEnvelope, RpcRequest,
+    RpcResponse, TrainingBatch, TrainingBlock,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -129,6 +130,36 @@ impl XenomRpcClient {
             RpcResponse::ModelCheckpoint(cp) => Ok(cp),
             RpcResponse::Error(msg) => bail!("Node returned error: {}", msg),
             other => bail!("Unexpected response to GetModelCheckpoint: {:?}", other),
+        }
+    }
+
+    /// Request lightweight V2 checkpoint metadata, exposing both the combined
+    /// checkpoint id and the base weights hash.
+    pub async fn get_model_checkpoint_info_v2(&mut self, model_id: &str) -> Result<ModelCheckpointInfoV2> {
+        let response = self
+            .send_request(RpcRequest::GetModelCheckpointInfoV2(GetModelCheckpointInfoV2 { model_id: model_id.to_string() }))
+            .await?;
+
+        match response {
+            RpcResponse::ModelCheckpointInfoV2(info) => Ok(info),
+            RpcResponse::Error(msg) => bail!("Node returned error: {}", msg),
+            other => bail!("Unexpected response to GetModelCheckpointInfoV2: {:?}", other),
+        }
+    }
+
+    /// Request the model checkpoint (full or adapter-only) from the seed-node.
+    pub async fn get_model_checkpoint_v2(&mut self, model_id: &str, cached_base_hash: Option<[u8; 32]>) -> Result<ModelCheckpointV2> {
+        let response = self
+            .send_request_with_timeout(
+                RpcRequest::GetModelCheckpointV2(GetModelCheckpointV2 { model_id: model_id.to_string(), cached_base_hash }),
+                MODEL_CHECKPOINT_TIMEOUT,
+            )
+            .await?;
+
+        match response {
+            RpcResponse::ModelCheckpointV2(cp) => Ok(cp),
+            RpcResponse::Error(msg) => bail!("Node returned error: {}", msg),
+            other => bail!("Unexpected response to GetModelCheckpointV2: {:?}", other),
         }
     }
 

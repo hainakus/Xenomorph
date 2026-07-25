@@ -10,7 +10,7 @@ use borsh::{to_vec, BorshDeserialize};
 use futures_util::{SinkExt, StreamExt};
 use kaspa_core::{info, warn};
 use kaspa_p2p_flows::flow_context::FlowContext;
-use seed_node::rpc::messages::{GetModelCheckpointInfo, RpcEnvelope, RpcRequest, RpcResponse};
+use seed_node::rpc::messages::{GetModelCheckpointInfo, GetModelCheckpointInfoV2, RpcEnvelope, RpcRequest, RpcResponse};
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::accept_async_with_config;
@@ -101,6 +101,12 @@ async fn handle_request(req: RpcRequest, coordinator: &Coordinator, flow_context
         RpcRequest::GetModelCheckpoint { model_id } => coordinator.get_model_checkpoint(model_id).await,
         RpcRequest::GetModelCheckpointInfo(GetModelCheckpointInfo { model_id }) => {
             coordinator.get_model_checkpoint_info(model_id).await
+        }
+        RpcRequest::GetModelCheckpointInfoV2(GetModelCheckpointInfoV2 { model_id }) => {
+            coordinator.get_model_checkpoint_info_v2(model_id).await
+        }
+        RpcRequest::GetModelCheckpointV2(request) => {
+            coordinator.get_model_checkpoint_v2(request.model_id, request.cached_base_hash).await
         }
         RpcRequest::SubmitBlock(block) => coordinator.submit_block(block).await,
         RpcRequest::SubmitGradients(update) => match coordinator.submit_gradients(&update).await {

@@ -26,7 +26,8 @@ use seed_node::model::manager::ModelManager;
 use seed_node::model::storage::ModelStorage;
 use seed_node::rpc::messages::{
     GenomeTrainingBatchMsg, GetGenomeTrainingBatch, GradientUpdate, ModelCheckpoint as RpcModelCheckpoint,
-    ModelCheckpointInfo as RpcModelCheckpointInfo, RpcResponse, TrainingBatch, TrainingBlock,
+    ModelCheckpointInfo as RpcModelCheckpointInfo, ModelCheckpointInfoV2 as RpcModelCheckpointInfoV2,
+    ModelCheckpointV2 as RpcModelCheckpointV2, RpcResponse, TrainingBatch, TrainingBlock,
 };
 use seed_node::LoraConfig;
 use tokio::sync::RwLock;
@@ -259,6 +260,50 @@ impl Coordinator {
             tokenizer: files.tokenizer,
             weights: files.weights,
             encrypted: true,
+        })
+    }
+
+    /// Return lightweight V2 checkpoint metadata to the miner so it can decide
+    /// whether its cached base weights are still valid.
+    pub async fn get_model_checkpoint_info_v2(&self, model_id: String) -> RpcResponse {
+        if model_id != self.inner.active_model_id {
+            return RpcResponse::Error(format!("Unknown model id {} (active is {})", model_id, self.inner.active_model_id));
+        }
+
+        let (combined_hash, base_hash) = match self.inner.model_manager.get_model_checkpoint_info_v2(&model_id).await {
+            Ok(hashes) => hashes,
+            Err(e) => return RpcResponse::Error(format!("Failed to load active model: {}", e)),
+        };
+
+        RpcResponse::ModelCheckpointInfoV2(RpcModelCheckpointInfoV2 { model_id, base_checkpoint: combined_hash, base_hash })
+    }
+
+    /// Return the raw model checkpoint files to the miner, sending only the
+    /// LoRA adapter when the miner already has the matching base weights.
+    pub async fn get_model_checkpoint_v2(&self, model_id: String, cached_base_hash: Option<[u8; 32]>) -> RpcResponse {
+        if model_id != self.inner.active_model_id {
+            return RpcResponse::Error(format!("Unknown model id {} (active is {})", model_id, self.inner.active_model_id));
+        }
+
+        if let Err(e) = self.inner.model_manager.ensure_model_downloaded(&model_id).await {
+            return RpcResponse::Error(format!("Failed to download model: {}", e));
+        }
+
+        let (files, combined_hash, base_hash, is_adapter) =
+            match self.inner.model_manager.get_encrypted_model_checkpoint_v2(&model_id, cached_base_hash).await {
+                Ok(cp) => cp,
+                Err(e) => return RpcResponse::Error(format!("Failed to load model checkpoint: {}", e)),
+            };
+
+        RpcResponse::ModelCheckpointV2(RpcModelCheckpointV2 {
+            model_id,
+            base_checkpoint: combined_hash,
+            base_hash,
+            config: files.config,
+            tokenizer: files.tokenizer,
+            weights: files.weights,
+            encrypted: true,
+            is_adapter,
         })
     }
 

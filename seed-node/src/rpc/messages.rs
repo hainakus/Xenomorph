@@ -129,6 +129,8 @@ pub enum RpcRequest {
     GetGenomeTrainingBatch(GetGenomeTrainingBatch),
     GetModelCheckpointInfo(GetModelCheckpointInfo),
     SubmitGradients(GradientUpdate),
+    GetModelCheckpointInfoV2(GetModelCheckpointInfoV2),
+    GetModelCheckpointV2(GetModelCheckpointV2),
 }
 
 /// Response messages sent from the Xenomorph node to the miner.
@@ -146,6 +148,8 @@ pub enum RpcResponse {
     GenomeTrainingBatch(GenomeTrainingBatchMsg),
     ModelCheckpointInfo(ModelCheckpointInfo),
     GradientAck { new_checkpoint: Option<[u8; 32]> },
+    ModelCheckpointInfoV2(ModelCheckpointInfoV2),
+    ModelCheckpointV2(ModelCheckpointV2),
 }
 
 /// Request the lightweight metadata for the active model checkpoint.
@@ -159,6 +163,49 @@ pub struct GetModelCheckpointInfo {
 pub struct ModelCheckpointInfo {
     pub model_id: String,
     pub base_checkpoint: [u8; 32],
+}
+
+/// V2 model checkpoint for LoRA adapter-aware sync.
+///
+/// `base_checkpoint` is the combined hash used as the training block base.
+/// `base_hash` is the hash of the frozen base weights the node used as the
+/// foundation for the adapter. `is_adapter` tells the receiver whether
+/// `weights` contains the full merged checkpoint or only the adapter tensors.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct ModelCheckpointV2 {
+    pub model_id: String,
+    pub base_checkpoint: [u8; 32],
+    pub base_hash: [u8; 32],
+    pub config: Vec<u8>,
+    pub tokenizer: Vec<u8>,
+    pub weights: Vec<u8>,
+    pub encrypted: bool,
+    pub is_adapter: bool,
+}
+
+/// V2 request for `ModelCheckpointV2`.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct GetModelCheckpointV2 {
+    pub model_id: String,
+    /// If the miner already has a base checkpoint with this hash, the node may
+    /// return only the LoRA adapter. `None` always requests the full bundle.
+    pub cached_base_hash: Option<[u8; 32]>,
+}
+
+/// V2 lightweight checkpoint metadata exposing both the combined and base hashes.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct GetModelCheckpointInfoV2 {
+    pub model_id: String,
+}
+
+/// V2 lightweight checkpoint metadata.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct ModelCheckpointInfoV2 {
+    pub model_id: String,
+    /// Combined hash (the active checkpoint id used as `base_checkpoint` in training).
+    pub base_checkpoint: [u8; 32],
+    /// Hash of the frozen base weights the current adapter is built on.
+    pub base_hash: [u8; 32],
 }
 
 /// Wire envelope used by the RPC client to tag requests.

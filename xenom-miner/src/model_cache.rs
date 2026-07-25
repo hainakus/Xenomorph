@@ -7,6 +7,8 @@ const CONFIG_FILE: &str = "config.json";
 const TOKENIZER_FILE: &str = "tokenizer.json";
 const WEIGHTS_FILE: &str = "model.safetensors";
 const HASH_FILE: &str = "base_checkpoint";
+const BASE_HASH_FILE: &str = "base_hash";
+const BASE_WEIGHTS_FILE: &str = "base.safetensors";
 
 /// In-memory bundle returned by the seed-node. The miner can persist this to
 /// disk so it only has to download the full weights once.
@@ -93,6 +95,41 @@ impl ModelCache {
         let mut arr = [0u8; 32];
         arr.copy_from_slice(&bytes);
         Ok(arr)
+    }
+
+    /// Write the frozen base weights and their hash for Phase 2 adapter merging.
+    pub fn write_base(&self, model_id: &str, base_hash: [u8; 32], base_weights: &[u8]) -> Result<()> {
+        let dir = self.model_dir(model_id);
+        fs::create_dir_all(&dir).with_context(|| format!("Failed to create cache directory {:?}", dir))?;
+
+        fs::write(dir.join(BASE_HASH_FILE), hex::encode(base_hash)).context("Failed to write cached base hash")?;
+        fs::write(dir.join(BASE_WEIGHTS_FILE), base_weights).context("Failed to write cached base weights")?;
+        Ok(())
+    }
+
+    /// Read the cached base weights hash, if any.
+    pub fn read_base_hash(&self, model_id: &str) -> Option<[u8; 32]> {
+        let path = self.model_dir(model_id).join(BASE_HASH_FILE);
+        let hex_str = fs::read_to_string(&path).ok()?;
+        let bytes = hex::decode(hex_str).ok()?;
+        if bytes.len() != 32 {
+            return None;
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Some(arr)
+    }
+
+    /// Read the cached base weights bytes.
+    pub fn read_base_weights(&self, model_id: &str) -> Result<Vec<u8>> {
+        let path = self.model_dir(model_id).join(BASE_WEIGHTS_FILE);
+        fs::read(&path).with_context(|| format!("Failed to read cached base weights at {:?}", path))
+    }
+
+    /// Returns true if cached base weights are present.
+    pub fn is_base_cached(&self, model_id: &str) -> bool {
+        let dir = self.model_dir(model_id);
+        dir.join(BASE_HASH_FILE).is_file() && dir.join(BASE_WEIGHTS_FILE).is_file()
     }
 }
 

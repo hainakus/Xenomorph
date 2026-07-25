@@ -203,6 +203,18 @@ impl DnaBert2Trainer {
         safetensors::tensor::serialize(tensors, &None).map_err(|e| anyhow::anyhow!("Failed to serialize adapter weights: {}", e))
     }
 
+    /// Serialize the frozen base weights into a SafeTensors buffer.
+    ///
+    /// For non-LoRA models this is the full checkpoint; for LoRA it is the base
+    /// model without the adapter tensors.
+    pub fn save_base_weights_to_bytes(&self) -> Result<Vec<u8>> {
+        if self.base_weights.is_empty() {
+            return self.save_weights_to_bytes();
+        }
+        let tensors: Vec<(String, &Tensor)> = self.base_weights.iter().map(|(k, v)| (k.clone(), v)).collect();
+        safetensors::tensor::serialize(tensors, &None).map_err(|e| anyhow::anyhow!("Failed to serialize base weights: {}", e))
+    }
+
     /// Load trainable weights from an in-memory SafeTensors buffer into the live VarMap.
     pub fn load_weights_from_bytes(&self, weights: &[u8]) -> Result<()> {
         let loaded = candle_core::safetensors::load_buffer(weights, &self.device).context("Failed to load safetensors weights")?;

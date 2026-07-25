@@ -62,8 +62,9 @@ pub struct ModelInfo {
 
 /// A cached, trainable checkpoint lineage.
 ///
-/// `base_hash` is the original checkpoint hash that seeded this lineage.
-/// `head_hash` is the latest weights hash after the most recent aggregation.
+/// `base_hash` is the hash of the frozen base weights.
+/// `head_hash` is the latest combined weights hash after the most recent aggregation.
+/// `adapter_bytes` holds the serialized (plaintext) LoRA adapter when one exists.
 /// The `trainer` holds the live DNABERT-2 weights and AdamW optimizer state,
 /// and the `aggregator` collects gradients for the next FedAvg round.
 pub struct CachedCheckpoint {
@@ -73,6 +74,8 @@ pub struct CachedCheckpoint {
     pub aggregator: FedAvgAggregator,
     pub last_used: Instant,
     pub model_id: String,
+    /// Plaintext LoRA adapter bytes, kept in memory to serve adapter-only sync.
+    pub adapter_bytes: Option<Vec<u8>>,
 }
 
 pub struct ModelManager {
@@ -317,6 +320,74 @@ impl ModelManager {
         Ok((model_info.checkpoint, files))
     }
 
+    /// Return checkpoint metadata for the V2 RPC, exposing both the combined
+    /// checkpoint id and the base weights hash.
+    pub async fn get_model_checkpoint_info_v2(&self, model_id: &str) -> Result<([u8; 32], [u8; 32])> {
+        self.ensure_checkpoint_cached(model_id).await?;
+
+        let active_hash = {
+            let models = self.models.read().await;
+            models.get(model_id).map(|info| info.checkpoint.weights_hash)
+        };
+        let active_hash = active_hash.ok_or_else(|| anyhow!("Model {} is not loaded", model_id))?;
+
+        let cache = self.checkpoint_cache.read().await;
+        let entry = cache.get(&active_hash).ok_or_else(|| anyhow!("Active checkpoint not cached"))?;
+        let entry = entry.lock().await;
+        Ok((entry.head_hash, entry.base_hash))
+    }
+
+    /// Return encrypted model files for the V2 RPC.
+    ///
+    /// If `cached_base_hash` matches the active base hash and a LoRA adapter is
+    /// available, only the encrypted adapter is returned (`is_adapter=true`).
+    /// Otherwise the full merged checkpoint is returned (`is_adapter=false`).
+    pub async fn get_encrypted_model_checkpoint_v2(
+        &self,
+        model_id: &str,
+        cached_base_hash: Option<[u8; 32]>,
+    ) -> Result<(EncryptedModelFiles, [u8; 32], [u8; 32], bool)> {
+        self.ensure_checkpoint_cached(model_id).await?;
+
+        let active_hash = {
+            let models = self.models.read().await;
+            models.get(model_id).map(|info| info.checkpoint.weights_hash)
+        };
+        let active_hash = active_hash.ok_or_else(|| anyhow!("Model {} is not loaded", model_id))?;
+
+        let cache = self.checkpoint_cache.read().await;
+        let entry = cache.get(&active_hash).ok_or_else(|| anyhow!("Active checkpoint not cached"))?.clone();
+        let entry = entry.lock().await;
+
+        let metadata = self
+            .storage
+            .load_encrypted_model_metadata(model_id)
+            .await
+            .map_err(|e| anyhow!("Failed to load encrypted model metadata: {}", e))?;
+
+        let base_hash = entry.base_hash;
+        let head_hash = entry.head_hash;
+
+        let send_adapter = cached_base_hash == Some(base_hash) && entry.adapter_bytes.is_some();
+        let weights = if send_adapter {
+            let adapter = entry.adapter_bytes.as_ref().unwrap();
+            model_crypto::encrypt(adapter, self.storage.encryption_key()).context("Failed to encrypt adapter")?
+        } else {
+            self.storage
+                .load_encrypted_model_files(model_id)
+                .await
+                .map_err(|e| anyhow!("Failed to load encrypted model files: {}", e))?
+                .weights
+        };
+
+        Ok((
+            EncryptedModelFiles { config: metadata.config, tokenizer: metadata.tokenizer, weights },
+            head_hash,
+            base_hash,
+            send_adapter,
+        ))
+    }
+
     pub async fn store_checkpoint(&self, model_id: &str, version: u32, data: &[u8], _metrics: ModelMetrics) -> Result<String> {
         let path =
             self.storage.store_checkpoint(model_id, version, data).await.map_err(|e| anyhow!("Failed to store checkpoint: {}", e))?;
@@ -479,6 +550,7 @@ impl ModelManager {
         // Apply the averaged gradients on a blocking thread so the async runtime
         // is not paused by the DNABERT-2 forward / backward pass.
         let entry_clone = entry.clone();
+        let is_lora = self.lora_config.is_some();
         let (weights, new_hash) = tokio::task::spawn_blocking(move || {
             let mut entry = entry_clone.blocking_lock();
 
@@ -504,6 +576,11 @@ impl ModelManager {
 
             entry.head_hash = new_hash_bytes;
             entry.last_used = Instant::now();
+
+            // Refresh the in-memory adapter bytes for Phase 2 adapter-only sync.
+            if is_lora {
+                entry.adapter_bytes = entry.trainer.save_adapter_to_bytes().ok();
+            }
 
             Ok::<_, anyhow::Error>((weights, new_hash_bytes))
         })
@@ -618,7 +695,7 @@ impl ModelManager {
     fn build_cached_checkpoint(
         &self,
         model_id: &str,
-        base_hash: [u8; 32],
+        active_hash: [u8; 32],
         files: RawModelFiles,
     ) -> Result<Arc<Mutex<CachedCheckpoint>>> {
         let config = DnaBert2Config::from_bytes(&files.config).context("Failed to parse model config")?;
@@ -629,13 +706,23 @@ impl ModelManager {
             DnaBert2Trainer::new(config, files.weights, tokenizer, Device::Cpu, threads, DType::F32, self.lora_config.clone())
                 .context("Failed to load trainable model for aggregation")?;
 
+        // Compute the base weights hash and, for LoRA, the adapter bytes.
+        let base_bytes = trainer.save_base_weights_to_bytes().context("Failed to serialize base weights")?;
+        let base_hash = <[u8; 32]>::from(blake3::hash(&base_bytes));
+        let adapter_bytes = if self.lora_config.is_some() {
+            Some(trainer.save_adapter_to_bytes().context("Failed to serialize adapter weights")?)
+        } else {
+            None
+        };
+
         let entry = CachedCheckpoint {
             base_hash,
-            head_hash: base_hash,
+            head_hash: active_hash,
             trainer,
             aggregator: FedAvgAggregator::new(self.fedavg_config.clone()),
             last_used: Instant::now(),
             model_id: model_id.to_string(),
+            adapter_bytes,
         };
 
         Ok(Arc::new(Mutex::new(entry)))

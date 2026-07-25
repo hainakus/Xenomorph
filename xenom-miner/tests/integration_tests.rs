@@ -10,7 +10,8 @@ use tokio_tungstenite::tungstenite::Message;
 use xenom_miner::block::BlockBuilder;
 use xenom_miner::prover::{PublicInputs, ZkProver};
 use xenom_miner::rpc::messages::{
-    BlockHeader, ModelCheckpointInfo, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch, TrainingBlock, TrainingProof,
+    BlockHeader, ModelCheckpointInfo, ModelCheckpointInfoV2, ModelCheckpointV2, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch,
+    TrainingBlock, TrainingProof,
 };
 use xenom_miner::rpc::XenomRpcClient;
 use xenom_miner::trainer::{MockTrainer, Trainer};
@@ -64,6 +65,21 @@ async fn start_mock_server() -> u16 {
                     RpcRequest::GetModelCheckpointInfo(req) => {
                         RpcResponse::ModelCheckpointInfo(ModelCheckpointInfo { model_id: req.model_id, base_checkpoint: [1u8; 32] })
                     }
+                    RpcRequest::GetModelCheckpointInfoV2(req) => RpcResponse::ModelCheckpointInfoV2(ModelCheckpointInfoV2 {
+                        model_id: req.model_id,
+                        base_checkpoint: [1u8; 32],
+                        base_hash: [2u8; 32],
+                    }),
+                    RpcRequest::GetModelCheckpointV2(req) => RpcResponse::ModelCheckpointV2(ModelCheckpointV2 {
+                        model_id: req.model_id,
+                        base_checkpoint: [1u8; 32],
+                        base_hash: [2u8; 32],
+                        config: b"{}".to_vec(),
+                        tokenizer: b"[]".to_vec(),
+                        weights: vec![0u8; 64],
+                        encrypted: false,
+                        is_adapter: false,
+                    }),
                     RpcRequest::SubmitGradients(_) => RpcResponse::GradientAck { new_checkpoint: None },
                 };
 

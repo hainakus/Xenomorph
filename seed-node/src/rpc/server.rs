@@ -17,7 +17,8 @@ use crate::genome::{GenomeBatchGenerator, GenomeStorage};
 use crate::model::manager::ModelManager;
 use crate::rpc::client::XenomorphRpcClient;
 use crate::rpc::messages::{
-    GenomeTrainingBatchMsg, GetGenomeTrainingBatch, GetModelCheckpointInfo, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch,
+    GenomeTrainingBatchMsg, GetGenomeTrainingBatch, GetModelCheckpointInfo, GetModelCheckpointInfoV2, ModelCheckpointInfoV2,
+    ModelCheckpointV2, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch,
 };
 
 /// Allow WebSocket messages up to 1 GiB so model checkpoints (config + tokenizer + weights) fit.
@@ -163,6 +164,29 @@ async fn handle_request(
             }),
             Err(e) => RpcResponse::Error(format!("Failed to get model checkpoint: {}", e)),
         },
+        RpcRequest::GetModelCheckpointInfoV2(GetModelCheckpointInfoV2 { model_id }) => {
+            match model_manager.get_model_checkpoint_info_v2(&model_id).await {
+                Ok((combined, base_hash)) => {
+                    RpcResponse::ModelCheckpointInfoV2(ModelCheckpointInfoV2 { model_id, base_checkpoint: combined, base_hash })
+                }
+                Err(e) => RpcResponse::Error(format!("Failed to get model checkpoint info: {}", e)),
+            }
+        }
+        RpcRequest::GetModelCheckpointV2(request) => {
+            match model_manager.get_encrypted_model_checkpoint_v2(&request.model_id, request.cached_base_hash).await {
+                Ok((files, combined, base_hash, is_adapter)) => RpcResponse::ModelCheckpointV2(ModelCheckpointV2 {
+                    model_id: request.model_id,
+                    base_checkpoint: combined,
+                    base_hash,
+                    config: files.config,
+                    tokenizer: files.tokenizer,
+                    weights: files.weights,
+                    encrypted: true,
+                    is_adapter,
+                }),
+                Err(e) => RpcResponse::Error(format!("Failed to get model checkpoint: {}", e)),
+            }
+        }
         RpcRequest::SubmitBlock(block) => {
             // Validate the miner's address is a syntactically valid Kaspa/Xenom address
             // before we sign anything or forward it. We cannot verify the signature here
