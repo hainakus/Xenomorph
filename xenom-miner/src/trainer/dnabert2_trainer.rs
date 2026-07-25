@@ -104,7 +104,9 @@ impl DnaBert2Trainer {
         let masked_labels: Vec<u32> = positions.iter().map(|&i| labels_vec[i as usize]).collect();
         let masked_labels = Tensor::new(masked_labels.as_slice(), &self.device)?;
 
-        loss::cross_entropy(&masked_logits, &masked_labels).context("Failed to compute cross-entropy loss")
+        // Run cross-entropy / log-softmax in F32 to avoid FP16 overflow/NaN in the loss.
+        let masked_logits_f32 = masked_logits.to_dtype(DType::F32)?;
+        loss::cross_entropy(&masked_logits_f32, &masked_labels).context("Failed to compute cross-entropy loss")
     }
 
     /// Compute a deterministic gradient commitment hash from a name -> tensor map.

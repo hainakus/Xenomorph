@@ -166,7 +166,10 @@ impl DnaBert2SelfAttention {
         attention_scores = attention_scores.broadcast_add(&alibi)?;
         attention_scores = attention_scores.broadcast_add(attention_mask)?;
 
-        let attention_probs = candle_nn::ops::softmax(&attention_scores, 3)?;
+        // Compute softmax in F32 for numerical stability, then cast back to the model dtype.
+        let attention_scores_f32 = attention_scores.to_dtype(DType::F32)?;
+        let attention_probs = candle_nn::ops::softmax(&attention_scores_f32, 3)?;
+        let attention_probs = attention_probs.to_dtype(hidden_states.dtype())?;
         let attention_probs = self.dropout.forward_t(&attention_probs, false)?;
 
         let attention_output = attention_probs.matmul(&value_layer)?;
