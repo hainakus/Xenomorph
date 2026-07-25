@@ -296,7 +296,11 @@ async fn submit_block(rpc_client: &SharedRpc, block: TrainingBlock) -> Result<[u
     match client.submit_block(block).await {
         Ok(hash) => Ok(hash),
         Err(e) => {
-            *guard = None;
+            let msg = e.to_string().to_lowercase();
+            if !(msg.contains("base checkpoint") && msg.contains("active model weights hash")) {
+                // Connection-level or unknown error; force a reconnect on the next attempt.
+                *guard = None;
+            }
             Err(anyhow::anyhow!("Failed to submit block: {}", e))
         }
     }
@@ -616,6 +620,7 @@ async fn main() -> Result<()> {
                 wallet.sign_block(&mut block)?;
 
                 let built_block_number = block.header.block_number;
+                let mut stale_base = false;
                 if config.dry_run {
                     info!(
                         "Dry-run block {} built (merkle {})",
@@ -639,13 +644,16 @@ async fn main() -> Result<()> {
                         }
                         Err(e) => {
                             warn!("Failed to submit block: {}", e);
+                            if e.to_string().to_lowercase().contains("base checkpoint does not match active model weights hash") {
+                                warn!("Block rejected because the active model checkpoint moved; discarding prefetched batches and refetching");
+                                stale_base = true;
+                            }
                         }
                     }
                 }
 
                 // Await previous gradient submission so we don't queue
                 // unbounded gradient payloads in memory.
-                let mut stale_base = false;
                 if let Some(handle) = gradient_handle.take() {
                     match handle.await {
                         Ok(Ok(Some(new_checkpoint))) => info!("FedAvg produced new checkpoint: {}", hex::encode(new_checkpoint)),
