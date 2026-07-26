@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -7,6 +7,7 @@ use candle_core::Tensor;
 use model_crypto::{decrypt, derive_encryption_key};
 use tokio::time::timeout;
 use tracing::{info, warn};
+use url::Url;
 use xenom_quic::{CheckpointFileRequest, CheckpointFileType, CheckpointTransferClient};
 
 pub use crate::model_cache::{ModelBundle, ModelCache};
@@ -224,9 +225,28 @@ async fn try_fetch_quic(
     timeout_duration: Duration,
 ) -> Result<ModelCheckpointV2> {
     let peers = rpc.get_checkpoint_peers(model_id, info.base_checkpoint).await?;
-    let addrs: Vec<SocketAddr> = peers.into_iter().filter_map(|p| p.listen_addr.and_then(|s| s.parse().ok())).collect();
+    let mut addrs: Vec<SocketAddr> = peers
+        .into_iter()
+        .filter_map(|p| p.listen_addr.and_then(|s| s.parse::<SocketAddr>().ok()))
+        .filter(|a| !a.ip().is_unspecified())
+        .collect();
     if addrs.is_empty() {
         anyhow::bail!("no QUIC peers returned by the node");
+    }
+
+    // If the miner connected to the node over localhost/127.0.0.1, the node may
+    // have announced its public IP, but connecting to that public IP from the
+    // same host often fails (hairpin NAT).  Try 127.0.0.1:<quic-port> first.
+    if rpc_url_local_host(rpc.url()).unwrap_or(false) {
+        let mut local_addrs = Vec::new();
+        for addr in &addrs {
+            if !addr.ip().is_loopback() {
+                local_addrs.push(SocketAddr::new(IpAddr::from([127, 0, 0, 1]), addr.port()));
+            }
+        }
+        if !local_addrs.is_empty() {
+            addrs = local_addrs.into_iter().chain(addrs.into_iter()).collect();
+        }
     }
 
     let is_adapter = cache.read_base_hash(model_id) == Some(info.base_hash);
@@ -239,7 +259,12 @@ async fn try_fetch_quic(
     let local_addr = SocketAddr::from(([0, 0, 0, 0], 0));
 
     for peer_addr in addrs {
-        let client = CheckpointTransferClient::new(local_addr, "localhost")
+        // Use an IP-based server name for IP addresses; "localhost" only works
+        // conceptually for loopback.  The server uses a self-signed cert and the
+        // client skips verification, but quinn still uses the server_name in SNI.
+        let server_name = if peer_addr.ip().is_loopback() { "localhost".to_string() } else { peer_addr.ip().to_string() };
+
+        let client = CheckpointTransferClient::new(local_addr, &server_name)
             .with_context(|| format!("failed to create QUIC client for {peer_addr}"))?;
 
         let mut encrypted_files = EncryptedFiles::default();
@@ -287,6 +312,16 @@ async fn try_fetch_quic(
     }
 
     anyhow::bail!("exhausted QUIC peers")
+}
+
+/// Return true if the WebSocket RPC URL points to a local (loopback/localhost) host.
+fn rpc_url_local_host(url: &str) -> Option<bool> {
+    let Ok(parsed) = Url::parse(url) else { return None };
+    match parsed.host()? {
+        url::Host::Domain(d) => Some(d == "localhost"),
+        url::Host::Ipv4(ip) => Some(ip.is_loopback()),
+        url::Host::Ipv6(ip) => Some(ip.is_loopback()),
+    }
 }
 
 #[derive(Default)]

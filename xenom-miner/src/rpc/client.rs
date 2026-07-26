@@ -52,6 +52,11 @@ impl XenomRpcClient {
         Self { url, connection: None, request_counter: 0, last_heartbeat: Instant::now() }
     }
 
+    /// Return the configured WebSocket RPC URL.
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
     /// Connect (or reconnect) to the configured RPC endpoint.
     pub async fn connect(&mut self) -> Result<()> {
         let (ws_stream, _) = connect_async_with_config(&self.url, Some(ws_config()), false)
