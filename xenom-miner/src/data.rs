@@ -64,19 +64,63 @@ impl MlmBatchGenerator {
         let base_seed = u64::from_le_bytes(seed[..8].try_into().unwrap_or([0u8; 8])) ^ batch_id;
 
         let mut encoded_seqs = Vec::with_capacity(batch_size);
-        let mut max_encoded_len = 0usize;
-        for sequence in sequences {
+        let mut per_seq_seeds = Vec::with_capacity(batch_size);
+        for (b, sequence) in sequences.iter().enumerate() {
             let mut encoded = self.tokenizer.encode(sequence, false)?;
             encoded.truncate(self.seq_len);
-            max_encoded_len = max_encoded_len.max(encoded.len());
             encoded_seqs.push(encoded);
+            per_seq_seeds.push(base_seed.wrapping_add(b as u64));
         }
 
-        // Use the real token length for this batch instead of padding everything to
-        // the model's maximum.  ALiBi position bias is computed from the actual seq
-        // length, so shorter inputs are still valid.
-        let output_seq_len = max_encoded_len.min(self.seq_len).max(1);
-        let total_len = batch_size * output_seq_len;
+        self.prepare_mlm_batch(encoded_seqs, &per_seq_seeds)
+    }
+
+    /// Generate an MLM batch from a non-genome `TrainingBatch`.
+    ///
+    /// This is a synthetic fallback used for devnet/dry-run when no real genome
+    /// archive is configured.  It builds random DNA strings from `data_indices`
+    /// and reuses the same masking/padding path as `generate_from_sequences`.
+    pub fn generate(&self, batch: &TrainingBatch) -> Result<MlmBatch> {
+        if batch.data_indices.is_empty() {
+            return Ok(MlmBatch {
+                input_ids: Vec::new(),
+                token_type_ids: Vec::new(),
+                attention_mask: Vec::new(),
+                labels: Vec::new(),
+                mask: Vec::new(),
+                seq_len: 0,
+                batch_size: 0,
+            });
+        }
+
+        let base_seed = u64::from_le_bytes(batch.base_checkpoint[..8].try_into().unwrap_or([0u8; 8]));
+        let raw_len = (self.seq_len * 4).max(16);
+
+        let mut encoded_seqs = Vec::with_capacity(batch.data_indices.len());
+        let mut per_seq_seeds = Vec::with_capacity(batch.data_indices.len());
+        for &index in &batch.data_indices {
+            let mut rng = Self::seeded_rng(&batch.base_checkpoint, index);
+
+            // Generate a random DNA string long enough to tokenize into at least seq_len ids.
+            let sequence: String = (0..raw_len).map(|_| self.dna_bases[rng.gen_range(0..4)]).collect();
+
+            let mut encoded = self.tokenizer.encode(&sequence, false)?;
+            encoded.truncate(self.seq_len);
+            encoded_seqs.push(encoded);
+            per_seq_seeds.push(base_seed ^ index);
+        }
+
+        self.prepare_mlm_batch(encoded_seqs, &per_seq_seeds)
+    }
+
+    /// Build an MLM batch from already-encoded sequences and per-sequence RNG seeds.
+    ///
+    /// The output `seq_len` is the actual maximum encoded length in the batch, so
+    /// short sequences are not padded up to the model's full token budget.
+    fn prepare_mlm_batch(&self, encoded_seqs: Vec<Vec<u32>>, per_seq_seeds: &[u64]) -> Result<MlmBatch> {
+        let batch_size = encoded_seqs.len();
+        let max_encoded_len = encoded_seqs.iter().map(|v| v.len()).max().unwrap_or(0).min(self.seq_len).max(1);
+        let total_len = batch_size * max_encoded_len;
 
         let mut input_ids = vec![self.tokenizer.pad_token_id; total_len];
         let token_type_ids = vec![0u32; total_len];
@@ -85,8 +129,8 @@ impl MlmBatchGenerator {
         let mut mask = vec![0u8; total_len];
 
         for (b, encoded) in encoded_seqs.iter().enumerate() {
-            let mut rng = ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(b as u64));
-            let offset = b * output_seq_len;
+            let mut rng = ChaCha8Rng::seed_from_u64(per_seq_seeds[b]);
+            let offset = b * max_encoded_len;
             for (i, &original_id) in encoded.iter().enumerate() {
                 let pos = offset + i;
                 attention_mask[pos] = 1;
@@ -102,47 +146,7 @@ impl MlmBatchGenerator {
             }
         }
 
-        Ok(MlmBatch { input_ids, token_type_ids, attention_mask, labels, mask, seq_len: output_seq_len, batch_size })
-    }
-
-    /// Generate an MLM batch from a `TrainingBatch`.
-    pub fn generate(&self, batch: &TrainingBatch) -> Result<MlmBatch> {
-        let batch_size = batch.data_indices.len();
-        let total_len = batch_size * self.seq_len;
-
-        let mut input_ids = vec![self.tokenizer.pad_token_id; total_len];
-        let token_type_ids = vec![0u32; total_len];
-        let mut attention_mask = vec![0u32; total_len];
-        let mut labels = vec![u32::MAX; total_len];
-        let mut mask = vec![0u8; total_len];
-
-        for (b, &index) in batch.data_indices.iter().enumerate() {
-            let mut rng = Self::seeded_rng(&batch.base_checkpoint, index);
-
-            // Generate a random DNA string long enough to tokenize into at least seq_len ids.
-            let raw_len = (self.seq_len * 4).max(16);
-            let sequence: String = (0..raw_len).map(|_| self.dna_bases[rng.gen_range(0..4)]).collect();
-
-            let mut encoded = self.tokenizer.encode(&sequence, false)?;
-            encoded.truncate(self.seq_len);
-
-            let offset = b * self.seq_len;
-            for (i, &original_id) in encoded.iter().enumerate() {
-                let pos = offset + i;
-                attention_mask[pos] = 1;
-
-                if rng.gen::<f64>() < self.mask_prob {
-                    mask[pos] = 1;
-                    labels[pos] = original_id;
-                    input_ids[pos] = self.tokenizer.mask_token_id;
-                } else {
-                    input_ids[pos] = original_id;
-                    labels[pos] = u32::MAX;
-                }
-            }
-        }
-
-        Ok(MlmBatch { input_ids, token_type_ids, attention_mask, labels, mask, seq_len: self.seq_len, batch_size })
+        Ok(MlmBatch { input_ids, token_type_ids, attention_mask, labels, mask, seq_len: max_encoded_len, batch_size })
     }
 
     fn seeded_rng(base_checkpoint: &[u8; 32], index: u64) -> ChaCha8Rng {
