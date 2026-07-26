@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use clap::Parser;
+use clap::{ArgAction, Parser};
 use indicatif::{ProgressBar, ProgressStyle};
 use kaspa_consensus_core::network::NetworkType;
 use std::path::PathBuf;
@@ -103,7 +103,7 @@ struct Args {
     models_dir: Option<String>,
 
     /// Enable QUIC bulk checkpoint transfers (fall back to WebSocket on failure).
-    #[arg(long, default_value_t = true, env = "XENO_QUIC_ENABLED")]
+    #[arg(long, default_value_t = true, action = ArgAction::SetFalse, env = "XENO_QUIC_ENABLED")]
     quic: bool,
 
     /// Timeout in seconds for each QUIC file transfer.

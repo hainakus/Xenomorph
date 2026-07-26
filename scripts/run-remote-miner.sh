@@ -42,6 +42,8 @@ Options:
                                   (default: \$XENO_DATA_DIR or ./miner-data)
   --miner-ws-port <port>          Miner websocket port on the remote node
                                   (default: \$XENO_MINER_WS_PORT or 17110)
+  --no-quic                       Disable QUIC bulk checkpoint transfer; use WebSocket only
+                                  (default: QUIC enabled; accepts \$XENO_QUIC_ENABLED=0)
   -q, --quiet                     Minimal output
   -v, --verbose                   Debug output
   -h, --help                      Show this help and exit
@@ -66,6 +68,7 @@ GRADIENT_TOP_K_RATIO="${XENO_GRADIENT_TOP_K_RATIO:-1.0}"
 DATA_DIR="${XENO_DATA_DIR:-$SCRIPT_DIR/../miner-data}"
 MINER_WS_PORT="${XENO_MINER_WS_PORT:-17110}"
 NODE_HOST="${XENO_NODE_HOST:-}"
+QUIC_ENABLED="${XENO_QUIC_ENABLED:-1}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -89,6 +92,7 @@ while [[ $# -gt 0 ]]; do
         -d|--data-dir) DATA_DIR="$2"; shift 2 ;;
         --miner-ws-port) MINER_WS_PORT="$2"; shift 2 ;;
         --node) NODE_HOST="$2"; shift 2 ;;
+        --no-quic) QUIC_ENABLED=0; shift ;;
         -q|--quiet) XENO_QUIET=1; shift ;;
         -v|--verbose) XENO_VERBOSE=1; shift ;;
         -h|--help) print_help_and_exit "$USAGE" 0 ;;
@@ -111,6 +115,8 @@ load_env
 
 export XENO_QUIET="${XENO_QUIET:-0}"
 export XENO_VERBOSE="${XENO_VERBOSE:-0}"
+# Allow .env/env to override CLI flags (set XENO_QUIC_ENABLED=0 to disable QUIC).
+QUIC_ENABLED="${XENO_QUIC_ENABLED:-$QUIC_ENABLED}"
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
@@ -176,6 +182,7 @@ if [[ "$TRAINER" == "dnabert2" || "$TRAINER" == "gpu" || "$TRAINER" == "cuda" ||
         MINER_EXTRA_ARGS+=(--lora-dropout "$LORA_DROPOUT")
         [[ -n "$LORA_TARGET_MODULES" ]] && MINER_EXTRA_ARGS+=(--lora-target-modules "$LORA_TARGET_MODULES")
     fi
+    [[ "$QUIC_ENABLED" == "0" ]] && MINER_EXTRA_ARGS+=(--no-quic)
 fi
 
 qlog "Starting xenom-miner against $RPC_URL (trainer=$TRAINER, gpus=$GPUS, micro_batch=$MICRO_BATCH_SIZE, acc=$GRADIENT_ACCUMULATION, max_seq_len=$MAX_SEQ_LEN, lora=$LORA, fp16=$FP16)..."

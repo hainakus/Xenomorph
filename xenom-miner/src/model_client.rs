@@ -259,12 +259,10 @@ async fn try_fetch_quic(
     let local_addr = SocketAddr::from(([0, 0, 0, 0], 0));
 
     for peer_addr in addrs {
-        // Use an IP-based server name for IP addresses; "localhost" only works
-        // conceptually for loopback.  The server uses a self-signed cert and the
-        // client skips verification, but quinn still uses the server_name in SNI.
-        let server_name = if peer_addr.ip().is_loopback() { "localhost".to_string() } else { peer_addr.ip().to_string() };
-
-        let client = CheckpointTransferClient::new(local_addr, &server_name)
+        // The server cert is self-signed for "localhost".  The client skips cert
+        // verification, but the server's rustls still requires the SNI to match one
+        // of the cert's SANs, so always present "localhost" regardless of peer IP.
+        let client = CheckpointTransferClient::new(local_addr, "localhost")
             .with_context(|| format!("failed to create QUIC client for {peer_addr}"))?;
 
         let mut encrypted_files = EncryptedFiles::default();
