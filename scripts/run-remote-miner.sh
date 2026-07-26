@@ -190,7 +190,6 @@ qlog "Starting xenom-miner against $RPC_URL (trainer=$TRAINER, gpus=$GPUS, micro
 XENO_WALLET_PASSWORD="${XENO_WALLET_PASSWORD:-devnet-password}" \
 RUST_LOG="${RUST_LOG:-info}" \
     "$BIN_PREFIX/xenom-miner" \
-
     --rpc-url "$RPC_URL" \
     --model-id "${XENO_MODEL_ID:-xeno/mgm-1}" \
     --threads "${XENO_MINER_THREADS:-4}" \
