@@ -615,14 +615,19 @@ fn top_k_compress(flat: &[f32], ratio: f32) -> (Vec<f32>, Vec<usize>) {
 impl Trainer for MultiGpuTrainer {
     fn train(&self, batch: &TrainingBatch) -> Result<TrainingResult> {
         let mlm_batch = self.trainers[0].generator.generate(batch).context("Failed to generate MLM batch")?;
-        self.train_mlm_batch(&mlm_batch, &batch.model_id, batch.base_checkpoint, batch.data_indices.clone(), batch.learning_rate)
+        self.train_mlm_batch(&mlm_batch, &batch.model_id, batch.base_checkpoint, mlm_batch.batch_indices.clone(), batch.learning_rate)
             .map(|(result, _, _)| result)
     }
 
     fn train_with_gradients(&self, batch: &TrainingBatch) -> Result<(TrainingResult, Option<GradientUpdate>)> {
         let mlm_batch = self.trainers[0].generator.generate(batch).context("Failed to generate MLM batch")?;
-        let (result, named_grads, participant_weight) =
-            self.train_mlm_batch(&mlm_batch, &batch.model_id, batch.base_checkpoint, batch.data_indices.clone(), batch.learning_rate)?;
+        let (result, named_grads, participant_weight) = self.train_mlm_batch(
+            &mlm_batch,
+            &batch.model_id,
+            batch.base_checkpoint,
+            mlm_batch.batch_indices.clone(),
+            batch.learning_rate,
+        )?;
         let build_start = Instant::now();
         let update = self.build_gradient_update(&batch.model_id, batch.base_checkpoint, named_grads, participant_weight)?;
         info!("Gradient update build time: {} ms", build_start.elapsed().as_millis());
@@ -631,25 +636,26 @@ impl Trainer for MultiGpuTrainer {
 
     fn train_genome(&self, msg: &GenomeTrainingBatchMsg) -> Result<TrainingResult> {
         let batch = &msg.batch;
+        let batch_indices: Vec<u64> = batch.data_indices.iter().map(|slice| slice.chunk_idx).collect();
         let mlm_batch = self.trainers[0]
             .generator
-            .generate_from_sequences(&msg.sequences, &batch.genome_merkle_root, batch.batch_id)
+            .generate_from_sequences_with_indices(&msg.sequences, &batch.genome_merkle_root, batch.batch_id, Some(&batch_indices))
             .context("Failed to generate MLM batch from genome sequences")?;
 
-        let batch_indices: Vec<u64> = batch.data_indices.iter().map(|slice| slice.chunk_idx).collect();
-        self.train_mlm_batch(&mlm_batch, &batch.model_id, msg.base_checkpoint, batch_indices, 0.01).map(|(result, _, _)| result)
+        self.train_mlm_batch(&mlm_batch, &batch.model_id, msg.base_checkpoint, mlm_batch.batch_indices.clone(), 0.01)
+            .map(|(result, _, _)| result)
     }
 
     fn train_genome_with_gradients(&self, msg: &GenomeTrainingBatchMsg) -> Result<(TrainingResult, Option<GradientUpdate>)> {
         let batch = &msg.batch;
+        let batch_indices: Vec<u64> = batch.data_indices.iter().map(|slice| slice.chunk_idx).collect();
         let mlm_batch = self.trainers[0]
             .generator
-            .generate_from_sequences(&msg.sequences, &batch.genome_merkle_root, batch.batch_id)
+            .generate_from_sequences_with_indices(&msg.sequences, &batch.genome_merkle_root, batch.batch_id, Some(&batch_indices))
             .context("Failed to generate MLM batch from genome sequences")?;
 
-        let batch_indices: Vec<u64> = batch.data_indices.iter().map(|slice| slice.chunk_idx).collect();
         let (result, named_grads, participant_weight) =
-            self.train_mlm_batch(&mlm_batch, &batch.model_id, msg.base_checkpoint, batch_indices, 0.01)?;
+            self.train_mlm_batch(&mlm_batch, &batch.model_id, msg.base_checkpoint, mlm_batch.batch_indices.clone(), 0.01)?;
         let build_start = Instant::now();
         let update = self.build_gradient_update(&batch.model_id, msg.base_checkpoint, named_grads, participant_weight)?;
         info!("Genome gradient update build time: {} ms", build_start.elapsed().as_millis());
@@ -782,6 +788,7 @@ fn extract_mlm_batch(batch: &MlmBatch, start: usize, end: usize, seq_len: usize)
         mask: batch.mask[start_flat..end_flat].to_vec(),
         seq_len,
         batch_size: end - start,
+        batch_indices: batch.batch_indices[start..end].to_vec(),
     }
 }
 

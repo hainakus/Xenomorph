@@ -186,7 +186,8 @@ mod tests {
 
         let result = trainer.train_genome(&dummy_genome_msg()).unwrap();
         assert_eq!(result.model_id, "dnabert2");
-        assert_eq!(result.batch_indices, vec![0, 1]);
+        // Reverse-complement augmentation doubles the rows (forward + RC for each source index).
+        assert_eq!(result.batch_indices, vec![0, 0, 1, 1]);
         assert!(!result.gradients_commitment.iter().all(|&b| b == 0));
         assert!(result.loss_after <= result.loss_before);
     }

@@ -51,7 +51,9 @@ impl DnaBert2Trainer {
         // back into a full checkpoint.
         let base_weights = if lora_config.is_some() { base_weights } else { Arc::new(HashMap::new()) };
         let seq_len = config.max_position_embeddings.min(512);
-        let generator = MlmBatchGenerator::new(tokenizer, seq_len);
+        // Enable reverse-complement augmentation and 6-token span masking for real
+        // genome training.  Short test sequences will clamp the span automatically.
+        let generator = MlmBatchGenerator::new(tokenizer, seq_len).with_span_len(6).with_reverse_complement(true);
         let optimizer = ManualAdamW::new(0.0);
         let trainer = Self { model, varmap, base_weights, generator, device, threads, optimizer: Mutex::new(optimizer) };
         trainer.sanity_check().context("Loaded checkpoint failed sanity check; weights may contain NaN/Inf")?;
@@ -399,19 +401,18 @@ impl DnaBert2Trainer {
 impl Trainer for DnaBert2Trainer {
     fn train(&self, batch: &TrainingBatch) -> Result<TrainingResult> {
         let mlm_batch = self.generator.generate(batch).context("Failed to generate MLM batch")?;
-        self.train_mlm_batch(&mlm_batch, &batch.model_id, batch.base_checkpoint, batch.data_indices.clone(), batch.learning_rate)
+        self.train_mlm_batch(&mlm_batch, &batch.model_id, batch.base_checkpoint, mlm_batch.batch_indices.clone(), batch.learning_rate)
     }
 
     fn train_genome(&self, msg: &GenomeTrainingBatchMsg) -> Result<TrainingResult> {
         let batch = &msg.batch;
+        let batch_indices: Vec<u64> = batch.data_indices.iter().map(|slice| slice.chunk_idx).collect();
         let mlm_batch = self
             .generator
-            .generate_from_sequences(&msg.sequences, &batch.genome_merkle_root, batch.batch_id)
+            .generate_from_sequences_with_indices(&msg.sequences, &batch.genome_merkle_root, batch.batch_id, Some(&batch_indices))
             .context("Failed to generate MLM batch from genome sequences")?;
 
-        let batch_indices: Vec<u64> = batch.data_indices.iter().map(|slice| slice.chunk_idx).collect();
-
-        self.train_mlm_batch(&mlm_batch, &batch.model_id, msg.base_checkpoint, batch_indices, 0.01)
+        self.train_mlm_batch(&mlm_batch, &batch.model_id, msg.base_checkpoint, mlm_batch.batch_indices.clone(), 0.01)
     }
 
     fn device_info(&self) -> DeviceInfo {
@@ -768,7 +769,8 @@ mod tests {
         let result = trainer.train_genome(&msg).unwrap();
 
         assert_eq!(result.model_id, "dnabert2");
-        assert_eq!(result.batch_indices, vec![0, 1]);
+        // Reverse-complement augmentation doubles the rows (forward + RC for each source index).
+        assert_eq!(result.batch_indices, vec![0, 0, 1, 1]);
         assert!(!result.gradients_commitment.iter().all(|&b| b == 0));
         assert!(result.loss_after <= result.loss_before);
     }
