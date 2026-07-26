@@ -515,8 +515,8 @@ impl MultiGpuTrainer {
 
         let total_ms = start.elapsed().as_millis() as u64;
         info!(
-            "MultiGpuTrainer timings (ms): total={}, loss_before={:.6}, compute={}, gather={}, overflow_check={}, avg={}, add={}, apply={}, loss_after={}, commitment={}, restore={}",
-            total_ms, loss_before, compute_ms, gather_ms, overflow_check_ms, avg_ms, add_ms, apply_ms, loss_after_ms, commitment_ms, restore_ms
+            "MultiGpuTrainer timings (ms): total={}, loss_before={:.6}, loss_after={:.6}, compute={}, gather={}, overflow_check={}, avg={}, add={}, apply={}, loss_after_ms={}, commitment={}, restore={}",
+            total_ms, loss_before, loss_after, compute_ms, gather_ms, overflow_check_ms, avg_ms, add_ms, apply_ms, loss_after_ms, commitment_ms, restore_ms
         );
 
         let result = TrainingResult {
