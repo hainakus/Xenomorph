@@ -22,6 +22,7 @@ members = [
     "simpa",
     "genome-miner",
     "genome-freeze",
+    "mini-genome-model",
     "integrations/stratum-bridge",
     "wasm",
     "wasm/core",
