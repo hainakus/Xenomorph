@@ -18,6 +18,7 @@ smart-contracts/build/
 dump.rdb
 devnet-data/
 devnet-data-native/
+miner-data/
 *.log
 scripts/*.tar.gz
 
