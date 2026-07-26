@@ -10,7 +10,10 @@ use borsh::{to_vec, BorshDeserialize};
 use futures_util::{SinkExt, StreamExt};
 use kaspa_core::{info, warn};
 use kaspa_p2p_flows::flow_context::FlowContext;
-use seed_node::rpc::messages::{GetModelCheckpointInfo, GetModelCheckpointInfoV2, RpcEnvelope, RpcRequest, RpcResponse};
+use model_crypto::gossip::Announcement;
+use seed_node::rpc::messages::{
+    GetCheckpointPeers, GetModelCheckpointInfo, GetModelCheckpointInfoV2, PeerAnnouncement, RpcEnvelope, RpcRequest, RpcResponse,
+};
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::accept_async_with_config;
@@ -125,8 +128,30 @@ async fn handle_request(req: RpcRequest, coordinator: &Coordinator, flow_context
                 RpcResponse::Error(format!("Failed to submit gradients: {}", e))
             }
         },
+        RpcRequest::GetCheckpointPeers(GetCheckpointPeers { weights_hash, .. }) => match flow_context {
+            Some(ctx) => {
+                let registry = ctx.gossip_registry.lock();
+                let peers = registry.get(&weights_hash).iter().map(peer_announcement_from).collect();
+                RpcResponse::CheckpointPeers(peers)
+            }
+            None => RpcResponse::Error("P2P gossip not enabled on this node".to_string()),
+        },
         RpcRequest::GetBalance { .. } => RpcResponse::Balance(10_000),
         RpcRequest::GetDifficulty => RpcResponse::Difficulty([0u8; 32]),
         RpcRequest::Heartbeat => RpcResponse::Pong,
+    }
+}
+
+fn peer_announcement_from(ann: &Announcement) -> PeerAnnouncement {
+    PeerAnnouncement {
+        model_id: ann.model_id.clone(),
+        weights_hash: ann.weights_hash,
+        cid: ann.cid,
+        timestamp: ann.timestamp,
+        is_genome: ann.is_genome,
+        node_address: ann.node_address.clone(),
+        public_key: ann.public_key,
+        listen_addr: ann.listen_addr.map(|addr| addr.to_string()),
+        signature: ann.signature,
     }
 }

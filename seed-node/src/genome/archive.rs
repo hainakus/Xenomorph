@@ -45,7 +45,7 @@ impl GenomeArchive {
 
     /// Load a `.xenom` genome archive from disk with a specific fragment size.
     pub fn load_with_fragment_size<P: AsRef<Path>>(path: P, fragment_size: u32) -> Result<Self> {
-        if fragment_size % 4 != 0 {
+        if !fragment_size.is_multiple_of(4) {
             bail!("fragment_size must be divisible by 4");
         }
         let bytes = fs::read(&path).with_context(|| format!("Failed to read genome archive {:?}", path.as_ref()))?;
@@ -54,7 +54,7 @@ impl GenomeArchive {
 
     /// Parse a `.xenom` archive from an in-memory byte slice.
     pub fn from_bytes(bytes: &[u8], fragment_size: u32) -> Result<Self> {
-        if fragment_size % 4 != 0 {
+        if !fragment_size.is_multiple_of(4) {
             bail!("fragment_size must be divisible by 4");
         }
         if bytes.len() < GENOME_FILE_HEADER_SIZE {
@@ -233,7 +233,7 @@ pub fn base_from_bits(bits: u8) -> char {
 
 /// Number of packed bytes needed to store `base_count` bases.
 pub fn packed_bytes_for(base_count: u32) -> u32 {
-    (base_count + 3) / 4
+    base_count.div_ceil(4)
 }
 
 #[cfg(test)]

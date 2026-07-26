@@ -10,9 +10,9 @@ use tokio_tungstenite::{
 use tracing::{debug, info, warn};
 
 use super::messages::{
-    BlockHash, DifficultyTarget, GenomeTrainingBatchMsg, GetModelCheckpointInfo, GetModelCheckpointInfoV2, GetModelCheckpointV2,
-    GradientUpdate, ModelCheckpoint, ModelCheckpointInfo, ModelCheckpointInfoV2, ModelCheckpointV2, RpcEnvelope, RpcRequest,
-    RpcResponse, TrainingBatch, TrainingBlock,
+    BlockHash, DifficultyTarget, GenomeTrainingBatchMsg, GetCheckpointPeers, GetModelCheckpointInfo, GetModelCheckpointInfoV2,
+    GetModelCheckpointV2, GradientUpdate, ModelCheckpoint, ModelCheckpointInfo, ModelCheckpointInfoV2, ModelCheckpointV2,
+    PeerAnnouncement, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch, TrainingBlock,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -160,6 +160,19 @@ impl XenomRpcClient {
             RpcResponse::ModelCheckpointV2(cp) => Ok(cp),
             RpcResponse::Error(msg) => bail!("Node returned error: {}", msg),
             other => bail!("Unexpected response to GetModelCheckpointV2: {:?}", other),
+        }
+    }
+
+    /// Request a list of peers that advertise the given checkpoint.
+    pub async fn get_checkpoint_peers(&mut self, model_id: &str, weights_hash: [u8; 32]) -> Result<Vec<PeerAnnouncement>> {
+        let response = self
+            .send_request(RpcRequest::GetCheckpointPeers(GetCheckpointPeers { model_id: model_id.to_string(), weights_hash }))
+            .await?;
+
+        match response {
+            RpcResponse::CheckpointPeers(peers) => Ok(peers),
+            RpcResponse::Error(msg) => bail!("Node returned error: {}", msg),
+            other => bail!("Unexpected response to GetCheckpointPeers: {:?}", other),
         }
     }
 

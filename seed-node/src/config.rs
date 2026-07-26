@@ -7,14 +7,8 @@ pub struct GenomeSource {
 }
 
 /// Seed-node runtime configuration.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SeedNodeConfig {
     pub genome_default: Option<String>,
     pub genome_sources: Vec<GenomeSource>,
-}
-
-impl Default for SeedNodeConfig {
-    fn default() -> Self {
-        Self { genome_default: None, genome_sources: Vec::new() }
-    }
 }

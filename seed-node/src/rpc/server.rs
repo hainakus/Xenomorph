@@ -15,10 +15,11 @@ use tracing::{info, warn};
 
 use crate::genome::{GenomeBatchGenerator, GenomeStorage};
 use crate::model::manager::ModelManager;
+use crate::p2p::P2pGossipHandle;
 use crate::rpc::client::XenomorphRpcClient;
 use crate::rpc::messages::{
-    GenomeTrainingBatchMsg, GetGenomeTrainingBatch, GetModelCheckpointInfo, GetModelCheckpointInfoV2, ModelCheckpointInfoV2,
-    ModelCheckpointV2, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch,
+    GenomeTrainingBatchMsg, GetCheckpointPeers, GetGenomeTrainingBatch, GetModelCheckpointInfo, GetModelCheckpointInfoV2,
+    ModelCheckpointInfoV2, ModelCheckpointV2, PeerAnnouncement, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch,
 };
 
 /// Allow WebSocket messages up to 1 GiB so model checkpoints (config + tokenizer + weights) fit.
@@ -42,6 +43,7 @@ pub async fn run_miner_server(
     model_manager: Arc<ModelManager>,
     genome_storage: Arc<RwLock<GenomeStorage>>,
     xenomorph_client: Option<Arc<XenomorphRpcClient>>,
+    p2p_gossip: Option<Arc<P2pGossipHandle>>,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr).await.map_err(|e| anyhow!("Failed to bind miner server {}: {}", addr, e))?;
     let bound: SocketAddr = listener.local_addr()?;
@@ -51,8 +53,9 @@ pub async fn run_miner_server(
         let mm = model_manager.clone();
         let gs = genome_storage.clone();
         let xc = xenomorph_client.clone();
+        let pg = p2p_gossip.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, mm, gs, xc).await {
+            if let Err(e) = handle_connection(stream, mm, gs, xc, pg).await {
                 warn!("Miner WebSocket connection from {} closed: {}", peer, e);
             }
         });
@@ -66,6 +69,7 @@ async fn handle_connection(
     model_manager: Arc<ModelManager>,
     genome_storage: Arc<RwLock<GenomeStorage>>,
     xenomorph_client: Option<Arc<XenomorphRpcClient>>,
+    p2p_gossip: Option<Arc<P2pGossipHandle>>,
 ) -> Result<()> {
     let mut ws = accept_async_with_config(stream, Some(ws_config())).await?;
 
@@ -93,6 +97,7 @@ async fn handle_connection(
                     model_manager.clone(),
                     genome_storage.clone(),
                     xenomorph_client.clone(),
+                    p2p_gossip.clone(),
                 ));
 
                 let response = loop {
@@ -133,6 +138,7 @@ async fn handle_request(
     model_manager: Arc<ModelManager>,
     genome_storage: Arc<RwLock<GenomeStorage>>,
     xenomorph_client: Option<Arc<XenomorphRpcClient>>,
+    p2p_gossip: Option<Arc<P2pGossipHandle>>,
 ) -> RpcResponse {
     match req {
         RpcRequest::GetTrainingBatch { model_id } => {
@@ -245,9 +251,31 @@ async fn handle_request(
                 RpcResponse::Error(format!("Failed to submit gradients: {}", e))
             }
         },
+        RpcRequest::GetCheckpointPeers(GetCheckpointPeers { weights_hash, .. }) => match p2p_gossip {
+            Some(gossip) => {
+                let announcements = gossip.known_peers(&weights_hash).await;
+                let peers = announcements.iter().map(peer_announcement_from).collect();
+                RpcResponse::CheckpointPeers(peers)
+            }
+            None => RpcResponse::Error("P2P gossip not enabled on this seed-node".to_string()),
+        },
         RpcRequest::GetBalance { .. } => RpcResponse::Balance(10_000),
         RpcRequest::GetDifficulty => RpcResponse::Difficulty([0u8; 32]),
         RpcRequest::Heartbeat => RpcResponse::Pong,
+    }
+}
+
+fn peer_announcement_from(ann: &model_crypto::gossip::Announcement) -> PeerAnnouncement {
+    PeerAnnouncement {
+        model_id: ann.model_id.clone(),
+        weights_hash: ann.weights_hash,
+        cid: ann.cid,
+        timestamp: ann.timestamp,
+        is_genome: ann.is_genome,
+        node_address: ann.node_address.clone(),
+        public_key: ann.public_key,
+        listen_addr: ann.listen_addr.map(|addr| addr.to_string()),
+        signature: ann.signature,
     }
 }
 
@@ -290,5 +318,40 @@ async fn get_checkpoint(model_manager: &ModelManager, model_id: &str) -> [u8; 32
     match model_manager.load_model(model_id).await {
         Ok(info) => info.checkpoint.weights_hash,
         Err(_) => [0u8; 32],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use model_crypto::gossip::{Announcement, GossipRegistry};
+
+    use super::*;
+
+    #[test]
+    fn test_peer_announcement_from_registry() {
+        let mut registry = GossipRegistry::new();
+        let hash = [1u8; 32];
+        let ann = Announcement {
+            model_id: "multimolecule/dnabert2".to_string(),
+            weights_hash: hash,
+            cid: [2u8; 32],
+            timestamp: 1234,
+            is_genome: false,
+            node_address: "xnom:test".to_string(),
+            public_key: [3u8; 33],
+            listen_addr: Some(SocketAddr::from(([127, 0, 0, 1], 8443))),
+            signature: [4u8; 64],
+        };
+        registry.insert(ann.clone());
+
+        let found = registry.get(&hash);
+        assert_eq!(found.len(), 1);
+
+        let peer = peer_announcement_from(&found[0]);
+        assert_eq!(peer.model_id, ann.model_id);
+        assert_eq!(peer.weights_hash, hash);
+        assert_eq!(peer.listen_addr, Some("127.0.0.1:8443".to_string()));
     }
 }

@@ -25,7 +25,7 @@ impl GenomeStorage {
 
     /// Create a new storage instance with a specific fragment size.
     pub async fn new_with_fragment_size<P: AsRef<Path>>(cache_dir: P, fragment_size: u32) -> Result<Self> {
-        if fragment_size % 4 != 0 {
+        if !fragment_size.is_multiple_of(4) {
             bail!("Genome fragment size must be divisible by 4");
         }
         let cache_dir = cache_dir.as_ref().to_path_buf();
@@ -44,7 +44,7 @@ impl GenomeStorage {
         downloader: GenomeDownloader,
         fragment_size: u32,
     ) -> Result<Self> {
-        if fragment_size % 4 != 0 {
+        if !fragment_size.is_multiple_of(4) {
             bail!("Genome fragment size must be divisible by 4");
         }
         let cache_dir = cache_dir.as_ref().to_path_buf();

@@ -81,6 +81,7 @@ async fn start_mock_server() -> u16 {
                         is_adapter: false,
                     }),
                     RpcRequest::SubmitGradients(_) => RpcResponse::GradientAck { new_checkpoint: None },
+                    RpcRequest::GetCheckpointPeers(_) => RpcResponse::CheckpointPeers(Vec::new()),
                 };
 
                 let payload = to_vec(&response).unwrap();

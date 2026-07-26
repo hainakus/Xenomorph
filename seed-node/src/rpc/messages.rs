@@ -131,6 +131,7 @@ pub enum RpcRequest {
     SubmitGradients(GradientUpdate),
     GetModelCheckpointInfoV2(GetModelCheckpointInfoV2),
     GetModelCheckpointV2(GetModelCheckpointV2),
+    GetCheckpointPeers(GetCheckpointPeers),
 }
 
 /// Response messages sent from the Xenomorph node to the miner.
@@ -150,6 +151,7 @@ pub enum RpcResponse {
     GradientAck { new_checkpoint: Option<[u8; 32]> },
     ModelCheckpointInfoV2(ModelCheckpointInfoV2),
     ModelCheckpointV2(ModelCheckpointV2),
+    CheckpointPeers(Vec<PeerAnnouncement>),
 }
 
 /// Request the lightweight metadata for the active model checkpoint.
@@ -208,6 +210,30 @@ pub struct ModelCheckpointInfoV2 {
     pub base_hash: [u8; 32],
 }
 
+/// A signed checkpoint announcement as exposed to miners over the RPC channel.
+///
+/// This mirrors `model_crypto::gossip::Announcement` but uses only Borsh-serializable
+/// types, and stores `listen_addr` as an `ip:port` string.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq, Eq)]
+pub struct PeerAnnouncement {
+    pub model_id: String,
+    pub weights_hash: [u8; 32],
+    pub cid: [u8; 32],
+    pub timestamp: u64,
+    pub is_genome: bool,
+    pub node_address: String,
+    pub public_key: [u8; 33],
+    pub listen_addr: Option<String>,
+    pub signature: [u8; 64],
+}
+
+/// Request a list of peers that advertise a given checkpoint.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq, Eq)]
+pub struct GetCheckpointPeers {
+    pub model_id: String,
+    pub weights_hash: [u8; 32],
+}
+
 /// Wire envelope used by the RPC client to tag requests.
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub struct RpcEnvelope {
@@ -242,5 +268,30 @@ mod tests {
         let bytes = to_vec(&env).unwrap();
         let decoded: RpcEnvelope = RpcEnvelope::try_from_slice(&bytes).unwrap();
         assert_eq!(env, decoded);
+    }
+
+    #[test]
+    fn test_roundtrip_get_checkpoint_peers() {
+        let req = GetCheckpointPeers { model_id: "multimolecule/dnabert2".to_string(), weights_hash: [2u8; 32] };
+        let peer = PeerAnnouncement {
+            model_id: "multimolecule/dnabert2".to_string(),
+            weights_hash: [2u8; 32],
+            cid: [3u8; 32],
+            timestamp: 42,
+            is_genome: false,
+            node_address: "127.0.0.1:16110".to_string(),
+            public_key: [4u8; 33],
+            listen_addr: Some("127.0.0.1:8443".to_string()),
+            signature: [5u8; 64],
+        };
+        let env = RpcEnvelope { request_id: 7, payload: RpcRequest::GetCheckpointPeers(req) };
+        let bytes = to_vec(&env).unwrap();
+        let decoded: RpcEnvelope = RpcEnvelope::try_from_slice(&bytes).unwrap();
+        assert_eq!(env, decoded);
+
+        let resp = RpcResponse::CheckpointPeers(vec![peer.clone(), peer]);
+        let bytes = to_vec(&resp).unwrap();
+        let decoded: RpcResponse = RpcResponse::try_from_slice(&bytes).unwrap();
+        assert_eq!(resp, decoded);
     }
 }
