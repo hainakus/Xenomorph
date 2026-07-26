@@ -1,7 +1,6 @@
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
-use kaspa_consensus_core::config::params::Params;
 use kaspa_consensus_core::network::NetworkType;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -32,6 +31,9 @@ const DEFAULT_DATA_DIR: &str = "~/.xenom-miner";
 const BLOCK_REWARD: u64 = 100;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const RETRY_DELAY: Duration = Duration::from_secs(2);
+/// Canonical GRCh38 `.xenom` archive merkle root used for real human-genome
+/// DNABERT-2 training on all networks (mainnet, testnet, devnet, simnet).
+const HUMAN_GENOME_MERKLE_ROOT: &str = "577126c448d24d132ba77436517a7db2203d6fce0cd81e2b84db39875d43ee80";
 
 /// Shared, async-mutex protected RPC handle. `None` means disconnected and a
 /// reconnect should be attempted before the next call.
@@ -513,11 +515,10 @@ async fn main() -> Result<()> {
     let genome_merkle: Option<[u8; 32]> = if let Some(hex_str) = args.genome_merkle.as_deref() {
         Some(parse_genome_merkle(hex_str)?)
     } else if is_dna_model {
-        let network = args.network.as_deref().unwrap_or("mainnet");
-        let network_type = NetworkType::from_str(network).with_context(|| format!("Invalid network: {}", network))?;
-        let params = Params::from(network_type);
-        info!("Using {} genome merkle root: {}", network, params.genome_merkle_root);
-        Some(parse_genome_merkle(params.genome_merkle_root)?)
+        // DNA trainers always train on the real human GRCh38 genome, regardless
+        // of the network selected for the wallet/address prefix.
+        info!("Using canonical human genome merkle root for DNABERT-2 training");
+        Some(parse_genome_merkle(HUMAN_GENOME_MERKLE_ROOT)?)
     } else {
         None
     };
