@@ -60,7 +60,7 @@ The devnet follows these ownership rules:
 - **Runtime flow:**
   1. Reads `XENO_NODE_RPC`, `XENO_GRPC_ADDR`, `XENO_MINER_WS_ADDR`, `XENO_MODELS_DIR`, `XENO_DEFAULT_MODEL_ID` from the environment.
   2. Builds a `ModelManager` for encrypted local model storage.
-  3. Spawns a background task to download the default model (`multimolecule/dnabert2`) from Hugging Face.
+  3. Spawns a background task to download or generate the default model (`xeno/mgm-1`).
   4. Starts a gRPC inference service (`seed-node/src/serving/inference.rs`) on `XENO_GRPC_ADDR`.
   5. Starts a WebSocket miner server (`seed-node/src/rpc/server.rs`) on `XENO_MINER_WS_ADDR`.
 - **Key modules:**
@@ -175,9 +175,9 @@ All AI/devnet services are configured through environment variables. The `.env.e
 | `XENO_MINER_WS_PORT` | `xenom` | `17110` | Miner WebSocket port (`--miner-ws-listen`) |
 | `XENO_INFERENCE_GRPC_PORT` | `xenom` | `50051` | gRPC inference port (`--inference-grpc-listen`) |
 | `XENO_MODELS_DIR` | `xenom` | `appdir/models` | Local encrypted model storage |
-| `XENO_MODEL_ID` | `xenom` / `xenom-miner` | `multimolecule/dnabert2` | Hugging Face model to download/train |
+| `XENO_MODEL_ID` | `xenom` / `xenom-miner` | `xeno/mgm-1` | Model to download/train |
 | `XENO_MINER_RPC_URL` | `xenom-miner` | `ws://127.0.0.1:17110` | WebSocket URL of the `xenom` node |
-| `XENO_MINER_MODEL_ID` | `xenom-miner` | `multimolecule/dnabert2` | Model id to train |
+| `XENO_MINER_MODEL_ID` | `xenom-miner` | `xeno/mgm-1` | Model id to train |
 | `XENO_MINER_THREADS` | `xenom-miner` | `4` | CPU threads for Candle trainer |
 | `XENO_MINER_MOCK_MODE` | `xenom-miner` | `true` | Use fast mock trainer |
 | `XENO_WALLET_PASSWORD` | `xenom-miner` | `devnet-password` | Wallet encryption |
@@ -228,7 +228,7 @@ pub struct TrainingProof {
 
 The following items are known gaps in the current branch:
 
-- **Real model training in `xenom-miner`:** the `CpuTrainer` is a small synthetic MLP; it does not load or train the real `multimolecule/dnabert2` model.
+- **Real model training in `xenom-miner`:** `Mgm1Trainer` and `DnaBert2Trainer` load and train real models; the legacy `CpuTrainer` is a small synthetic MLP kept for compatibility.
 - **ZK proof:** `consensus/core/src/pow/training_proof.rs:66` and `mining/src/training/miner.rs:204` contain placeholders. A real ZK-SNARK (e.g. EZKL) is not implemented.
 - **Consensus reward integration:** `quality_score` exists but reward distribution and difficulty adjustment are not fully wired into consensus.
 - **`mining` crate separation:** `mining/src/training/` is not used by `xenom-miner`; the two training paths are duplicated/independent.

@@ -20,12 +20,13 @@ use xenom_miner::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch, Training
 use xenom_miner::rpc::XenomRpcClient;
 use xenom_miner::tokenizer::DnaTokenizer;
 use xenom_miner::trainer::{
-    CpuTrainer, GpuBackend, GradientUpdate, MockTrainer, MultiGpuConfig, MultiGpuTrainer, Trainer, TrainingResult,
+    CpuTrainer, GpuBackend, GpuTrainer, GradientUpdate, Mgm1MultiGpuTrainer, Mgm1Trainer, MockTrainer, MultiGpuConfig,
+    MultiGpuTrainer, Trainer, TrainingResult,
 };
 use xenom_miner::wallet::{validate_address, WalletManager};
 
 const DEFAULT_RPC_URL: &str = "ws://xeno-node:17110";
-const DEFAULT_MODEL_ID: &str = "multimolecule/dnabert2";
+const DEFAULT_MODEL_ID: &str = "xeno/mgm-1";
 const DEFAULT_THREADS: usize = 4;
 const DEFAULT_DATA_DIR: &str = "~/.xenom-miner";
 const BLOCK_REWARD: u64 = 100;
@@ -58,8 +59,8 @@ struct Args {
     #[arg(long, default_value_t = DEFAULT_THREADS)]
     threads: usize,
 
-    /// Trainer backend to use: mock, cpu, dnabert2, gpu, cuda, rocm, or metal.
-    #[arg(long, value_parser = ["mock", "cpu", "dnabert2", "gpu", "cuda", "rocm", "metal"], default_value = "mock")]
+    /// Trainer backend to use: mock, cpu, dnabert2, mgm1, gpu, cuda, rocm, or metal.
+    #[arg(long, value_parser = ["mock", "cpu", "dnabert2", "mgm1", "gpu", "cuda", "rocm", "metal"], default_value = "mock")]
     trainer: String,
 
     /// Deprecated alias for --trainer=mock.
@@ -355,10 +356,30 @@ async fn load_trainer(
     // Retry until the seed-node has the model loaded. In Docker Compose the
     // service dependency should already guarantee this, but the retry makes
     // manual/standalone runs robust against slow model downloads.
-    let ModelBundle { model_id, config, tokenizer, weights, .. } =
+    let ModelBundle { model_id, base_checkpoint, config, tokenizer, weights, .. } =
         fetch_model_checkpoint_with_retry(client, model_id, cache, quic_enabled, quic_timeout)
             .await
             .context("Failed to fetch model checkpoint from seed-node")?;
+
+    if model_id.contains("mgm-1") {
+        if gpu_config.gpus.len() > 1 {
+            let trainer =
+                Mgm1MultiGpuTrainer::new(&model_id, &config, &tokenizer, weights, base_checkpoint, gpu_config, backend, 1e-4, threads)
+                    .context("Failed to initialize multi-GPU MGM-1 trainer")?;
+            info!("Loaded multi-GPU MGM-1 model checkpoint for {}", model_id);
+            info!("Trainer device: {:?}", trainer.device_info());
+            return Ok(Arc::new(trainer));
+        }
+
+        let device_index = gpu_config.gpus.first().copied().unwrap_or(0);
+        let (device, _, _) = GpuTrainer::select_device(backend, device_index)?;
+        let trainer =
+            Mgm1Trainer::new(&model_id, &config, &tokenizer, weights, base_checkpoint, device, 1e-4, gpu_config.gradient_top_k_ratio)
+                .context("Failed to initialize MGM-1 trainer")?;
+        info!("Loaded MGM-1 model checkpoint for {}", model_id);
+        info!("Trainer device: {:?}", trainer.device_info());
+        return Ok(Arc::new(trainer));
+    }
 
     let config = DnaBert2Config::from_bytes(&config).context("Failed to parse DNABERT-2 config")?;
     let tokenizer = DnaTokenizer::from_bytes(&tokenizer).context("Failed to parse tokenizer")?;
@@ -453,9 +474,9 @@ async fn main() -> Result<()> {
             info!("Using legacy Candle CPU trainer");
             Arc::new(CpuTrainer::new(config.threads)?)
         }
-        "dnabert2" | "gpu" | "cuda" | "rocm" | "metal" => {
+        "dnabert2" | "mgm1" | "gpu" | "cuda" | "rocm" | "metal" => {
             let backend = match trainer_kind.as_str() {
-                "dnabert2" | "gpu" => GpuBackend::Auto,
+                "dnabert2" | "mgm1" | "gpu" => GpuBackend::Auto,
                 "cuda" => GpuBackend::Cuda,
                 "rocm" => GpuBackend::Rocm,
                 "metal" => GpuBackend::Metal,
@@ -491,7 +512,7 @@ async fn main() -> Result<()> {
             };
             gpu_config.validate()?;
 
-            info!("Using multi-GPU DNABERT-2 trainer with {:?} backend and config {:?}", backend, gpu_config);
+            info!("Using model trainer with {:?} backend and config {:?}", backend, gpu_config);
             let quic_timeout = Duration::from_secs(args.quic_timeout);
             load_trainer(
                 &rpc_client,
@@ -506,10 +527,10 @@ async fn main() -> Result<()> {
             )
             .await?
         }
-        other => bail!("Unknown trainer: {}. Use mock, cpu, dnabert2, gpu, cuda, rocm, or metal.", other),
+        other => bail!("Unknown trainer: {}. Use mock, cpu, dnabert2, mgm1, gpu, cuda, rocm, or metal.", other),
     };
 
-    let dna_model_backends = ["dnabert2", "gpu", "cuda", "rocm", "metal"];
+    let dna_model_backends = ["dnabert2", "mgm1", "gpu", "cuda", "rocm", "metal"];
     let is_dna_model = dna_model_backends.contains(&trainer_kind.as_str());
 
     let genome_merkle: Option<[u8; 32]> = if let Some(hex_str) = args.genome_merkle.as_deref() {

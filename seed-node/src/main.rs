@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
     let quic_external = std::env::var("XENO_QUIC_EXTERNAL").ok();
     let quic_max_transfers: u32 = std::env::var("XENO_QUIC_MAX_TRANSFERS").ok().and_then(|s| s.parse().ok()).unwrap_or(64);
     let seed_host = std::env::var("XENO_SEED_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let default_model_id = std::env::var("XENO_DEFAULT_MODEL_ID").unwrap_or_else(|_| "multimolecule/dnabert2".to_string());
+    let default_model_id = std::env::var("XENO_DEFAULT_MODEL_ID").unwrap_or_else(|_| "xeno/mgm-1".to_string());
     let network_str = std::env::var("XENO_NETWORK").unwrap_or_else(|_| "devnet".to_string());
     let network_type = NetworkType::from_str(&network_str).unwrap_or(NetworkType::Devnet);
 

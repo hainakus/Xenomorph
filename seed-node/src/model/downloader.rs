@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use reqwest::Url;
+use std::fs;
 use std::time::Duration;
 use tracing::{info, warn};
 
@@ -10,7 +11,12 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Download a complete model checkpoint (config.json, tokenizer.json, weights) from Hugging Face.
 /// Prefers `model.safetensors`; falls back to `pytorch_model.bin` (zip format) if needed.
+/// Built-in models such as `xeno/mgm-1` are generated locally instead of downloaded.
 pub async fn download_model(model_id: &str) -> Result<RawModelFiles> {
+    if model_id.contains("mgm-1") {
+        info!("Generating default MGM-1 checkpoint for {}", model_id);
+        return build_default_mgm1_files();
+    }
     let client = reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .connect_timeout(Duration::from_secs(30))
@@ -121,4 +127,28 @@ async fn download_file(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
 
     let bytes = response.bytes().await.context("Failed to read response body")?;
     Ok(bytes.to_vec())
+}
+
+/// Generate a fresh `xeno/mgm-1` checkpoint with random weights.
+fn build_default_mgm1_files() -> Result<RawModelFiles> {
+    use candle_core::{DType, Device};
+    use candle_nn::{VarBuilder, VarMap};
+    use mini_genome_model::{MiniGenomeConfig, MiniGenomeModel};
+
+    let device = Device::Cpu;
+    let config = MiniGenomeConfig::default();
+    let varmap = VarMap::new();
+
+    let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    MiniGenomeModel::new(vb, config.clone()).context("Failed to build default MGM-1 model")?;
+
+    let tmp = std::env::temp_dir().join(format!("mgm1_default_{}.safetensors", rand::random::<u64>()));
+    varmap.save(&tmp).context("Failed to save default MGM-1 weights")?;
+    let weights = fs::read(&tmp).context("Failed to read default MGM-1 weights")?;
+    let _ = fs::remove_file(&tmp);
+
+    let config_bytes = serde_json::to_vec(&config).context("Failed to serialize MGM-1 config")?;
+    let tokenizer_bytes = br#"{"version":"1.0","truncation":null,"padding":null,"added_tokens":[],"normalizer":null,"pre_tokenizer":null,"post_processor":null,"decoder":null,"model":{"type":"BPE","vocab":{"A":0,"C":1,"G":2,"T":3,"[MASK]":4," ":5,"[CLS]":6,"[SEP]":7},"merges":[]}}"#.to_vec();
+
+    Ok(RawModelFiles { config: config_bytes, tokenizer: tokenizer_bytes, weights })
 }

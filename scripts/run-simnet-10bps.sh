@@ -219,7 +219,7 @@ for i in $(seq 1 "$NUM_MINERS"); do
     RUST_LOG="${RUST_LOG:-info}" \
         "$BIN_PREFIX/xenom-miner" \
         --rpc-url "ws://127.0.0.1:$NODE1_MINER_WS_PORT" \
-        --model-id "${XENO_MINER_MODEL_ID:-multimolecule/dnabert2}" \
+        --model-id "${XENO_MINER_MODEL_ID:-xeno/mgm-1}" \
         --threads "${XENO_MINER_THREADS:-4}" \
         --trainer mock \
         --network simnet \

@@ -15,7 +15,7 @@ The xenom node now also serves as the training coordinator / genome server.
 Options:
   -b, --build                     Build release binaries before starting (default)
   --no-build                      Skip cargo build
-  -t, --trainer <name>            Miner trainer: mock, cpu, dnabert2, gpu, cuda, metal, rocm
+  -t, --trainer <name>            Miner trainer: mock, cpu, dnabert2, mgm1, gpu, cuda, metal, rocm
                                   (default: \$XENO_MINER_TRAINER or mock)
   --features <features>           Extra cargo features for xenom-miner (e.g. cuda, metal).
                                   Overrides auto-detection. Also accepts \$XENO_MINER_FEATURES.
@@ -92,8 +92,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$TRAINER" != "mock" && "$TRAINER" != "cpu" && "$TRAINER" != "dnabert2" && \
-      "$TRAINER" != "gpu" && "$TRAINER" != "cuda" && "$TRAINER" != "metal" && "$TRAINER" != "rocm" ]]; then
-    err "Unknown trainer: $TRAINER. Use mock, cpu, dnabert2, gpu, cuda, metal, or rocm."
+      "$TRAINER" != "mgm1" && "$TRAINER" != "gpu" && "$TRAINER" != "cuda" && \
+      "$TRAINER" != "metal" && "$TRAINER" != "rocm" ]]; then
+    err "Unknown trainer: $TRAINER. Use mock, cpu, dnabert2, mgm1, gpu, cuda, metal, or rocm."
     exit 1
 fi
 
@@ -275,7 +276,7 @@ wait_for_port "$MINER_WS_PORT" 600 "$NODE_PID"
 # xeno-miner
 # -----------------------------------------------------------------------------
 MINER_EXTRA_ARGS=()
-if [[ "$TRAINER" == "dnabert2" || "$TRAINER" == "gpu" || "$TRAINER" == "cuda" || "$TRAINER" == "metal" || "$TRAINER" == "rocm" ]]; then
+if [[ "$TRAINER" == "dnabert2" || "$TRAINER" == "mgm1" || "$TRAINER" == "gpu" || "$TRAINER" == "cuda" || "$TRAINER" == "metal" || "$TRAINER" == "rocm" ]]; then
     MINER_EXTRA_ARGS+=(
         --gpus "$GPUS"
         --micro-batch-size "$MICRO_BATCH_SIZE"
@@ -300,7 +301,7 @@ XENO_WALLET_PASSWORD="${XENO_WALLET_PASSWORD:-devnet-password}" \
 RUST_LOG="${RUST_LOG:-info}" \
     "$BIN_PREFIX/xenom-miner" \
     --rpc-url "ws://127.0.0.1:$MINER_WS_PORT" \
-    --model-id "${XENO_MINER_MODEL_ID:-multimolecule/dnabert2}" \
+    --model-id "${XENO_MINER_MODEL_ID:-xeno/mgm-1}" \
     --threads "${XENO_MINER_THREADS:-4}" \
     --trainer "$TRAINER" \
     --network devnet \

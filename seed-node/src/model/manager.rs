@@ -59,12 +59,65 @@ fn decompress_gradient_layer(layer: &GradientLayer) -> Result<Vec<f32>> {
     Ok(full)
 }
 
+/// Build a `MiniGenomeModel` from `files`, apply averaged gradients with a simple
+/// SGD step, and return the new safetensors weights plus their hash.
+fn apply_mgm1_gradients_sync(files: RawModelFiles, averages: HashMap<String, Vec<f32>>) -> Result<(Vec<u8>, [u8; 32])> {
+    let config: MiniGenomeConfig = serde_json::from_slice(&files.config).context("Failed to parse MGM-1 config")?;
+    let device = Device::Cpu;
+    let mut varmap = VarMap::new();
+    let vb = candle_nn::VarBuilder::from_varmap(&varmap, DType::F32, &device);
+    let _model = MiniGenomeModel::new(vb, config).context("Failed to build MGM-1 model for aggregation")?;
+
+    let tmp_load = std::env::temp_dir().join(format!("mgm1_seed_load_{}.safetensors", rand::random::<u64>()));
+    std::fs::write(&tmp_load, &files.weights).context("Failed to write temporary MGM-1 weights")?;
+    varmap.load(&tmp_load).map_err(|e| anyhow!("Failed to load MGM-1 weights into VarMap: {}", e))?;
+    let _ = std::fs::remove_file(&tmp_load);
+
+    let named_grads = {
+        let data = varmap.data().lock().map_err(|e| anyhow!("VarMap poisoned: {}", e))?;
+        let mut named_grads = HashMap::with_capacity(averages.len());
+        for (name, avg) in averages {
+            let var = data.get(&name).ok_or_else(|| anyhow!("Model has no variable named {}", name))?;
+            let shape = var.as_tensor().shape().clone();
+            let grad = Tensor::from_vec(avg, shape, &device)
+                .with_context(|| format!("Failed to build gradient tensor for {}", name))?
+                .to_dtype(DType::F32)?;
+            named_grads.insert(name, grad);
+        }
+        named_grads
+    };
+
+    let lr = 1e-5f64;
+    {
+        let data = varmap.data().lock().map_err(|e| anyhow!("VarMap poisoned: {}", e))?;
+        for (name, var) in data.iter() {
+            if let Some(grad) = named_grads.get(name) {
+                let theta = var.as_tensor();
+                let grad = grad.to_device(theta.device())?.to_dtype(theta.dtype())?;
+                let grad_scaled = (grad * lr)?;
+                let updated = (theta - &grad_scaled)?;
+                var.set(&updated)?;
+            }
+        }
+    }
+
+    let tmp_save = std::env::temp_dir().join(format!("mgm1_seed_save_{}.safetensors", rand::random::<u64>()));
+    varmap.save(&tmp_save).map_err(|e| anyhow!("Failed to save updated MGM-1 weights: {}", e))?;
+    let weights = std::fs::read(&tmp_save).context("Failed to read updated MGM-1 weights")?;
+    let _ = std::fs::remove_file(&tmp_save);
+
+    let new_hash = <[u8; 32]>::from(blake3::hash(&weights));
+    Ok((weights, new_hash))
+}
+
 use super::checkpoint::{ModelCheckpoint, ModelMetrics};
 use super::downloader::{download_model, is_valid_weights};
 use super::storage::ModelStorage;
 use super::{EncryptedModelFiles, RawModelFiles};
 
 use candle_core::{DType, Device, Tensor};
+use candle_nn::VarMap;
+use mini_genome_model::{MiniGenomeConfig, MiniGenomeModel};
 use model_crypto;
 use xenom_miner::lora::LoraConfig;
 use xenom_miner::model::DnaBert2Config;
@@ -113,12 +166,13 @@ impl PendingRebase {
 /// `base_hash` is the hash of the frozen base weights.
 /// `head_hash` is the latest combined weights hash after the most recent aggregation.
 /// `adapter_bytes` holds the serialized (plaintext) LoRA adapter when one exists.
-/// The `trainer` holds the live DNABERT-2 weights and AdamW optimizer state,
-/// and the `aggregator` collects gradients for the next FedAvg round.
+/// The `trainer` holds the live DNABERT-2 weights and AdamW optimizer state when
+/// the model is trainable on this node; `None` for models such as MGM-1 whose
+/// FedAvg path is not yet implemented.
 pub struct CachedCheckpoint {
     pub base_hash: [u8; 32],
     pub head_hash: [u8; 32],
-    pub trainer: DnaBert2Trainer,
+    pub trainer: Option<DnaBert2Trainer>,
     pub aggregator: FedAvgAggregator,
     pub last_used: Instant,
     pub model_id: String,
@@ -640,6 +694,10 @@ impl ModelManager {
         let base = update.base_checkpoint;
         let is_active = base == active_hash;
 
+        if update.model_id.contains("mgm-1") && !is_active {
+            bail!("MGM-1 FedAvg only supports active-base gradients currently");
+        }
+
         if !is_active && !self.is_ancestor_of_active(&update.model_id, base).await {
             bail!(
                 "Gradient base {} is not active nor an ancestor of active {} for {}",
@@ -735,6 +793,29 @@ impl ModelManager {
             }
         };
 
+        // MGM-1: load the current model files, build a MiniGenomeModel on CPU, and
+        // apply the averaged gradients with a simple SGD step.
+        if update.model_id.contains("mgm-1") {
+            let files = self
+                .storage
+                .load_model_files(&update.model_id)
+                .await
+                .map_err(|e| anyhow!("Failed to load MGM-1 model files: {}", e))?;
+            let (weights, new_hash) = tokio::task::spawn_blocking(move || apply_mgm1_gradients_sync(files, averages))
+                .await
+                .context("MGM-1 gradient aggregation task panicked")??;
+
+            {
+                let mut entry_guard = entry.lock().await;
+                entry_guard.head_hash = new_hash;
+                entry_guard.last_used = Instant::now();
+            }
+
+            self.finalize_new_head(&update.model_id, weights, old_head, new_hash, entry.clone()).await?;
+            info!("FedAvg produced new active checkpoint for {}: hash {}", update.model_id, hex::encode(new_hash));
+            return Ok(Some(new_hash));
+        }
+
         // Apply the averaged gradients on a blocking thread so the async runtime
         // is not paused by the DNABERT-2 forward / backward pass.
         let entry_clone = entry.clone();
@@ -751,47 +832,55 @@ impl ModelManager {
                     .get(&rebase_base)
                     .cloned()
                     .ok_or_else(|| anyhow!("Missing snapshot for rebase base {}", hex::encode(rebase_base)))?;
-                let named_grads = build_named_grads(&entry.trainer, averages)?;
 
-                let old_active_snapshot = CheckpointSnapshot {
-                    weights: entry.trainer.trainable_weights().context("Failed to snapshot active weights")?,
-                    optimizer: entry.trainer.clone_optimizer().context("Failed to snapshot active optimizer")?,
+                let (weights, new_hash, old_active_snapshot, adapter_bytes) = {
+                    let trainer = entry.trainer.as_ref().ok_or_else(|| anyhow!("Cached checkpoint has no trainer"))?;
+                    let named_grads = build_named_grads(trainer, averages)?;
+
+                    let old_active_snapshot = CheckpointSnapshot {
+                        weights: trainer.trainable_weights().context("Failed to snapshot active weights")?,
+                        optimizer: trainer.clone_optimizer().context("Failed to snapshot active optimizer")?,
+                    };
+
+                    let delta = trainer
+                        .compute_delta_from_snapshot(&snapshot.weights, &snapshot.optimizer, &named_grads, 1e-5f32)
+                        .context("Failed to compute rebase delta")?;
+                    trainer.apply_weight_delta(&delta).context("Failed to apply rebase delta")?;
+
+                    let weights = trainer.save_weights_to_bytes().context("Failed to serialize rebased weights")?;
+                    let new_hash = <[u8; 32]>::from(blake3::hash(&weights));
+                    let adapter_bytes = if is_lora { trainer.save_adapter_to_bytes().ok() } else { None };
+                    (weights, new_hash, old_active_snapshot, adapter_bytes)
                 };
 
-                let delta = entry
-                    .trainer
-                    .compute_delta_from_snapshot(&snapshot.weights, &snapshot.optimizer, &named_grads, 1e-5f32)
-                    .context("Failed to compute rebase delta")?;
-                entry.trainer.apply_weight_delta(&delta).context("Failed to apply rebase delta")?;
-
-                let weights = entry.trainer.save_weights_to_bytes().context("Failed to serialize rebased weights")?;
-                let new_hash = <[u8; 32]>::from(blake3::hash(&weights));
                 entry.snapshots.insert(old_head, old_active_snapshot);
                 entry.head_hash = new_hash;
                 entry.last_used = Instant::now();
-                if is_lora {
-                    entry.adapter_bytes = entry.trainer.save_adapter_to_bytes().ok();
-                }
+                entry.adapter_bytes = adapter_bytes;
                 Ok::<_, anyhow::Error>((weights, new_hash))
             } else {
                 // Active checkpoint: apply the gradient directly and persist the new state.
-                let named_grads = build_named_grads(&entry.trainer, averages)?;
+                let (weights, new_hash, old_snapshot, adapter_bytes) = {
+                    let trainer = entry.trainer.as_ref().ok_or_else(|| anyhow!("Cached checkpoint has no trainer"))?;
+                    let named_grads = build_named_grads(trainer, averages)?;
 
-                let old_snapshot = CheckpointSnapshot {
-                    weights: entry.trainer.trainable_weights().context("Failed to snapshot active weights")?,
-                    optimizer: entry.trainer.clone_optimizer().context("Failed to snapshot active optimizer")?,
+                    let old_snapshot = CheckpointSnapshot {
+                        weights: trainer.trainable_weights().context("Failed to snapshot active weights")?,
+                        optimizer: trainer.clone_optimizer().context("Failed to snapshot active optimizer")?,
+                    };
+
+                    trainer.apply_gradients(&named_grads, 1e-5f32).context("Failed to apply averaged gradients")?;
+
+                    let weights = trainer.save_weights_to_bytes().context("Failed to serialize updated weights")?;
+                    let new_hash = <[u8; 32]>::from(blake3::hash(&weights));
+                    let adapter_bytes = if is_lora { trainer.save_adapter_to_bytes().ok() } else { None };
+                    (weights, new_hash, old_snapshot, adapter_bytes)
                 };
 
-                entry.trainer.apply_gradients(&named_grads, 1e-5f32).context("Failed to apply averaged gradients")?;
-
-                let weights = entry.trainer.save_weights_to_bytes().context("Failed to serialize updated weights")?;
-                let new_hash = <[u8; 32]>::from(blake3::hash(&weights));
                 entry.snapshots.insert(old_head, old_snapshot);
                 entry.head_hash = new_hash;
                 entry.last_used = Instant::now();
-                if is_lora {
-                    entry.adapter_bytes = entry.trainer.save_adapter_to_bytes().ok();
-                }
+                entry.adapter_bytes = adapter_bytes;
                 Ok::<_, anyhow::Error>((weights, new_hash))
             }
         })
@@ -904,13 +993,34 @@ impl ModelManager {
         }
     }
 
-    /// Build a cached trainable DNABERT-2 replica from raw model files.
+    /// Build a cached trainable checkpoint replica from raw model files.
     fn build_cached_checkpoint(
         &self,
         model_id: &str,
         active_hash: [u8; 32],
         files: RawModelFiles,
     ) -> Result<Arc<Mutex<CachedCheckpoint>>> {
+        // MGM-1 is not aggregated by this node yet, but it still needs a
+        // lightweight cache entry so checkpoint metadata can be served.
+        if model_id.contains("mgm-1") {
+            let entry = CachedCheckpoint {
+                base_hash: active_hash,
+                head_hash: active_hash,
+                trainer: None,
+                aggregator: FedAvgAggregator::new(self.fedavg_config.clone()),
+                last_used: Instant::now(),
+                model_id: model_id.to_string(),
+                adapter_bytes: None,
+                epoch_started: None,
+                epoch_duration: self.epoch_duration,
+                epoch_size_cap: self.epoch_size_cap,
+                snapshots: HashMap::new(),
+                pending_rebases: HashMap::new(),
+                fedavg_config: self.fedavg_config.clone(),
+            };
+            return Ok(Arc::new(Mutex::new(entry)));
+        }
+
         let config = DnaBert2Config::from_bytes(&files.config).context("Failed to parse model config")?;
         let tokenizer = DnaTokenizer::from_bytes(&files.tokenizer).context("Failed to parse tokenizer")?;
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
@@ -936,7 +1046,7 @@ impl ModelManager {
         let entry = CachedCheckpoint {
             base_hash,
             head_hash: active_hash,
-            trainer,
+            trainer: Some(trainer),
             aggregator: FedAvgAggregator::new(self.fedavg_config.clone()),
             last_used: Instant::now(),
             model_id: model_id.to_string(),

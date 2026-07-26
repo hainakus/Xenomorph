@@ -15,9 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
-use borsh::to_vec as borsh_to_vec;
 use candle_core::{DType, Device, Tensor};
-use rayon::prelude::*;
 use tracing::{info, warn};
 
 use crate::data::MlmBatch;
@@ -25,12 +23,13 @@ use crate::dnabert2::DnaBert2Model;
 use crate::lora::LoraConfig;
 use crate::model::DnaBert2Config;
 use crate::models::checkpointed_forward::CheckpointedForward;
-use crate::rpc::messages::{GenomeTrainingBatchMsg, GradientLayer, GradientPayload, GradientUpdate, TrainingBatch};
+use crate::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch};
 use crate::tokenizer::DnaTokenizer;
 use crate::trainer::gpu_trainer::GpuBackend;
-use crate::trainer::mixed_precision::{to_grad_dtype, MixedPrecisionScaler};
+use crate::trainer::gradient::{add_grad_maps, average_grad_maps, build_gradient_update, gradient_commitment, move_grads_to_device};
+use crate::trainer::mixed_precision::MixedPrecisionScaler;
 use crate::trainer::DnaBert2Trainer;
-use crate::trainer::{DeviceInfo, DeviceType, Trainer, TrainingResult};
+use crate::trainer::{DeviceInfo, DeviceType, GradientUpdate, Trainer, TrainingResult};
 
 /// Learning-rate cap inherited from `DnaBert2Trainer`.
 const MAX_LEARNING_RATE: f32 = 1e-5;
@@ -209,7 +208,7 @@ impl MultiGpuTrainer {
 
     /// Determine which physical devices to use based on the CLI config and
     /// requested backend.
-    fn resolve_devices(gpu_config: &MultiGpuConfig, backend: GpuBackend) -> Result<Vec<Device>> {
+    pub(crate) fn resolve_devices(gpu_config: &MultiGpuConfig, backend: GpuBackend) -> Result<Vec<Device>> {
         let mut devices = Vec::new();
         let _ = gpu_config.gpus.len();
 
@@ -258,7 +257,7 @@ impl MultiGpuTrainer {
         Ok(devices)
     }
 
-    fn build_device_info(devices: &[Device], threads: usize) -> DeviceInfo {
+    pub(crate) fn build_device_info(devices: &[Device], threads: usize) -> DeviceInfo {
         let mut device_type = DeviceType::Cpu;
         let mut name = format!("Multi-GPU CPU trainer ({} threads)", threads);
 
@@ -504,7 +503,7 @@ impl MultiGpuTrainer {
         let loss_after_ms = loss_after_start.elapsed().as_millis() as u64;
 
         let commitment_start = Instant::now();
-        let gradients_commitment = self.trainers[0].gradient_commitment_from_named_tensors(&final_grads)?;
+        let gradients_commitment = gradient_commitment(&final_grads)?;
         let commitment_ms = commitment_start.elapsed().as_millis() as u64;
 
         // Restore all replicas to the base checkpoint so the next batch starts from the same point.
@@ -534,47 +533,6 @@ impl MultiGpuTrainer {
 }
 
 impl MultiGpuTrainer {
-    /// Encrypt and package the averaged gradients as a `GradientUpdate` ready to
-    /// be sent to the seed-node's FedAvg aggregator.
-    fn build_gradient_update(
-        &self,
-        model_id: &str,
-        base_checkpoint: [u8; 32],
-        named_grads: HashMap<String, Tensor>,
-        participant_weight: f32,
-    ) -> Result<GradientUpdate> {
-        let top_k_ratio = self.config.gradient_top_k_ratio.clamp(0.0, 1.0);
-
-        // Process layers in parallel: each layer is flattened (GPU -> CPU copy),
-        // optionally top-k compressed, and packed into a GradientLayer. Sorting by
-        // name makes the result deterministic across runs.
-        let mut pairs: Vec<(String, Tensor)> = named_grads.into_iter().collect();
-        pairs.sort_by(|a, b| a.0.cmp(&b.0));
-
-        let layer_entries: Vec<Result<(String, GradientLayer)>> = pairs
-            .into_par_iter()
-            .map(|(name, grad)| {
-                let shape = grad.dims().to_vec();
-                let flat = grad.flatten_all()?.to_vec1::<f32>()?;
-                let (values, indices) = if top_k_ratio >= 1.0 { (flat, Vec::new()) } else { top_k_compress(&flat, top_k_ratio) };
-                Ok((name, GradientLayer { values, shape, indices }))
-            })
-            .collect();
-
-        let mut layer_gradients = HashMap::with_capacity(layer_entries.len());
-        for entry in layer_entries {
-            let (name, layer) = entry?;
-            layer_gradients.insert(name, layer);
-        }
-
-        let payload = GradientPayload { layer_gradients };
-        let payload_bytes = borsh_to_vec(&payload).context("Failed to serialize gradient payload")?;
-        let encrypted_payload = model_crypto::encrypt(&payload_bytes, &model_crypto::derive_encryption_key())
-            .context("Failed to encrypt gradient payload")?;
-
-        Ok(GradientUpdate { model_id: model_id.to_string(), base_checkpoint, encrypted_payload, participant_weight })
-    }
-
     /// Return the currently tracked base checkpoint, if any.
     pub fn current_base_checkpoint(&self) -> Option<[u8; 32]> {
         self.base.lock().ok()?.checkpoint
@@ -590,26 +548,6 @@ impl MultiGpuTrainer {
         self.snapshot_base(checkpoint)?;
         Ok(())
     }
-}
-
-/// Keep only the `k` largest absolute values of `flat` and return them together
-/// with their flattened indices (sorted ascending by index).
-fn top_k_compress(flat: &[f32], ratio: f32) -> (Vec<f32>, Vec<usize>) {
-    if ratio <= 0.0 || flat.is_empty() {
-        return (Vec::new(), Vec::new());
-    }
-
-    let k = ((flat.len() as f32 * ratio).ceil() as usize).clamp(1, flat.len());
-
-    let mut indexed: Vec<(usize, f32)> = flat.iter().copied().enumerate().collect();
-    // Partially sort by descending absolute value and keep the top k.
-    indexed.select_nth_unstable_by(k - 1, |a, b| b.1.abs().total_cmp(&a.1.abs()).then_with(|| b.0.cmp(&a.0)));
-    let mut top: Vec<(usize, f32)> = indexed.into_iter().take(k).collect();
-    top.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let indices = top.iter().map(|(i, _)| *i).collect();
-    let values = top.iter().map(|(_, v)| *v).collect();
-    (values, indices)
 }
 
 impl Trainer for MultiGpuTrainer {
@@ -629,7 +567,13 @@ impl Trainer for MultiGpuTrainer {
             batch.learning_rate,
         )?;
         let build_start = Instant::now();
-        let update = self.build_gradient_update(&batch.model_id, batch.base_checkpoint, named_grads, participant_weight)?;
+        let update = build_gradient_update(
+            &batch.model_id,
+            batch.base_checkpoint,
+            named_grads,
+            participant_weight,
+            self.config.gradient_top_k_ratio,
+        )?;
         info!("Gradient update build time: {} ms", build_start.elapsed().as_millis());
         Ok((result, Some(update)))
     }
@@ -657,7 +601,13 @@ impl Trainer for MultiGpuTrainer {
         let (result, named_grads, participant_weight) =
             self.train_mlm_batch(&mlm_batch, &batch.model_id, msg.base_checkpoint, mlm_batch.batch_indices.clone(), 0.01)?;
         let build_start = Instant::now();
-        let update = self.build_gradient_update(&batch.model_id, msg.base_checkpoint, named_grads, participant_weight)?;
+        let update = build_gradient_update(
+            &batch.model_id,
+            msg.base_checkpoint,
+            named_grads,
+            participant_weight,
+            self.config.gradient_top_k_ratio,
+        )?;
         info!("Genome gradient update build time: {} ms", build_start.elapsed().as_millis());
         Ok((result, Some(update)))
     }
@@ -690,35 +640,6 @@ impl DnaBert2Model {
     // Helper used by the trait impl above. Always returns false for now.
     fn checkpointing_state(&self) -> bool {
         false
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_top_k_compress_keeps_largest_absolute_values() {
-        let flat = vec![1.0f32, -5.0, 2.0, 0.1, -3.0, 4.0];
-        let (values, indices) = top_k_compress(&flat, 0.5);
-        assert_eq!(values.len(), 3);
-        assert_eq!(indices.len(), 3);
-
-        let mut reconstructed = vec![0.0f32; flat.len()];
-        for (i, idx) in indices.iter().enumerate() {
-            reconstructed[*idx] = values[i];
-        }
-        // Top 3 absolute values are -5, -3 and 4.
-        assert_eq!(reconstructed, vec![0.0, -5.0, 0.0, 0.0, -3.0, 4.0]);
-    }
-
-    #[test]
-    fn test_top_k_compress_full_ratio_returns_sorted_identity() {
-        let flat = vec![1.0f32, -5.0, 2.0, 0.1, -3.0, 4.0];
-        let (values, indices) = top_k_compress(&flat, 1.0);
-        assert_eq!(values.len(), flat.len());
-        assert_eq!(indices, (0..flat.len()).collect::<Vec<_>>());
-        assert_eq!(values, flat);
     }
 }
 
@@ -790,66 +711,4 @@ fn extract_mlm_batch(batch: &MlmBatch, start: usize, end: usize, seq_len: usize)
         batch_size: end - start,
         batch_indices: batch.batch_indices[start..end].to_vec(),
     }
-}
-
-/// Average a list of per-GPU gradient maps. All tensors are expected to be on
-/// the CPU and in F32.
-///
-/// The maps may have different key sets (for example because a micro-batch had
-/// no masked positions or because tied weights produced gradients on a single
-/// tensor). Each key is averaged over the gradient maps that actually contain it.
-fn average_grad_maps(grads: &[HashMap<String, Tensor>]) -> Result<HashMap<String, Tensor>> {
-    if grads.is_empty() {
-        bail!("Cannot average empty gradient list");
-    }
-
-    // Accumulate the sum and per-key count so missing keys do not poison the average.
-    let mut acc: HashMap<String, (Tensor, usize)> = HashMap::new();
-    for g in grads {
-        for (name, t) in g.iter() {
-            let t = to_grad_dtype(t)?;
-            match acc.get_mut(name) {
-                Some((sum, count)) => {
-                    *sum = (&*sum + &t)?;
-                    *count += 1;
-                }
-                None => {
-                    acc.insert(name.clone(), (t, 1));
-                }
-            }
-        }
-    }
-
-    let mut out = HashMap::with_capacity(acc.len());
-    for (name, (sum, count)) in acc {
-        let avg = (&sum / (count as f64))?;
-        out.insert(name, avg);
-    }
-
-    Ok(out)
-}
-
-/// Element-wise addition of two gradient maps. Keys present in only one map are
-/// kept unchanged, so accumulated gradients survive accumulation steps where a
-/// micro-batch did not contribute to every variable.
-fn add_grad_maps(a: HashMap<String, Tensor>, b: HashMap<String, Tensor>) -> Result<HashMap<String, Tensor>> {
-    let mut out = HashMap::with_capacity(a.len().max(b.len()));
-    for (name, ta) in a {
-        if let Some(tb) = b.get(&name) {
-            let ta = to_grad_dtype(&ta)?;
-            let tb = to_grad_dtype(tb)?;
-            out.insert(name, (&ta + &tb)?);
-        } else {
-            out.insert(name, ta);
-        }
-    }
-    for (name, tb) in b {
-        out.entry(name).or_insert(tb);
-    }
-    Ok(out)
-}
-
-/// Move every tensor in a named gradient map to `device`.
-fn move_grads_to_device(grads: HashMap<String, Tensor>, device: &Device) -> Result<HashMap<String, Tensor>> {
-    grads.into_iter().map(|(k, v)| Ok((k, v.to_device(device)?))).collect()
 }

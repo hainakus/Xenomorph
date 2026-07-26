@@ -321,7 +321,8 @@ async fn handle_genome_batch_request(
     let seed = *blake3::hash(&seed_input).as_bytes();
 
     let mut generator = GenomeBatchGenerator::new(archive, seed);
-    let seq_len_bases = 512usize.saturating_mul(4);
+    // DNABERT-2 BPE compresses DNA ~4x, while MGM-1 is char-level.
+    let seq_len_bases = if request.model_id.contains("mgm-1") { 512usize } else { 512usize.saturating_mul(4) };
     let mut batch = generator.generate_batch(request.preferred_batch_size.max(1), seq_len_bases);
     batch.batch_id = batch_nonce;
     batch.model_id = request.model_id.clone();

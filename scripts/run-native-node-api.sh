@@ -122,7 +122,7 @@ QUIC_PORT="${XENO_QUIC_PORT:-$QUIC_PORT}"
 INFERENCE_GRPC_PORT="${XENO_INFERENCE_GRPC_PORT:-50051}"
 API_PORT="${XENO_API_PORT:-3000}"
 REDIS_PORT="${XENO_REDIS_PORT:-6379}"
-MODEL_ID="${XENO_MODEL_ID:-multimolecule/dnabert2}"
+MODEL_ID="${XENO_MODEL_ID:-xeno/mgm-1}"
 
 # When binding to a specific IP, health-check waits on that IP; otherwise use localhost.
 WAIT_HOST="127.0.0.1"

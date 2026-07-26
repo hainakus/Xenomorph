@@ -31,30 +31,14 @@ pub struct MiniGenomeConfig {
 
 impl Default for MiniGenomeConfig {
     fn default() -> Self {
-        Self {
-            vocab_size: 8,
-            d_model: 128,
-            n_heads: 4,
-            n_layers: 4,
-            d_ff: 512,
-            max_seq_len: 512,
-            dropout: 0.1,
-        }
+        Self { vocab_size: 8, d_model: 128, n_heads: 4, n_layers: 4, d_ff: 512, max_seq_len: 512, dropout: 0.1 }
     }
 }
 
 impl MiniGenomeConfig {
     /// Configuracao ultra-pequena para testes rapidos
     pub fn tiny() -> Self {
-        Self {
-            vocab_size: 8,
-            d_model: 64,
-            n_heads: 2,
-            n_layers: 2,
-            d_ff: 256,
-            max_seq_len: 256,
-            dropout: 0.1,
-        }
+        Self { vocab_size: 8, d_model: 64, n_heads: 2, n_layers: 2, d_ff: 256, max_seq_len: 256, dropout: 0.1 }
     }
 
     /// Numero total de parametros (estimativa)
@@ -125,13 +109,12 @@ impl Default for DnaTokenizer {
 
 /// Embedding posicional sinusoidal (como no Transformer original)
 pub struct SinusoidalPositionalEmbedding {
-    max_seq_len: usize,
     d_model: usize,
 }
 
 impl SinusoidalPositionalEmbedding {
-    pub fn new(max_seq_len: usize, d_model: usize) -> Self {
-        Self { max_seq_len, d_model }
+    pub fn new(_max_seq_len: usize, d_model: usize) -> Self {
+        Self { d_model }
     }
 
     pub fn forward(&self, seq_len: usize, device: &Device) -> Result<Tensor> {
@@ -139,8 +122,7 @@ impl SinusoidalPositionalEmbedding {
 
         for pos in 0..seq_len {
             for i in 0..self.d_model {
-                let angle = pos as f32
-                    / f32::powf(10000.0, (2 * (i / 2)) as f32 / self.d_model as f32);
+                let angle = pos as f32 / f32::powf(10000.0, (2 * (i / 2)) as f32 / self.d_model as f32);
                 pe[pos * self.d_model + i] = if i % 2 == 0 { angle.sin() } else { angle.cos() };
             }
         }
@@ -243,8 +225,7 @@ pub struct TransformerBlock {
 
 impl TransformerBlock {
     pub fn new(vb: VarBuilder, config: &MiniGenomeConfig) -> Result<Self> {
-        let attention =
-            MultiHeadAttention::new(vb.pp("attention"), config.d_model, config.n_heads, config.dropout)?;
+        let attention = MultiHeadAttention::new(vb.pp("attention"), config.d_model, config.n_heads, config.dropout)?;
 
         let ffn = FeedForward::new(vb.pp("ffn"), config.d_model, config.d_ff, config.dropout)?;
 
@@ -288,7 +269,7 @@ impl MiniGenomeModel {
 
         let mut transformer_blocks = Vec::new();
         for i in 0..config.n_layers {
-            let block = TransformerBlock::new(vb.pp(&format!("block_{}", i)), &config)?;
+            let block = TransformerBlock::new(vb.pp(format!("block_{}", i)), &config)?;
             transformer_blocks.push(block);
         }
 
@@ -300,7 +281,7 @@ impl MiniGenomeModel {
 
     /// Forward pass completo
     pub fn forward(&self, input_ids: &Tensor) -> Result<Tensor> {
-        let (batch, seq_len) = input_ids.dims2()?;
+        let (_batch, seq_len) = input_ids.dims2()?;
 
         let token_emb = self.token_embedding.forward(input_ids)?;
 
@@ -363,23 +344,16 @@ impl Module for MiniGenomeModel {
 pub struct Trainer {
     model: MiniGenomeModel,
     optimizer: candle_nn::optim::AdamW,
-    config: MiniGenomeConfig,
     varmap: VarMap,
 }
 
 impl Trainer {
     pub fn new(model: MiniGenomeModel, varmap: VarMap, lr: f64) -> Result<Self> {
         let vars = varmap.all_vars();
-        let params = candle_nn::optim::ParamsAdamW {
-            lr,
-            beta1: 0.9,
-            beta2: 0.999,
-            eps: 1e-8,
-            weight_decay: 0.01,
-        };
+        let params = candle_nn::optim::ParamsAdamW { lr, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.01 };
         let optimizer = candle_nn::optim::AdamW::new(vars, params)?;
 
-        Ok(Self { model, optimizer, config: MiniGenomeConfig::default(), varmap })
+        Ok(Self { model, optimizer, varmap })
     }
 
     pub fn train_step(&mut self, input_ids: &Tensor, labels: &Tensor) -> Result<(f32, f32)> {

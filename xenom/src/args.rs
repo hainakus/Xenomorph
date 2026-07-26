@@ -163,7 +163,7 @@ impl Default for Args {
             disable_grpc: false,
             ram_scale: 1.0,
             genome_file: None,
-            active_model_id: "multimolecule/dnabert2".into(),
+            active_model_id: "xeno/mgm-1".into(),
             active_model_weights_hash: None,
 
             models_dir: None,
@@ -439,7 +439,7 @@ Setting to 0 prevents the preallocation and sets the maximum to {}, leading to 0
                 .value_name("MODEL_ID")
                 .require_equals(true)
                 .value_parser(clap::value_parser!(String))
-                .help("HuggingFace model id used for training-proof validation (default: multimolecule/dnabert2)."),
+                .help("Model id used for training-proof validation (default: xeno/mgm-1)."),
         )
         .arg(
             Arg::new("active-model-weights-hash")

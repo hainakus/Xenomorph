@@ -1,6 +1,9 @@
 pub mod cpu_trainer;
 pub mod dnabert2_trainer;
 pub mod gpu_trainer;
+pub mod gradient;
+pub mod mgm1_multi_gpu;
+pub mod mgm1_trainer;
 pub mod mixed_precision;
 pub mod mock_trainer;
 pub mod multi_gpu;
@@ -17,6 +20,8 @@ use anyhow::Result;
 pub use cpu_trainer::CpuTrainer;
 pub use dnabert2_trainer::{DnaBert2Trainer, ManualAdamW};
 pub use gpu_trainer::{GpuBackend, GpuTrainer};
+pub use mgm1_multi_gpu::Mgm1MultiGpuTrainer;
+pub use mgm1_trainer::Mgm1Trainer;
 pub use mixed_precision::MixedPrecisionScaler;
 pub use mock_trainer::MockTrainer;
 pub use multi_gpu::{MultiGpuConfig, MultiGpuTrainer};

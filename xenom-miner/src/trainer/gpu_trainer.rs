@@ -64,7 +64,7 @@ impl GpuTrainer {
         Ok(Self { inner, device_type, device_name, device_index, threads })
     }
 
-    fn select_device(backend: GpuBackend, _index: usize) -> Result<(Device, DeviceType, String)> {
+    pub fn select_device(backend: GpuBackend, _index: usize) -> Result<(Device, DeviceType, String)> {
         match backend {
             GpuBackend::Cuda => {
                 #[cfg(feature = "cuda")]

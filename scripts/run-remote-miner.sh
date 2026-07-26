@@ -18,8 +18,8 @@ Required:
 Options:
   -b, --build                     Build release binary before starting (default)
   --no-build                      Skip cargo build
-  -t, --trainer <name>            Miner trainer: mock, cpu, dnabert2, gpu, cuda, metal, rocm
-                                  (default: \$XENO_MINER_TRAINER or cuda)
+  -t, --trainer <name>            Miner trainer: mock, cpu, dnabert2, mgm1, gpu, cuda, metal, rocm
+                                  (default: \$XENO_MINER_TRAINER or mgm1)
   --features <features>           Extra cargo features for xenom-miner (e.g. cuda, metal).
                                   Overrides auto-detection. Also accepts \$XENO_MINER_FEATURES.
   --gpus <ids>                    Comma-separated GPU ordinals for multi-GPU training
@@ -50,7 +50,7 @@ Options:
 "
 
 BUILD=1
-TRAINER="${XENO_MINER_TRAINER:-cuda}"
+TRAINER="${XENO_MINER_TRAINER:-mgm1}"
 FEATURES="${XENO_MINER_FEATURES:-}"
 GPUS="${XENO_MINER_GPUS:-0}"
 MICRO_BATCH_SIZE="${XENO_MINER_MICRO_BATCH_SIZE:-1}"
@@ -106,8 +106,9 @@ if [[ -z "$NODE_HOST" ]]; then
 fi
 
 if [[ "$TRAINER" != "mock" && "$TRAINER" != "cpu" && "$TRAINER" != "dnabert2" && \
-      "$TRAINER" != "gpu" && "$TRAINER" != "cuda" && "$TRAINER" != "metal" && "$TRAINER" != "rocm" ]]; then
-    err "Unknown trainer: $TRAINER. Use mock, cpu, dnabert2, gpu, cuda, metal, or rocm."
+      "$TRAINER" != "mgm1" && "$TRAINER" != "gpu" && "$TRAINER" != "cuda" && \
+      "$TRAINER" != "metal" && "$TRAINER" != "rocm" ]]; then
+    err "Unknown trainer: $TRAINER. Use mock, cpu, dnabert2, mgm1, gpu, cuda, metal, or rocm."
     exit 1
 fi
 
@@ -164,7 +165,7 @@ require_command "$BIN_PREFIX/xenom-miner"
 RPC_URL="ws://${NODE_HOST}:${MINER_WS_PORT}"
 
 MINER_EXTRA_ARGS=()
-if [[ "$TRAINER" == "dnabert2" || "$TRAINER" == "gpu" || "$TRAINER" == "cuda" || "$TRAINER" == "metal" || "$TRAINER" == "rocm" ]]; then
+if [[ "$TRAINER" == "dnabert2" || "$TRAINER" == "mgm1" || "$TRAINER" == "gpu" || "$TRAINER" == "cuda" || "$TRAINER" == "metal" || "$TRAINER" == "rocm" ]]; then
     MINER_EXTRA_ARGS+=(
         --gpus "$GPUS"
         --micro-batch-size "$MICRO_BATCH_SIZE"
@@ -189,8 +190,9 @@ qlog "Starting xenom-miner against $RPC_URL (trainer=$TRAINER, gpus=$GPUS, micro
 XENO_WALLET_PASSWORD="${XENO_WALLET_PASSWORD:-devnet-password}" \
 RUST_LOG="${RUST_LOG:-info}" \
     "$BIN_PREFIX/xenom-miner" \
+
     --rpc-url "$RPC_URL" \
-    --model-id "${XENO_MODEL_ID:-multimolecule/dnabert2}" \
+    --model-id "${XENO_MODEL_ID:-xeno/mgm-1}" \
     --threads "${XENO_MINER_THREADS:-4}" \
     --trainer "$TRAINER" \
     --network devnet \

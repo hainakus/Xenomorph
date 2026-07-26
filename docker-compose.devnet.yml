@@ -52,10 +52,10 @@ services:
       - RUST_LOG=${XENO_LOG_LEVEL:-info}
       - XENO_WALLET_PASSWORD=${XENO_WALLET_PASSWORD:-devnet-password}
       - XENO_MINER_RPC_URL=ws://xeno-node:${XENO_MINER_RPC_PORT:-17110}
-      - XENO_MINER_MODEL_ID=${XENO_MINER_MODEL_ID:-multimolecule/dnabert2}
+      - XENO_MINER_MODEL_ID=${XENO_MINER_MODEL_ID:-xeno/mgm-1}
       - XENO_MINER_THREADS=${XENO_MINER_THREADS:-4}
       - XENO_MINER_DATA_DIR=/root/.xenom-miner
-      - XENO_MINER_TRAINER=${XENO_MINER_TRAINER:-dnabert2}
+      - XENO_MINER_TRAINER=${XENO_MINER_TRAINER:-mgm1}
       - XENO_MINER_EXTRA_ARGS=${XENO_MINER_EXTRA_ARGS:---network devnet}
     networks:
       - xeno-devnet

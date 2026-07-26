@@ -31,6 +31,7 @@ rand_chacha = "0.3"
 candle-core = { version = "0.3", default-features = false }
 candle-nn = { version = "0.3", default-features = false }
 candle-transformers = "0.3"
+mini-genome-model = { path = "../mini-genome-model" }
 safetensors = "0.4"
 # Pin half so its rand_distr feature uses the same rand 0.8 as candle-core.
 half = "=2.4.1"

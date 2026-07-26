@@ -244,7 +244,8 @@ impl Coordinator {
         // DNABERT-2's BPE tokenizer compresses DNA by roughly 4x (bases -> tokens),
         // so request ~4x the model's token budget (512) to obtain full 512-token
         // sequences after tokenization, instead of heavily padded 128-base slices.
-        let seq_len_bases = 512usize.saturating_mul(4);
+        // MGM-1 uses a char-level tokenizer, so request 512 bases directly.
+        let seq_len_bases = if self.inner.active_model_id.contains("mgm-1") { 512usize } else { 512usize.saturating_mul(4) };
         let mut batch = generator.generate_batch(request.preferred_batch_size.max(1), seq_len_bases);
         batch.batch_id = batch_nonce;
         batch.model_id = request.model_id;
