@@ -111,9 +111,10 @@ Examples:
 ./target/release/xenom-miner --rpc-url ws://xeno-node:17110 \
   --trainer cuda --gpus 0,1 --micro-batch-size 1 --gradient-accumulation 2 --fp16
 
-# DNABERT-2 training on a genome archive served by the unified xeno-node
-# --network derives the canonical genome merkle root from consensus Params.
-./target/debug/xenom-miner --rpc-url ws://xeno-node:17110 --trainer dnabert2 --network mainnet
+# DNABERT-2 training on a genome archive served by the unified xeno-node.
+# --network selects the wallet address prefix; the real human GRCh38 genome
+# merkle root is always used for DNA trainers (dnabert2/gpu/cuda/rocm/metal).
+./target/debug/xenom-miner --rpc-url ws://xeno-node:17110 --trainer dnabert2 --network devnet
 
 # Override the genome merkle root explicitly
 ./target/debug/xenom-miner --rpc-url ws://xeno-node:17110 --trainer dnabert2 --genome-merkle <64-hex-chars>
