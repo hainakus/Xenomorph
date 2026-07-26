@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -49,13 +50,17 @@ pub async fn run_miner_server(
     let bound: SocketAddr = listener.local_addr()?;
     info!("Miner WebSocket server listening on {}", bound);
 
+    // Per-request nonce so every genome batch is drawn from a different RNG state.
+    let batch_counter = Arc::new(AtomicU64::new(1));
+
     while let Ok((stream, peer)) = listener.accept().await {
         let mm = model_manager.clone();
         let gs = genome_storage.clone();
         let xc = xenomorph_client.clone();
         let pg = p2p_gossip.clone();
+        let bc = batch_counter.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, mm, gs, xc, pg).await {
+            if let Err(e) = handle_connection(stream, mm, gs, xc, pg, bc).await {
                 warn!("Miner WebSocket connection from {} closed: {}", peer, e);
             }
         });
@@ -70,6 +75,7 @@ async fn handle_connection(
     genome_storage: Arc<RwLock<GenomeStorage>>,
     xenomorph_client: Option<Arc<XenomorphRpcClient>>,
     p2p_gossip: Option<Arc<P2pGossipHandle>>,
+    batch_counter: Arc<AtomicU64>,
 ) -> Result<()> {
     let mut ws = accept_async_with_config(stream, Some(ws_config())).await?;
 
@@ -98,6 +104,7 @@ async fn handle_connection(
                     genome_storage.clone(),
                     xenomorph_client.clone(),
                     p2p_gossip.clone(),
+                    batch_counter.clone(),
                 ));
 
                 let response = loop {
@@ -139,6 +146,7 @@ async fn handle_request(
     genome_storage: Arc<RwLock<GenomeStorage>>,
     xenomorph_client: Option<Arc<XenomorphRpcClient>>,
     p2p_gossip: Option<Arc<P2pGossipHandle>>,
+    batch_counter: Arc<AtomicU64>,
 ) -> RpcResponse {
     match req {
         RpcRequest::GetTrainingBatch { model_id } => {
@@ -152,7 +160,9 @@ async fn handle_request(
                 learning_rate: 0.01,
             }))
         }
-        RpcRequest::GetGenomeTrainingBatch(request) => handle_genome_batch_request(request, genome_storage, model_manager).await,
+        RpcRequest::GetGenomeTrainingBatch(request) => {
+            handle_genome_batch_request(request, genome_storage, model_manager, batch_counter).await
+        }
         RpcRequest::GetModelCheckpointInfo(GetModelCheckpointInfo { model_id }) => {
             RpcResponse::ModelCheckpointInfo(super::messages::ModelCheckpointInfo {
                 model_id: model_id.clone(),
@@ -288,6 +298,7 @@ async fn handle_genome_batch_request(
     request: GetGenomeTrainingBatch,
     genome_storage: Arc<RwLock<GenomeStorage>>,
     model_manager: Arc<ModelManager>,
+    batch_counter: Arc<AtomicU64>,
 ) -> RpcResponse {
     // The seed-node auto-discovers the genome archive in its local cache or falls
     // back to the canonical GitHub Releases URL (overridable via XENO_GENOME_URL).
@@ -300,12 +311,21 @@ async fn handle_genome_batch_request(
         }
     };
 
-    // Deterministic seed derived from the genome merkle root.
+    // Deterministic seed derived from the genome merkle root, mixed with a
+    // per-request nonce so the RNG advances between batches and miners do not
+    // train repeatedly on the same 88 sequences.
     let mut seed = [0u8; 32];
     seed.copy_from_slice(&request.genome_merkle_root);
+    let batch_nonce = batch_counter.fetch_add(1, Ordering::Relaxed);
+    let nonce_bytes = batch_nonce.to_le_bytes();
+    for i in 0..8 {
+        seed[i + 8] ^= nonce_bytes[i];
+    }
 
     let mut generator = GenomeBatchGenerator::new(archive, seed);
-    let mut batch = generator.generate_batch(request.preferred_batch_size, 128);
+    let seq_len_bases = 512usize.saturating_mul(4);
+    let mut batch = generator.generate_batch(request.preferred_batch_size.max(1), seq_len_bases);
+    batch.batch_id = batch_nonce;
     batch.model_id = request.model_id.clone();
 
     let sequences = generator.extract_sequences(&batch);

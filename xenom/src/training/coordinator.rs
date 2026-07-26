@@ -65,6 +65,9 @@ struct CoordinatorInner {
     genome_pow_activation_daa_score: u64,
 
     current_epoch: AtomicU64,
+    /// Monotonic counter incremented for every genome batch request so each
+    /// miner gets a different slice of the genome even before a block is accepted.
+    batch_counter: AtomicU64,
     quic_announce_addr: RwLock<Option<SocketAddr>>,
 }
 
@@ -139,6 +142,7 @@ impl Coordinator {
                 genome_fragment_size_bytes,
                 genome_pow_activation_daa_score,
                 current_epoch: AtomicU64::new(0),
+                batch_counter: AtomicU64::new(1),
                 quic_announce_addr: RwLock::new(None),
             }),
         };
@@ -221,12 +225,16 @@ impl Coordinator {
 
         let mut seed = [0u8; 32];
         seed.copy_from_slice(&request.genome_merkle_root);
-        // XOR the first 8 bytes with the current epoch so each accepted training
-        // block produces a different genome batch instead of repeating the same slice.
+        // XOR the first 8 bytes with the current epoch, and the next 8 bytes with a
+        // per-request counter, so every batch request produces a different slice of
+        // the genome instead of repeating the same 88 sequences.
         let epoch = self.inner.current_epoch.load(Ordering::Relaxed);
+        let batch_nonce = self.inner.batch_counter.fetch_add(1, Ordering::Relaxed);
         let epoch_bytes = epoch.to_le_bytes();
+        let nonce_bytes = batch_nonce.to_le_bytes();
         for i in 0..8 {
             seed[i] ^= epoch_bytes[i];
+            seed[i + 8] ^= nonce_bytes[i];
         }
         let mut generator = GenomeBatchGenerator::new(archive, seed);
         // DNABERT-2's BPE tokenizer compresses DNA by roughly 4x (bases -> tokens),
@@ -234,6 +242,7 @@ impl Coordinator {
         // sequences after tokenization, instead of heavily padded 128-base slices.
         let seq_len_bases = 512usize.saturating_mul(4);
         let mut batch = generator.generate_batch(request.preferred_batch_size.max(1), seq_len_bases);
+        batch.batch_id = batch_nonce;
         batch.model_id = request.model_id;
 
         let sequences = generator.extract_sequences(&batch);
