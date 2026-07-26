@@ -3,7 +3,7 @@
 //! This is the unified node's replacement for the standalone seed-node WebSocket
 //! server. It speaks the same Borsh-over-WebSocket protocol as `xenom-miner`.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use anyhow::{anyhow, Result};
 use borsh::{to_vec, BorshDeserialize};
@@ -138,9 +138,7 @@ async fn handle_request(req: RpcRequest, coordinator: &Coordinator, flow_context
                 };
                 // If this unified node is serving the requested checkpoint over QUIC,
                 // include itself in the peer list so miners can reach it directly.
-                if let Some(own) = self_announcement(coordinator, &ctx, &model_id, weights_hash).await {
-                    peers.push(own);
-                }
+                peers.extend(self_announcements(coordinator, &ctx, &model_id, weights_hash).await);
                 RpcResponse::CheckpointPeers(peers)
             }
             None => RpcResponse::Error("P2P gossip not enabled on this node".to_string()),
@@ -151,35 +149,85 @@ async fn handle_request(req: RpcRequest, coordinator: &Coordinator, flow_context
     }
 }
 
-/// Build a signed checkpoint announcement for this node if it is the active
-/// model and has a QUIC transfer endpoint configured.
-async fn self_announcement(
+/// Return a list of QUIC endpoints this node can be reached on.  The returned
+/// addresses include the configured announce address plus any other non-loopback
+/// local interface addresses, sorted so private/site-local addresses come first.
+async fn local_quic_endpoints(coordinator: &Coordinator) -> Vec<SocketAddr> {
+    let Some(base) = coordinator.quic_announce_addr().await else { return Vec::new() };
+    let port = base.port();
+    let mut addrs = Vec::new();
+    if !base.ip().is_loopback() && !base.ip().is_unspecified() {
+        addrs.push(base);
+    }
+
+    if let Ok(ifaces) = local_ip_address::list_afinet_netifas() {
+        let mut extra: Vec<SocketAddr> = ifaces
+            .into_iter()
+            .map(|(_, ip)| SocketAddr::new(ip, port))
+            .filter(|a| !a.ip().is_loopback() && !a.ip().is_unspecified() && !addrs.contains(a))
+            .collect();
+        extra.sort_by_key(|a| !is_site_local(a.ip()));
+        addrs.extend(extra);
+    }
+
+    addrs
+}
+
+fn is_site_local(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+        IpAddr::V6(v6) => {
+            let octets = v6.octets();
+            // Unique local (fc00::/7) or link-local (fe80::/10)
+            (octets[0] & 0xfe) == 0xfc || (octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80)
+        }
+    }
+}
+
+/// Build signed checkpoint announcements for this node if it is the active model
+/// and has QUIC transfer endpoints configured.  Multiple announcements are
+/// returned (one per local address) so miners can pick the address they can
+/// actually reach (e.g. LAN IP vs public IP).
+async fn self_announcements(
     coordinator: &Coordinator,
     ctx: &FlowContext,
     model_id: &str,
     weights_hash: [u8; 32],
-) -> Option<PeerAnnouncement> {
+) -> Vec<PeerAnnouncement> {
     if model_id != coordinator.active_model_id() {
-        return None;
+        return Vec::new();
     }
-    let quic_addr = coordinator.quic_announce_addr().await?;
-    let active_hash = coordinator.active_weights_hash().await.ok()?;
-    if active_hash.as_bytes() != weights_hash {
-        return None;
-    }
-    let identity = ctx.gossip_identity.as_ref()?;
-    let announcement = Announcement {
-        model_id: model_id.to_string(),
-        weights_hash,
-        cid: weights_hash,
-        timestamp: kaspa_core::time::unix_now(),
-        is_genome: false,
-        node_address: String::new(),
-        public_key: [0u8; 33],
-        listen_addr: Some(quic_addr),
-        signature: [0u8; 64],
+    let active_hash = match coordinator.active_weights_hash().await {
+        Ok(h) => h,
+        Err(_) => return Vec::new(),
     };
-    identity.sign(announcement).ok().map(|signed| peer_announcement_from(&signed))
+    if active_hash.as_bytes() != weights_hash {
+        return Vec::new();
+    }
+    let identity = match ctx.gossip_identity.as_ref() {
+        Some(id) => id,
+        None => return Vec::new(),
+    };
+
+    let mut out = Vec::new();
+    let base_time = kaspa_core::time::unix_now();
+    for (idx, quic_addr) in local_quic_endpoints(coordinator).await.into_iter().enumerate() {
+        let announcement = Announcement {
+            model_id: model_id.to_string(),
+            weights_hash,
+            cid: weights_hash,
+            timestamp: base_time + idx as u64,
+            is_genome: false,
+            node_address: String::new(),
+            public_key: [0u8; 33],
+            listen_addr: Some(quic_addr),
+            signature: [0u8; 64],
+        };
+        if let Ok(signed) = identity.sign(announcement) {
+            out.push(peer_announcement_from(&signed));
+        }
+    }
+    out
 }
 
 fn peer_announcement_from(ann: &Announcement) -> PeerAnnouncement {

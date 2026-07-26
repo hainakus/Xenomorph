@@ -119,9 +119,30 @@ fn quic_announce_addr(local_addr: SocketAddr, external: Option<&str>, seed_host:
     }
 
     let ip = if local_addr.ip().is_unspecified() {
-        seed_host.parse().ok().or_else(|| local_ip_address::local_ip().ok()).unwrap_or(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))
+        seed_host.parse().ok().or_else(preferred_local_ip).unwrap_or(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))
     } else {
         local_addr.ip()
     };
     Some(SocketAddr::new(ip, local_addr.port()))
+}
+
+/// Return the best local IP to announce for QUIC when no explicit external
+/// address is configured.  Prefers private/site-local addresses over globally
+/// routable ones so miners on the same LAN/VPN find a connectable endpoint.
+fn preferred_local_ip() -> Option<IpAddr> {
+    let Ok(ifaces) = local_ip_address::list_afinet_netifas() else { return None };
+    let mut candidates: Vec<IpAddr> = ifaces.into_iter().map(|(_, ip)| ip).filter(|ip| !ip.is_loopback()).collect();
+    candidates.sort_by_key(|ip| !is_site_local(*ip));
+    candidates.into_iter().next()
+}
+
+fn is_site_local(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+        IpAddr::V6(v6) => {
+            let octets = v6.octets();
+            // Unique local (fc00::/7) or link-local (fe80::/10)
+            (octets[0] & 0xfe) == 0xfc || (octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80)
+        }
+    }
 }

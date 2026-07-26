@@ -59,7 +59,7 @@ use anyhow;
 use core::str::FromStr;
 use kaspa_hashes::Hash;
 use seed_node::quic::ModelFileProvider;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use xenom_quic::CheckpointTransferServer;
 
 const DEFAULT_DATA_DIR: &str = "datadir";
@@ -172,6 +172,28 @@ pub fn get_log_dir(args: &Args) -> Option<String> {
     log_dir
 }
 
+/// Return the best local IP to announce for QUIC when no explicit external
+/// address is configured.  Prefers private/site-local addresses (10/8,
+/// 172.16/12, 192.168/16, ULA, link-local) over globally routable ones so that
+/// miners on the same LAN/VPN find a connectable endpoint by default.
+fn preferred_local_ip() -> Option<IpAddr> {
+    let Ok(ifaces) = local_ip_address::list_afinet_netifas() else { return None };
+    let mut candidates: Vec<IpAddr> = ifaces.into_iter().map(|(_, ip)| ip).filter(|ip| !ip.is_loopback()).collect();
+    candidates.sort_by_key(|ip| !is_site_local(*ip));
+    candidates.into_iter().next()
+}
+
+fn is_site_local(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+        IpAddr::V6(v6) => {
+            let octets = v6.octets();
+            // Unique local (fc00::/7) or link-local (fe80::/10)
+            (octets[0] & 0xfe) == 0xfc || (octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80)
+        }
+    }
+}
+
 async fn start_quic_server(
     quic_listen: Option<ContextualNetAddress>,
     quic_external: Option<ContextualNetAddress>,
@@ -193,11 +215,11 @@ async fn start_quic_server(
     } else if local_addr.ip().is_unspecified() {
         if let Some(externalip) = externalip {
             SocketAddr::new(externalip.normalize(0).ip.0, local_addr.port())
-        } else if let Ok(ip) = local_ip_address::local_ip() {
+        } else if let Some(ip) = preferred_local_ip() {
             SocketAddr::new(ip, local_addr.port())
         } else {
             warn!("QUIC bound to 0.0.0.0 and no --quic-external or --externalip given; using 127.0.0.1 for local testing");
-            SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), local_addr.port())
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), local_addr.port())
         }
     } else {
         local_addr
