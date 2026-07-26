@@ -223,19 +223,18 @@ impl Coordinator {
             }
         };
 
-        let mut seed = [0u8; 32];
-        seed.copy_from_slice(&request.genome_merkle_root);
-        // XOR the first 8 bytes with the current epoch, and the next 8 bytes with a
-        // per-request counter, so every batch request produces a different slice of
-        // the genome instead of repeating the same 88 sequences.
+        // Derive the RNG seed from the genome merkle root, the current epoch, and a
+        // per-request nonce.  The merkle root is just a file identifier/checksum; we
+        // need a changing seed so the generator returns a different slice of the real
+        // DNA for every batch request instead of repeating the same 88 sequences.
         let epoch = self.inner.current_epoch.load(Ordering::Relaxed);
         let batch_nonce = self.inner.batch_counter.fetch_add(1, Ordering::Relaxed);
-        let epoch_bytes = epoch.to_le_bytes();
-        let nonce_bytes = batch_nonce.to_le_bytes();
-        for i in 0..8 {
-            seed[i] ^= epoch_bytes[i];
-            seed[i + 8] ^= nonce_bytes[i];
-        }
+        let mut seed_input = Vec::with_capacity(48);
+        seed_input.extend_from_slice(&request.genome_merkle_root);
+        seed_input.extend_from_slice(&epoch.to_le_bytes());
+        seed_input.extend_from_slice(&batch_nonce.to_le_bytes());
+        let seed = *blake3::hash(&seed_input).as_bytes();
+
         let mut generator = GenomeBatchGenerator::new(archive, seed);
         // DNABERT-2's BPE tokenizer compresses DNA by roughly 4x (bases -> tokens),
         // so request ~4x the model's token budget (512) to obtain full 512-token

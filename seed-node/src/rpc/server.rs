@@ -311,16 +311,14 @@ async fn handle_genome_batch_request(
         }
     };
 
-    // Deterministic seed derived from the genome merkle root, mixed with a
-    // per-request nonce so the RNG advances between batches and miners do not
-    // train repeatedly on the same 88 sequences.
-    let mut seed = [0u8; 32];
-    seed.copy_from_slice(&request.genome_merkle_root);
+    // Derive the RNG seed from the genome merkle root plus a per-request nonce.
+    // The merkle root identifies which .xenom archive to use; the nonce ensures
+    // each batch extracts a different region of the real DNA.
     let batch_nonce = batch_counter.fetch_add(1, Ordering::Relaxed);
-    let nonce_bytes = batch_nonce.to_le_bytes();
-    for i in 0..8 {
-        seed[i + 8] ^= nonce_bytes[i];
-    }
+    let mut seed_input = Vec::with_capacity(40);
+    seed_input.extend_from_slice(&request.genome_merkle_root);
+    seed_input.extend_from_slice(&batch_nonce.to_le_bytes());
+    let seed = *blake3::hash(&seed_input).as_bytes();
 
     let mut generator = GenomeBatchGenerator::new(archive, seed);
     let seq_len_bases = 512usize.saturating_mul(4);
