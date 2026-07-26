@@ -41,6 +41,12 @@ impl GenomeBatchGenerator {
 
     /// Generate a batch of `batch_size` genome slices, each up to `seq_len` bases long.
     ///
+    /// When the genome fragment is large enough, the slices are adjacent windows taken
+    /// from a single fragment, so a training batch covers a contiguous genomic region
+    /// instead of scattered random positions.  This gives the DNABERT-2 attention layers
+    /// meaningful local context.  If the fragment is too small, the generator falls back
+    /// to the original random-window behaviour.
+    ///
     /// The returned batch also includes a reproducible `batch_id` derived from the archive
     /// merkle root and the generator's RNG state.
     pub fn generate_batch(&mut self, batch_size: usize, seq_len: usize) -> GenomeTrainingBatch {
@@ -48,7 +54,7 @@ impl GenomeBatchGenerator {
         let fragment_count = self.archive.num_fragments();
         let max_seq_len = seq_len.min(self.archive.fragment_size as usize);
 
-        if fragment_count == 0 || max_seq_len == 0 {
+        if fragment_count == 0 || max_seq_len == 0 || batch_size == 0 {
             return GenomeTrainingBatch {
                 batch_id: 0,
                 model_id: String::new(),
@@ -59,16 +65,37 @@ impl GenomeBatchGenerator {
             };
         }
 
-        for _ in 0..batch_size {
-            let fragment_idx = self.rng.gen_range(0..fragment_count);
-            let fragment_bases = self.archive.fragment_base_count(fragment_idx).unwrap_or(0) as usize;
-            let length = max_seq_len.min(fragment_bases);
-            if length == 0 {
-                continue;
-            }
-            let start_base = if fragment_bases == length { 0 } else { self.rng.gen_range(0..=(fragment_bases - length)) };
+        // Try to produce adjacent windows from a single fragment.  The step size is
+        // the window length so consecutive slices are contiguous.
+        let step = max_seq_len;
+        let total_span = if batch_size == 1 { max_seq_len } else { max_seq_len + (batch_size - 1) * step };
+        let fragment_idx = self.rng.gen_range(0..fragment_count);
+        let fragment_bases = self.archive.fragment_base_count(fragment_idx).unwrap_or(0) as usize;
 
-            slices.push(GenomeSlice { chunk_idx: fragment_idx, start_base: start_base as u32, length: length as u32 });
+        if fragment_bases >= total_span {
+            let max_start = fragment_bases - total_span;
+            let start_base = if max_start == 0 { 0 } else { self.rng.gen_range(0..=max_start) };
+            for i in 0..batch_size {
+                let s = start_base + i * step;
+                let length = max_seq_len.min(fragment_bases - s);
+                if length == 0 {
+                    continue;
+                }
+                slices.push(GenomeSlice { chunk_idx: fragment_idx, start_base: s as u32, length: length as u32 });
+            }
+        } else {
+            // Fragment too small for contiguous windows: fall back to random slices.
+            for _ in 0..batch_size {
+                let fragment_idx = self.rng.gen_range(0..fragment_count);
+                let fragment_bases = self.archive.fragment_base_count(fragment_idx).unwrap_or(0) as usize;
+                let length = max_seq_len.min(fragment_bases);
+                if length == 0 {
+                    continue;
+                }
+                let start_base = if fragment_bases == length { 0 } else { self.rng.gen_range(0..=(fragment_bases - length)) };
+
+                slices.push(GenomeSlice { chunk_idx: fragment_idx, start_base: start_base as u32, length: length as u32 });
+            }
         }
 
         let batch_id = self.rng.gen::<u64>();

@@ -229,7 +229,11 @@ impl Coordinator {
             seed[i] ^= epoch_bytes[i];
         }
         let mut generator = GenomeBatchGenerator::new(archive, seed);
-        let mut batch = generator.generate_batch(request.preferred_batch_size.max(1), 128);
+        // DNABERT-2's BPE tokenizer compresses DNA by roughly 4x (bases -> tokens),
+        // so request ~4x the model's token budget (512) to obtain full 512-token
+        // sequences after tokenization, instead of heavily padded 128-base slices.
+        let seq_len_bases = 512usize.saturating_mul(4);
+        let mut batch = generator.generate_batch(request.preferred_batch_size.max(1), seq_len_bases);
         batch.model_id = request.model_id;
 
         let sequences = generator.extract_sequences(&batch);

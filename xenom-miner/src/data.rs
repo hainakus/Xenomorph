@@ -43,11 +43,40 @@ impl MlmBatchGenerator {
 
     /// Generate an MLM batch from a list of DNA sequences.
     ///
-    /// Each sequence is tokenized, truncated or padded to `seq_len`, and masked
-    /// using an RNG seeded from `seed` and `batch_id`.
+    /// Each sequence is tokenized, truncated to the model's maximum `seq_len`, and
+    /// masked using an RNG seeded from `seed` and `batch_id`.  The returned batch's
+    /// `seq_len` is the actual maximum encoded length in the batch, so short sequences
+    /// are not padded up to the model's full token budget.
     pub fn generate_from_sequences(&self, sequences: &[String], seed: &[u8; 32], batch_id: u64) -> Result<MlmBatch> {
         let batch_size = sequences.len();
-        let total_len = batch_size * self.seq_len;
+        if batch_size == 0 {
+            return Ok(MlmBatch {
+                input_ids: Vec::new(),
+                token_type_ids: Vec::new(),
+                attention_mask: Vec::new(),
+                labels: Vec::new(),
+                mask: Vec::new(),
+                seq_len: 0,
+                batch_size: 0,
+            });
+        }
+
+        let base_seed = u64::from_le_bytes(seed[..8].try_into().unwrap_or([0u8; 8])) ^ batch_id;
+
+        let mut encoded_seqs = Vec::with_capacity(batch_size);
+        let mut max_encoded_len = 0usize;
+        for sequence in sequences {
+            let mut encoded = self.tokenizer.encode(sequence, false)?;
+            encoded.truncate(self.seq_len);
+            max_encoded_len = max_encoded_len.max(encoded.len());
+            encoded_seqs.push(encoded);
+        }
+
+        // Use the real token length for this batch instead of padding everything to
+        // the model's maximum.  ALiBi position bias is computed from the actual seq
+        // length, so shorter inputs are still valid.
+        let output_seq_len = max_encoded_len.min(self.seq_len).max(1);
+        let total_len = batch_size * output_seq_len;
 
         let mut input_ids = vec![self.tokenizer.pad_token_id; total_len];
         let token_type_ids = vec![0u32; total_len];
@@ -55,15 +84,9 @@ impl MlmBatchGenerator {
         let mut labels = vec![u32::MAX; total_len];
         let mut mask = vec![0u8; total_len];
 
-        let base_seed = u64::from_le_bytes(seed[..8].try_into().unwrap_or([0u8; 8])) ^ batch_id;
-
-        for (b, sequence) in sequences.iter().enumerate() {
+        for (b, encoded) in encoded_seqs.iter().enumerate() {
             let mut rng = ChaCha8Rng::seed_from_u64(base_seed.wrapping_add(b as u64));
-
-            let mut encoded = self.tokenizer.encode(sequence, false)?;
-            encoded.truncate(self.seq_len);
-
-            let offset = b * self.seq_len;
+            let offset = b * output_seq_len;
             for (i, &original_id) in encoded.iter().enumerate() {
                 let pos = offset + i;
                 attention_mask[pos] = 1;
@@ -79,7 +102,7 @@ impl MlmBatchGenerator {
             }
         }
 
-        Ok(MlmBatch { input_ids, token_type_ids, attention_mask, labels, mask, seq_len: self.seq_len, batch_size })
+        Ok(MlmBatch { input_ids, token_type_ids, attention_mask, labels, mask, seq_len: output_seq_len, batch_size })
     }
 
     /// Generate an MLM batch from a `TrainingBatch`.
