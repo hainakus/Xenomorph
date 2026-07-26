@@ -1,0 +1,21 @@
+[package]
+name = "xenom-quic"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+borsh = { workspace = true }
+quinn = { workspace = true }
+rcgen = { workspace = true }
+rustls = { workspace = true }
+tokio = { workspace = true, features = ["macros", "net", "io-util", "time", "rt"] }
+anyhow = "1.0"
+thiserror = { workspace = true }
+tracing = "0.1"
+
+[lints]
+workspace = true
