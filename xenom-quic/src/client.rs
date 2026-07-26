@@ -10,6 +10,12 @@ use rustls::{DigitallySignedStruct, Error as RustlsError, SignatureScheme};
 
 use crate::protocol::{CheckpointFileRequest, CheckpointFileResponseHeader, ResponseStatus};
 
+/// Compute the blake3 content hash used by the response header.
+pub fn content_hash(bytes: &[u8]) -> [u8; 32] {
+    let hash = blake3::hash(bytes);
+    *hash.as_bytes()
+}
+
 /// QUIC client that downloads checkpoint files from a peer.
 pub struct CheckpointTransferClient {
     endpoint: Endpoint,
@@ -56,6 +62,10 @@ impl CheckpointTransferClient {
                 let mut payload = vec![0u8; header.length as usize];
                 if header.length > 0 {
                     recv.read_exact(&mut payload).await.context("failed to read response payload")?;
+                }
+                let actual_hash = content_hash(&payload);
+                if actual_hash != header.content_hash {
+                    bail!("checkpoint file hash mismatch");
                 }
                 Ok(payload)
             }

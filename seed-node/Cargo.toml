@@ -13,6 +13,7 @@ kaspa-core = { workspace = true }
 kaspa-p2p-lib = { workspace = true }
 kaspa-utils-tower = { workspace = true }
 model-crypto = { path = "../crypto/model-crypto" }
+xenom-quic = { path = "../xenom-quic" }
 uuid = { workspace = true, features = ["v4", "fast-rng"] }
 blake3 = "1.5"
 xenom-miner = { path = "../xenom-miner" }

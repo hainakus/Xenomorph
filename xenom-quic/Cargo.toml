@@ -8,6 +8,8 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+async-trait = "0.1"
+blake3 = { workspace = true }
 borsh = { workspace = true }
 quinn = { workspace = true }
 rcgen = { workspace = true }

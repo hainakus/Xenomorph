@@ -8468,6 +8468,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid 1.10.0",
  "xenom-miner",
+ "xenom-quic",
 ]
 
 [[package]]
@@ -11731,6 +11732,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "xenom-quic",
 ]
 
 [[package]]
@@ -11738,6 +11740,8 @@ name = "xenom-quic"
 version = "0.15.5"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "blake3",
  "borsh",
  "quinn",
  "rcgen",

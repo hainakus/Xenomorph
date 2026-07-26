@@ -1,12 +1,16 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use candle_core::Tensor;
 use model_crypto::{decrypt, derive_encryption_key};
+use tokio::time::timeout;
 use tracing::{info, warn};
+use xenom_quic::{CheckpointFileRequest, CheckpointFileType, CheckpointTransferClient};
 
 pub use crate::model_cache::{ModelBundle, ModelCache};
-use crate::rpc::messages::ModelCheckpointV2;
+use crate::rpc::messages::{ModelCheckpointInfoV2, ModelCheckpointV2};
 use crate::rpc::XenomRpcClient;
 
 /// Decrypt the encrypted model files returned by the seed-node.
@@ -80,9 +84,19 @@ fn merge_adapter_into_base(base: &[u8], adapter: &[u8]) -> Result<Vec<u8>> {
 /// base weights match, only the LoRA adapter is downloaded and merged with the
 /// local base. Otherwise the full base+adapter bundle is downloaded.
 ///
+/// When `quic_enabled` is true the miner tries to fetch the missing files from
+/// discovered QUIC peers first, and falls back to the existing WebSocket RPC on
+/// any failure.
+///
 /// The returned `ModelBundle` is always plaintext; if the node sent encrypted
 /// files they are decrypted with the same `XENO_MODEL_KEY` used by the node.
-pub async fn fetch_model_checkpoint(rpc: &mut XenomRpcClient, model_id: &str, cache: &ModelCache) -> Result<ModelBundle> {
+pub async fn fetch_model_checkpoint(
+    rpc: &mut XenomRpcClient,
+    model_id: &str,
+    cache: &ModelCache,
+    quic_enabled: bool,
+    quic_timeout: Duration,
+) -> Result<ModelBundle> {
     let info = rpc.get_model_checkpoint_info_v2(model_id).await?;
 
     // If we already have the combined checkpoint cached, use it directly.
@@ -112,21 +126,25 @@ pub async fn fetch_model_checkpoint(rpc: &mut XenomRpcClient, model_id: &str, ca
         }
     }
 
-    // If the cached base weights match the active base, download only the adapter.
-    let cached_base_hash = cache.read_base_hash(model_id);
-    let cp = if cached_base_hash == Some(info.base_hash) {
-        info!("Base weights for {} already cached; fetching adapter only", model_id);
-        let cp = rpc.get_model_checkpoint_v2(model_id, Some(info.base_hash)).await?;
-        if !cp.is_adapter {
-            warn!("Node returned a full checkpoint despite cached base match; using full response");
+    // Try QUIC first when enabled; fall through to WebSocket on any failure.
+    let mut cp = if quic_enabled {
+        match try_fetch_quic(rpc, model_id, cache, &info, quic_timeout).await {
+            Ok(cp) => cp,
+            Err(e) => {
+                warn!("QUIC checkpoint fetch failed for {}: {}; falling back to WebSocket", model_id, e);
+                fetch_websocket_checkpoint(rpc, model_id, cache, &info).await?
+            }
         }
-        cp
     } else {
-        info!("Fetching full model checkpoint for {} from node", model_id);
-        rpc.get_model_checkpoint_v2(model_id, None).await?
+        fetch_websocket_checkpoint(rpc, model_id, cache, &info).await?
     };
 
-    let mut cp = decrypt_v2(&cp)?;
+    // If the node sent only the adapter, merge it with the cached base.
+    if cp.is_adapter {
+        let base = cache.read_base_weights(model_id).context("Missing cached base weights for adapter merge")?;
+        cp.weights = merge_adapter_into_base(&base, &cp.weights)?;
+        cp.is_adapter = false;
+    }
 
     if let Err(e) = validate_weights_payload(&cp.weights) {
         anyhow::bail!(
@@ -137,10 +155,15 @@ pub async fn fetch_model_checkpoint(rpc: &mut XenomRpcClient, model_id: &str, ca
         );
     }
 
-    // If the node sent only the adapter, merge it with the cached base.
-    if cp.is_adapter {
-        let base = cache.read_base_weights(model_id).context("Missing cached base weights for adapter merge")?;
-        cp.weights = merge_adapter_into_base(&base, &cp.weights)?;
+    // Verify the combined weights hash matches the metadata announced by the node.
+    let actual_hash = blake3::hash(&cp.weights);
+    if *actual_hash.as_bytes() != info.base_checkpoint {
+        anyhow::bail!(
+            "Checkpoint weights hash mismatch for {}: expected {}, got {}",
+            model_id,
+            hex::encode(info.base_checkpoint),
+            hex::encode(actual_hash.as_bytes())
+        );
     }
 
     let bundle = ModelBundle {
@@ -168,6 +191,109 @@ pub async fn fetch_model_checkpoint(rpc: &mut XenomRpcClient, model_id: &str, ca
     }
 
     Ok(bundle)
+}
+
+async fn fetch_websocket_checkpoint(
+    rpc: &mut XenomRpcClient,
+    model_id: &str,
+    cache: &ModelCache,
+    info: &ModelCheckpointInfoV2,
+) -> Result<ModelCheckpointV2> {
+    // If the cached base weights match the active base, download only the adapter.
+    let cached_base_hash = cache.read_base_hash(model_id);
+    let cp = if cached_base_hash == Some(info.base_hash) {
+        info!("Base weights for {} already cached; fetching adapter only", model_id);
+        let cp = rpc.get_model_checkpoint_v2(model_id, Some(info.base_hash)).await?;
+        if !cp.is_adapter {
+            warn!("Node returned a full checkpoint despite cached base match; using full response");
+        }
+        cp
+    } else {
+        info!("Fetching full model checkpoint for {} from node", model_id);
+        rpc.get_model_checkpoint_v2(model_id, None).await?
+    };
+
+    decrypt_v2(&cp)
+}
+
+async fn try_fetch_quic(
+    rpc: &mut XenomRpcClient,
+    model_id: &str,
+    cache: &ModelCache,
+    info: &ModelCheckpointInfoV2,
+    timeout_duration: Duration,
+) -> Result<ModelCheckpointV2> {
+    let peers = rpc.get_checkpoint_peers(model_id, info.base_checkpoint).await?;
+    let addrs: Vec<SocketAddr> = peers.into_iter().filter_map(|p| p.listen_addr.and_then(|s| s.parse().ok())).collect();
+    if addrs.is_empty() {
+        anyhow::bail!("no QUIC peers returned by the node");
+    }
+
+    let is_adapter = cache.read_base_hash(model_id) == Some(info.base_hash);
+    let file_types: Vec<CheckpointFileType> = if is_adapter {
+        vec![CheckpointFileType::Config, CheckpointFileType::Tokenizer, CheckpointFileType::Adapter]
+    } else {
+        vec![CheckpointFileType::Config, CheckpointFileType::Tokenizer, CheckpointFileType::Weights]
+    };
+
+    let local_addr = SocketAddr::from(([0, 0, 0, 0], 0));
+
+    for peer_addr in addrs {
+        let client = CheckpointTransferClient::new(local_addr, "localhost")
+            .with_context(|| format!("failed to create QUIC client for {peer_addr}"))?;
+
+        let mut encrypted_files = EncryptedFiles::default();
+        let mut ok = true;
+        for file_type in &file_types {
+            let request =
+                CheckpointFileRequest { model_id: model_id.to_string(), weights_hash: info.base_checkpoint, file_type: *file_type };
+            let encrypted = match timeout(timeout_duration, client.get_file(peer_addr, &request)).await {
+                Ok(Ok(bytes)) => bytes,
+                Ok(Err(e)) => {
+                    warn!("QUIC {file_type:?} from {peer_addr} failed: {e}");
+                    ok = false;
+                    break;
+                }
+                Err(_) => {
+                    warn!("QUIC {file_type:?} from {peer_addr} timed out");
+                    ok = false;
+                    break;
+                }
+            };
+            match file_type {
+                CheckpointFileType::Config => encrypted_files.config = encrypted,
+                CheckpointFileType::Tokenizer => encrypted_files.tokenizer = encrypted,
+                CheckpointFileType::Weights | CheckpointFileType::Adapter => encrypted_files.weights = encrypted,
+            }
+        }
+        if !ok {
+            continue;
+        }
+
+        let cp = ModelCheckpointV2 {
+            model_id: model_id.to_string(),
+            base_checkpoint: info.base_checkpoint,
+            base_hash: info.base_hash,
+            config: encrypted_files.config,
+            tokenizer: encrypted_files.tokenizer,
+            weights: encrypted_files.weights,
+            encrypted: true,
+            is_adapter,
+        };
+
+        let cp = decrypt_v2(&cp)?;
+        info!("Successfully fetched checkpoint for {} over QUIC from {}", model_id, peer_addr);
+        return Ok(cp);
+    }
+
+    anyhow::bail!("exhausted QUIC peers")
+}
+
+#[derive(Default)]
+struct EncryptedFiles {
+    config: Vec<u8>,
+    tokenizer: Vec<u8>,
+    weights: Vec<u8>,
 }
 
 #[cfg(test)]

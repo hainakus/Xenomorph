@@ -30,4 +30,6 @@ pub enum ResponseStatus {
 pub struct CheckpointFileResponseHeader {
     pub status: ResponseStatus,
     pub length: u64,
+    /// blake3 hash of the response payload, used by the client to verify integrity.
+    pub content_hash: [u8; 32],
 }

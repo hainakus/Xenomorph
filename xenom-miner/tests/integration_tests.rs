@@ -1,13 +1,25 @@
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
+use std::time::Duration;
+
 use borsh::{to_vec, BorshDeserialize};
 use futures::{SinkExt, StreamExt};
 use kaspa_consensus_core::network::NetworkType;
-use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
+use xenom_quic::{async_trait, CheckpointFileRequest, CheckpointFileType, CheckpointTransferServer, FileProvider};
+
+const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn localhost() -> SocketAddr {
+    (Ipv4Addr::new(127, 0, 0, 1), 0).into()
+}
 
 use xenom_miner::block::BlockBuilder;
+use xenom_miner::model_cache::ModelCache;
+use xenom_miner::model_client::fetch_model_checkpoint;
 use xenom_miner::prover::{PublicInputs, ZkProver};
 use xenom_miner::rpc::messages::{
     BlockHeader, ModelCheckpointInfo, ModelCheckpointInfoV2, ModelCheckpointV2, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch,
@@ -17,14 +29,21 @@ use xenom_miner::rpc::XenomRpcClient;
 use xenom_miner::trainer::{MockTrainer, Trainer};
 use xenom_miner::wallet::WalletManager;
 
-const TEST_TIMEOUT: Duration = Duration::from_secs(10);
-
 /// Start a minimal mock Xenomorph node that speaks Borsh over WebSocket.
-async fn start_mock_server() -> u16 {
+/// If `quic_peer` is given, `GetCheckpointPeers` returns a single announcement
+/// advertising that QUIC address so the miner can attempt a bulk transfer.
+async fn start_mock_server(quic_peer: Option<std::net::SocketAddr>) -> u16 {
+    use xenom_miner::rpc::messages::PeerAnnouncement;
+
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
 
     tokio::spawn(async move {
+        // Consistent payload/hash so `fetch_model_checkpoint` hash verification passes.
+        let weights = vec![0u8; 64];
+        let combined = *blake3::hash(&weights).as_bytes();
+        let base_hash = [2u8; 32];
+
         let (stream, _) = listener.accept().await.unwrap();
         let mut ws = accept_async(stream).await.unwrap();
 
@@ -42,7 +61,7 @@ async fn start_mock_server() -> u16 {
                     RpcRequest::GetTrainingBatch { model_id } => RpcResponse::TrainingBatch(Some(TrainingBatch {
                         batch_id: 42,
                         model_id,
-                        base_checkpoint: [1u8; 32],
+                        base_checkpoint: combined,
                         data_indices: vec![0, 1, 2, 3],
                         target_improvement: 0.01,
                         learning_rate: 0.01,
@@ -50,10 +69,10 @@ async fn start_mock_server() -> u16 {
                     RpcRequest::GetModelCheckpoint { model_id } => {
                         RpcResponse::ModelCheckpoint(xenom_miner::rpc::messages::ModelCheckpoint {
                             model_id,
-                            base_checkpoint: [1u8; 32],
+                            base_checkpoint: combined,
                             config: b"{}".to_vec(),
                             tokenizer: b"[]".to_vec(),
-                            weights: vec![0u8; 64],
+                            weights: weights.clone(),
                             encrypted: false,
                         })
                     }
@@ -63,25 +82,40 @@ async fn start_mock_server() -> u16 {
                     RpcRequest::GetDifficulty => RpcResponse::Difficulty([0xff; 32]),
                     RpcRequest::GetGenomeTrainingBatch(_) => RpcResponse::Error("genome batch not supported in mock".to_string()),
                     RpcRequest::GetModelCheckpointInfo(req) => {
-                        RpcResponse::ModelCheckpointInfo(ModelCheckpointInfo { model_id: req.model_id, base_checkpoint: [1u8; 32] })
+                        RpcResponse::ModelCheckpointInfo(ModelCheckpointInfo { model_id: req.model_id, base_checkpoint: combined })
                     }
                     RpcRequest::GetModelCheckpointInfoV2(req) => RpcResponse::ModelCheckpointInfoV2(ModelCheckpointInfoV2 {
                         model_id: req.model_id,
-                        base_checkpoint: [1u8; 32],
-                        base_hash: [2u8; 32],
+                        base_checkpoint: combined,
+                        base_hash,
                     }),
                     RpcRequest::GetModelCheckpointV2(req) => RpcResponse::ModelCheckpointV2(ModelCheckpointV2 {
                         model_id: req.model_id,
-                        base_checkpoint: [1u8; 32],
-                        base_hash: [2u8; 32],
+                        base_checkpoint: combined,
+                        base_hash,
                         config: b"{}".to_vec(),
                         tokenizer: b"[]".to_vec(),
-                        weights: vec![0u8; 64],
+                        weights: weights.clone(),
                         encrypted: false,
                         is_adapter: false,
                     }),
                     RpcRequest::SubmitGradients(_) => RpcResponse::GradientAck { new_checkpoint: None },
-                    RpcRequest::GetCheckpointPeers(_) => RpcResponse::CheckpointPeers(Vec::new()),
+                    RpcRequest::GetCheckpointPeers(req) => RpcResponse::CheckpointPeers(
+                        quic_peer
+                            .map(|addr| PeerAnnouncement {
+                                model_id: req.model_id,
+                                weights_hash: combined,
+                                cid: combined,
+                                timestamp: 0,
+                                is_genome: false,
+                                node_address: "xnom:test".to_string(),
+                                public_key: [0u8; 33],
+                                listen_addr: Some(addr.to_string()),
+                                signature: [0u8; 64],
+                            })
+                            .into_iter()
+                            .collect(),
+                    ),
                 };
 
                 let payload = to_vec(&response).unwrap();
@@ -99,7 +133,7 @@ async fn start_mock_server() -> u16 {
 
 #[tokio::test]
 async fn test_rpc_client_against_mock_server() {
-    let port = start_mock_server().await;
+    let port = start_mock_server(None).await;
     let url = format!("ws://127.0.0.1:{}", port);
 
     let mut client = XenomRpcClient::new(url);
@@ -171,4 +205,85 @@ async fn test_end_to_end_mining_pipeline() {
     let mut block = builder.build_block("dnabert2", &result, proof, [0u8; 32]).unwrap();
     wallet.sign_block(&mut block).unwrap();
     assert!(wallet.verify_signature(&block).unwrap());
+}
+
+#[tokio::test]
+async fn test_fetch_model_checkpoint_falls_back_to_websocket() {
+    let tmp = tempfile::tempdir().unwrap();
+    let port = start_mock_server(None).await;
+    let url = format!("ws://127.0.0.1:{}", port);
+
+    let mut client = XenomRpcClient::new(url);
+    timeout(TEST_TIMEOUT, client.connect()).await.expect("connect timed out").expect("connect failed");
+
+    let cache = ModelCache::new(tmp.path().join("models"));
+    // QUIC is enabled but the mock server returns no peers, so the miner must
+    // fall back to the WebSocket path and verify the downloaded weights hash.
+    let bundle = timeout(TEST_TIMEOUT, fetch_model_checkpoint(&mut client, "dnabert2", &cache, true, Duration::from_secs(1)))
+        .await
+        .expect("fetch_model_checkpoint timed out")
+        .expect("fetch_model_checkpoint failed");
+
+    assert_eq!(bundle.model_id, "dnabert2");
+    assert!(!bundle.config.is_empty());
+    assert!(!bundle.tokenizer.is_empty());
+    assert!(!bundle.weights.is_empty());
+}
+
+struct MockQuicProvider {
+    combined: [u8; 32],
+    weights: Vec<u8>,
+    key: [u8; 32],
+}
+
+#[async_trait]
+impl FileProvider for MockQuicProvider {
+    async fn get_file(&self, req: &CheckpointFileRequest) -> anyhow::Result<Option<(Vec<u8>, [u8; 32])>> {
+        if req.weights_hash != self.combined || req.model_id != "dnabert2" {
+            return Ok(None);
+        }
+
+        let plaintext = match req.file_type {
+            CheckpointFileType::Config => b"{}".to_vec(),
+            CheckpointFileType::Tokenizer => b"[]".to_vec(),
+            CheckpointFileType::Weights => self.weights.clone(),
+            CheckpointFileType::Adapter => self.weights.clone(),
+        };
+
+        let encrypted = model_crypto::encrypt(&plaintext, &self.key)?;
+        let hash = *blake3::hash(&encrypted).as_bytes();
+        Ok(Some((encrypted, hash)))
+    }
+}
+
+#[tokio::test]
+async fn test_fetch_model_checkpoint_over_quic() {
+    std::env::set_var("XENO_MODEL_KEY", "0".repeat(64));
+
+    let weights = vec![0u8; 64];
+    let combined = *blake3::hash(&weights).as_bytes();
+    let key = [0u8; 32];
+
+    let provider = Arc::new(MockQuicProvider { combined, weights, key });
+    let quic_server = CheckpointTransferServer::new(localhost(), provider).await.unwrap();
+    let quic_addr = quic_server.local_addr().unwrap();
+
+    let port = start_mock_server(Some(quic_addr)).await;
+    let url = format!("ws://127.0.0.1:{}", port);
+
+    let mut client = XenomRpcClient::new(url);
+    timeout(TEST_TIMEOUT, client.connect()).await.expect("connect timed out").expect("connect failed");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let cache = ModelCache::new(tmp.path().join("models"));
+    let bundle = timeout(TEST_TIMEOUT, fetch_model_checkpoint(&mut client, "dnabert2", &cache, true, Duration::from_secs(1)))
+        .await
+        .expect("fetch_model_checkpoint timed out")
+        .expect("fetch_model_checkpoint failed");
+
+    assert_eq!(bundle.model_id, "dnabert2");
+    assert!(!bundle.config.is_empty());
+    assert!(!bundle.tokenizer.is_empty());
+    assert!(!bundle.weights.is_empty());
+    assert_eq!(blake3::hash(&bundle.weights).as_bytes(), &combined);
 }
