@@ -16,6 +16,7 @@ model-crypto = { path = "../crypto/model-crypto" }
 xenom-quic = { path = "../xenom-quic" }
 uuid = { workspace = true, features = ["v4", "fast-rng"] }
 blake3 = "1.5"
+local-ip-address = "0.6.1"
 xenom-miner = { path = "../xenom-miner" }
 candle-core = { version = "0.3", default-features = false }
 candle-nn = { version = "0.3", default-features = false }

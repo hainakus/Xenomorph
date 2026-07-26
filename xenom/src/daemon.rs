@@ -8,7 +8,7 @@ use kaspa_consensus_core::{
     network::NetworkType,
 };
 use kaspa_consensus_notify::{root::ConsensusNotificationRoot, service::NotifyService};
-use kaspa_core::{core::Core, debug, info};
+use kaspa_core::{core::Core, debug, info, warn};
 use kaspa_core::{kaspad_env::version, task::tick::TickService};
 use kaspa_database::prelude::CachePolicy;
 use kaspa_grpc_server::service::GrpcService;
@@ -193,8 +193,11 @@ async fn start_quic_server(
     } else if local_addr.ip().is_unspecified() {
         if let Some(externalip) = externalip {
             SocketAddr::new(externalip.normalize(0).ip.0, local_addr.port())
+        } else if let Ok(ip) = local_ip_address::local_ip() {
+            SocketAddr::new(ip, local_addr.port())
         } else {
-            local_addr
+            warn!("QUIC bound to 0.0.0.0 and no --quic-external or --externalip given; using 127.0.0.1 for local testing");
+            SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)), local_addr.port())
         }
     } else {
         local_addr

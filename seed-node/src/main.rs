@@ -119,7 +119,7 @@ fn quic_announce_addr(local_addr: SocketAddr, external: Option<&str>, seed_host:
     }
 
     let ip = if local_addr.ip().is_unspecified() {
-        seed_host.parse().unwrap_or(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))
+        seed_host.parse().ok().or_else(|| local_ip_address::local_ip().ok()).unwrap_or(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))
     } else {
         local_addr.ip()
     };
