@@ -55,8 +55,12 @@ use crate::training::coordinator::Coordinator;
 use crate::training::inference_service::InferenceGrpcService;
 use crate::training::service::MinerWebsocketService;
 use crate::training_block_service::{ActiveModel, TrainingBlockService};
+use anyhow;
 use core::str::FromStr;
 use kaspa_hashes::Hash;
+use seed_node::quic::ModelFileProvider;
+use std::net::SocketAddr;
+use xenom_quic::CheckpointTransferServer;
 
 const DEFAULT_DATA_DIR: &str = "datadir";
 const CONSENSUS_DB: &str = "consensus";
@@ -166,6 +170,49 @@ pub fn get_log_dir(args: &Args) -> Option<String> {
     let log_dir = if log_dir.is_empty() { app_dir.join(network.to_prefixed()).join(DEFAULT_LOG_DIR) } else { PathBuf::from(log_dir) };
     let log_dir = if args.no_log_files { None } else { log_dir.to_str().map(String::from) };
     log_dir
+}
+
+async fn start_quic_server(
+    quic_listen: Option<ContextualNetAddress>,
+    quic_external: Option<ContextualNetAddress>,
+    externalip: Option<ContextualNetAddress>,
+    quic_max_transfers: u32,
+    coordinator: &Coordinator,
+    flow_context: Arc<FlowContext>,
+    active_model_id: String,
+) -> anyhow::Result<()> {
+    let Some(listen) = quic_listen else { return Ok(()) };
+
+    let bind_addr: SocketAddr = listen.normalize(17111).into();
+    let provider = Arc::new(ModelFileProvider::new(coordinator.model_manager()));
+    let server = CheckpointTransferServer::with_max_transfers(bind_addr, provider, quic_max_transfers as usize).await?;
+    let local_addr = server.local_addr()?;
+
+    let announce_addr: SocketAddr = if let Some(external) = quic_external {
+        external.normalize(local_addr.port()).into()
+    } else if local_addr.ip().is_unspecified() {
+        if let Some(externalip) = externalip {
+            SocketAddr::new(externalip.normalize(0).ip.0, local_addr.port())
+        } else {
+            local_addr
+        }
+    } else {
+        local_addr
+    };
+
+    coordinator.set_quic_announce_addr(Some(announce_addr)).await;
+
+    // Hold the QUIC endpoint alive for the lifetime of the process.
+    tokio::spawn(async move {
+        let _ = server;
+        std::future::pending::<()>().await
+    });
+
+    if let Ok(hash) = coordinator.active_weights_hash().await {
+        flow_context.announce_checkpoint(active_model_id, hash.as_bytes(), hash.as_bytes(), Some(announce_addr)).await;
+    }
+
+    Ok(())
 }
 
 impl Runtime {
@@ -669,22 +716,44 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
         let genome_source_url = args.genome_url.clone().unwrap_or_default();
         let genome_file = genome_file_path.as_ref().map(PathBuf::from);
 
+        let quic_listen = args.quic_listen;
+        let quic_external = args.quic_external;
+        let externalip = args.externalip;
+        let quic_max_transfers = args.quic_max_transfers;
+        let active_model_id = args.active_model_id.clone();
+
         let coordinator = Arc::new(
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .expect("Failed to build temporary runtime for training coordinator initialization")
-                .block_on(Coordinator::new(
-                    network.network_type,
-                    args.active_model_id.clone(),
-                    models_dir,
-                    genome_cache_dir,
-                    genome_file,
-                    genome_source_url,
-                    rpc_core_service.clone(),
-                    config.genome_fragment_size_bytes,
-                    config.genome_pow_activation_daa_score,
-                ))
+                .block_on(async {
+                    let coordinator = Coordinator::new(
+                        network.network_type,
+                        active_model_id.clone(),
+                        models_dir,
+                        genome_cache_dir,
+                        genome_file,
+                        genome_source_url,
+                        rpc_core_service.clone(),
+                        config.genome_fragment_size_bytes,
+                        config.genome_pow_activation_daa_score,
+                    )
+                    .await?;
+
+                    start_quic_server(
+                        quic_listen,
+                        quic_external,
+                        externalip,
+                        quic_max_transfers,
+                        &coordinator,
+                        flow_context.clone(),
+                        active_model_id,
+                    )
+                    .await?;
+
+                    Ok::<_, anyhow::Error>(coordinator)
+                })
                 .expect("Failed to initialize training coordinator"),
         );
 

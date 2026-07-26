@@ -118,7 +118,9 @@ async fn handle_request(req: RpcRequest, coordinator: &Coordinator, flow_context
                     // Announce the new active checkpoint over P2P gossip so other nodes
                     // (e.g. standalone seed-nodes) can discover it.  `cid` is currently a
                     // placeholder equal to the weights hash until IPFS/HTTP content IDs are wired.
-                    ctx.announce_checkpoint(update.model_id.clone(), new_checkpoint, new_checkpoint, None).await;
+                    // Include the QUIC transfer endpoint if the node is serving checkpoints directly.
+                    let listen_addr = coordinator.quic_announce_addr().await;
+                    ctx.announce_checkpoint(update.model_id.clone(), new_checkpoint, new_checkpoint, listen_addr).await;
                 }
                 RpcResponse::GradientAck { new_checkpoint: Some(new_checkpoint) }
             }

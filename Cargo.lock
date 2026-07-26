@@ -11607,6 +11607,7 @@ dependencies = [
  "toml",
  "tonic",
  "workflow-log",
+ "xenom-quic",
 ]
 
 [[package]]

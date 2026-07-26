@@ -4,6 +4,7 @@
 //! it stores the active model, serves genome batches to miners, accepts completed
 //! training blocks, validates the training proof, builds a Kaspa block and mines it.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -64,6 +65,7 @@ struct CoordinatorInner {
     genome_pow_activation_daa_score: u64,
 
     current_epoch: AtomicU64,
+    quic_announce_addr: RwLock<Option<SocketAddr>>,
 }
 
 impl Coordinator {
@@ -71,6 +73,16 @@ impl Coordinator {
     /// can share the same encrypted model cache.
     pub fn model_manager(&self) -> Arc<ModelManager> {
         self.inner.model_manager.clone()
+    }
+
+    /// Store the QUIC endpoint address that should be announced to P2P gossip peers.
+    pub async fn set_quic_announce_addr(&self, addr: Option<SocketAddr>) {
+        *self.inner.quic_announce_addr.write().await = addr;
+    }
+
+    /// Return the QUIC endpoint address announced to P2P gossip peers, if any.
+    pub async fn quic_announce_addr(&self) -> Option<SocketAddr> {
+        *self.inner.quic_announce_addr.read().await
     }
 
     pub async fn new(
@@ -127,6 +139,7 @@ impl Coordinator {
                 genome_fragment_size_bytes,
                 genome_pow_activation_daa_score,
                 current_epoch: AtomicU64::new(0),
+                quic_announce_addr: RwLock::new(None),
             }),
         };
 
