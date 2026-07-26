@@ -130,10 +130,17 @@ async fn handle_request(req: RpcRequest, coordinator: &Coordinator, flow_context
                 RpcResponse::Error(format!("Failed to submit gradients: {}", e))
             }
         },
-        RpcRequest::GetCheckpointPeers(GetCheckpointPeers { weights_hash, .. }) => match flow_context {
+        RpcRequest::GetCheckpointPeers(GetCheckpointPeers { model_id, weights_hash }) => match flow_context {
             Some(ctx) => {
-                let registry = ctx.gossip_registry.lock();
-                let peers = registry.get(&weights_hash).iter().map(peer_announcement_from).collect();
+                let mut peers: Vec<PeerAnnouncement> = {
+                    let registry = ctx.gossip_registry.lock();
+                    registry.get(&weights_hash).iter().map(peer_announcement_from).collect()
+                };
+                // If this unified node is serving the requested checkpoint over QUIC,
+                // include itself in the peer list so miners can reach it directly.
+                if let Some(own) = self_announcement(coordinator, &ctx, &model_id, weights_hash).await {
+                    peers.push(own);
+                }
                 RpcResponse::CheckpointPeers(peers)
             }
             None => RpcResponse::Error("P2P gossip not enabled on this node".to_string()),
@@ -142,6 +149,37 @@ async fn handle_request(req: RpcRequest, coordinator: &Coordinator, flow_context
         RpcRequest::GetDifficulty => RpcResponse::Difficulty([0u8; 32]),
         RpcRequest::Heartbeat => RpcResponse::Pong,
     }
+}
+
+/// Build a signed checkpoint announcement for this node if it is the active
+/// model and has a QUIC transfer endpoint configured.
+async fn self_announcement(
+    coordinator: &Coordinator,
+    ctx: &FlowContext,
+    model_id: &str,
+    weights_hash: [u8; 32],
+) -> Option<PeerAnnouncement> {
+    if model_id != coordinator.active_model_id() {
+        return None;
+    }
+    let quic_addr = coordinator.quic_announce_addr().await?;
+    let active_hash = coordinator.active_weights_hash().await.ok()?;
+    if active_hash.as_bytes() != weights_hash {
+        return None;
+    }
+    let identity = ctx.gossip_identity.as_ref()?;
+    let announcement = Announcement {
+        model_id: model_id.to_string(),
+        weights_hash,
+        cid: weights_hash,
+        timestamp: kaspa_core::time::unix_now(),
+        is_genome: false,
+        node_address: String::new(),
+        public_key: [0u8; 33],
+        listen_addr: Some(quic_addr),
+        signature: [0u8; 64],
+    };
+    identity.sign(announcement).ok().map(|signed| peer_announcement_from(&signed))
 }
 
 fn peer_announcement_from(ann: &Announcement) -> PeerAnnouncement {

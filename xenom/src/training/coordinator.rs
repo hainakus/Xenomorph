@@ -72,6 +72,11 @@ struct CoordinatorInner {
 }
 
 impl Coordinator {
+    /// Return the active model id.
+    pub fn active_model_id(&self) -> &str {
+        &self.inner.active_model_id
+    }
+
     /// Return a handle to the model manager so other services (e.g. gRPC inference)
     /// can share the same encrypted model cache.
     pub fn model_manager(&self) -> Arc<ModelManager> {
