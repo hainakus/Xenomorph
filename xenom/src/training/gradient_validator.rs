@@ -19,7 +19,10 @@ use xenom_miner::rpc::messages::{GenomeSlice as MinerGenomeSlice, GenomeTraining
 use xenom_miner::trainer::{Mgm1Trainer, Trainer};
 
 /// Tolerance for comparing floating-point loss values between miner and validator.
-const LOSS_TOLERANCE: f64 = 1e-3;
+/// Multi-GPU forward/backward and cross-device tensor movement introduce
+/// small numerical differences, so a 5e-3 tolerance is used while still
+/// preventing miners from claiming arbitrary loss improvements.
+const LOSS_TOLERANCE: f64 = 5e-3;
 
 /// Interface implemented by every model-specific validator.
 #[async_trait]
