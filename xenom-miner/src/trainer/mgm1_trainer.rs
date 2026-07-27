@@ -88,6 +88,21 @@ impl Mgm1Trainer {
         &self.device
     }
 
+    #[cfg(test)]
+    pub(crate) fn forward(&self, input_ids: &Tensor) -> Result<Tensor> {
+        self.model.forward(input_ids).map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn compute_mlm_loss(
+        &self,
+        input_ids: &Tensor,
+        labels: &Tensor,
+        class_weights: Option<&Tensor>,
+    ) -> Result<(Tensor, f32)> {
+        self.model.compute_mlm_loss(input_ids, labels, class_weights).map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
     /// Tokenize a batch of DNA sequences, padding/truncating to `max_seq_len`.
     fn tokenize_batch(&self, sequences: &[String]) -> Vec<Vec<usize>> {
         sequences
@@ -149,13 +164,11 @@ impl Mgm1Trainer {
         self.build_mlm_tensors(&token_ids, &mut rng)
     }
 
-    /// Compute inverse-frequency class weights from the masked positions of a batch.
-    ///
-    /// Weights are smoothed by `eps` and then normalized so the mean over the
-    /// present classes is 1.0.  This keeps the loss scale stable while still
-    /// up-weighting minority bases (C/G).
+    /// Compute smoothed inverse-frequency class weights from the masked positions
+    /// of a batch.  The weights are clipped to [0.5, 2.0] so a small number of
+    /// minority examples cannot dominate the gradient and collapse predictions to
+    /// a single class.
     fn class_weights_for_batch(&self, input_ids: &Tensor, labels: &Tensor) -> Result<Tensor> {
-        let eps = 1.0f32;
         let mask = input_ids.ne(labels)?.to_dtype(DType::F32)?;
         let labels_u32 = labels.to_dtype(DType::U32)?;
         let flat = labels_u32.reshape((labels.elem_count(),))?;
@@ -171,11 +184,16 @@ impl Mgm1Trainer {
             }
         }
 
-        let active_classes = counts.iter().filter(|&&c| c > 0.0).count().max(1);
-        let inv_freq_sum: f32 = counts.iter().map(|&c| if c > 0.0 { 1.0 / (c + eps) } else { 0.0 }).sum::<f32>().max(1e-6);
-        let mut weights = vec![0.0f32; self.config.vocab_size];
+        let total_masked: f32 = counts.iter().take(4).sum::<f32>().max(1.0);
+        let active_classes = 4usize;
+        let smoothing = total_masked / active_classes as f32;
+        let numerator = total_masked + active_classes as f32 * smoothing;
+
+        let mut weights = vec![1.0f32; self.config.vocab_size];
         for i in 0..self.config.vocab_size {
-            weights[i] = if counts[i] > 0.0 { (active_classes as f32 / inv_freq_sum) / (counts[i] + eps) } else { 0.0 };
+            let effective = counts[i] + smoothing;
+            let w = numerator / (active_classes as f32 * effective);
+            weights[i] = w.clamp(0.5, 2.0);
         }
 
         Ok(Tensor::new(weights, &self.device)?)
@@ -553,5 +571,159 @@ mod tests {
             result.loss_after
         );
         assert!(update.is_some());
+    }
+
+    #[test]
+    #[ignore = "diagnostic helper; run manually with -- --ignored --nocapture"]
+    fn diagnose_mgm1_first_batch() {
+        use candle_nn::ops::softmax;
+        use candle_core::D;
+
+        let config_json = serde_json::json!({
+            "vocab_size": 8,
+            "d_model": 128,
+            "n_heads": 4,
+            "n_layers": 4,
+            "d_ff": 512,
+            "max_seq_len": 64,
+            "dropout": 0.1,
+        });
+        let config_bytes = config_json.to_string().into_bytes();
+        let trainer = Mgm1Trainer::new("xeno/mgm-1", &config_bytes, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, 1.0).unwrap();
+
+        // Balanced synthetic batch (already tested) plus an imbalanced batch
+        let sequences = vec![
+            "TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTCCCCCCCCCCCCAA".to_string(),
+            "TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTCCCCCCCCCCCCAA".to_string(),
+            "TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTCCCCCCCCCCCCAA".to_string(),
+        ];
+        let msg = GenomeTrainingBatchMsg {
+            batch: GenomeTrainingBatch {
+                batch_id: 1,
+                model_id: "xeno/mgm-1".to_string(),
+                genome_merkle_root: [0u8; 32],
+                data_indices: sequences.iter().enumerate().map(|(i, s)| GenomeSlice { chunk_idx: i as u64, start_base: 0, length: s.len() as u32 }).collect(),
+                mask_ratio: 0.15,
+                seq_length: 64,
+            },
+            sequences,
+            base_checkpoint: [0u8; 32],
+        };
+
+        let (input_ids, labels) = trainer.prepare_sequences(&msg.sequences, [0u8; 32]).unwrap();
+        let input_vec = input_ids.to_vec2::<i64>().unwrap();
+        let label_vec = labels.to_vec2::<i64>().unwrap();
+
+        let mut label_counts = HashMap::<i64, usize>::new();
+        let mut mask_count = 0usize;
+        for b in 0..input_vec.len() {
+            for t in 0..input_vec[b].len() {
+                if input_vec[b][t] != label_vec[b][t] {
+                    mask_count += 1;
+                    *label_counts.entry(label_vec[b][t]).or_insert(0) += 1;
+                }
+            }
+        }
+        println!("\n[DIAGNOSE] Masked positions: {}", mask_count);
+        println!("[DIAGNOSE] Label distribution among masked positions:");
+        let base_name = |id: i64| -> char {
+            match id {
+                0 => 'A', 1 => 'C', 2 => 'G', 3 => 'T', 4 => '[', 5 => ' ', 6 => ']', 7 => '|', _ => '?',
+            }
+        };
+        let mut counts: Vec<_> = label_counts.iter().collect();
+        counts.sort_by(|a, b| a.0.cmp(b.0));
+        for (id, c) in counts {
+            println!("  {} (id={}): {} ({:.1}%)", base_name(*id), id, c, 100.0 * (*c as f32) / mask_count.max(1) as f32);
+        }
+
+        let logits = trainer.forward(&input_ids).unwrap();
+        let logits_4 = logits.narrow(D::Minus1, 0, 4).unwrap();
+        let probs = softmax(&logits_4, D::Minus1).unwrap();
+        let probs_vec = probs.to_vec3::<f32>().unwrap();
+        let pred_ids = logits_4.argmax(D::Minus1).unwrap().to_vec2::<u32>().unwrap();
+
+        println!("\n[DIAGNOSE] Top-4 logits / probabilities for first 20 masked positions (fresh model):");
+        let mut printed = 0usize;
+        'outer: for b in 0..input_vec.len() {
+            for t in 0..input_vec[b].len() {
+                if input_vec[b][t] != label_vec[b][t] {
+                    let true_id = label_vec[b][t];
+                    println!(
+                        "  batch[{}][{}] true={} pred={} | A={:.3} C={:.3} G={:.3} T={:.3}",
+                        b, t, base_name(true_id), base_name(pred_ids[b][t] as i64),
+                        probs_vec[b][t][0], probs_vec[b][t][1], probs_vec[b][t][2], probs_vec[b][t][3]
+                    );
+                    printed += 1;
+                    if printed >= 20 {
+                        break 'outer;
+                    }
+                }
+            }
+        }
+
+        let mut all_predictions = HashMap::<char, usize>::new();
+        for b in 0..input_vec.len() {
+            for t in 0..input_vec[b].len() {
+                if input_vec[b][t] != label_vec[b][t] {
+                    let pred = base_name(pred_ids[b][t] as i64);
+                    *all_predictions.entry(pred).or_insert(0) += 1;
+                }
+            }
+        }
+        println!("\n[DIAGNOSE] Prediction distribution on fresh model masked positions:");
+        for c in ['A', 'C', 'G', 'T'] {
+            let n = all_predictions.get(&c).copied().unwrap_or(0);
+            println!("  {}: {} ({:.1}%)", c, n, 100.0 * (n as f32) / mask_count.max(1) as f32);
+        }
+
+        // Inspect class-weights that the trainer would use for this batch.
+        let class_weights = trainer.class_weights_for_batch(&input_ids, &labels).unwrap();
+        let cw_vec = class_weights.to_vec1::<f32>().unwrap();
+        println!("\n[DIAGNOSE] Class weights for this batch: A={:.3} C={:.3} G={:.3} T={:.3}", cw_vec[0], cw_vec[1], cw_vec[2], cw_vec[3]);
+
+        // Train for a few steps on the same batch and observe whether loss decreases
+        // and whether the prediction distribution stays balanced or collapses.
+        println!("\n[DIAGNOSE] Training on same batch for 50 steps (no class weights)...");
+        for step in 0..50 {
+            let (loss, _) = trainer.compute_mlm_loss(&input_ids, &labels, None).unwrap();
+            let loss_scalar = loss.to_dtype(DType::F32).unwrap().to_vec0::<f32>().unwrap();
+            let grads = loss.backward().unwrap();
+            let named_grads = trainer.grad_store_to_map(&grads).unwrap();
+            trainer.apply_gradients(&named_grads, 1e-4).unwrap();
+            if step % 10 == 0 {
+                println!("  step {:>3}: loss = {:.6}", step, loss_scalar);
+            }
+        }
+
+        let logits_after = trainer.forward(&input_ids).unwrap();
+        let logits_4_after = logits_after.narrow(D::Minus1, 0, 4).unwrap();
+        let pred_ids_after = logits_4_after.argmax(D::Minus1).unwrap().to_vec2::<u32>().unwrap();
+        let mut predictions_after = HashMap::<char, usize>::new();
+        let mut correct = 0usize;
+        for b in 0..input_vec.len() {
+            for t in 0..input_vec[b].len() {
+                if input_vec[b][t] != label_vec[b][t] {
+                    let pred = base_name(pred_ids_after[b][t] as i64);
+                    *predictions_after.entry(pred).or_insert(0) += 1;
+                    if pred == base_name(label_vec[b][t]) {
+                        correct += 1;
+                    }
+                }
+            }
+        }
+        println!("\n[DIAGNOSE] Prediction distribution after 50 steps (same batch):");
+        for c in ['A', 'C', 'G', 'T'] {
+            let n = predictions_after.get(&c).copied().unwrap_or(0);
+            println!("  {}: {} ({:.1}%)", c, n, 100.0 * (n as f32) / mask_count.max(1) as f32);
+        }
+        println!("[DIAGNOSE] Accuracy after 50 steps: {} / {} ({:.1}%)", correct, mask_count, 100.0 * (correct as f32) / mask_count.max(1) as f32);
+
+        let (final_loss, final_acc) = trainer.compute_mlm_loss(&input_ids, &labels, None).unwrap();
+        println!(
+            "[DIAGNOSE] Final loss = {:.6}, final accuracy = {:.2}%",
+            final_loss.to_dtype(DType::F32).unwrap().to_vec0::<f32>().unwrap(),
+            final_acc * 100.0
+        );
     }
 }
