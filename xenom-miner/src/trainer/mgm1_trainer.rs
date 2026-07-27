@@ -9,11 +9,12 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use candle_core::{DType, Device, Tensor};
+use candle_core::{D as TensorD, DType, Device, Tensor};
 use candle_nn::VarMap;
 use mini_genome_model::{DnaTokenizer, MiniGenomeConfig, MiniGenomeModel};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use tracing::info;
 
 use crate::rpc::messages::{GenomeTrainingBatchMsg, GradientUpdate, TrainingBatch};
 use crate::trainer::gradient::{build_gradient_update, gradient_commitment};
@@ -21,7 +22,7 @@ use crate::trainer::{DeviceInfo, DeviceType, ManualAdamW, Trainer, TrainingResul
 
 const MASK_TOKEN_ID: usize = 4;
 const MASK_RATIO: f64 = 0.15;
-const MAX_LEARNING_RATE: f32 = 1e-4;
+pub(crate) const MAX_LEARNING_RATE: f32 = 1e-4;
 
 /// Trainer for the `xenom/mgm-1` model.
 pub struct Mgm1Trainer {
@@ -88,19 +89,8 @@ impl Mgm1Trainer {
         &self.device
     }
 
-    #[cfg(test)]
     pub(crate) fn forward(&self, input_ids: &Tensor) -> Result<Tensor> {
         self.model.forward(input_ids).map_err(|e| anyhow::anyhow!("{e}"))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn compute_mlm_loss(
-        &self,
-        input_ids: &Tensor,
-        labels: &Tensor,
-        class_weights: Option<&Tensor>,
-    ) -> Result<(Tensor, f32)> {
-        self.model.compute_mlm_loss(input_ids, labels, class_weights).map_err(|e| anyhow::anyhow!("{e}"))
     }
 
     /// Tokenize a batch of DNA sequences, padding/truncating to `max_seq_len`.
@@ -199,16 +189,24 @@ impl Mgm1Trainer {
         Ok(Tensor::new(weights, &self.device)?)
     }
 
-    /// Run a forward/backward pass and return the unscaled loss plus per-variable
-    /// gradients moved to the CPU (as F32).
+    /// Compute loss and accuracy for a batch without taking gradients.
+    pub(crate) fn compute_loss_and_accuracy(&self, input_ids: &Tensor, labels: &Tensor) -> Result<(f64, f32)> {
+        let class_weights = self.class_weights_for_batch(input_ids, labels).ok();
+        let (loss, accuracy) = self.model.compute_mlm_loss(input_ids, labels, class_weights.as_ref())?;
+        let loss_scalar = loss.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64;
+        Ok((loss_scalar, accuracy))
+    }
+
+    /// Run a forward/backward pass and return the unscaled loss, accuracy, and
+    /// per-variable gradients moved to the CPU (as F32).
     pub(crate) fn compute_gradients(
         &self,
         input_ids: &Tensor,
         labels: &Tensor,
         loss_scale: f32,
-    ) -> Result<(f64, HashMap<String, Tensor>)> {
+    ) -> Result<(f64, f32, HashMap<String, Tensor>)> {
         let class_weights = self.class_weights_for_batch(input_ids, labels).ok();
-        let (loss, _) = self.model.compute_mlm_loss(input_ids, labels, class_weights.as_ref())?;
+        let (loss, accuracy) = self.model.compute_mlm_loss(input_ids, labels, class_weights.as_ref())?;
         let loss_scalar = loss.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64;
         if !loss_scalar.is_finite() {
             anyhow::bail!("Loss is not finite ({}) before backward", loss_scalar);
@@ -225,7 +223,7 @@ impl Mgm1Trainer {
         if named_grads.is_empty() {
             anyhow::bail!("Backward produced no named gradients; likely no trainable variables in the graph");
         }
-        Ok((loss_scalar, named_grads))
+        Ok((loss_scalar, accuracy, named_grads))
     }
 
     /// Apply named gradients to this trainer using its AdamW optimizer.
@@ -236,13 +234,6 @@ impl Mgm1Trainer {
         let varmap = self.varmap.lock().map_err(|e| anyhow::anyhow!("VarMap mutex poisoned: {e}"))?;
         optimizer.step(&varmap, named_grads).context("Optimizer step failed")?;
         Ok(())
-    }
-
-    /// Compute scalar loss for a batch without taking gradients.
-    pub(crate) fn compute_loss_scalar(&self, input_ids: &Tensor, labels: &Tensor) -> Result<f64> {
-        let class_weights = self.class_weights_for_batch(input_ids, labels).ok();
-        let (loss, _) = self.model.compute_mlm_loss(input_ids, labels, class_weights.as_ref())?;
-        Ok(loss.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64)
     }
 
     fn grad_store_to_map(&self, grads: &candle_core::backprop::GradStore) -> Result<HashMap<String, Tensor>> {
@@ -257,14 +248,47 @@ impl Mgm1Trainer {
         Ok(out)
     }
 
-    /// Run one training step on an (input_ids, labels) pair and return the result.
-    fn train_step(&self, input_ids: &Tensor, labels: &Tensor, batch_indices: Vec<u64>, learning_rate: f32) -> Result<TrainingResult> {
+    /// Run one training step on an (input_ids, labels) pair.
+    ///
+    /// Returns the `TrainingResult` and, if requested, the weight-space delta that
+    /// will be sent to the seed-node for FedAvg aggregation.
+    fn train_step(
+        &self,
+        input_ids: &Tensor,
+        labels: &Tensor,
+        batch_indices: Vec<u64>,
+        learning_rate: f32,
+        return_update: bool,
+    ) -> Result<(TrainingResult, Option<HashMap<String, Tensor>>)> {
         let start = Instant::now();
-        let (loss_before, grads) = self.compute_gradients(input_ids, labels, 1.0)?;
+        let effective_lr = learning_rate.min(MAX_LEARNING_RATE);
+
+        let (loss_before, accuracy_before, grads) = self.compute_gradients(input_ids, labels, 1.0)?;
+        let grad_norm = gradient_norm(&grads)?;
+        let label_dist = masked_label_distribution(input_ids, labels)?;
+
+        let old_weights = self.varmap_snapshot()?;
         self.apply_gradients(&grads, learning_rate)?;
-        let loss_after = self.compute_loss_scalar(input_ids, labels)?;
-        let gradients_commitment = gradient_commitment(&grads)?;
-        Ok(TrainingResult {
+        let new_weights = self.varmap_snapshot()?;
+        let weight_delta = if return_update {
+            Some(Self::compute_weight_delta(&old_weights, &new_weights)?)
+        } else {
+            None
+        };
+
+        let (loss_after, accuracy_after) = self.compute_loss_and_accuracy(input_ids, labels)?;
+        let logits = self.model.forward(input_ids)?;
+        let pred_dist = masked_prediction_distribution(input_ids, labels, &logits)?;
+
+        let gradients_commitment = gradient_commitment(weight_delta.as_ref().unwrap_or(&grads))?;
+        info!(
+            "MGM-1 block: lr={:.3e} loss={:.4} -> {:.4} acc={:.2}% -> {:.2}% grad_norm={:.4}\n  labels A={:>3} C={:>3} G={:>3} T={:>3}\n  preds  A={:>3} C={:>3} G={:>3} T={:>3}",
+            effective_lr, loss_before, loss_after,
+            accuracy_before * 100.0, accuracy_after * 100.0, grad_norm,
+            label_dist[0], label_dist[1], label_dist[2], label_dist[3],
+            pred_dist[0], pred_dist[1], pred_dist[2], pred_dist[3],
+        );
+        let result = TrainingResult {
             model_id: self.model_id.clone(),
             batch_indices,
             base_checkpoint: *self.base_checkpoint.lock().unwrap(),
@@ -272,7 +296,8 @@ impl Mgm1Trainer {
             loss_after,
             gradients_commitment,
             compute_time_ms: start.elapsed().as_millis() as u64,
-        })
+        };
+        Ok((result, weight_delta))
     }
 
     /// Reset optimizer moment estimates (used when the base checkpoint changes).
@@ -346,7 +371,7 @@ impl Trainer for Mgm1Trainer {
 
         let n = batch.data_indices.len().max(1);
         let (input_ids, labels) = self.prepare_random(n, seed)?;
-        self.train_step(&input_ids, &labels, batch.data_indices.clone(), batch.learning_rate)
+        self.train_step(&input_ids, &labels, batch.data_indices.clone(), batch.learning_rate, false).map(|(r, _)| r)
     }
 
     fn train_with_gradients(&self, batch: &TrainingBatch) -> Result<(TrainingResult, Option<GradientUpdate>)> {
@@ -358,25 +383,9 @@ impl Trainer for Mgm1Trainer {
         let (input_ids, labels) = self.prepare_random(n, seed)?;
         let participant_weight = (input_ids.dim(0)? * input_ids.dim(1)?) as f32;
 
-        let start = Instant::now();
-        let (loss_before, grads) = self.compute_gradients(&input_ids, &labels, 1.0)?;
-        let old_weights = self.varmap_snapshot()?;
-        self.apply_gradients(&grads, batch.learning_rate)?;
-        let new_weights = self.varmap_snapshot()?;
-        let weight_delta = Self::compute_weight_delta(&old_weights, &new_weights)?;
-        let loss_after = self.compute_loss_scalar(&input_ids, &labels)?;
-        // The commitment is over the weight-delta that will be sent in the FedAvg payload.
-        let gradients_commitment = gradient_commitment(&weight_delta)?;
-
-        let result = TrainingResult {
-            model_id: self.model_id.clone(),
-            batch_indices: batch.data_indices.clone(),
-            base_checkpoint: batch.base_checkpoint,
-            loss_before,
-            loss_after,
-            gradients_commitment,
-            compute_time_ms: start.elapsed().as_millis() as u64,
-        };
+        let (result, weight_delta) =
+            self.train_step(&input_ids, &labels, batch.data_indices.clone(), batch.learning_rate, true)?;
+        let weight_delta = weight_delta.ok_or_else(|| anyhow::anyhow!("Weight delta was not produced"))?;
         let update = build_gradient_update(
             &self.model_id,
             batch.base_checkpoint,
@@ -403,7 +412,7 @@ impl Trainer for Mgm1Trainer {
         let batch_indices: Vec<u64> = msg.batch.data_indices.iter().map(|s| s.chunk_idx).collect();
 
         let (input_ids, labels) = self.prepare_sequences(&msg.sequences, seed)?;
-        self.train_step(&input_ids, &labels, batch_indices, self.learning_rate as f32)
+        self.train_step(&input_ids, &labels, batch_indices, self.learning_rate as f32, false).map(|(r, _)| r)
     }
 
     fn train_genome_with_gradients(&self, msg: &GenomeTrainingBatchMsg) -> Result<(TrainingResult, Option<GradientUpdate>)> {
@@ -419,25 +428,9 @@ impl Trainer for Mgm1Trainer {
         let (input_ids, labels) = self.prepare_sequences(&msg.sequences, seed)?;
         let participant_weight = (input_ids.dim(0)? * input_ids.dim(1)?) as f32;
 
-        let start = Instant::now();
-        let (loss_before, grads) = self.compute_gradients(&input_ids, &labels, 1.0)?;
-        let old_weights = self.varmap_snapshot()?;
-        self.apply_gradients(&grads, self.learning_rate as f32)?;
-        let new_weights = self.varmap_snapshot()?;
-        let weight_delta = Self::compute_weight_delta(&old_weights, &new_weights)?;
-        let loss_after = self.compute_loss_scalar(&input_ids, &labels)?;
-        // The commitment is over the weight-delta that will be sent in the FedAvg payload.
-        let gradients_commitment = gradient_commitment(&weight_delta)?;
-
-        let result = TrainingResult {
-            model_id: self.model_id.clone(),
-            batch_indices,
-            base_checkpoint: msg.base_checkpoint,
-            loss_before,
-            loss_after,
-            gradients_commitment,
-            compute_time_ms: start.elapsed().as_millis() as u64,
-        };
+        let (result, weight_delta) =
+            self.train_step(&input_ids, &labels, batch_indices, self.learning_rate as f32, true)?;
+        let weight_delta = weight_delta.ok_or_else(|| anyhow::anyhow!("Weight delta was not produced"))?;
         let update = build_gradient_update(
             &self.model_id,
             msg.base_checkpoint,
@@ -472,6 +465,56 @@ impl Trainer for Mgm1Trainer {
         *self.base_checkpoint.lock().unwrap() = base_checkpoint;
         Ok(())
     }
+}
+
+/// Compute the L2 norm of a collection of named gradients.
+pub(crate) fn gradient_norm(named_grads: &HashMap<String, Tensor>) -> Result<f64> {
+    let mut sum_sq = 0.0f64;
+    for grad in named_grads.values() {
+        let t = grad.to_dtype(DType::F32)?;
+        let v = t.sqr()?.sum_all()?.to_scalar::<f32>()? as f64;
+        sum_sq += v;
+    }
+    Ok(sum_sq.sqrt())
+}
+
+/// Count how many masked labels belong to each DNA base (A, C, G, T).
+pub(crate) fn masked_label_distribution(input_ids: &Tensor, labels: &Tensor) -> Result<[usize; 4]> {
+    let mask = input_ids.ne(labels)?.to_dtype(DType::F32)?;
+    let labels_u32 = labels.to_dtype(DType::U32)?.to_vec2::<u32>()?;
+    let mask_f = mask.to_vec2::<f32>()?;
+    let mut dist = [0usize; 4];
+    for b in 0..labels_u32.len() {
+        for t in 0..labels_u32[b].len() {
+            if mask_f[b][t] > 0.5 {
+                let id = labels_u32[b][t] as usize;
+                if id < 4 {
+                    dist[id] += 1;
+                }
+            }
+        }
+    }
+    Ok(dist)
+}
+
+/// Count how many masked positions are predicted as each DNA base (A, C, G, T).
+pub(crate) fn masked_prediction_distribution(input_ids: &Tensor, labels: &Tensor, logits: &Tensor) -> Result<[usize; 4]> {
+    let mask = input_ids.ne(labels)?.to_dtype(DType::F32)?;
+    let logits_dna = logits.narrow(TensorD::Minus1, 0, 4)?;
+    let pred_ids = logits_dna.argmax(TensorD::Minus1)?.to_dtype(DType::U32)?.to_vec2::<u32>()?;
+    let mask_f = mask.to_vec2::<f32>()?;
+    let mut dist = [0usize; 4];
+    for b in 0..pred_ids.len() {
+        for t in 0..pred_ids[b].len() {
+            if mask_f[b][t] > 0.5 {
+                let id = pred_ids[b][t] as usize;
+                if id < 4 {
+                    dist[id] += 1;
+                }
+            }
+        }
+    }
+    Ok(dist)
 }
 
 /// Load safetensor weights into an existing `VarMap`.
@@ -686,7 +729,7 @@ mod tests {
         // and whether the prediction distribution stays balanced or collapses.
         println!("\n[DIAGNOSE] Training on same batch for 50 steps (no class weights)...");
         for step in 0..50 {
-            let (loss, _) = trainer.compute_mlm_loss(&input_ids, &labels, None).unwrap();
+            let (loss, _) = trainer.model.compute_mlm_loss(&input_ids, &labels, None).unwrap();
             let loss_scalar = loss.to_dtype(DType::F32).unwrap().to_vec0::<f32>().unwrap();
             let grads = loss.backward().unwrap();
             let named_grads = trainer.grad_store_to_map(&grads).unwrap();
@@ -719,7 +762,7 @@ mod tests {
         }
         println!("[DIAGNOSE] Accuracy after 50 steps: {} / {} ({:.1}%)", correct, mask_count, 100.0 * (correct as f32) / mask_count.max(1) as f32);
 
-        let (final_loss, final_acc) = trainer.compute_mlm_loss(&input_ids, &labels, None).unwrap();
+        let (final_loss, final_acc) = trainer.model.compute_mlm_loss(&input_ids, &labels, None).unwrap();
         println!(
             "[DIAGNOSE] Final loss = {:.6}, final accuracy = {:.2}%",
             final_loss.to_dtype(DType::F32).unwrap().to_vec0::<f32>().unwrap(),

@@ -19,7 +19,7 @@ use tracing::{info, warn};
 use crate::rpc::messages::{GenomeSlice, GenomeTrainingBatchMsg, GradientUpdate, TrainingBatch};
 use crate::trainer::gpu_trainer::GpuBackend;
 use crate::trainer::gradient::{add_grad_maps, average_grad_maps, build_gradient_update, gradient_commitment, move_grads_to_device};
-use crate::trainer::mgm1_trainer::Mgm1Trainer;
+use crate::trainer::mgm1_trainer::{gradient_norm, masked_label_distribution, masked_prediction_distribution, Mgm1Trainer, MAX_LEARNING_RATE};
 use crate::trainer::multi_gpu::{MultiGpuConfig, MultiGpuTrainer};
 use crate::trainer::{DeviceInfo, Trainer, TrainingResult};
 
@@ -216,7 +216,7 @@ impl Mgm1MultiGpuTrainer {
                     let handle = s.spawn(move || -> Result<MicroResult> {
                         let ids = ids.to_device(trainer.device())?;
                         let lbls = lbls.to_device(trainer.device())?;
-                        let (loss, grads) = trainer
+                        let (loss, _accuracy, grads) = trainer
                             .compute_gradients(&ids, &lbls, 1.0)
                             .with_context(|| format!("Gradient computation failed on GPU {}", gpu_idx))?;
                         let weight = ids.elem_count() as f32;
@@ -253,6 +253,14 @@ impl Mgm1MultiGpuTrainer {
         let final_grads = accumulated_grads.ok_or_else(|| anyhow::anyhow!("No gradients were produced by any GPU"))?;
         let loss_before = if loss_before_weight > 0.0 { loss_before_sum / loss_before_weight as f64 } else { 0.0 };
 
+        let used_input_ids = used_input_ids.to_device(&master_device)?;
+        let used_labels = used_labels.to_device(&master_device)?;
+        let (_, accuracy_before) = self.trainers[0]
+            .compute_loss_and_accuracy(&used_input_ids, &used_labels)
+            .context("Failed to compute pre-update accuracy on master replica")?;
+        let label_dist = masked_label_distribution(&used_input_ids, &used_labels)?;
+        let grad_norm = gradient_norm(&final_grads)?;
+
         let old_weights = self.trainers[0].varmap_snapshot().context("Failed to snapshot master replica weights before update")?;
         self.trainers[0]
             .apply_gradients(&final_grads, learning_rate)
@@ -261,11 +269,13 @@ impl Mgm1MultiGpuTrainer {
         let weight_delta =
             Mgm1Trainer::compute_weight_delta(&old_weights, &new_weights).context("Failed to compute MGM-1 multi-GPU weight delta")?;
 
-        let used_input_ids = used_input_ids.to_device(&master_device)?;
-        let used_labels = used_labels.to_device(&master_device)?;
-        let loss_after = self.trainers[0]
-            .compute_loss_scalar(&used_input_ids, &used_labels)
-            .context("Failed to compute post-update loss on master replica")?;
+        let (loss_after, accuracy_after) = self.trainers[0]
+            .compute_loss_and_accuracy(&used_input_ids, &used_labels)
+            .context("Failed to compute post-update loss/accuracy on master replica")?;
+        let logits = self.trainers[0]
+            .forward(&used_input_ids)
+            .context("Failed to compute post-update logits on master replica")?;
+        let pred_dist = masked_prediction_distribution(&used_input_ids, &used_labels, &logits)?;
 
         // The commitment is over the weight-delta that will be sent in the FedAvg payload.
         let gradients_commitment = gradient_commitment(&weight_delta)?;
@@ -275,8 +285,12 @@ impl Mgm1MultiGpuTrainer {
 
         let total_ms = start.elapsed().as_millis() as u64;
         info!(
-            "Mgm1MultiGpuTrainer loss_before={:.6} loss_after={:.6} devices={} total_ms={}",
-            loss_before, loss_after, num_gpus, total_ms
+            "Mgm1MultiGpu block: lr={:.3e} loss={:.4} -> {:.4} acc={:.2}% -> {:.2}% grad_norm={:.4} devices={} total_ms={}\n  labels A={:>3} C={:>3} G={:>3} T={:>3}\n  preds  A={:>3} C={:>3} G={:>3} T={:>3}",
+            learning_rate.min(MAX_LEARNING_RATE), loss_before, loss_after,
+            accuracy_before * 100.0, accuracy_after * 100.0, grad_norm,
+            num_gpus, total_ms,
+            label_dist[0], label_dist[1], label_dist[2], label_dist[3],
+            pred_dist[0], pred_dist[1], pred_dist[2], pred_dist[3],
         );
 
         let result = TrainingResult {
