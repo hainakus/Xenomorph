@@ -21,4 +21,6 @@ devnet-data-native/
 miner-data/
 *.log
 scripts/*.tar.gz
+**/__pycache__/
+*.py[co]
 
