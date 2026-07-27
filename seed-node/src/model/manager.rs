@@ -1114,14 +1114,7 @@ impl ModelManager {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{Ipv4Addr, SocketAddr};
-
     use super::*;
-    use xenom_quic::{CheckpointFileRequest, CheckpointFileType, CheckpointTransferClient, CheckpointTransferServer};
-
-    fn localhost() -> SocketAddr {
-        (Ipv4Addr::new(127, 0, 0, 1), 0).into()
-    }
 
     #[tokio::test]
     async fn test_model_manager() {
@@ -1342,79 +1335,5 @@ mod tests {
         assert!(!loaded.weights.is_empty());
         assert!(loaded.weights.len() > 8);
         assert_eq!(loaded.weights[8], b'{'); // SafeTensors header starts with JSON
-    }
-
-    #[tokio::test]
-    async fn test_quic_file_provider_serves_active_checkpoint() {
-        // Use a deterministic all-zero key so the test client can decrypt the bytes.
-        std::env::set_var("XENO_MODEL_KEY", "0".repeat(64));
-
-        let dir = tempfile::tempdir().unwrap();
-        let key = [0u8; 32];
-        let lora_config = LoraConfig::default();
-        let manager = ModelManager::new_with_key(dir.path().to_string_lossy().to_string(), key, Some(lora_config)).await.unwrap();
-        let model_id = "dnabert2-quic";
-
-        let files = build_tiny_dnabert2_files();
-        manager.store_model_files(model_id, &files, ModelMetrics::default()).await.unwrap();
-        manager.load_model(model_id).await.unwrap();
-
-        let (combined, _base_hash) = manager.get_model_checkpoint_info_v2(model_id).await.unwrap();
-        let active_hash = manager.active_hash(model_id).await.unwrap();
-        assert_eq!(combined, active_hash);
-
-        let provider = Arc::new(crate::quic::ModelFileProvider::new(Arc::new(manager)));
-        let server = CheckpointTransferServer::new(localhost(), provider).await.unwrap();
-        let server_addr = server.local_addr().unwrap();
-        let client = CheckpointTransferClient::new(localhost(), "localhost").unwrap();
-
-        let decryption_key = model_crypto::derive_encryption_key();
-
-        // Full checkpoint files.
-        for file_type in [CheckpointFileType::Config, CheckpointFileType::Tokenizer, CheckpointFileType::Weights] {
-            let request = CheckpointFileRequest { model_id: model_id.to_string(), weights_hash: combined, file_type };
-            let encrypted = client.get_file(server_addr, &request).await.unwrap();
-            let decrypted = model_crypto::decrypt(&encrypted, &decryption_key).unwrap();
-            match file_type {
-                CheckpointFileType::Config => assert_eq!(decrypted, files.config),
-                CheckpointFileType::Tokenizer => assert_eq!(decrypted, files.tokenizer),
-                CheckpointFileType::Weights => {
-                    assert_eq!(blake3::hash(&decrypted).as_bytes(), &combined);
-                }
-                _ => unreachable!(),
-            }
-        }
-
-        // Adapter-only request should return the LoRA adapter bytes.
-        let adapter_request =
-            CheckpointFileRequest { model_id: model_id.to_string(), weights_hash: combined, file_type: CheckpointFileType::Adapter };
-        let encrypted_adapter = client.get_file(server_addr, &adapter_request).await.unwrap();
-        let adapter = model_crypto::decrypt(&encrypted_adapter, &decryption_key).unwrap();
-        let parsed = candle_core::safetensors::load_buffer(&adapter, &candle_core::Device::Cpu).unwrap();
-        assert!(parsed.keys().all(|k| k.ends_with(".lora_a") || k.ends_with(".lora_b")));
-
-        // Unknown checkpoint hash returns NotFound.
-        let bad_request = CheckpointFileRequest {
-            model_id: model_id.to_string(),
-            weights_hash: [0xffu8; 32],
-            file_type: CheckpointFileType::Weights,
-        };
-        let err = client.get_file(server_addr, &bad_request).await.unwrap_err();
-        assert!(err.to_string().contains("not found"));
-
-        // Rebase request for wrong base hash should not return adapter bytes.
-        let bad_adapter_request =
-            CheckpointFileRequest { model_id: model_id.to_string(), weights_hash: combined, file_type: CheckpointFileType::Adapter };
-        // weights_hash is the active combined hash; a wrong base hash is not passed by the
-        // client, so this is just a sanity check that the active request succeeds.
-        let _ = client.get_file(server_addr, &bad_adapter_request).await.unwrap();
-
-        // Unknown model id returns NotFound.
-        let unknown_model_request =
-            CheckpointFileRequest { model_id: "unknown".to_string(), weights_hash: combined, file_type: CheckpointFileType::Weights };
-        let err = client.get_file(server_addr, &unknown_model_request).await.unwrap_err();
-        assert!(err.to_string().contains("not found"));
-
-        let _ = std::fs::remove_dir_all(dir.path());
     }
 }

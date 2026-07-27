@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use clap::{ArgAction, Parser};
+use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use kaspa_consensus_core::network::NetworkType;
 use std::path::PathBuf;
@@ -102,14 +102,6 @@ struct Args {
     /// Defaults to `<data_dir>/models`.
     #[arg(long)]
     models_dir: Option<String>,
-
-    /// Enable QUIC bulk checkpoint transfers (fall back to WebSocket on failure).
-    #[arg(long, default_value_t = true, action = ArgAction::SetFalse, env = "XENO_QUIC_ENABLED")]
-    quic: bool,
-
-    /// Timeout in seconds for each QUIC file transfer.
-    #[arg(long, default_value_t = 60, env = "XENO_QUIC_TIMEOUT")]
-    quic_timeout: u64,
 
     /// Password used to encrypt the wallet file.
     #[arg(long, default_value = "", env = "XENOM_WALLET_PASSWORD")]
@@ -279,8 +271,6 @@ async fn maybe_reload_base(
     model_cache: &ModelCache,
     model_id: &str,
     base_checkpoint: [u8; 32],
-    quic_enabled: bool,
-    quic_timeout: Duration,
 ) -> Result<()> {
     if trainer.current_base_checkpoint() == Some(base_checkpoint) {
         return Ok(());
@@ -294,7 +284,7 @@ async fn maybe_reload_base(
 
     let mut guard = rpc_client.lock().await;
     let client = guard.as_mut().context("No RPC connection to reload base checkpoint")?;
-    let bundle = fetch_model_checkpoint_with_retry(client, model_id, model_cache, quic_enabled, quic_timeout)
+    let bundle = fetch_model_checkpoint_with_retry(client, model_id, model_cache)
         .await
         .context("Failed to fetch new base checkpoint from seed-node")?;
     drop(guard);
@@ -339,8 +329,6 @@ async fn load_trainer(
     gpu_config: MultiGpuConfig,
     threads: usize,
     dry_run: bool,
-    quic_enabled: bool,
-    quic_timeout: Duration,
 ) -> Result<Arc<dyn Trainer>> {
     if dry_run {
         let guard = rpc_client.lock().await;
@@ -357,9 +345,7 @@ async fn load_trainer(
     // service dependency should already guarantee this, but the retry makes
     // manual/standalone runs robust against slow model downloads.
     let ModelBundle { model_id, base_checkpoint, config, tokenizer, weights, .. } =
-        fetch_model_checkpoint_with_retry(client, model_id, cache, quic_enabled, quic_timeout)
-            .await
-            .context("Failed to fetch model checkpoint from seed-node")?;
+        fetch_model_checkpoint_with_retry(client, model_id, cache).await.context("Failed to fetch model checkpoint from seed-node")?;
 
     if model_id.contains("mgm-1") {
         if gpu_config.gpus.len() > 1 {
@@ -391,18 +377,12 @@ async fn load_trainer(
     Ok(Arc::new(trainer))
 }
 
-async fn fetch_model_checkpoint_with_retry(
-    client: &mut XenomRpcClient,
-    model_id: &str,
-    cache: &ModelCache,
-    quic_enabled: bool,
-    quic_timeout: Duration,
-) -> Result<ModelBundle> {
+async fn fetch_model_checkpoint_with_retry(client: &mut XenomRpcClient, model_id: &str, cache: &ModelCache) -> Result<ModelBundle> {
     let mut interval = tokio::time::interval(Duration::from_secs(2));
     let max_attempts = 60;
 
     for attempt in 1..=max_attempts {
-        match fetch_model_checkpoint(client, model_id, cache, quic_enabled, quic_timeout).await {
+        match fetch_model_checkpoint(client, model_id, cache).await {
             Ok(bundle) => return Ok(bundle),
             Err(e) if attempt < max_attempts => {
                 warn!("Model checkpoint not ready (attempt {}/{}): {}", attempt, max_attempts, e);
@@ -513,19 +493,7 @@ async fn main() -> Result<()> {
             gpu_config.validate()?;
 
             info!("Using model trainer with {:?} backend and config {:?}", backend, gpu_config);
-            let quic_timeout = Duration::from_secs(args.quic_timeout);
-            load_trainer(
-                &rpc_client,
-                &config.model_id,
-                &model_cache,
-                backend,
-                gpu_config,
-                config.threads,
-                config.dry_run,
-                args.quic,
-                quic_timeout,
-            )
-            .await?
+            load_trainer(&rpc_client, &config.model_id, &model_cache, backend, gpu_config, config.threads, config.dry_run).await?
         }
         other => bail!("Unknown trainer: {}. Use mock, cpu, dnabert2, mgm1, gpu, cuda, rocm, or metal.", other),
     };
@@ -605,15 +573,12 @@ async fn main() -> Result<()> {
                 };
 
                 // Hot-reload the model if the base checkpoint changed.
-                let quic_timeout = Duration::from_secs(args.quic_timeout);
                 if let Err(e) = maybe_reload_base(
                     &trainer,
                     &rpc_client,
                     &model_cache,
                     &config.model_id,
                     batch.base_checkpoint(),
-                    args.quic,
-                    quic_timeout,
                 )
                 .await {
                     warn!("Failed to reload base checkpoint: {:#}", e);

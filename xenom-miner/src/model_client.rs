@@ -1,14 +1,9 @@
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use candle_core::Tensor;
 use model_crypto::{decrypt, derive_encryption_key};
-use tokio::time::timeout;
 use tracing::{info, warn};
-use url::Url;
-use xenom_quic::{CheckpointFileRequest, CheckpointFileType, CheckpointTransferClient};
 
 pub use crate::model_cache::{ModelBundle, ModelCache};
 use crate::rpc::messages::{ModelCheckpointInfoV2, ModelCheckpointV2};
@@ -81,23 +76,11 @@ fn merge_adapter_into_base(base: &[u8], adapter: &[u8]) -> Result<Vec<u8>> {
 /// Fetch a model checkpoint from the node, using the local cache when the
 /// active weights hash has not changed.
 ///
-/// Phase 2: the miner first requests V2 checkpoint metadata. If the cached
-/// base weights match, only the LoRA adapter is downloaded and merged with the
-/// local base. Otherwise the full base+adapter bundle is downloaded.
-///
-/// When `quic_enabled` is true the miner tries to fetch the missing files from
-/// discovered QUIC peers first, and falls back to the existing WebSocket RPC on
-/// any failure.
+/// The miner always fetches the missing files over the WebSocket RPC.
 ///
 /// The returned `ModelBundle` is always plaintext; if the node sent encrypted
 /// files they are decrypted with the same `XENO_MODEL_KEY` used by the node.
-pub async fn fetch_model_checkpoint(
-    rpc: &mut XenomRpcClient,
-    model_id: &str,
-    cache: &ModelCache,
-    quic_enabled: bool,
-    quic_timeout: Duration,
-) -> Result<ModelBundle> {
+pub async fn fetch_model_checkpoint(rpc: &mut XenomRpcClient, model_id: &str, cache: &ModelCache) -> Result<ModelBundle> {
     let info = rpc.get_model_checkpoint_info_v2(model_id).await?;
 
     // If we already have the combined checkpoint cached, use it directly.
@@ -127,18 +110,7 @@ pub async fn fetch_model_checkpoint(
         }
     }
 
-    // Try QUIC first when enabled; fall through to WebSocket on any failure.
-    let mut cp = if quic_enabled {
-        match try_fetch_quic(rpc, model_id, cache, &info, quic_timeout).await {
-            Ok(cp) => cp,
-            Err(e) => {
-                warn!("QUIC checkpoint fetch failed for {}: {}; falling back to WebSocket", model_id, e);
-                fetch_websocket_checkpoint(rpc, model_id, cache, &info).await?
-            }
-        }
-    } else {
-        fetch_websocket_checkpoint(rpc, model_id, cache, &info).await?
-    };
+    let mut cp = fetch_websocket_checkpoint(rpc, model_id, cache, &info).await?;
 
     // If the node sent only the adapter, merge it with the cached base.
     if cp.is_adapter {
@@ -215,118 +187,6 @@ async fn fetch_websocket_checkpoint(
     };
 
     decrypt_v2(&cp)
-}
-
-async fn try_fetch_quic(
-    rpc: &mut XenomRpcClient,
-    model_id: &str,
-    cache: &ModelCache,
-    info: &ModelCheckpointInfoV2,
-    timeout_duration: Duration,
-) -> Result<ModelCheckpointV2> {
-    let peers = rpc.get_checkpoint_peers(model_id, info.base_checkpoint).await?;
-    let mut addrs: Vec<SocketAddr> = peers
-        .into_iter()
-        .filter_map(|p| p.listen_addr.and_then(|s| s.parse::<SocketAddr>().ok()))
-        .filter(|a| !a.ip().is_unspecified())
-        .collect();
-    if addrs.is_empty() {
-        anyhow::bail!("no QUIC peers returned by the node");
-    }
-
-    // If the miner connected to the node over localhost/127.0.0.1, the node may
-    // have announced its public IP, but connecting to that public IP from the
-    // same host often fails (hairpin NAT).  Try 127.0.0.1:<quic-port> first.
-    if rpc_url_local_host(rpc.url()).unwrap_or(false) {
-        let mut local_addrs = Vec::new();
-        for addr in &addrs {
-            if !addr.ip().is_loopback() {
-                local_addrs.push(SocketAddr::new(IpAddr::from([127, 0, 0, 1]), addr.port()));
-            }
-        }
-        if !local_addrs.is_empty() {
-            addrs = local_addrs.into_iter().chain(addrs.into_iter()).collect();
-        }
-    }
-
-    let is_adapter = cache.read_base_hash(model_id) == Some(info.base_hash);
-    let file_types: Vec<CheckpointFileType> = if is_adapter {
-        vec![CheckpointFileType::Config, CheckpointFileType::Tokenizer, CheckpointFileType::Adapter]
-    } else {
-        vec![CheckpointFileType::Config, CheckpointFileType::Tokenizer, CheckpointFileType::Weights]
-    };
-
-    let local_addr = SocketAddr::from(([0, 0, 0, 0], 0));
-
-    for peer_addr in addrs {
-        // The server cert is self-signed for "localhost".  The client skips cert
-        // verification, but the server's rustls still requires the SNI to match one
-        // of the cert's SANs, so always present "localhost" regardless of peer IP.
-        let client = CheckpointTransferClient::new(local_addr, "localhost")
-            .with_context(|| format!("failed to create QUIC client for {peer_addr}"))?;
-
-        let mut encrypted_files = EncryptedFiles::default();
-        let mut ok = true;
-        for file_type in &file_types {
-            let request =
-                CheckpointFileRequest { model_id: model_id.to_string(), weights_hash: info.base_checkpoint, file_type: *file_type };
-            let encrypted = match timeout(timeout_duration, client.get_file(peer_addr, &request)).await {
-                Ok(Ok(bytes)) => bytes,
-                Ok(Err(e)) => {
-                    warn!("QUIC {file_type:?} from {peer_addr} failed: {e}");
-                    ok = false;
-                    break;
-                }
-                Err(_) => {
-                    warn!("QUIC {file_type:?} from {peer_addr} timed out");
-                    ok = false;
-                    break;
-                }
-            };
-            match file_type {
-                CheckpointFileType::Config => encrypted_files.config = encrypted,
-                CheckpointFileType::Tokenizer => encrypted_files.tokenizer = encrypted,
-                CheckpointFileType::Weights | CheckpointFileType::Adapter => encrypted_files.weights = encrypted,
-            }
-        }
-        if !ok {
-            continue;
-        }
-
-        let cp = ModelCheckpointV2 {
-            model_id: model_id.to_string(),
-            base_checkpoint: info.base_checkpoint,
-            base_hash: info.base_hash,
-            config: encrypted_files.config,
-            tokenizer: encrypted_files.tokenizer,
-            weights: encrypted_files.weights,
-            encrypted: true,
-            is_adapter,
-        };
-
-        let cp = decrypt_v2(&cp)?;
-        info!("Successfully fetched checkpoint for {} over QUIC from {}", model_id, peer_addr);
-        return Ok(cp);
-    }
-
-    anyhow::bail!("exhausted QUIC peers")
-}
-
-/// Return true if the WebSocket RPC URL points to a local (loopback/localhost) host.
-fn rpc_url_local_host(url: &str) -> Option<bool> {
-    let Ok(parsed) = Url::parse(url) else { return None };
-    match parsed.host()? {
-        url::Host::Domain(d) => Some(d == "localhost"),
-        url::Host::Ipv4(ip) => Some(ip.is_loopback()),
-        url::Host::Ipv6(ip) => Some(ip.is_loopback()),
-    }
-}
-
-#[derive(Default)]
-struct EncryptedFiles {
-    config: Vec<u8>,
-    tokenizer: Vec<u8>,
-    weights: Vec<u8>,
 }
 
 #[cfg(test)]

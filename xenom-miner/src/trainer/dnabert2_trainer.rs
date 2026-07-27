@@ -121,8 +121,19 @@ impl DnaBert2Trainer {
             bail!("No masked positions in micro-batch; cannot compute MLM loss");
         }
 
-        let positions_t = Tensor::new(positions.as_slice(), &self.device)?;
-        let masked_logits = logits_flat.index_select(&positions_t, 0)?;
+        // Metal does not implement index_select for F32 data (it falls back to I64
+        // indices which are also unsupported), so gather the masked logits on the
+        // CPU and copy them to the device. Labels are gathered the same way for
+        // the same reason.
+        let masked_logits = if self.device.is_metal() {
+            let positions_i64: Vec<i64> = positions.iter().map(|&i| i as i64).collect();
+            let positions_t = Tensor::new(positions_i64.as_slice(), &Device::Cpu)?;
+            let logits_cpu = logits_flat.to_device(&Device::Cpu)?;
+            logits_cpu.index_select(&positions_t, 0)?.to_device(&self.device)?
+        } else {
+            let positions_t = Tensor::new(positions.as_slice(), &self.device)?;
+            logits_flat.index_select(&positions_t, 0)?
+        };
 
         // Metal does not implement index_select on U32 source tensors, so gather the
         // masked labels on the CPU and copy them to the device.

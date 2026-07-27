@@ -23,12 +23,6 @@ Options:
                                   (optional; enables real Genome PoW)
   --bind-ip <ip>                  IP to bind node/API sockets to
                                   (default: \$XENO_BIND_IP or 0.0.0.0)
-  --quic-port <port>              QUIC bulk transfer server port
-                                  (default: \$XENO_QUIC_PORT or 17111)
-  --quic-external <addr:port>     External QUIC address announced to miners
-                                  (default: auto-detected from bind/local IP)
-  --quic-max-transfers <n>        Max concurrent QUIC checkpoint transfers
-                                  (default: \$XENO_QUIC_MAX_TRANSFERS or 64)
   --lora                          Enable LoRA (default: on)
   --lora-rank <n>                 LoRA rank (default: 8)
   --lora-alpha <n>                LoRA alpha (default: 16)
@@ -43,9 +37,6 @@ BUILD=1
 DATA_DIR="${XENO_DATA_DIR:-$SCRIPT_DIR/../devnet-data-native}"
 GENOME_FILE="${XENO_GENOME_FILE:-}"
 BIND_IP="${XENO_BIND_IP:-0.0.0.0}"
-QUIC_PORT="${XENO_QUIC_PORT:-17111}"
-QUIC_EXTERNAL="${XENO_QUIC_EXTERNAL:-}"
-QUIC_MAX_TRANSFERS="${XENO_QUIC_MAX_TRANSFERS:-64}"
 LORA=1
 LORA_RANK="${XENO_LORA_RANK:-8}"
 LORA_ALPHA="${XENO_LORA_ALPHA:-16}"
@@ -59,9 +50,6 @@ while [[ $# -gt 0 ]]; do
         -d|--data-dir) DATA_DIR="$2"; shift 2 ;;
         --genome-file) GENOME_FILE="$2"; shift 2 ;;
         --bind-ip) BIND_IP="$2"; shift 2 ;;
-        --quic-port) QUIC_PORT="$2"; shift 2 ;;
-        --quic-external) QUIC_EXTERNAL="$2"; shift 2 ;;
-        --quic-max-transfers) QUIC_MAX_TRANSFERS="$2"; shift 2 ;;
         --lora) LORA=1; shift ;;
         --lora-rank) LORA_RANK="$2"; shift 2 ;;
         --lora-alpha) LORA_ALPHA="$2"; shift 2 ;;
@@ -81,9 +69,6 @@ export XENO_VERBOSE="${XENO_VERBOSE:-0}"
 
 # Honour XENO_* from .env/env, keeping CLI flags as fallbacks.
 BIND_IP="${XENO_BIND_IP:-$BIND_IP}"
-QUIC_PORT="${XENO_QUIC_PORT:-$QUIC_PORT}"
-QUIC_EXTERNAL="${XENO_QUIC_EXTERNAL:-$QUIC_EXTERNAL}"
-QUIC_MAX_TRANSFERS="${XENO_QUIC_MAX_TRANSFERS:-$QUIC_MAX_TRANSFERS}"
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
@@ -137,7 +122,7 @@ if [[ "$BIND_IP" != "0.0.0.0" && "$BIND_IP" != "127.0.0.1" ]]; then
 fi
 
 if ! is_port_free "$NODE_RPC_PORT" || ! is_port_free "$NODE_P2P_PORT" || \
-   ! is_port_free "$MINER_WS_PORT" || ! is_port_free "$QUIC_PORT" || \
+   ! is_port_free "$MINER_WS_PORT" || \
    ! is_port_free "$INFERENCE_GRPC_PORT" || ! is_port_free "$API_PORT"; then
     err "One or more required ports are already in use"
     exit 1
@@ -231,31 +216,6 @@ if [[ "$LORA" == "1" ]]; then
     [[ -n "$LORA_TARGET_MODULES" ]] && export XENO_LORA_TARGET_MODULES="$LORA_TARGET_MODULES"
 fi
 
-# If no explicit external QUIC address was given, derive one from the bind IP
-# or try to find a non-loopback local IP so miners receive a connectable endpoint.
-if [[ -z "$QUIC_EXTERNAL" ]]; then
-    if [[ "$BIND_IP" != "0.0.0.0" && "$BIND_IP" != "127.0.0.1" ]]; then
-        QUIC_EXTERNAL="$BIND_IP:$QUIC_PORT"
-    else
-        if command -v hostname &>/dev/null && hostname -I &>/dev/null; then
-            for ip in $(hostname -I); do
-                if [[ "$ip" != 127.* && "$ip" != ::1* ]]; then
-                    QUIC_EXTERNAL="$ip:$QUIC_PORT"
-                    break
-                fi
-            done
-        elif command -v ipconfig &>/dev/null; then
-            ip=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)
-            if [[ -n "$ip" ]]; then
-                QUIC_EXTERNAL="$ip:$QUIC_PORT"
-            fi
-        fi
-        if [[ -z "$QUIC_EXTERNAL" ]]; then
-            qwarn "Could not auto-detect a non-loopback IP for QUIC. External miners may need --quic-external."
-        fi
-    fi
-fi
-
 qlog "Starting xeno-node..."
 NODE_ARGS=(
     --devnet
@@ -264,15 +224,12 @@ NODE_ARGS=(
     --rpclisten="$BIND_IP:$NODE_RPC_PORT"
     --listen="$BIND_IP:$NODE_P2P_PORT"
     --miner-ws-listen="$BIND_IP:$MINER_WS_PORT"
-    --quic-listen="$BIND_IP:$QUIC_PORT"
-    --quic-max-transfers="$QUIC_MAX_TRANSFERS"
     --inference-grpc-listen="$BIND_IP:$INFERENCE_GRPC_PORT"
     --models-dir="$MODELS_DIR"
     --disable-upnp
     --nodnsseed
     --addpeer="94.237.108.145:16111"
 )
-[[ -n "$QUIC_EXTERNAL" ]] && NODE_ARGS+=(--quic-external="$QUIC_EXTERNAL")
 [[ -n "$GENOME_FILE" ]] && NODE_ARGS+=(--genome-file="$GENOME_FILE")
 
 RUST_LOG="${RUST_LOG:-info}" "$BIN_PREFIX/xenom" "${NODE_ARGS[@]}" \
@@ -306,7 +263,6 @@ wait_for_port "$WAIT_HOST" "$API_PORT" 60 "$API_PID"
 
 qok "Node (unified) + API gateway running."
 qok "  Miner websocket:  ws://$BIND_IP:$MINER_WS_PORT"
-qok "  QUIC transfer:    ${QUIC_EXTERNAL:-$BIND_IP:$QUIC_PORT}"
 qok "  OpenAI API:       http://$BIND_IP:$API_PORT"
 qok "  Inference gRPC:   http://$BIND_IP:$INFERENCE_GRPC_PORT"
 qok "  Kaspa RPC:        http://$BIND_IP:$NODE_RPC_PORT"

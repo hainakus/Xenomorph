@@ -6,7 +6,6 @@ pub mod genome;
 pub mod governance;
 pub mod model;
 pub mod p2p;
-pub mod quic;
 pub mod rpc;
 pub mod serving;
 

@@ -3,7 +3,7 @@
 //! This is the unified node's replacement for the standalone seed-node WebSocket
 //! server. It speaks the same Borsh-over-WebSocket protocol as `xenom-miner`.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 
 use anyhow::{anyhow, Result};
 use borsh::{to_vec, BorshDeserialize};
@@ -118,9 +118,7 @@ async fn handle_request(req: RpcRequest, coordinator: &Coordinator, flow_context
                     // Announce the new active checkpoint over P2P gossip so other nodes
                     // (e.g. standalone seed-nodes) can discover it.  `cid` is currently a
                     // placeholder equal to the weights hash until IPFS/HTTP content IDs are wired.
-                    // Include the QUIC transfer endpoint if the node is serving checkpoints directly.
-                    let listen_addr = coordinator.quic_announce_addr().await;
-                    ctx.announce_checkpoint(update.model_id.clone(), new_checkpoint, new_checkpoint, listen_addr).await;
+                    ctx.announce_checkpoint(update.model_id.clone(), new_checkpoint, new_checkpoint, None).await;
                 }
                 RpcResponse::GradientAck { new_checkpoint: Some(new_checkpoint) }
             }
@@ -130,15 +128,12 @@ async fn handle_request(req: RpcRequest, coordinator: &Coordinator, flow_context
                 RpcResponse::Error(format!("Failed to submit gradients: {}", e))
             }
         },
-        RpcRequest::GetCheckpointPeers(GetCheckpointPeers { model_id, weights_hash }) => match flow_context {
+        RpcRequest::GetCheckpointPeers(GetCheckpointPeers { weights_hash, .. }) => match flow_context {
             Some(ctx) => {
-                let mut peers: Vec<PeerAnnouncement> = {
+                let peers: Vec<PeerAnnouncement> = {
                     let registry = ctx.gossip_registry.lock();
                     registry.get(&weights_hash).iter().map(peer_announcement_from).collect()
                 };
-                // If this unified node is serving the requested checkpoint over QUIC,
-                // include itself in the peer list so miners can reach it directly.
-                peers.extend(self_announcements(coordinator, &ctx, &model_id, weights_hash).await);
                 RpcResponse::CheckpointPeers(peers)
             }
             None => RpcResponse::Error("P2P gossip not enabled on this node".to_string()),
@@ -147,87 +142,6 @@ async fn handle_request(req: RpcRequest, coordinator: &Coordinator, flow_context
         RpcRequest::GetDifficulty => RpcResponse::Difficulty([0u8; 32]),
         RpcRequest::Heartbeat => RpcResponse::Pong,
     }
-}
-
-/// Return a list of QUIC endpoints this node can be reached on.  The returned
-/// addresses include the configured announce address plus any other non-loopback
-/// local interface addresses, sorted so private/site-local addresses come first.
-async fn local_quic_endpoints(coordinator: &Coordinator) -> Vec<SocketAddr> {
-    let Some(base) = coordinator.quic_announce_addr().await else { return Vec::new() };
-    let port = base.port();
-    let mut addrs = Vec::new();
-    if !base.ip().is_loopback() && !base.ip().is_unspecified() {
-        addrs.push(base);
-    }
-
-    if let Ok(ifaces) = local_ip_address::list_afinet_netifas() {
-        let mut extra: Vec<SocketAddr> = ifaces
-            .into_iter()
-            .map(|(_, ip)| SocketAddr::new(ip, port))
-            .filter(|a| !a.ip().is_loopback() && !a.ip().is_unspecified() && !addrs.contains(a))
-            .collect();
-        extra.sort_by_key(|a| !is_site_local(a.ip()));
-        addrs.extend(extra);
-    }
-
-    addrs
-}
-
-fn is_site_local(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
-        IpAddr::V6(v6) => {
-            let octets = v6.octets();
-            // Unique local (fc00::/7) or link-local (fe80::/10)
-            (octets[0] & 0xfe) == 0xfc || (octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80)
-        }
-    }
-}
-
-/// Build signed checkpoint announcements for this node if it is the active model
-/// and has QUIC transfer endpoints configured.  Multiple announcements are
-/// returned (one per local address) so miners can pick the address they can
-/// actually reach (e.g. LAN IP vs public IP).
-async fn self_announcements(
-    coordinator: &Coordinator,
-    ctx: &FlowContext,
-    model_id: &str,
-    weights_hash: [u8; 32],
-) -> Vec<PeerAnnouncement> {
-    if model_id != coordinator.active_model_id() {
-        return Vec::new();
-    }
-    let active_hash = match coordinator.active_weights_hash().await {
-        Ok(h) => h,
-        Err(_) => return Vec::new(),
-    };
-    if active_hash.as_bytes() != weights_hash {
-        return Vec::new();
-    }
-    let identity = match ctx.gossip_identity.as_ref() {
-        Some(id) => id,
-        None => return Vec::new(),
-    };
-
-    let mut out = Vec::new();
-    let base_time = kaspa_core::time::unix_now();
-    for (idx, quic_addr) in local_quic_endpoints(coordinator).await.into_iter().enumerate() {
-        let announcement = Announcement {
-            model_id: model_id.to_string(),
-            weights_hash,
-            cid: weights_hash,
-            timestamp: base_time + idx as u64,
-            is_genome: false,
-            node_address: String::new(),
-            public_key: [0u8; 33],
-            listen_addr: Some(quic_addr),
-            signature: [0u8; 64],
-        };
-        if let Ok(signed) = identity.sign(announcement) {
-            out.push(peer_announcement_from(&signed));
-        }
-    }
-    out
 }
 
 fn peer_announcement_from(ann: &Announcement) -> PeerAnnouncement {

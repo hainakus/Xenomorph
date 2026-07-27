@@ -103,13 +103,6 @@ pub struct Args {
     pub models_dir: Option<String>,
     pub genome_cache_dir: Option<String>,
     pub genome_url: Option<String>,
-
-    // QUIC bulk transfer options
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    pub quic_listen: Option<ContextualNetAddress>,
-    #[serde_as(as = "Option<DisplayFromStr>")]
-    pub quic_external: Option<ContextualNetAddress>,
-    pub quic_max_transfers: u32,
 }
 
 impl Default for Args {
@@ -169,10 +162,6 @@ impl Default for Args {
             models_dir: None,
             genome_cache_dir: None,
             genome_url: None,
-
-            quic_listen: Some("0.0.0.0:17111".parse::<ContextualNetAddress>().unwrap()),
-            quic_external: None,
-            quic_max_transfers: 64,
         }
     }
 }
@@ -474,30 +463,6 @@ Setting to 0 prevents the preallocation and sets the maximum to {}, leading to 0
                 .help("Override the default .xenom genome archive download URL."),
         )
         .arg(
-            Arg::new("quic-listen")
-                .long("quic-listen")
-                .value_name("ADDR:PORT")
-                .require_equals(true)
-                .value_parser(clap::value_parser!(ContextualNetAddress))
-                .help("Address to bind the QUIC bulk transfer server (default: 0.0.0.0:17111)."),
-        )
-        .arg(
-            Arg::new("quic-external")
-                .long("quic-external")
-                .value_name("ADDR:PORT")
-                .require_equals(true)
-                .value_parser(clap::value_parser!(ContextualNetAddress))
-                .help("External QUIC address announced to peers (default: same as --quic-listen)."),
-        )
-        .arg(
-            Arg::new("quic-max-transfers")
-                .long("quic-max-transfers")
-                .value_name("N")
-                .require_equals(true)
-                .value_parser(clap::value_parser!(u32))
-                .help("Maximum number of concurrent QUIC checkpoint transfers (default: 64)."),
-        )
-        .arg(
             Arg::new("ram-scale")
                 .long("ram-scale")
                 .require_equals(true)
@@ -599,10 +564,6 @@ impl Args {
             models_dir: m.get_one::<String>("models-dir").cloned().or(defaults.models_dir),
             genome_cache_dir: m.get_one::<String>("genome-cache-dir").cloned().or(defaults.genome_cache_dir),
             genome_url: m.get_one::<String>("genome-url").cloned().or(defaults.genome_url),
-
-            quic_listen: m.get_one::<ContextualNetAddress>("quic-listen").cloned().or(defaults.quic_listen),
-            quic_external: m.get_one::<ContextualNetAddress>("quic-external").cloned().or(defaults.quic_external),
-            quic_max_transfers: arg_match_unwrap_or::<u32>(&m, "quic-max-transfers", defaults.quic_max_transfers),
 
             #[cfg(feature = "devnet-prealloc")]
             num_prealloc_utxos: m.get_one::<u64>("num-prealloc-utxos").cloned(),

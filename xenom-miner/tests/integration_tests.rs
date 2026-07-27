@@ -1,5 +1,3 @@
-use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::Arc;
 use std::time::Duration;
 
 use borsh::{to_vec, BorshDeserialize};
@@ -9,13 +7,8 @@ use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
-use xenom_quic::{async_trait, CheckpointFileRequest, CheckpointFileType, CheckpointTransferServer, FileProvider};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(10);
-
-fn localhost() -> SocketAddr {
-    (Ipv4Addr::new(127, 0, 0, 1), 0).into()
-}
 
 use xenom_miner::block::BlockBuilder;
 use xenom_miner::model_cache::ModelCache;
@@ -30,11 +23,7 @@ use xenom_miner::trainer::{MockTrainer, Trainer};
 use xenom_miner::wallet::WalletManager;
 
 /// Start a minimal mock Xenomorph node that speaks Borsh over WebSocket.
-/// If `quic_peer` is given, `GetCheckpointPeers` returns a single announcement
-/// advertising that QUIC address so the miner can attempt a bulk transfer.
-async fn start_mock_server(quic_peer: Option<std::net::SocketAddr>) -> u16 {
-    use xenom_miner::rpc::messages::PeerAnnouncement;
-
+async fn start_mock_server() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
 
@@ -100,22 +89,7 @@ async fn start_mock_server(quic_peer: Option<std::net::SocketAddr>) -> u16 {
                         is_adapter: false,
                     }),
                     RpcRequest::SubmitGradients(_) => RpcResponse::GradientAck { new_checkpoint: None },
-                    RpcRequest::GetCheckpointPeers(req) => RpcResponse::CheckpointPeers(
-                        quic_peer
-                            .map(|addr| PeerAnnouncement {
-                                model_id: req.model_id,
-                                weights_hash: combined,
-                                cid: combined,
-                                timestamp: 0,
-                                is_genome: false,
-                                node_address: "xnom:test".to_string(),
-                                public_key: [0u8; 33],
-                                listen_addr: Some(addr.to_string()),
-                                signature: [0u8; 64],
-                            })
-                            .into_iter()
-                            .collect(),
-                    ),
+                    RpcRequest::GetCheckpointPeers(_req) => RpcResponse::CheckpointPeers(Vec::new()),
                 };
 
                 let payload = to_vec(&response).unwrap();
@@ -133,7 +107,7 @@ async fn start_mock_server(quic_peer: Option<std::net::SocketAddr>) -> u16 {
 
 #[tokio::test]
 async fn test_rpc_client_against_mock_server() {
-    let port = start_mock_server(None).await;
+    let port = start_mock_server().await;
     let url = format!("ws://127.0.0.1:{}", port);
 
     let mut client = XenomRpcClient::new(url);
@@ -210,16 +184,15 @@ async fn test_end_to_end_mining_pipeline() {
 #[tokio::test]
 async fn test_fetch_model_checkpoint_falls_back_to_websocket() {
     let tmp = tempfile::tempdir().unwrap();
-    let port = start_mock_server(None).await;
+    let port = start_mock_server().await;
     let url = format!("ws://127.0.0.1:{}", port);
 
     let mut client = XenomRpcClient::new(url);
     timeout(TEST_TIMEOUT, client.connect()).await.expect("connect timed out").expect("connect failed");
 
     let cache = ModelCache::new(tmp.path().join("models"));
-    // QUIC is enabled but the mock server returns no peers, so the miner must
-    // fall back to the WebSocket path and verify the downloaded weights hash.
-    let bundle = timeout(TEST_TIMEOUT, fetch_model_checkpoint(&mut client, "dnabert2", &cache, true, Duration::from_secs(1)))
+    // The miner always fetches over WebSocket and verifies the downloaded weights hash.
+    let bundle = timeout(TEST_TIMEOUT, fetch_model_checkpoint(&mut client, "dnabert2", &cache))
         .await
         .expect("fetch_model_checkpoint timed out")
         .expect("fetch_model_checkpoint failed");
@@ -228,62 +201,4 @@ async fn test_fetch_model_checkpoint_falls_back_to_websocket() {
     assert!(!bundle.config.is_empty());
     assert!(!bundle.tokenizer.is_empty());
     assert!(!bundle.weights.is_empty());
-}
-
-struct MockQuicProvider {
-    combined: [u8; 32],
-    weights: Vec<u8>,
-    key: [u8; 32],
-}
-
-#[async_trait]
-impl FileProvider for MockQuicProvider {
-    async fn get_file(&self, req: &CheckpointFileRequest) -> anyhow::Result<Option<(Vec<u8>, [u8; 32])>> {
-        if req.weights_hash != self.combined || req.model_id != "dnabert2" {
-            return Ok(None);
-        }
-
-        let plaintext = match req.file_type {
-            CheckpointFileType::Config => b"{}".to_vec(),
-            CheckpointFileType::Tokenizer => b"[]".to_vec(),
-            CheckpointFileType::Weights => self.weights.clone(),
-            CheckpointFileType::Adapter => self.weights.clone(),
-        };
-
-        let encrypted = model_crypto::encrypt(&plaintext, &self.key)?;
-        let hash = *blake3::hash(&encrypted).as_bytes();
-        Ok(Some((encrypted, hash)))
-    }
-}
-
-#[tokio::test]
-async fn test_fetch_model_checkpoint_over_quic() {
-    std::env::set_var("XENO_MODEL_KEY", "0".repeat(64));
-
-    let weights = vec![0u8; 64];
-    let combined = *blake3::hash(&weights).as_bytes();
-    let key = [0u8; 32];
-
-    let provider = Arc::new(MockQuicProvider { combined, weights, key });
-    let quic_server = CheckpointTransferServer::new(localhost(), provider).await.unwrap();
-    let quic_addr = quic_server.local_addr().unwrap();
-
-    let port = start_mock_server(Some(quic_addr)).await;
-    let url = format!("ws://127.0.0.1:{}", port);
-
-    let mut client = XenomRpcClient::new(url);
-    timeout(TEST_TIMEOUT, client.connect()).await.expect("connect timed out").expect("connect failed");
-
-    let tmp = tempfile::tempdir().unwrap();
-    let cache = ModelCache::new(tmp.path().join("models"));
-    let bundle = timeout(TEST_TIMEOUT, fetch_model_checkpoint(&mut client, "dnabert2", &cache, true, Duration::from_secs(1)))
-        .await
-        .expect("fetch_model_checkpoint timed out")
-        .expect("fetch_model_checkpoint failed");
-
-    assert_eq!(bundle.model_id, "dnabert2");
-    assert!(!bundle.config.is_empty());
-    assert!(!bundle.tokenizer.is_empty());
-    assert!(!bundle.weights.is_empty());
-    assert_eq!(blake3::hash(&bundle.weights).as_bytes(), &combined);
 }

@@ -8,7 +8,7 @@ use kaspa_consensus_core::{
     network::NetworkType,
 };
 use kaspa_consensus_notify::{root::ConsensusNotificationRoot, service::NotifyService};
-use kaspa_core::{core::Core, debug, info, warn};
+use kaspa_core::{core::Core, debug, info};
 use kaspa_core::{kaspad_env::version, task::tick::TickService};
 use kaspa_database::prelude::CachePolicy;
 use kaspa_grpc_server::service::GrpcService;
@@ -58,9 +58,6 @@ use crate::training_block_service::{ActiveModel, TrainingBlockService};
 use anyhow;
 use core::str::FromStr;
 use kaspa_hashes::Hash;
-use seed_node::quic::ModelFileProvider;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use xenom_quic::CheckpointTransferServer;
 
 const DEFAULT_DATA_DIR: &str = "datadir";
 const CONSENSUS_DB: &str = "consensus";
@@ -170,74 +167,6 @@ pub fn get_log_dir(args: &Args) -> Option<String> {
     let log_dir = if log_dir.is_empty() { app_dir.join(network.to_prefixed()).join(DEFAULT_LOG_DIR) } else { PathBuf::from(log_dir) };
     let log_dir = if args.no_log_files { None } else { log_dir.to_str().map(String::from) };
     log_dir
-}
-
-/// Return the best local IP to announce for QUIC when no explicit external
-/// address is configured.  Prefers private/site-local addresses (10/8,
-/// 172.16/12, 192.168/16, ULA, link-local) over globally routable ones so that
-/// miners on the same LAN/VPN find a connectable endpoint by default.
-fn preferred_local_ip() -> Option<IpAddr> {
-    let Ok(ifaces) = local_ip_address::list_afinet_netifas() else { return None };
-    let mut candidates: Vec<IpAddr> = ifaces.into_iter().map(|(_, ip)| ip).filter(|ip| !ip.is_loopback()).collect();
-    candidates.sort_by_key(|ip| !is_site_local(*ip));
-    candidates.into_iter().next()
-}
-
-fn is_site_local(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
-        IpAddr::V6(v6) => {
-            let octets = v6.octets();
-            // Unique local (fc00::/7) or link-local (fe80::/10)
-            (octets[0] & 0xfe) == 0xfc || (octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80)
-        }
-    }
-}
-
-async fn start_quic_server(
-    quic_listen: Option<ContextualNetAddress>,
-    quic_external: Option<ContextualNetAddress>,
-    externalip: Option<ContextualNetAddress>,
-    quic_max_transfers: u32,
-    coordinator: &Coordinator,
-    flow_context: Arc<FlowContext>,
-    active_model_id: String,
-) -> anyhow::Result<()> {
-    let Some(listen) = quic_listen else { return Ok(()) };
-
-    let bind_addr: SocketAddr = listen.normalize(17111).into();
-    let provider = Arc::new(ModelFileProvider::new(coordinator.model_manager()));
-    let server = CheckpointTransferServer::with_max_transfers(bind_addr, provider, quic_max_transfers as usize).await?;
-    let local_addr = server.local_addr()?;
-
-    let announce_addr: SocketAddr = if let Some(external) = quic_external {
-        external.normalize(local_addr.port()).into()
-    } else if local_addr.ip().is_unspecified() {
-        if let Some(externalip) = externalip {
-            SocketAddr::new(externalip.normalize(0).ip.0, local_addr.port())
-        } else if let Some(ip) = preferred_local_ip() {
-            SocketAddr::new(ip, local_addr.port())
-        } else {
-            warn!("QUIC bound to 0.0.0.0 and no --quic-external or --externalip given; using 127.0.0.1 for local testing");
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), local_addr.port())
-        }
-    } else {
-        local_addr
-    };
-
-    coordinator.set_quic_announce_addr(Some(announce_addr)).await;
-
-    // Hold the QUIC endpoint alive for the lifetime of the process.
-    tokio::spawn(async move {
-        let _ = server;
-        std::future::pending::<()>().await
-    });
-
-    if let Ok(hash) = coordinator.active_weights_hash().await {
-        flow_context.announce_checkpoint(active_model_id, hash.as_bytes(), hash.as_bytes(), Some(announce_addr)).await;
-    }
-
-    Ok(())
 }
 
 impl Runtime {
@@ -741,10 +670,6 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
         let genome_source_url = args.genome_url.clone().unwrap_or_default();
         let genome_file = genome_file_path.as_ref().map(PathBuf::from);
 
-        let quic_listen = args.quic_listen;
-        let quic_external = args.quic_external;
-        let externalip = args.externalip;
-        let quic_max_transfers = args.quic_max_transfers;
         let active_model_id = args.active_model_id.clone();
 
         let coordinator = Arc::new(
@@ -755,7 +680,7 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
                 .block_on(async {
                     let coordinator = Coordinator::new(
                         network.network_type,
-                        active_model_id.clone(),
+                        active_model_id,
                         models_dir,
                         genome_cache_dir,
                         genome_file,
@@ -763,17 +688,6 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
                         rpc_core_service.clone(),
                         config.genome_fragment_size_bytes,
                         config.genome_pow_activation_daa_score,
-                    )
-                    .await?;
-
-                    start_quic_server(
-                        quic_listen,
-                        quic_external,
-                        externalip,
-                        quic_max_transfers,
-                        &coordinator,
-                        flow_context.clone(),
-                        active_model_id,
                     )
                     .await?;
 

@@ -6,10 +6,9 @@ use seed_node::genome::GenomeStorage;
 use seed_node::model::manager::ModelManager;
 use seed_node::model::storage::ModelStorage;
 use seed_node::p2p::P2pGossipHandle;
-use seed_node::quic::ModelFileProvider;
 use seed_node::rpc::client::XenomorphRpcClient;
 use seed_node::serving::inference::InferenceService;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -18,7 +17,6 @@ use tonic::transport::Server;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 use xenom_miner::lora::LoraConfig;
-use xenom_quic::CheckpointTransferServer;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -33,10 +31,6 @@ async fn main() -> Result<()> {
     let node_p2p = std::env::var("XENO_NODE_P2P").unwrap_or_else(|_| "127.0.0.1:16111".to_string());
     let grpc_addr = std::env::var("XENO_GRPC_ADDR").unwrap_or_else(|_| "0.0.0.0:50051".to_string());
     let miner_ws_addr = std::env::var("XENO_MINER_WS_ADDR").unwrap_or_else(|_| "0.0.0.0:17110".to_string());
-    let quic_listen = std::env::var("XENO_QUIC_LISTEN").unwrap_or_else(|_| "0.0.0.0:17111".to_string());
-    let quic_external = std::env::var("XENO_QUIC_EXTERNAL").ok();
-    let quic_max_transfers: u32 = std::env::var("XENO_QUIC_MAX_TRANSFERS").ok().and_then(|s| s.parse().ok()).unwrap_or(64);
-    let seed_host = std::env::var("XENO_SEED_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let default_model_id = std::env::var("XENO_DEFAULT_MODEL_ID").unwrap_or_else(|_| "xeno/mgm-1".to_string());
     let network_str = std::env::var("XENO_NETWORK").unwrap_or_else(|_| "devnet".to_string());
     let network_type = NetworkType::from_str(&network_str).unwrap_or(NetworkType::Devnet);
@@ -53,31 +47,14 @@ async fn main() -> Result<()> {
     model_manager.load_model(&default_model_id).await?;
     info!("Default model {} is ready", default_model_id);
 
-    // Start the QUIC bulk transfer server and expose the model files to peers.
-    let bind_addr: SocketAddr = quic_listen.parse()?;
-    let provider = Arc::new(ModelFileProvider::new(model_manager.clone()));
-    let quic_server = CheckpointTransferServer::with_max_transfers(bind_addr, provider, quic_max_transfers as usize).await?;
-    let quic_local_addr = quic_server.local_addr()?;
-    info!("QUIC transfer server listening on {}", quic_local_addr);
-
-    // Compute the address to announce in P2P gossip (external override, otherwise bind address
-    // with any unspecified IP resolved via XENO_SEED_HOST).
-    let quic_announce_addr = quic_announce_addr(quic_local_addr, quic_external.as_deref(), &seed_host);
-
-    // Hold the QUIC server alive for the lifetime of the process.
-    tokio::spawn(async move {
-        let _ = quic_server;
-        std::future::pending::<()>().await
-    });
-
     // Join the P2P gossip network and announce the active checkpoint.
     let gossip_key_path = PathBuf::from(&models_dir).join("gossip.key");
     let p2p_gossip = match P2pGossipHandle::connect(node_p2p, network_type, &gossip_key_path).await {
         Ok(gossip) => {
             if let Some(model_info) = model_manager.get_model(&default_model_id).await {
                 let weights_hash = model_info.checkpoint.weights_hash;
-                gossip.announce(default_model_id.clone(), weights_hash, weights_hash, quic_announce_addr).await;
-                info!("Announced checkpoint {} on P2P gossip (listen_addr: {:?})", hex::encode(weights_hash), quic_announce_addr);
+                gossip.announce(default_model_id.clone(), weights_hash, weights_hash, None).await;
+                info!("Announced checkpoint {} on P2P gossip", hex::encode(weights_hash));
             }
             Some(gossip)
         }
@@ -111,38 +88,4 @@ async fn main() -> Result<()> {
     grpc_handle.await??;
 
     Ok(())
-}
-
-fn quic_announce_addr(local_addr: SocketAddr, external: Option<&str>, seed_host: &str) -> Option<SocketAddr> {
-    if let Some(external) = external {
-        return external.parse().ok();
-    }
-
-    let ip = if local_addr.ip().is_unspecified() {
-        seed_host.parse().ok().or_else(preferred_local_ip).unwrap_or(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))
-    } else {
-        local_addr.ip()
-    };
-    Some(SocketAddr::new(ip, local_addr.port()))
-}
-
-/// Return the best local IP to announce for QUIC when no explicit external
-/// address is configured.  Prefers private/site-local addresses over globally
-/// routable ones so miners on the same LAN/VPN find a connectable endpoint.
-fn preferred_local_ip() -> Option<IpAddr> {
-    let Ok(ifaces) = local_ip_address::list_afinet_netifas() else { return None };
-    let mut candidates: Vec<IpAddr> = ifaces.into_iter().map(|(_, ip)| ip).filter(|ip| !ip.is_loopback()).collect();
-    candidates.sort_by_key(|ip| !is_site_local(*ip));
-    candidates.into_iter().next()
-}
-
-fn is_site_local(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
-        IpAddr::V6(v6) => {
-            let octets = v6.octets();
-            // Unique local (fc00::/7) or link-local (fe80::/10)
-            (octets[0] & 0xfe) == 0xfc || (octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80)
-        }
-    }
 }
