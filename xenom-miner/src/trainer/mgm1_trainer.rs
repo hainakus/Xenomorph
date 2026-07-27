@@ -176,7 +176,10 @@ impl Mgm1Trainer {
 
         let total_masked: f32 = counts.iter().take(4).sum::<f32>().max(1.0);
         let active_classes = 4usize;
-        let smoothing = total_masked / active_classes as f32;
+        // Use a much smaller smoothing constant so minority classes in a batch get
+        // a strong inverse-frequency boost while the [0.5, 2.0] clamp still prevents
+        // absent classes from producing runaway gradients.
+        let smoothing = total_masked / (active_classes as f32 * 10.0);
         let numerator = total_masked + active_classes as f32 * smoothing;
 
         let mut weights = vec![1.0f32; self.config.vocab_size];
@@ -654,18 +657,26 @@ mod tests {
             "n_heads": 4,
             "n_layers": 4,
             "d_ff": 512,
-            "max_seq_len": 64,
+            "max_seq_len": 256,
             "dropout": 0.1,
         });
         let config_bytes = config_json.to_string().into_bytes();
         let trainer = Mgm1Trainer::new("xeno/mgm-1", &config_bytes, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, 1.0).unwrap();
 
-        // Balanced synthetic batch (already tested) plus an imbalanced batch
-        let sequences = vec![
-            "TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTCCCCCCCCCCCCAA".to_string(),
-            "TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTCCCCCCCCCCCCAA".to_string(),
-            "TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTCCCCCCCCCCCCAA".to_string(),
-        ];
+        // Synthetic batch matching the distribution from the user's log:
+        // A=72 C=70 G=55 T=117 across ~314 masked positions.
+        let mut raw = String::with_capacity(2048);
+        let total_bases = 2048usize;
+        let a_count = (total_bases as f32 * 72.0 / 314.0).round() as usize;
+        let c_count = (total_bases as f32 * 70.0 / 314.0).round() as usize;
+        let g_count = (total_bases as f32 * 55.0 / 314.0).round() as usize;
+        let t_count = total_bases - a_count - c_count - g_count;
+        raw.extend(std::iter::repeat('A').take(a_count));
+        raw.extend(std::iter::repeat('C').take(c_count));
+        raw.extend(std::iter::repeat('G').take(g_count));
+        raw.extend(std::iter::repeat('T').take(t_count));
+
+        let sequences: Vec<String> = raw.as_bytes().chunks(256).map(|c| String::from_utf8_lossy(c).to_string()).collect();
         let msg = GenomeTrainingBatchMsg {
             batch: GenomeTrainingBatch {
                 batch_id: 1,
@@ -673,7 +684,7 @@ mod tests {
                 genome_merkle_root: [0u8; 32],
                 data_indices: sequences.iter().enumerate().map(|(i, s)| GenomeSlice { chunk_idx: i as u64, start_base: 0, length: s.len() as u32 }).collect(),
                 mask_ratio: 0.15,
-                seq_length: 64,
+                seq_length: 256,
             },
             sequences,
             base_checkpoint: [0u8; 32],
@@ -753,9 +764,9 @@ mod tests {
 
         // Train for a few steps on the same batch and observe whether loss decreases
         // and whether the prediction distribution stays balanced or collapses.
-        println!("\n[DIAGNOSE] Training on same batch for 50 steps (no class weights)...");
-        for step in 0..50 {
-            let (loss, _) = trainer.model.compute_mlm_loss(&input_ids, &labels, None).unwrap();
+        println!("\n[DIAGNOSE] Training on same batch for 30 steps (with class weights)...");
+        for step in 0..30 {
+            let (loss, _) = trainer.model.compute_mlm_loss(&input_ids, &labels, Some(&class_weights)).unwrap();
             let loss_scalar = loss.to_dtype(DType::F32).unwrap().to_vec0::<f32>().unwrap();
             let grads = loss.backward().unwrap();
             let named_grads = trainer.grad_store_to_map(&grads).unwrap();
