@@ -1,4 +1,5 @@
 use crate::rpc::borsh_codec::BorshCodec;
+use crate::rpc::messages::GradientUpdate;
 use anyhow::{anyhow, Result};
 use borsh::{BorshDeserialize, BorshSerialize};
 use std::net::SocketAddr;
@@ -33,6 +34,16 @@ pub struct SubmitTrainingBlockResponse {
 }
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub struct SubmitGradientsRequest {
+    pub update: GradientUpdate,
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub struct SubmitGradientsResponse {
+    pub new_checkpoint: Option<[u8; 32]>,
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub enum RpcMessage {
     GetModelCheckpoint(GetModelCheckpointRequest),
     GetModelCheckpointResponse(GetModelCheckpointResponse),
@@ -40,6 +51,9 @@ pub enum RpcMessage {
     SubmitTrainingBlockResponse(SubmitTrainingBlockResponse),
     Ping,
     Pong,
+    // New variants are appended at the end to keep Borsh enum indices stable.
+    SubmitGradients(SubmitGradientsRequest),
+    SubmitGradientsResponse(SubmitGradientsResponse),
 }
 
 pub struct XenomorphRpcClient {
@@ -91,6 +105,17 @@ impl XenomorphRpcClient {
 
         match response {
             RpcMessage::SubmitTrainingBlockResponse(resp) => Ok(resp),
+            _ => Err(anyhow!("Unexpected response type")),
+        }
+    }
+
+    #[instrument(skip(self, update))]
+    pub async fn submit_gradients(&self, update: GradientUpdate) -> Result<SubmitGradientsResponse> {
+        let message = RpcMessage::SubmitGradients(SubmitGradientsRequest { update });
+        let response = self.send_message(message).await?;
+
+        match response {
+            RpcMessage::SubmitGradientsResponse(resp) => Ok(resp),
             _ => Err(anyhow!("Unexpected response type")),
         }
     }

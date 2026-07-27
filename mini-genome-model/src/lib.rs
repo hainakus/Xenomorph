@@ -312,7 +312,12 @@ impl MiniGenomeModel {
     /// o loss e para a acuracia. Isso evita que o modelo aprenda a simplesmente
     /// copiar as bases nao mascaradas e foca a previsao das bases reais do
     /// genoma que foram escondidas.
-    pub fn compute_mlm_loss(&self, input_ids: &Tensor, labels: &Tensor) -> Result<(Tensor, f32)> {
+    pub fn compute_mlm_loss(
+        &self,
+        input_ids: &Tensor,
+        labels: &Tensor,
+        class_weights: Option<&Tensor>,
+    ) -> Result<(Tensor, f32)> {
         let logits = self.forward(input_ids)?;
         let (batch, seq_len, vocab_size) = logits.dims3()?;
 
@@ -324,7 +329,13 @@ impl MiniGenomeModel {
         let log_probs = candle_nn::ops::log_softmax(&logits_flat, candle_core::D::Minus1)?;
         let labels_flat_unsqueezed = labels_flat.unsqueeze(1)?;
         let target_log_probs = log_probs.gather(&labels_flat_unsqueezed, candle_core::D::Minus1)?;
-        let nll = target_log_probs.neg()?.reshape((batch * seq_len,))?;
+        let mut nll = target_log_probs.neg()?.reshape((batch * seq_len,))?;
+
+        // Optionally reweight classes (e.g. inverse-frequency) to combat class imbalance.
+        if let Some(cw) = class_weights {
+            let cw_per_token = cw.index_select(&labels_flat, 0)?.reshape((batch * seq_len,))?;
+            nll = nll.mul(&cw_per_token)?;
+        }
 
         // Mask: train only on positions where the input was masked (input != label).
         // Padding positions also have input == label (mask token == mask token) and
@@ -385,14 +396,18 @@ impl Trainer {
         Ok(Self { model, optimizer, varmap })
     }
 
-    pub fn train_step(&mut self, input_ids: &Tensor, labels: &Tensor) -> Result<(f32, f32)> {
-        let (loss, _accuracy) = self.model.compute_mlm_loss(input_ids, labels)?;
+    pub fn train_step(&mut self, input_ids: &Tensor, labels: &Tensor, class_weights: Option<&Tensor>) -> Result<(f32, f32)> {
+        let (loss, _accuracy) = self.model.compute_mlm_loss(input_ids, labels, class_weights)?;
 
         self.optimizer.backward_step(&loss)?;
 
         let loss_val = loss.to_scalar::<f32>()?;
 
         Ok((loss_val, 0.0))
+    }
+
+    pub fn model(&self) -> &MiniGenomeModel {
+        &self.model
     }
 
     /// Salvar modelo
@@ -444,5 +459,35 @@ mod tests {
         let output = model.forward(&input_ids).unwrap();
 
         assert_eq!(output.dims(), &[2, 10, 8]);
+    }
+
+    /// Class-weighted MLM loss accepts a 1-D weight tensor and still produces
+    /// a finite, non-negative loss value.  This is a regression test for the
+    /// A/T bias: it locks down the class-weight plumbing in `compute_mlm_loss`.
+    #[test]
+    fn test_class_weighted_mlm_loss() {
+        let device = Device::Cpu;
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let config = MiniGenomeConfig::tiny();
+        let model = MiniGenomeModel::new(vb, config).unwrap();
+
+        // A small batch with one masked position per row.
+        let input = Tensor::new(&[[0i64, 4i64], [4i64, 1i64]], &device).unwrap();
+        let labels = Tensor::new(&[[0i64, 0i64], [1i64, 1i64]], &device).unwrap();
+
+        // Inverse-frequency-ish weights that penalize A and reward C.
+        let weights = Tensor::new(&[0.5f32, 2.0f32, 1.0f32, 1.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32], &device).unwrap();
+
+        let (loss_cw, _) = model.compute_mlm_loss(&input, &labels, Some(&weights)).unwrap();
+        let (loss_no_cw, _) = model.compute_mlm_loss(&input, &labels, None).unwrap();
+
+        let loss_cw_f = loss_cw.to_scalar::<f32>().unwrap();
+        let loss_no_cw_f = loss_no_cw.to_scalar::<f32>().unwrap();
+
+        assert!(loss_cw_f.is_finite() && loss_no_cw_f.is_finite());
+        // Up-weighting the masked C target should increase the loss because the
+        // model starts from random weights and has not yet learned to predict C.
+        assert!(loss_cw_f > loss_no_cw_f, "Weighted loss {} should exceed unweighted {}", loss_cw_f, loss_no_cw_f);
     }
 }

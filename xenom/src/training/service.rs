@@ -1,5 +1,6 @@
 //! Async service wrapper for the unified miner WebSocket server.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use kaspa_core::task::service::{AsyncService, AsyncServiceError, AsyncServiceFuture};
@@ -17,6 +18,9 @@ pub struct MinerWebsocketService {
     listen_address: ContextualNetAddress,
     coordinator: Arc<Coordinator>,
     flow_context: Option<Arc<FlowContext>>,
+    /// Optional public listen address to advertise in P2P gossip so peers can
+    /// fetch checkpoints directly from this node.
+    advertised_address: Option<SocketAddr>,
     shutdown: SingleTrigger,
 }
 
@@ -25,8 +29,9 @@ impl MinerWebsocketService {
         listen_address: ContextualNetAddress,
         coordinator: Arc<Coordinator>,
         flow_context: Option<Arc<FlowContext>>,
+        advertised_address: Option<SocketAddr>,
     ) -> Arc<Self> {
-        Arc::new(Self { listen_address, coordinator, flow_context, shutdown: SingleTrigger::new() })
+        Arc::new(Self { listen_address, coordinator, flow_context, advertised_address, shutdown: SingleTrigger::new() })
     }
 }
 
@@ -42,8 +47,10 @@ impl AsyncService for MinerWebsocketService {
             let listen = self.listen_address.to_string();
             let coordinator = self.coordinator.as_ref().clone();
             let flow_context = self.flow_context.clone();
-            let mut server_task =
-                tokio::spawn(async move { websocket_server::run_miner_server(&listen, coordinator, flow_context).await });
+            let advertised_address = self.advertised_address;
+            let mut server_task = tokio::spawn(async move {
+                websocket_server::run_miner_server(&listen, coordinator, flow_context, advertised_address).await
+            });
             let shutdown_signal = self.shutdown.listener.clone();
 
             tokio::select! {

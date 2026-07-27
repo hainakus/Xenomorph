@@ -7,6 +7,7 @@
 //! validates and mines into the DAG. API gateways can also connect directly to
 //! `xenom` for OpenAI-compatible inference.
 
+pub mod checkpoint_sync;
 pub mod coordinator;
 pub mod inference_service;
 pub mod service;

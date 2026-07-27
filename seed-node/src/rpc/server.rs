@@ -254,13 +254,28 @@ async fn handle_request(
             block_hash.copy_from_slice(hash.as_bytes());
             RpcResponse::BlockHash(block_hash)
         }
-        RpcRequest::SubmitGradients(update) => match model_manager.submit_gradients(&update).await {
-            Ok(new_checkpoint) => RpcResponse::GradientAck { new_checkpoint },
-            Err(e) => {
-                warn!("Failed to submit gradients for {}: {}", update.model_id, e);
-                RpcResponse::Error(format!("Failed to submit gradients: {}", e))
+        RpcRequest::SubmitGradients(update) => {
+            // If the seed-node is paired with a Xenomorph full node, forward the
+            // gradient update there so a single coordinator owns FedAvg state.
+            // Otherwise fall back to local aggregation for standalone/legacy mode.
+            if let Some(client) = xenomorph_client {
+                match client.submit_gradients(update.clone()).await {
+                    Ok(resp) => RpcResponse::GradientAck { new_checkpoint: resp.new_checkpoint },
+                    Err(e) => {
+                        warn!("Failed to forward gradients for {} to full node: {}", update.model_id, e);
+                        RpcResponse::Error(format!("Failed to forward gradients to full node: {}", e))
+                    }
+                }
+            } else {
+                match model_manager.submit_gradients(&update).await {
+                    Ok(new_checkpoint) => RpcResponse::GradientAck { new_checkpoint },
+                    Err(e) => {
+                        warn!("Failed to submit gradients for {}: {}", update.model_id, e);
+                        RpcResponse::Error(format!("Failed to submit gradients: {}", e))
+                    }
+                }
             }
-        },
+        }
         RpcRequest::GetCheckpointPeers(GetCheckpointPeers { weights_hash, .. }) => match p2p_gossip {
             Some(gossip) => {
                 let announcements = gossip.known_peers(&weights_hash).await;

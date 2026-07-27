@@ -26,6 +26,11 @@ pub struct GenomeTrainingBatch {
     pub seq_length: usize,
 }
 
+/// Maximum number of times the generator will resample a slice before giving up
+/// and accepting a low-complexity region.  Keeps batches from stalling if the
+/// archive is dominated by N/poly-X stretches.
+const MAX_HOMOPOLYMER_RETRIES: u32 = 20;
+
 /// Deterministic generator for `GenomeTrainingBatch` from a `.xenom` genome archive.
 pub struct GenomeBatchGenerator {
     archive: Arc<GenomeArchive>,
@@ -39,6 +44,63 @@ impl GenomeBatchGenerator {
         Self { archive, rng }
     }
 
+    /// Return true if the extracted sequence for `slice` consists of a single
+    /// repeated base (e.g. AAAAA... or TTTTT...).  These regions provide no
+    /// information for MLM training and can bias the model toward a single base.
+    fn is_homopolymer(&self, slice: &GenomeSlice) -> bool {
+        if slice.length < 2 {
+            return false;
+        }
+        let Ok(seq) = self.extract_for_miner(slice) else { return false };
+        let first = seq.as_bytes().first().copied().unwrap_or(b'A');
+        seq.as_bytes().iter().all(|&b| b == first)
+    }
+
+    /// Pick a fragment and contiguous start position that is not a homopolymer.
+    fn pick_non_homopolymer_contiguous(&mut self, batch_size: usize, max_seq_len: usize) -> Option<(u64, usize)> {
+        let fragment_count = self.archive.num_fragments();
+        let total_span = if batch_size == 1 { max_seq_len } else { max_seq_len + (batch_size - 1) * max_seq_len };
+
+        for _ in 0..MAX_HOMOPOLYMER_RETRIES {
+            let fragment_idx = self.rng.gen_range(0..fragment_count);
+            let fragment_bases = self.archive.fragment_base_count(fragment_idx).unwrap_or(0) as usize;
+            if fragment_bases < total_span {
+                continue;
+            }
+            let max_start = fragment_bases - total_span;
+            let start_base = if max_start == 0 { 0 } else { self.rng.gen_range(0..=max_start) };
+            let probe = GenomeSlice { chunk_idx: fragment_idx, start_base: start_base as u32, length: max_seq_len as u32 };
+            if !self.is_homopolymer(&probe) {
+                return Some((fragment_idx, start_base));
+            }
+        }
+        None
+    }
+
+    /// Pick a single non-homopolymer slice, falling back to the last draw if
+    /// the archive is dominated by low-complexity regions.
+    fn pick_non_homopolymer_slice(&mut self, max_seq_len: usize) -> Option<GenomeSlice> {
+        let fragment_count = self.archive.num_fragments();
+        let mut last_slice = None;
+
+        for _ in 0..MAX_HOMOPOLYMER_RETRIES {
+            let fragment_idx = self.rng.gen_range(0..fragment_count);
+            let fragment_bases = self.archive.fragment_base_count(fragment_idx).unwrap_or(0) as usize;
+            let length = max_seq_len.min(fragment_bases);
+            if length == 0 {
+                continue;
+            }
+            let start_base = if fragment_bases == length { 0 } else { self.rng.gen_range(0..=(fragment_bases - length)) };
+            let slice = GenomeSlice { chunk_idx: fragment_idx, start_base: start_base as u32, length: length as u32 };
+            last_slice = Some(slice.clone());
+            if !self.is_homopolymer(&slice) {
+                return Some(slice);
+            }
+        }
+
+        last_slice
+    }
+
     /// Generate a batch of `batch_size` genome slices, each up to `seq_len` bases long.
     ///
     /// When the genome fragment is large enough, the slices are adjacent windows taken
@@ -46,6 +108,10 @@ impl GenomeBatchGenerator {
     /// instead of scattered random positions.  This gives the DNABERT-2 attention layers
     /// meaningful local context.  If the fragment is too small, the generator falls back
     /// to the original random-window behaviour.
+    ///
+    /// Regions that are all one base (e.g. poly-A tails or runs of unknown bases packed
+    /// as A) are skipped, because they provide no training signal and can collapse the
+    /// MLM head to a single class.
     ///
     /// The returned batch also includes a reproducible `batch_id` derived from the archive
     /// merkle root and the generator's RNG state.
@@ -67,14 +133,9 @@ impl GenomeBatchGenerator {
 
         // Try to produce adjacent windows from a single fragment.  The step size is
         // the window length so consecutive slices are contiguous.
-        let step = max_seq_len;
-        let total_span = if batch_size == 1 { max_seq_len } else { max_seq_len + (batch_size - 1) * step };
-        let fragment_idx = self.rng.gen_range(0..fragment_count);
-        let fragment_bases = self.archive.fragment_base_count(fragment_idx).unwrap_or(0) as usize;
-
-        if fragment_bases >= total_span {
-            let max_start = fragment_bases - total_span;
-            let start_base = if max_start == 0 { 0 } else { self.rng.gen_range(0..=max_start) };
+        if let Some((fragment_idx, start_base)) = self.pick_non_homopolymer_contiguous(batch_size, max_seq_len) {
+            let fragment_bases = self.archive.fragment_base_count(fragment_idx).unwrap_or(0) as usize;
+            let step = max_seq_len;
             for i in 0..batch_size {
                 let s = start_base + i * step;
                 let length = max_seq_len.min(fragment_bases - s);
@@ -84,17 +145,12 @@ impl GenomeBatchGenerator {
                 slices.push(GenomeSlice { chunk_idx: fragment_idx, start_base: s as u32, length: length as u32 });
             }
         } else {
-            // Fragment too small for contiguous windows: fall back to random slices.
+            // Fragment too small for contiguous windows, or all contiguous probes were
+            // homopolymers: fall back to random slices.
             for _ in 0..batch_size {
-                let fragment_idx = self.rng.gen_range(0..fragment_count);
-                let fragment_bases = self.archive.fragment_base_count(fragment_idx).unwrap_or(0) as usize;
-                let length = max_seq_len.min(fragment_bases);
-                if length == 0 {
-                    continue;
+                if let Some(slice) = self.pick_non_homopolymer_slice(max_seq_len) {
+                    slices.push(slice);
                 }
-                let start_base = if fragment_bases == length { 0 } else { self.rng.gen_range(0..=(fragment_bases - length)) };
-
-                slices.push(GenomeSlice { chunk_idx: fragment_idx, start_base: start_base as u32, length: length as u32 });
             }
         }
 

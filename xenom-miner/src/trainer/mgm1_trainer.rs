@@ -149,6 +149,35 @@ impl Mgm1Trainer {
         self.build_mlm_tensors(&token_ids, &mut rng)
     }
 
+    /// Compute inverse-frequency class weights from the masked positions of a batch.
+    /// Returns a 1-D tensor of length `vocab_size` with weights normalized so the
+    /// mean over present classes is 1.0.
+    fn class_weights_for_batch(&self, input_ids: &Tensor, labels: &Tensor) -> Result<Tensor> {
+        let mask = input_ids.ne(labels)?.to_dtype(DType::F32)?;
+        let labels_u32 = labels.to_dtype(DType::U32)?;
+        let flat = labels_u32.reshape((labels.elem_count(),))?;
+        let mask_flat = mask.reshape((labels.elem_count(),))?;
+
+        let mut counts = vec![0.0f32; self.config.vocab_size];
+        let label_vec = flat.to_vec1::<u32>()?;
+        let mask_vec = mask_flat.to_vec1::<f32>()?;
+        for (id, m) in label_vec.iter().zip(mask_vec.iter()) {
+            let idx = *id as usize;
+            if idx < self.config.vocab_size {
+                counts[idx] += *m;
+            }
+        }
+
+        let total: f32 = counts.iter().sum::<f32>().max(1.0);
+        let active_classes = counts.iter().filter(|&&c| c > 0.0).count().max(1);
+        let mut weights = vec![0.0f32; self.config.vocab_size];
+        for i in 0..self.config.vocab_size {
+            weights[i] = if counts[i] > 0.0 { total / (counts[i] * active_classes as f32) } else { 0.0 };
+        }
+
+        Ok(Tensor::new(weights, &self.device)?)
+    }
+
     /// Run a forward/backward pass and return the unscaled loss plus per-variable
     /// gradients moved to the CPU (as F32).
     pub(crate) fn compute_gradients(
@@ -157,7 +186,8 @@ impl Mgm1Trainer {
         labels: &Tensor,
         loss_scale: f32,
     ) -> Result<(f64, HashMap<String, Tensor>)> {
-        let (loss, _) = self.model.compute_mlm_loss(input_ids, labels)?;
+        let class_weights = self.class_weights_for_batch(input_ids, labels).ok();
+        let (loss, _) = self.model.compute_mlm_loss(input_ids, labels, class_weights.as_ref())?;
         let loss_scalar = loss.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64;
         if !loss_scalar.is_finite() {
             anyhow::bail!("Loss is not finite ({}) before backward", loss_scalar);
@@ -189,7 +219,8 @@ impl Mgm1Trainer {
 
     /// Compute scalar loss for a batch without taking gradients.
     pub(crate) fn compute_loss_scalar(&self, input_ids: &Tensor, labels: &Tensor) -> Result<f64> {
-        let (loss, _) = self.model.compute_mlm_loss(input_ids, labels)?;
+        let class_weights = self.class_weights_for_batch(input_ids, labels).ok();
+        let (loss, _) = self.model.compute_mlm_loss(input_ids, labels, class_weights.as_ref())?;
         Ok(loss.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64)
     }
 

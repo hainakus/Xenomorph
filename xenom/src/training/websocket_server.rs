@@ -37,7 +37,12 @@ fn ws_config() -> WebSocketConfig {
 }
 
 /// Run the miner WebSocket server on `addr` using `coordinator` for state.
-pub async fn run_miner_server(addr: &str, coordinator: Coordinator, flow_context: Option<Arc<FlowContext>>) -> Result<()> {
+pub async fn run_miner_server(
+    addr: &str,
+    coordinator: Coordinator,
+    flow_context: Option<Arc<FlowContext>>,
+    listen_addr: Option<SocketAddr>,
+) -> Result<()> {
     let listener = TcpListener::bind(addr).await.map_err(|e| anyhow!("Failed to bind miner server {}: {}", addr, e))?;
     let bound: SocketAddr = listener.local_addr()?;
     info!("Unified miner WebSocket server listening on {}", bound);
@@ -45,8 +50,9 @@ pub async fn run_miner_server(addr: &str, coordinator: Coordinator, flow_context
     while let Ok((stream, peer)) = listener.accept().await {
         let coord = coordinator.clone();
         let ctx = flow_context.clone();
+        let addr = listen_addr.unwrap_or(bound);
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, peer, coord, ctx).await {
+            if let Err(e) = handle_connection(stream, peer, coord, ctx, addr).await {
                 warn!("Miner WebSocket connection from {} closed: {}", peer, e);
             }
         });
@@ -60,6 +66,7 @@ async fn handle_connection(
     peer: SocketAddr,
     coordinator: Coordinator,
     flow_context: Option<Arc<FlowContext>>,
+    listen_addr: SocketAddr,
 ) -> Result<()> {
     let mut ws = accept_async_with_config(stream, Some(ws_config())).await?;
 
@@ -75,7 +82,7 @@ async fn handle_connection(
                     }
                 };
 
-                let response = handle_request(envelope.payload, &coordinator, flow_context.clone()).await;
+                let response = handle_request(envelope.payload, &coordinator, flow_context.clone(), listen_addr).await;
                 let resp_bytes = match to_vec(&response) {
                     Ok(bytes) => bytes,
                     Err(e) => {
@@ -97,7 +104,12 @@ async fn handle_connection(
     Ok(())
 }
 
-async fn handle_request(req: RpcRequest, coordinator: &Coordinator, flow_context: Option<Arc<FlowContext>>) -> RpcResponse {
+async fn handle_request(
+    req: RpcRequest,
+    coordinator: &Coordinator,
+    flow_context: Option<Arc<FlowContext>>,
+    listen_addr: SocketAddr,
+) -> RpcResponse {
     match req {
         RpcRequest::GetTrainingBatch { model_id } => coordinator.get_training_batch(model_id).await,
         RpcRequest::GetGenomeTrainingBatch(request) => coordinator.get_genome_training_batch(request).await,
@@ -118,7 +130,9 @@ async fn handle_request(req: RpcRequest, coordinator: &Coordinator, flow_context
                     // Announce the new active checkpoint over P2P gossip so other nodes
                     // (e.g. standalone seed-nodes) can discover it.  `cid` is currently a
                     // placeholder equal to the weights hash until IPFS/HTTP content IDs are wired.
-                    ctx.announce_checkpoint(update.model_id.clone(), new_checkpoint, new_checkpoint, None).await;
+                    // `listen_addr` lets peers open a WebSocket directly to this node to fetch
+                    // the new checkpoint.
+                    ctx.announce_checkpoint(update.model_id.clone(), new_checkpoint, new_checkpoint, Some(listen_addr)).await;
                 }
                 RpcResponse::GradientAck { new_checkpoint: Some(new_checkpoint) }
             }

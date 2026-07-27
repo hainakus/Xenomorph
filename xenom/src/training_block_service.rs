@@ -3,6 +3,10 @@
 //! This service accepts `SubmitTrainingBlock` requests from the Xenomorph seed-node,
 //! builds a Kaspa block template with the training proof committed in the coinbase
 //! extra-data, solves the block PoW, and submits the block to the local consensus.
+//!
+//! It also proxies `SubmitGradients` to the unified training coordinator so a
+//! standalone `seed-node` can forward FedAvg updates to the single full-node that
+//! owns the active model state.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -23,8 +27,11 @@ use kaspa_rpc_core::{GetBlockTemplateRequest, SubmitBlockReport, SubmitBlockRequ
 use kaspa_rpc_service::service::RpcCoreService;
 use kaspa_utils::networking::ContextualNetAddress;
 use kaspa_utils::triggers::SingleTrigger;
+use seed_node::rpc::messages::GradientUpdate;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+
+use crate::training::coordinator::Coordinator;
 
 const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
 const TRAINING_BLOCK_SERVICE: &str = "training-block-rpc";
@@ -78,6 +85,16 @@ pub struct SubmitTrainingBlockResponse {
 }
 
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub struct SubmitGradientsRequest {
+    pub update: GradientUpdate,
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
+pub struct SubmitGradientsResponse {
+    pub new_checkpoint: Option<[u8; 32]>,
+}
+
+#[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 pub enum RpcMessage {
     GetModelCheckpoint(GetModelCheckpointRequest),
     GetModelCheckpointResponse(GetModelCheckpointResponse),
@@ -85,6 +102,9 @@ pub enum RpcMessage {
     SubmitTrainingBlockResponse(SubmitTrainingBlockResponse),
     Ping,
     Pong,
+    // New variants are appended at the end to preserve Borsh enum indices.
+    SubmitGradients(SubmitGradientsRequest),
+    SubmitGradientsResponse(SubmitGradientsResponse),
 }
 
 /// Active model state used to validate incoming training proofs.
@@ -104,6 +124,9 @@ pub struct TrainingBlockService {
     genome_fragment_size_bytes: u32,
     rpc_core_service: Arc<RpcCoreService>,
     shutdown: SingleTrigger,
+    /// Optional coordinator used to aggregate gradient updates forwarded by a
+    /// standalone `seed-node`. When `None`, gradient submissions are rejected.
+    coordinator: Option<Coordinator>,
 }
 
 impl TrainingBlockService {
@@ -114,6 +137,7 @@ impl TrainingBlockService {
         genome_pow_activation_daa_score: u64,
         genome_fragment_size_bytes: u32,
         rpc_core_service: Arc<RpcCoreService>,
+        coordinator: Option<Coordinator>,
     ) -> Arc<Self> {
         Arc::new(Self {
             listen_address,
@@ -123,6 +147,7 @@ impl TrainingBlockService {
             genome_fragment_size_bytes,
             rpc_core_service,
             shutdown: SingleTrigger::new(),
+            coordinator,
         })
     }
 
@@ -163,8 +188,25 @@ impl TrainingBlockService {
     async fn handle_message(&self, message: RpcMessage) -> RpcMessage {
         match message {
             RpcMessage::SubmitTrainingBlock(request) => self.submit_training_block(request).await,
+            RpcMessage::SubmitGradients(request) => self.submit_gradients(request).await,
             RpcMessage::Ping => RpcMessage::Pong,
             _ => RpcMessage::SubmitTrainingBlockResponse(SubmitTrainingBlockResponse { accepted: false, block_hash: [0u8; 32] }),
+        }
+    }
+
+    async fn submit_gradients(&self, request: SubmitGradientsRequest) -> RpcMessage {
+        match &self.coordinator {
+            Some(coordinator) => match coordinator.submit_gradients(&request.update).await {
+                Ok(new_checkpoint) => RpcMessage::SubmitGradientsResponse(SubmitGradientsResponse { new_checkpoint }),
+                Err(e) => {
+                    warn!("Rejecting forwarded gradients: {}", e);
+                    RpcMessage::SubmitGradientsResponse(SubmitGradientsResponse { new_checkpoint: None })
+                }
+            },
+            None => {
+                warn!("Rejecting gradients: no training coordinator configured for Borsh RPC");
+                RpcMessage::SubmitGradientsResponse(SubmitGradientsResponse { new_checkpoint: None })
+            }
         }
     }
 

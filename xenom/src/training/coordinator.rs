@@ -22,7 +22,9 @@ use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_rpc_core::{GetBlockTemplateRequest, SubmitBlockReport, SubmitBlockRequest};
 use kaspa_rpc_service::service::RpcCoreService;
 use seed_node::genome::{GenomeBatchGenerator, GenomeStorage};
+use seed_node::model::checkpoint::ModelMetrics;
 use seed_node::model::manager::ModelManager;
+use seed_node::model::model_files::RawModelFiles;
 use seed_node::model::storage::ModelStorage;
 use seed_node::rpc::messages::{
     GenomeTrainingBatchMsg, GetGenomeTrainingBatch, GradientUpdate, ModelCheckpoint as RpcModelCheckpoint,
@@ -527,6 +529,27 @@ impl Coordinator {
         }
 
         RpcResponse::BlockHash(block_hash)
+    }
+
+    /// Replace the active model checkpoint with a checkpoint downloaded from a
+    /// peer.  This is used by the checkpoint-sync service to keep multiple full
+    /// nodes consistent through P2P gossip.
+    pub async fn load_external_checkpoint(&self, model_id: String, files: RawModelFiles) -> Result<Hash> {
+        if model_id != self.inner.active_model_id {
+            return Err(anyhow::anyhow!(
+                "Checkpoint model id {} does not match active model {}",
+                model_id,
+                self.inner.active_model_id
+            ));
+        }
+
+        self.inner.model_manager.store_model_files(&model_id, &files, ModelMetrics::default()).await?;
+
+        let weights_hash = blake3::hash(&files.weights);
+        let hash = Hash::from_bytes(*weights_hash.as_bytes());
+        *self.inner.active_weights_hash.write().await = Some(hash);
+        info!("Replaced active model checkpoint for {} with downloaded weights {}", model_id, hex::encode(hash.as_bytes()));
+        Ok(hash)
     }
 
     /// Submit a gradient update for FedAvg aggregation and, if enough participants

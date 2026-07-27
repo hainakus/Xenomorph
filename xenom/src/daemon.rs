@@ -1,5 +1,5 @@
 use futures_util::StreamExt;
-use std::{fs, io::Write, path::PathBuf, process::exit, sync::Arc, time::Duration};
+use std::{fs, io::Write, net::SocketAddr, path::PathBuf, process::exit, sync::Arc, time::Duration};
 
 use async_channel::unbounded;
 use kaspa_consensus_core::{
@@ -51,6 +51,7 @@ pub const DESIRED_DAEMON_SOFT_FD_LIMIT: u64 = 8 * 1024;
 pub const MINIMUM_DAEMON_SOFT_FD_LIMIT: u64 = 4 * 1024;
 
 use crate::args::Args;
+use crate::training::checkpoint_sync::CheckpointSyncService;
 use crate::training::coordinator::Coordinator;
 use crate::training::inference_service::InferenceGrpcService;
 use crate::training::service::MinerWebsocketService;
@@ -637,34 +638,15 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
     })
     .for_each(|server| async_runtime.register(server));
 
-    // Register the Xenomorph training-block Borsh RPC service if enabled.
-    if let Some(training_rpc_listen) = args.training_rpc_listen {
-        let weights_hash_hex = args.active_model_weights_hash.as_deref().unwrap_or(config.genome_merkle_root);
-        let weights_hash = Hash::from_str(weights_hash_hex)
-            .unwrap_or_else(|e| panic!("Invalid active model weights hash {}: {}", weights_hash_hex, e));
-        let active_model = ActiveModel {
-            model_id: args.active_model_id.clone(),
-            weights_hash,
-            reward_per_block: 0,
-            // Devnet uses synthetic/random batches; a single AdamW step on a pre-trained
-            // DNABERT-2 model may not lower the loss on every batch. Allow the loss to
-            // increase by up to 1.0 while still rejecting proofs where the loss explodes.
-            difficulty: kaspa_consensus_core::pow::DifficultyTarget { min_improvement: -1.0, max_loss_after: f64::MAX },
-        };
-        async_runtime.register(TrainingBlockService::new(
-            training_rpc_listen,
-            network.network_type,
-            active_model,
-            config.genome_pow_activation_daa_score,
-            config.genome_fragment_size_bytes,
-            rpc_core_service.clone(),
-        ));
-    }
-
-    // Unified training and inference services (merge seed-node responsibilities into the full node).
-    let enable_training = args.miner_ws_listen.is_some();
+    // Unified training/inference coordinator. It is shared by the miner WebSocket
+    // service, the inference gRPC service and the legacy Borsh training-block RPC
+    // service (so the latter can accept gradient updates forwarded by a standalone
+    // seed-node).
+    let enable_training_ws = args.miner_ws_listen.is_some();
     let enable_inference_grpc = args.inference_grpc_listen.is_some();
-    if enable_training || enable_inference_grpc {
+    let enable_training_rpc = args.training_rpc_listen.is_some();
+
+    let coordinator: Option<Arc<Coordinator>> = if enable_training_ws || enable_inference_grpc || enable_training_rpc {
         let models_dir = args.models_dir.as_ref().map(PathBuf::from).unwrap_or_else(|| app_dir.join("models"));
         let genome_cache_dir = args.genome_cache_dir.as_ref().map(PathBuf::from).unwrap_or_else(|| app_dir.join("genome"));
         let genome_source_url = args.genome_url.clone().unwrap_or_default();
@@ -672,7 +654,7 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
 
         let active_model_id = args.active_model_id.clone();
 
-        let coordinator = Arc::new(
+        Some(Arc::new(
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
@@ -694,11 +676,58 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
                     Ok::<_, anyhow::Error>(coordinator)
                 })
                 .expect("Failed to initialize training coordinator"),
-        );
+        ))
+    } else {
+        None
+    };
+
+    // Register the Xenomorph training-block Borsh RPC service if enabled.
+    if let Some(training_rpc_listen) = args.training_rpc_listen {
+        let weights_hash_hex = args.active_model_weights_hash.as_deref().unwrap_or(config.genome_merkle_root);
+        let weights_hash = Hash::from_str(weights_hash_hex)
+            .unwrap_or_else(|e| panic!("Invalid active model weights hash {}: {}", weights_hash_hex, e));
+        let active_model = ActiveModel {
+            model_id: args.active_model_id.clone(),
+            weights_hash,
+            reward_per_block: 0,
+            // Devnet uses synthetic/random batches; a single AdamW step on a pre-trained
+            // DNABERT-2 model may not lower the loss on every batch. Allow the loss to
+            // increase by up to 1.0 while still rejecting proofs where the loss explodes.
+            difficulty: kaspa_consensus_core::pow::DifficultyTarget { min_improvement: -1.0, max_loss_after: f64::MAX },
+        };
+        async_runtime.register(TrainingBlockService::new(
+            training_rpc_listen,
+            network.network_type,
+            active_model,
+            config.genome_pow_activation_daa_score,
+            config.genome_fragment_size_bytes,
+            rpc_core_service.clone(),
+            coordinator.as_ref().map(|c| c.as_ref().clone()),
+        ));
+    }
+
+    // Unified training and inference services (merge seed-node responsibilities into the full node).
+    if enable_training_ws || enable_inference_grpc {
+        let coordinator = coordinator.expect("coordinator should be initialized when miner or inference services are enabled");
 
         if let Some(miner_ws_listen) = args.miner_ws_listen {
-            async_runtime.register(MinerWebsocketService::new(miner_ws_listen, coordinator.clone(), Some(flow_context.clone())));
+            let advertised_addr = miner_ws_listen.to_string().parse::<SocketAddr>().ok();
+            async_runtime.register(MinerWebsocketService::new(
+                miner_ws_listen,
+                coordinator.clone(),
+                Some(flow_context.clone()),
+                advertised_addr,
+            ));
         }
+
+        // Sync active model checkpoints with peers announced over P2P gossip.
+        // This keeps multiple full nodes in sync when miners connect to different
+        // entry points.
+        async_runtime.register(CheckpointSyncService::new_with_local_addr(
+            coordinator.as_ref().clone(),
+            flow_context.clone(),
+            args.miner_ws_listen.as_ref().and_then(|a| a.to_string().parse::<SocketAddr>().ok()),
+        ));
 
         if let Some(inference_grpc_listen) = args.inference_grpc_listen {
             async_runtime.register(InferenceGrpcService::new(inference_grpc_listen, coordinator));
