@@ -11483,6 +11483,7 @@ dependencies = [
  "async-channel 2.3.1",
  "blake3",
  "borsh",
+ "candle-core",
  "cfg-if 1.0.0",
  "clap 4.5.16",
  "dhat",
@@ -11529,7 +11530,9 @@ dependencies = [
  "tokio-tungstenite 0.21.0",
  "toml",
  "tonic",
+ "tracing",
  "workflow-log",
+ "xenom-miner",
 ]
 
 [[package]]

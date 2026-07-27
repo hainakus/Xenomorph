@@ -1351,6 +1351,10 @@ mod tests {
             loss_after: 0.9,
             gradients_commitment,
             batch_indices: vec![0, 1, 2],
+            batch_id: 1,
+            learning_rate: 0.001,
+            genome_merkle_root: [0u8; 32],
+            genome_slices: Vec::new(),
             compute_time_ms: 100,
         }
     }

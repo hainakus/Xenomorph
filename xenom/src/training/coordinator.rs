@@ -34,6 +34,8 @@ use seed_node::rpc::messages::{
 use seed_node::LoraConfig;
 use tokio::sync::RwLock;
 
+use crate::training::mgm1_validator;
+
 /// Compact training summary embedded into the coinbase extra-data payload.
 #[derive(Debug, Clone, BorshSerialize)]
 pub struct CoinbaseExtraData {
@@ -592,6 +594,21 @@ impl Coordinator {
                 update.loss_after,
                 self.inner.difficulty.max_loss_after
             ));
+        }
+
+        // For MGM-1 genome batches, fully re-execute the training step on the
+        // full node and verify the reported losses before accepting the update.
+        if update.model_id.contains("mgm-1") && !update.genome_slices.is_empty() {
+            let files = self
+                .inner
+                .model_manager
+                .get_model_checkpoint(&update.model_id)
+                .await
+                .with_context(|| format!("Failed to load active model files for validation of {}", update.model_id))?
+                .1;
+            mgm1_validator::validate_mgm1_update(update, &files, &self.inner.genome_storage)
+                .await
+                .with_context(|| format!("MGM-1 gradient validation failed for {}", update.model_id))?;
         }
 
         let new_checkpoint = self.inner.model_manager.submit_gradients(update).await?;

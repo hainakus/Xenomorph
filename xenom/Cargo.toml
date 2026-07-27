@@ -67,10 +67,13 @@ serde_with = "3.7.0"
 
 # Unified training: reuse seed-node's genome and model management inside the full node.
 seed-node = { path = "../seed-node" }
+xenom-miner = { path = "../xenom-miner" }
 tokio-tungstenite = "0.21"
 tonic = "0.10"
 blake3 = "1.5"
 hex = "0.4"
+candle-core = { version = "0.3", default-features = false }
+tracing = "0.1"
 
 [features]
 heap = ["dhat", "kaspa-alloc/heap"]

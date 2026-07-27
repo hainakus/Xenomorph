@@ -16,7 +16,7 @@ use anyhow::{bail, Context, Result};
 use candle_core::Tensor;
 use tracing::{info, warn};
 
-use crate::rpc::messages::{GenomeTrainingBatchMsg, GradientUpdate, TrainingBatch};
+use crate::rpc::messages::{GenomeSlice, GenomeTrainingBatchMsg, GradientUpdate, TrainingBatch};
 use crate::trainer::gpu_trainer::GpuBackend;
 use crate::trainer::gradient::{add_grad_maps, average_grad_maps, build_gradient_update, gradient_commitment, move_grads_to_device};
 use crate::trainer::mgm1_trainer::Mgm1Trainer;
@@ -27,6 +27,14 @@ use crate::trainer::{DeviceInfo, Trainer, TrainingResult};
 struct Mgm1BaseSnapshot {
     checkpoint: Option<[u8; 32]>,
     per_device: Vec<HashMap<String, Tensor>>,
+}
+
+/// Metadata needed to reconstruct a genome-backed batch on the validator node.
+struct Mgm1BatchMetadata {
+    batch_id: u64,
+    learning_rate: f32,
+    genome_merkle_root: [u8; 32],
+    genome_slices: Vec<GenomeSlice>,
 }
 
 /// Result of computing gradients for one micro-batch.
@@ -172,9 +180,12 @@ impl Mgm1MultiGpuTrainer {
         input_ids_full: &Tensor,
         labels_full: &Tensor,
         base_checkpoint: [u8; 32],
+        batch_id: u64,
         batch_indices: Vec<u64>,
         learning_rate: f32,
-    ) -> Result<(TrainingResult, HashMap<String, Tensor>, f32)> {
+        genome_merkle_root: [u8; 32],
+        genome_slices: Vec<GenomeSlice>,
+    ) -> Result<(TrainingResult, HashMap<String, Tensor>, f32, Mgm1BatchMetadata)> {
         let start = Instant::now();
         self.ensure_base(base_checkpoint).context("Failed to reset replicas to base checkpoint")?;
 
@@ -278,7 +289,9 @@ impl Mgm1MultiGpuTrainer {
             compute_time_ms: total_ms,
         };
 
-        Ok((result, weight_delta, loss_before_weight))
+        let metadata = Mgm1BatchMetadata { batch_id, learning_rate, genome_merkle_root, genome_slices };
+
+        Ok((result, weight_delta, loss_before_weight, metadata))
     }
 
     /// Encrypt and package the averaged gradients as a `GradientUpdate`.
@@ -288,6 +301,7 @@ impl Mgm1MultiGpuTrainer {
         named_grads: HashMap<String, Tensor>,
         participant_weight: f32,
         result: &TrainingResult,
+        metadata: &Mgm1BatchMetadata,
     ) -> Result<GradientUpdate> {
         build_gradient_update(
             &self.model_id,
@@ -296,6 +310,10 @@ impl Mgm1MultiGpuTrainer {
             participant_weight,
             self.config.gradient_top_k_ratio,
             result,
+            metadata.batch_id,
+            metadata.learning_rate,
+            metadata.genome_merkle_root,
+            metadata.genome_slices.clone(),
         )
     }
 }
@@ -308,8 +326,16 @@ impl Trainer for Mgm1MultiGpuTrainer {
 
         let n = batch.data_indices.len().max(1);
         let (input_ids, labels) = self.trainers[0].prepare_random(n, seed)?;
-        let (result, _, _) =
-            self.train_batch(&input_ids, &labels, batch.base_checkpoint, batch.data_indices.clone(), batch.learning_rate)?;
+        let (result, _, _, _) = self.train_batch(
+            &input_ids,
+            &labels,
+            batch.base_checkpoint,
+            batch.batch_id,
+            batch.data_indices.clone(),
+            batch.learning_rate,
+            [0u8; 32],
+            Vec::new(),
+        )?;
         Ok(result)
     }
 
@@ -320,9 +346,17 @@ impl Trainer for Mgm1MultiGpuTrainer {
 
         let n = batch.data_indices.len().max(1);
         let (input_ids, labels) = self.trainers[0].prepare_random(n, seed)?;
-        let (result, weight_delta, participant_weight) =
-            self.train_batch(&input_ids, &labels, batch.base_checkpoint, batch.data_indices.clone(), batch.learning_rate)?;
-        let update = self.build_gradient_update_for(batch.base_checkpoint, weight_delta, participant_weight, &result)?;
+        let (result, weight_delta, participant_weight, metadata) = self.train_batch(
+            &input_ids,
+            &labels,
+            batch.base_checkpoint,
+            batch.batch_id,
+            batch.data_indices.clone(),
+            batch.learning_rate,
+            [0u8; 32],
+            Vec::new(),
+        )?;
+        let update = self.build_gradient_update_for(batch.base_checkpoint, weight_delta, participant_weight, &result, &metadata)?;
         Ok((result, Some(update)))
     }
 
@@ -337,7 +371,16 @@ impl Trainer for Mgm1MultiGpuTrainer {
         let batch_indices: Vec<u64> = msg.batch.data_indices.iter().map(|s| s.chunk_idx).collect();
 
         let (input_ids, labels) = self.trainers[0].prepare_sequences(&msg.sequences, seed)?;
-        let (result, _, _) = self.train_batch(&input_ids, &labels, msg.base_checkpoint, batch_indices, self.lr as f32)?;
+        let (result, _, _, _) = self.train_batch(
+            &input_ids,
+            &labels,
+            msg.base_checkpoint,
+            msg.batch.batch_id,
+            batch_indices,
+            self.lr as f32,
+            msg.batch.genome_merkle_root,
+            msg.batch.data_indices.clone(),
+        )?;
         Ok(result)
     }
 
@@ -352,9 +395,17 @@ impl Trainer for Mgm1MultiGpuTrainer {
         let batch_indices: Vec<u64> = msg.batch.data_indices.iter().map(|s| s.chunk_idx).collect();
 
         let (input_ids, labels) = self.trainers[0].prepare_sequences(&msg.sequences, seed)?;
-        let (result, weight_delta, participant_weight) =
-            self.train_batch(&input_ids, &labels, msg.base_checkpoint, batch_indices, self.lr as f32)?;
-        let update = self.build_gradient_update_for(msg.base_checkpoint, weight_delta, participant_weight, &result)?;
+        let (result, weight_delta, participant_weight, metadata) = self.train_batch(
+            &input_ids,
+            &labels,
+            msg.base_checkpoint,
+            msg.batch.batch_id,
+            batch_indices,
+            self.lr as f32,
+            msg.batch.genome_merkle_root,
+            msg.batch.data_indices.clone(),
+        )?;
+        let update = self.build_gradient_update_for(msg.base_checkpoint, weight_delta, participant_weight, &result, &metadata)?;
         Ok((result, Some(update)))
     }
 

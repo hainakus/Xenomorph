@@ -179,7 +179,9 @@ pub struct GradientPayload {
 /// Gradient update submitted by a miner to the aggregator.
 ///
 /// Includes a short training proof so the node can reject useless or adversarial
-/// updates before they enter FedAvg.
+/// updates before they enter FedAvg. The `loss_*` fields and the `genome_*`
+/// fields allow the node to re-execute the exact training batch and verify the
+/// claimed improvement.
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub struct GradientUpdate {
     pub model_id: String,
@@ -192,9 +194,16 @@ pub struct GradientUpdate {
     /// Deterministic hash of the plaintext gradients/weight-delta contained in
     /// `encrypted_payload`.
     pub gradients_commitment: [u8; 32],
-    /// Batch indices that produced this update so the node can re-run a subset
-    /// for spot-checking.
+    /// Batch indices that produced this update (chunk_idx only, for logging).
     pub batch_indices: Vec<u64>,
+    /// The original batch id used to seed the MLM mask RNG.
+    pub batch_id: u64,
+    /// Learning rate used by the miner so the node re-executes the same step.
+    pub learning_rate: f32,
+    /// Genome archive this batch was extracted from.
+    pub genome_merkle_root: [u8; 32],
+    /// Exact genome slices used to extract the DNA sequences.
+    pub genome_slices: Vec<GenomeSlice>,
     pub compute_time_ms: u64,
 }
 

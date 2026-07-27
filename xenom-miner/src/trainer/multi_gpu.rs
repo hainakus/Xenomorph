@@ -574,6 +574,10 @@ impl Trainer for MultiGpuTrainer {
             participant_weight,
             self.config.gradient_top_k_ratio,
             &result,
+            batch.batch_id,
+            batch.learning_rate,
+            [0u8; 32],
+            Vec::new(),
         )?;
         info!("Gradient update build time: {} ms", build_start.elapsed().as_millis());
         Ok((result, Some(update)))
@@ -609,6 +613,10 @@ impl Trainer for MultiGpuTrainer {
             participant_weight,
             self.config.gradient_top_k_ratio,
             &result,
+            batch.batch_id,
+            0.01,
+            msg.batch.genome_merkle_root,
+            msg.batch.data_indices.clone(),
         )?;
         info!("Genome gradient update build time: {} ms", build_start.elapsed().as_millis());
         Ok((result, Some(update)))

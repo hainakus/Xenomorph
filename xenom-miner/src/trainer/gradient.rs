@@ -8,7 +8,7 @@ use borsh::to_vec as borsh_to_vec;
 use candle_core::{DType, Device, Tensor};
 use rayon::prelude::*;
 
-use crate::rpc::messages::{GradientLayer, GradientPayload, GradientUpdate};
+use crate::rpc::messages::{GenomeSlice, GradientLayer, GradientPayload, GradientUpdate};
 use crate::trainer::mixed_precision::to_grad_dtype;
 use crate::trainer::TrainingResult;
 
@@ -37,6 +37,10 @@ pub(crate) fn build_gradient_update(
     participant_weight: f32,
     top_k_ratio: f32,
     result: &TrainingResult,
+    batch_id: u64,
+    learning_rate: f32,
+    genome_merkle_root: [u8; 32],
+    genome_slices: Vec<GenomeSlice>,
 ) -> Result<GradientUpdate> {
     let top_k_ratio = top_k_ratio.clamp(0.0, 1.0);
 
@@ -77,6 +81,10 @@ pub(crate) fn build_gradient_update(
         loss_after: result.loss_after,
         gradients_commitment,
         batch_indices: result.batch_indices.clone(),
+        batch_id,
+        learning_rate,
+        genome_merkle_root,
+        genome_slices,
         compute_time_ms: result.compute_time_ms,
     })
 }

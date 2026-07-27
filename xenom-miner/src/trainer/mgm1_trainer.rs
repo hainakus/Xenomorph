@@ -366,6 +366,10 @@ impl Trainer for Mgm1Trainer {
             participant_weight,
             self.gradient_top_k_ratio,
             &result,
+            batch.batch_id,
+            batch.learning_rate,
+            [0u8; 32],
+            Vec::new(),
         )?;
         Ok((result, Some(update)))
     }
@@ -423,6 +427,10 @@ impl Trainer for Mgm1Trainer {
             participant_weight,
             self.gradient_top_k_ratio,
             &result,
+            msg.batch.batch_id,
+            self.learning_rate as f32,
+            msg.batch.genome_merkle_root,
+            msg.batch.data_indices.clone(),
         )?;
         Ok((result, Some(update)))
     }

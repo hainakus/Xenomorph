@@ -10,5 +10,6 @@
 pub mod checkpoint_sync;
 pub mod coordinator;
 pub mod inference_service;
+pub mod mgm1_validator;
 pub mod service;
 pub mod websocket_server;
