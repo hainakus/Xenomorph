@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::ops::softmax;
+use candle_nn::VarMap;
 use tracing::info;
 
 use crate::model::manager::ModelManager;
@@ -18,7 +19,7 @@ pub enum ModelKind {
     Chat,
     /// Autoregressive language model.
     CausalLM,
-    /// Masked language model such as DNABERT-2.
+    /// Masked language model such as DNABERT-2 or MGM-1.
     MaskedLM,
     /// Embedding-only model.
     Embedding,
@@ -30,7 +31,7 @@ pub enum ModelKind {
 /// `contains` check here and the engine will route to the correct pipeline.
 fn kind_for_model_id(model_id: &str) -> ModelKind {
     let lower = model_id.to_lowercase();
-    if lower.contains("dnabert") || lower.contains("nucleotide") {
+    if lower.contains("dnabert") || lower.contains("nucleotide") || lower.contains("mgm") || lower.contains("mini-genome") {
         ModelKind::MaskedLM
     } else if lower.contains("hyena") || lower.contains("evo") {
         ModelKind::CausalLM
@@ -40,11 +41,62 @@ fn kind_for_model_id(model_id: &str) -> ModelKind {
 }
 
 /// A loaded biological model ready for inference.
-pub struct LoadedModel {
-    model: xenom_miner::dnabert2::DnaBert2ForMaskedLM,
-    tokenizer: xenom_miner::tokenizer::DnaTokenizer,
-    config: xenom_miner::model::DnaBert2Config,
-    kind: ModelKind,
+#[allow(clippy::large_enum_variant)]
+pub enum LoadedModel {
+    DnaBert {
+        model: xenom_miner::dnabert2::DnaBert2ForMaskedLM,
+        tokenizer: xenom_miner::tokenizer::DnaTokenizer,
+        config: xenom_miner::model::DnaBert2Config,
+        kind: ModelKind,
+    },
+    Mgm {
+        model: mini_genome_model::MiniGenomeModel,
+        tokenizer: mini_genome_model::DnaTokenizer,
+        config: mini_genome_model::MiniGenomeConfig,
+        varmap: VarMap,
+        kind: ModelKind,
+    },
+}
+
+impl LoadedModel {
+    pub fn kind(&self) -> ModelKind {
+        match self {
+            LoadedModel::DnaBert { kind, .. } => *kind,
+            LoadedModel::Mgm { kind, .. } => *kind,
+        }
+    }
+
+    pub fn mask_token(&self) -> &str {
+        match self {
+            LoadedModel::DnaBert { tokenizer, .. } => tokenizer.mask_token(),
+            LoadedModel::Mgm { .. } => "[",
+        }
+    }
+
+    /// Public prediction entry point.
+    ///
+    /// Returns `(output, confidence, prompt_tokens, completion_tokens)`.
+    pub fn predict(&self, input: &str, device: &Device) -> Result<(String, f32, usize, usize)> {
+        match self.kind() {
+            ModelKind::MaskedLM => self.predict_masked_lm(input, device),
+            _ => bail!("Model is a {:?} model and the chat/prediction pipeline is not implemented for this kind", self.kind()),
+        }
+    }
+
+    /// Compute mean-pooled sequence embeddings for a DNA sequence.
+    pub fn embed(&self, input: &str, device: &Device) -> Result<Vec<f32>> {
+        match self {
+            LoadedModel::DnaBert { model, tokenizer, .. } => embed_dnabert(model, tokenizer, input, device),
+            LoadedModel::Mgm { .. } => Err(anyhow!("Embeddings not yet implemented for MGM-1 models")),
+        }
+    }
+
+    fn predict_masked_lm(&self, input: &str, device: &Device) -> Result<(String, f32, usize, usize)> {
+        match self {
+            LoadedModel::DnaBert { model, tokenizer, .. } => predict_masked_lm_dnabert(model, tokenizer, input, device),
+            LoadedModel::Mgm { model, tokenizer, .. } => predict_masked_lm_mgm(model, tokenizer, input, device),
+        }
+    }
 }
 
 /// Real inference engine for biological models.
@@ -73,9 +125,16 @@ impl InferenceEngine {
     }
 
     fn load_sync(&self, model_id: &str) -> Result<Arc<LoadedModel>> {
-        // `ModelManager::get_model_checkpoint` is async, but loading the candle model is
-        // CPU-bound. Run the whole thing in the async caller's `spawn_blocking` context
-        // or a dedicated runtime. Here we use `block_on` for the brief filesystem I/O.
+        let kind = kind_for_model_id(model_id);
+
+        match kind {
+            ModelKind::MaskedLM if is_mgm_model(model_id) => self.load_mgm(model_id),
+            ModelKind::MaskedLM => self.load_dnabert(model_id),
+            _ => bail!("Inference not implemented for {:?} model {}", kind, model_id),
+        }
+    }
+
+    fn load_dnabert(&self, model_id: &str) -> Result<Arc<LoadedModel>> {
         let runtime = tokio::runtime::Handle::try_current()?;
         let (config, tokenizer, weights) = runtime.block_on(async {
             self.model_manager.ensure_model_downloaded(model_id).await?;
@@ -91,9 +150,36 @@ impl InferenceEngine {
         let model = xenom_miner::dnabert2::DnaBert2ForMaskedLM::load(config.clone(), weights, DType::F32, &self.device, lora_config)
             .with_context(|| format!("Failed to load DNABERT-2 weights for model {}", model_id))?;
 
-        let kind = kind_for_model_id(model_id);
-        info!("Loaded model for inference: {} (kind: {:?})", model_id, kind);
-        Ok(Arc::new(LoadedModel { model, tokenizer, config, kind }))
+        info!("Loaded model for inference: {} (kind: MaskedLM/DNABERT)", model_id);
+        Ok(Arc::new(LoadedModel::DnaBert { model, tokenizer, config, kind: ModelKind::MaskedLM }))
+    }
+
+    fn load_mgm(&self, model_id: &str) -> Result<Arc<LoadedModel>> {
+        let runtime = tokio::runtime::Handle::try_current()?;
+        let (config, _tokenizer, weights) = runtime.block_on(async {
+            self.model_manager.ensure_model_downloaded(model_id).await?;
+            let (_checkpoint, files) = self.model_manager.get_model_checkpoint(model_id).await?;
+            Ok::<_, anyhow::Error>((files.config, files.tokenizer, files.weights))
+        })?;
+
+        let config: mini_genome_model::MiniGenomeConfig =
+            serde_json::from_slice(&config).with_context(|| format!("Failed to parse MGM-1 config for {}", model_id))?;
+
+        let mut varmap = VarMap::new();
+        let model = {
+            let vb = candle_nn::VarBuilder::from_varmap(&varmap, DType::F32, &self.device);
+            mini_genome_model::MiniGenomeModel::new(vb, config.clone())
+                .with_context(|| format!("Failed to build MGM-1 model {}", model_id))?
+        };
+
+        if !weights.is_empty() {
+            load_varmap_weights(&mut varmap, &weights, &self.device)
+                .with_context(|| format!("Failed to load MGM-1 weights for {}", model_id))?;
+        }
+
+        let tokenizer = mini_genome_model::DnaTokenizer::new();
+        info!("Loaded model for inference: {} (kind: MaskedLM/MGM)", model_id);
+        Ok(Arc::new(LoadedModel::Mgm { model, tokenizer, config, varmap, kind: ModelKind::MaskedLM }))
     }
 
     fn get_or_load(&self, model_id: &str) -> Result<Arc<LoadedModel>> {
@@ -117,133 +203,219 @@ impl InferenceEngine {
     /// Returns `(output, confidence, prompt_tokens, completion_tokens)`.
     pub fn predict(&self, model_id: &str, input: &str) -> Result<(String, f32, usize, usize)> {
         let loaded = self.get_or_load(model_id)?;
-        match loaded.kind {
-            ModelKind::MaskedLM => self.predict_masked_lm(&loaded, input),
-            _ => Err(anyhow!(
-                "Model {} is a {:?} model and the chat/prediction pipeline is not implemented for this kind",
-                model_id,
-                loaded.kind
-            )),
-        }
-    }
-
-    /// Run true Masked Language Modeling inference.
-    ///
-    /// * Tokenizes the prompt **without** adding special tokens, preserving the exact input
-    ///   sequence length.
-    /// * Finds every position whose token id equals the tokenizer's `mask_token_id`.
-    /// * Runs `DnaBert2ForMaskedLM::forward` once.
-    /// * Replaces each mask with the argmax-predicted token.
-    /// * Decodes by concatenating raw token strings, producing a continuous DNA sequence.
-    fn predict_masked_lm(&self, loaded: &LoadedModel, input: &str) -> Result<(String, f32, usize, usize)> {
-        let mask_token = loaded.tokenizer.mask_token();
-
-        // Normalize common aliases to the tokenizer's mask token, but never hardcode `<mask>`.
-        let mut sanitized = input.trim().to_string();
-        if mask_token == "<mask>" {
-            sanitized = sanitized.replace("[MASK]", mask_token);
-        }
-
-        // Replace the mask token with a placeholder that is not a valid DNA base, then
-        // uppercase and validate the rest of the sequence. This avoids upper-casing the
-        // mask token itself.
-        let placeholder = '\x07';
-        let mut with_placeholder = sanitized.replace(mask_token, &placeholder.to_string());
-        with_placeholder = with_placeholder.to_uppercase();
-        with_placeholder.retain(|c| !c.is_whitespace());
-
-        if with_placeholder.chars().any(|c| !matches!(c, 'A' | 'T' | 'C' | 'G' | '\x07')) {
-            return Err(anyhow!(
-                "Input contains characters that are not valid DNA bases. \
-                 Only A, T, C, G and the mask token '{}' are supported.",
-                mask_token
-            ));
-        }
-
-        let normalized = with_placeholder.replace(placeholder, mask_token);
-
-        // Encode without special tokens so the token sequence maps 1:1 to the DNA sequence.
-        let input_ids_vec = loaded.tokenizer.encode(&normalized, false)?;
-        if input_ids_vec.is_empty() {
-            return Err(anyhow!("Tokenizer produced no tokens for input"));
-        }
-        let prompt_tokens = input_ids_vec.len();
-
-        if !normalized.contains(mask_token) {
-            // No mask token in the prompt; return the input unchanged.
-            return Ok((normalized, 0.0, prompt_tokens, prompt_tokens));
-        }
-
-        let seq_len = input_ids_vec.len();
-        let mask_token_id = loaded.tokenizer.mask_token_id();
-
-        let input_ids = Tensor::new(input_ids_vec.as_slice(), &self.device)?.reshape((1, seq_len))?;
-
-        // Run the model and compute softmax probabilities over the vocabulary.
-        let logits = loaded.model.forward(&input_ids, None, None)?;
-        let probs = softmax(&logits, candle_core::D::Minus1)?;
-
-        // Predicted token id at every position.
-        let predicted_ids = logits.argmax(candle_core::D::Minus1)?; // [1, seq_len]
-
-        // Gather the probability of each predicted token. candle's gather requires the index
-        // tensor to have the same rank as the source, so expand [1, seq_len] -> [1, seq_len, 1].
-        let predicted_ids_expanded = predicted_ids.unsqueeze(2)?; // [1, seq_len, 1]
-        let gathered_probs = probs.gather(&predicted_ids_expanded, candle_core::D::Minus1)?; // [1, seq_len, 1]
-        let gathered_probs_vec = gathered_probs
-            .reshape(seq_len)?
-            .to_vec1::<f32>()
-            .map_err(|e| anyhow!("Failed to flatten gathered probabilities: {}", e))?;
-
-        let predicted_ids_vec =
-            predicted_ids.reshape(seq_len)?.to_vec1::<u32>().map_err(|e| anyhow!("Failed to flatten predicted ids: {}", e))?;
-
-        // Build the output sequence, replacing mask positions with predictions.
-        let mut output_ids = input_ids_vec.clone();
-        let mut mask_count = 0;
-        let mut total_confidence = 0.0f32;
-        for (i, &id) in input_ids_vec.iter().enumerate() {
-            if id == mask_token_id {
-                output_ids[i] = predicted_ids_vec[i];
-                total_confidence += gathered_probs_vec[i];
-                mask_count += 1;
-            }
-        }
-
-        let completion_tokens = output_ids.len();
-
-        // Decode by concatenating raw token strings; this avoids the default decoder which
-        // joins tokens with spaces for DNABERT-2 style BPE tokenizers.
-        let output = loaded.tokenizer.decode_to_sequence(&output_ids, true)?;
-        let confidence = if mask_count == 0 { 0.0 } else { total_confidence / mask_count as f32 };
-        Ok((output, confidence.clamp(0.0, 1.0), prompt_tokens, completion_tokens))
+        loaded.predict(input, &self.device)
     }
 
     /// Compute mean-pooled sequence embeddings for a DNA sequence.
     pub fn embed(&self, model_id: &str, input: &str) -> Result<Vec<f32>> {
         let loaded = self.get_or_load(model_id)?;
-
-        // Embeddings only make sense for raw DNA; strip mask tokens, whitespace and validate.
-        let mut sanitized = input.trim().to_uppercase().replace(loaded.tokenizer.mask_token(), "");
-        sanitized.retain(|c| !c.is_whitespace());
-        if sanitized.is_empty() {
-            return Err(anyhow!("Input is empty after removing mask tokens and whitespace"));
-        }
-        if sanitized.chars().any(|c| !matches!(c, 'A' | 'T' | 'C' | 'G')) {
-            return Err(anyhow!(
-                "Input contains characters that are not valid DNA bases. Only A, T, C, G are supported for embeddings."
-            ));
-        }
-
-        let input_ids_vec = loaded.tokenizer.encode(&sanitized, true)?;
-        let seq_len = input_ids_vec.len();
-        let input_ids = Tensor::new(input_ids_vec.as_slice(), &self.device)?.reshape((1, seq_len))?;
-
-        let embeddings = loaded.model.embeddings(&input_ids)?;
-        let vector =
-            embeddings.reshape(embeddings.dims()[1])?.to_vec1::<f32>().map_err(|e| anyhow!("Failed to flatten embeddings: {}", e))?;
-        Ok(vector)
+        loaded.embed(input, &self.device)
     }
+}
+
+fn is_mgm_model(model_id: &str) -> bool {
+    let lower = model_id.to_lowercase();
+    lower.contains("mgm") || lower.contains("mini-genome")
+}
+
+fn load_varmap_weights(varmap: &mut VarMap, weights: &[u8], _device: &Device) -> Result<()> {
+    let tmp = std::env::temp_dir().join(format!("mgm1_inference_load_{}.safetensors", rand::random::<u64>()));
+    std::fs::write(&tmp, weights)?;
+    let result = varmap.load(&tmp);
+    let _ = std::fs::remove_file(&tmp);
+    result.map_err(|e| anyhow!("Failed to load MGM-1 weights: {}", e))
+}
+
+/// Run true Masked Language Modeling inference for DNABERT-2.
+///
+/// * Tokenizes the prompt **without** adding special tokens, preserving the exact input
+///   sequence length.
+/// * Finds every position whose token id equals the tokenizer's `mask_token_id`.
+/// * Runs `DnaBert2ForMaskedLM::forward` once.
+/// * Replaces each mask with the argmax-predicted token.
+/// * Decodes by concatenating raw token strings, producing a continuous DNA sequence.
+fn predict_masked_lm_dnabert(
+    model: &xenom_miner::dnabert2::DnaBert2ForMaskedLM,
+    tokenizer: &xenom_miner::tokenizer::DnaTokenizer,
+    input: &str,
+    device: &Device,
+) -> Result<(String, f32, usize, usize)> {
+    let mask_token = tokenizer.mask_token();
+
+    // Normalize common aliases to the tokenizer's mask token, but never hardcode `<mask>`.
+    let mut sanitized = input.trim().to_string();
+    if mask_token == "<mask>" {
+        sanitized = sanitized.replace("[MASK]", mask_token);
+    }
+
+    // Replace the mask token with a placeholder that is not a valid DNA base, then
+    // uppercase and validate the rest of the sequence. This avoids upper-casing the
+    // mask token itself.
+    let placeholder = '\x07';
+    let mut with_placeholder = sanitized.replace(mask_token, &placeholder.to_string());
+    with_placeholder = with_placeholder.to_uppercase();
+    with_placeholder.retain(|c| !c.is_whitespace());
+
+    if with_placeholder.chars().any(|c| !matches!(c, 'A' | 'T' | 'C' | 'G' | '\x07')) {
+        bail!(
+            "Input contains characters that are not valid DNA bases. \
+             Only A, T, C, G and the mask token '{}' are supported.",
+            mask_token
+        );
+    }
+
+    let normalized = with_placeholder.replace(placeholder, mask_token);
+
+    // Encode without special tokens so the token sequence maps 1:1 to the DNA sequence.
+    let input_ids_vec = tokenizer.encode(&normalized, false)?;
+    if input_ids_vec.is_empty() {
+        bail!("Tokenizer produced no tokens for input");
+    }
+    let prompt_tokens = input_ids_vec.len();
+
+    if !normalized.contains(mask_token) {
+        // No mask token in the prompt; return the input unchanged.
+        return Ok((normalized, 0.0, prompt_tokens, prompt_tokens));
+    }
+
+    let seq_len = input_ids_vec.len();
+    let mask_token_id = tokenizer.mask_token_id();
+
+    let input_ids = Tensor::new(input_ids_vec.as_slice(), device)?.reshape((1, seq_len))?;
+
+    // Run the model and compute softmax probabilities over the vocabulary.
+    let logits = model.forward(&input_ids, None, None)?;
+    let probs = softmax(&logits, candle_core::D::Minus1)?;
+
+    // Predicted token id at every position.
+    let predicted_ids = logits.argmax(candle_core::D::Minus1)?; // [1, seq_len]
+
+    // Gather the probability of each predicted token. candle's gather requires the index
+    // tensor to have the same rank as the source, so expand [1, seq_len] -> [1, seq_len, 1].
+    let predicted_ids_expanded = predicted_ids.unsqueeze(2)?; // [1, seq_len, 1]
+    let gathered_probs = probs.gather(&predicted_ids_expanded, candle_core::D::Minus1)?; // [1, seq_len, 1]
+    let gathered_probs_vec =
+        gathered_probs.reshape(seq_len)?.to_vec1::<f32>().map_err(|e| anyhow!("Failed to flatten gathered probabilities: {}", e))?;
+
+    let predicted_ids_vec =
+        predicted_ids.reshape(seq_len)?.to_vec1::<u32>().map_err(|e| anyhow!("Failed to flatten predicted ids: {}", e))?;
+
+    // Build the output sequence, replacing mask positions with predictions.
+    let mut output_ids = input_ids_vec.clone();
+    let mut mask_count = 0;
+    let mut total_confidence = 0.0f32;
+    for (i, &id) in input_ids_vec.iter().enumerate() {
+        if id == mask_token_id {
+            output_ids[i] = predicted_ids_vec[i];
+            total_confidence += gathered_probs_vec[i];
+            mask_count += 1;
+        }
+    }
+
+    let completion_tokens = output_ids.len();
+
+    // Decode by concatenating raw token strings; this avoids the default decoder which
+    // joins tokens with spaces for DNABERT-2 style BPE tokenizers.
+    let output = tokenizer.decode_to_sequence(&output_ids, true)?;
+    let confidence = if mask_count == 0 { 0.0 } else { total_confidence / mask_count as f32 };
+    Ok((output, confidence.clamp(0.0, 1.0), prompt_tokens, completion_tokens))
+}
+
+fn embed_dnabert(
+    model: &xenom_miner::dnabert2::DnaBert2ForMaskedLM,
+    tokenizer: &xenom_miner::tokenizer::DnaTokenizer,
+    input: &str,
+    device: &Device,
+) -> Result<Vec<f32>> {
+    // Embeddings only make sense for raw DNA; strip mask tokens, whitespace and validate.
+    let mut sanitized = input.trim().to_uppercase().replace(tokenizer.mask_token(), "");
+    sanitized.retain(|c| !c.is_whitespace());
+    if sanitized.is_empty() {
+        bail!("Input is empty after removing mask tokens and whitespace");
+    }
+    if sanitized.chars().any(|c| !matches!(c, 'A' | 'T' | 'C' | 'G')) {
+        bail!("Input contains characters that are not valid DNA bases. Only A, T, C, G are supported for embeddings.");
+    }
+
+    let input_ids_vec = tokenizer.encode(&sanitized, true)?;
+    let seq_len = input_ids_vec.len();
+    let input_ids = Tensor::new(input_ids_vec.as_slice(), device)?.reshape((1, seq_len))?;
+
+    let embeddings = model.embeddings(&input_ids)?;
+    let vector =
+        embeddings.reshape(embeddings.dims()[1])?.to_vec1::<f32>().map_err(|e| anyhow!("Failed to flatten embeddings: {}", e))?;
+    Ok(vector)
+}
+
+/// Run Masked Language Modeling inference for the Mini Genome Model (MGM-1).
+fn predict_masked_lm_mgm(
+    model: &mini_genome_model::MiniGenomeModel,
+    tokenizer: &mini_genome_model::DnaTokenizer,
+    input: &str,
+    device: &Device,
+) -> Result<(String, f32, usize, usize)> {
+    const MASK_CHAR: char = '[';
+    const MASK_TOKEN_ID: usize = 4;
+
+    let mut sanitized = input.trim().to_string();
+    sanitized = sanitized.replace("<mask>", &MASK_CHAR.to_string());
+    sanitized = sanitized.replace("[MASK]", &MASK_CHAR.to_string());
+    sanitized = sanitized.to_uppercase();
+    sanitized.retain(|c| !c.is_whitespace());
+
+    if sanitized.chars().any(|c| !matches!(c, 'A' | 'T' | 'C' | 'G' | '[')) {
+        bail!(
+            "Input contains characters that are not valid DNA bases. \
+             Only A, T, C, G and the mask token '{}' are supported for MGM-1.",
+            MASK_CHAR
+        );
+    }
+
+    let input_ids_vec = tokenizer.encode(&sanitized);
+    if input_ids_vec.is_empty() {
+        bail!("Tokenizer produced no tokens for input");
+    }
+    let prompt_tokens = input_ids_vec.len();
+
+    if !sanitized.contains(MASK_CHAR) {
+        return Ok((sanitized, 0.0, prompt_tokens, prompt_tokens));
+    }
+
+    let seq_len = input_ids_vec.len();
+    let input_ids_u32: Vec<u32> = input_ids_vec.iter().map(|&i| i as u32).collect();
+    let input_ids = Tensor::new(input_ids_u32.as_slice(), device)?.reshape((1, seq_len))?;
+
+    let logits = model.forward(&input_ids)?;
+    let probs = softmax(&logits, candle_core::D::Minus1)?;
+    let predicted_ids = logits.argmax(candle_core::D::Minus1)?;
+
+    // Gather confidence values on the CPU to avoid backend-specific gather kernels.
+    let probs_cpu = probs.to_device(&Device::Cpu)?;
+    let predicted_ids_cpu = predicted_ids.to_device(&Device::Cpu)?;
+    let predicted_ids_expanded = predicted_ids_cpu.unsqueeze(2)?;
+    let gathered_probs = probs_cpu.gather(&predicted_ids_expanded, candle_core::D::Minus1)?;
+    let gathered_probs_vec =
+        gathered_probs.reshape(seq_len)?.to_vec1::<f32>().map_err(|e| anyhow!("Failed to flatten gathered probabilities: {}", e))?;
+    let predicted_ids_vec =
+        predicted_ids_cpu.reshape(seq_len)?.to_vec1::<u32>().map_err(|e| anyhow!("Failed to flatten predicted ids: {}", e))?;
+
+    let mut output_ids = input_ids_vec.clone();
+    let mut mask_count = 0;
+    let mut total_confidence = 0.0f32;
+    for (i, &id) in input_ids_vec.iter().enumerate() {
+        if id == MASK_TOKEN_ID {
+            // Clamp predicted ids to the four DNA bases for robustness; ignore specials.
+            let predicted = (predicted_ids_vec[i] as usize).min(3);
+            output_ids[i] = predicted;
+            total_confidence += gathered_probs_vec[i];
+            mask_count += 1;
+        }
+    }
+
+    let completion_tokens = output_ids.len();
+    let output = tokenizer.decode(&output_ids);
+    let confidence = if mask_count == 0 { 0.0 } else { total_confidence / mask_count as f32 };
+    Ok((output, confidence.clamp(0.0, 1.0), prompt_tokens, completion_tokens))
 }
 
 #[cfg(test)]
@@ -321,7 +493,7 @@ mod tests {
         let varmap = Arc::new(varmap);
         let builder = xenom_miner::lora::ModelBuilder::new(varmap, base_weights, None, DType::F32, device.clone());
         let model = xenom_miner::dnabert2::DnaBert2ForMaskedLM::new(&builder, config.clone(), &device).unwrap();
-        LoadedModel { model, tokenizer, config, kind: ModelKind::MaskedLM }
+        LoadedModel::DnaBert { model, tokenizer, config, kind: ModelKind::MaskedLM }
     }
 
     #[test]
@@ -329,6 +501,7 @@ mod tests {
         assert_eq!(kind_for_model_id("multimolecule/dnabert2"), ModelKind::MaskedLM);
         assert_eq!(kind_for_model_id("zhihan1996/DNABERT-2-117M"), ModelKind::MaskedLM);
         assert_eq!(kind_for_model_id("InstaDeepAI/nucleotide-transformer"), ModelKind::MaskedLM);
+        assert_eq!(kind_for_model_id("xeno/mgm-1"), ModelKind::MaskedLM);
         assert_eq!(kind_for_model_id("foo/hyena-dna"), ModelKind::CausalLM);
         assert_eq!(kind_for_model_id("togethercomputer/evo-2"), ModelKind::CausalLM);
         assert_eq!(kind_for_model_id("gpt-4"), ModelKind::Chat);
@@ -336,9 +509,8 @@ mod tests {
 
     #[test]
     fn test_single_mask_reconstruction() {
-        let engine = test_engine();
         let loaded = build_loaded_model();
-        let (output, confidence, _, _) = engine.predict_masked_lm(&loaded, "ATCG<mask>GTA").unwrap();
+        let (output, confidence, _, _) = loaded.predict("ATCG<mask>GTA", &Device::Cpu).unwrap();
 
         assert!(!output.contains('<'), "output should not contain any special token: {}", output);
         assert!(!output.contains(' '), "output should not contain spaces: {}", output);
@@ -348,9 +520,8 @@ mod tests {
 
     #[test]
     fn test_multiple_mask_reconstruction() {
-        let engine = test_engine();
         let loaded = build_loaded_model();
-        let (output, confidence, _, _) = engine.predict_masked_lm(&loaded, "AT<mask>G<mask>TA<mask>C").unwrap();
+        let (output, confidence, _, _) = loaded.predict("AT<mask>G<mask>TA<mask>C", &Device::Cpu).unwrap();
 
         assert!(!output.contains('<'), "output should not contain any special token: {}", output);
         assert!(!output.contains(' '), "output should not contain spaces: {}", output);
@@ -360,18 +531,16 @@ mod tests {
 
     #[test]
     fn test_no_mask_returns_input() {
-        let engine = test_engine();
         let loaded = build_loaded_model();
-        let (output, confidence, _, _) = engine.predict_masked_lm(&loaded, "ATCGGTA").unwrap();
+        let (output, confidence, _, _) = loaded.predict("ATCGGTA", &Device::Cpu).unwrap();
         assert_eq!(output, "ATCGGTA");
         assert_eq!(confidence, 0.0);
     }
 
     #[test]
     fn test_bracket_mask_alias() {
-        let engine = test_engine();
         let loaded = build_loaded_model();
-        let (output, _confidence, _, _) = engine.predict_masked_lm(&loaded, "ATCG[MASK]GTA").unwrap();
+        let (output, _confidence, _, _) = loaded.predict("ATCG[MASK]GTA", &Device::Cpu).unwrap();
         assert!(!output.contains('<'), "output should not contain any special token: {}", output);
         assert!(!output.contains(' '), "output should not contain spaces: {}", output);
         assert_eq!(output.len(), 8);
@@ -379,7 +548,6 @@ mod tests {
 
     #[test]
     fn test_predict_masked_lm_benchmark() {
-        let engine = test_engine();
         let loaded = build_loaded_model();
 
         for mask_count in [1, 10, 100] {
@@ -387,11 +555,11 @@ mod tests {
             for i in 1..=mask_count * 3 {
                 input.push(['A', 'T', 'C', 'G'][i % 4]);
                 if i % 3 == 0 {
-                    input.push_str(loaded.tokenizer.mask_token());
+                    input.push_str(loaded.mask_token());
                 }
             }
             let start = Instant::now();
-            let (output, _, _, _) = engine.predict_masked_lm(&loaded, &input).unwrap();
+            let (output, _, _, _) = loaded.predict(&input, &Device::Cpu).unwrap();
             let elapsed = start.elapsed();
             assert!(!output.contains('<'));
             assert!(!output.contains(' '));
