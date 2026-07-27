@@ -429,6 +429,24 @@ mod tests {
     }
 
     #[test]
+    fn test_tokenizer_maps_each_base_consistently() {
+        let tokenizer = DnaTokenizer::new();
+        // A/C/G/T must round-trip individually and match their token ids.
+        assert_eq!(tokenizer.encode("A"), vec![0]);
+        assert_eq!(tokenizer.encode("C"), vec![1]);
+        assert_eq!(tokenizer.encode("G"), vec![2]);
+        assert_eq!(tokenizer.encode("T"), vec![3]);
+
+        assert_eq!(tokenizer.decode(&[0]), "A");
+        assert_eq!(tokenizer.decode(&[1]), "C");
+        assert_eq!(tokenizer.decode(&[2]), "G");
+        assert_eq!(tokenizer.decode(&[3]), "T");
+
+        // The ids also match the 2-bit genome archive encoding used by seed-node.
+        assert_eq!(tokenizer.encode("ACGT"), vec![0b00, 0b01, 0b10, 0b11]);
+    }
+
+    #[test]
     fn test_model_creation() {
         let device = Device::Cpu;
         let varmap = VarMap::new();
