@@ -59,55 +59,94 @@ fn decompress_gradient_layer(layer: &GradientLayer) -> Result<Vec<f32>> {
     Ok(full)
 }
 
-/// Build a `MiniGenomeModel` from `files`, apply averaged gradients with a simple
-/// SGD step, and return the new safetensors weights plus their hash.
-fn apply_mgm1_gradients_sync(files: RawModelFiles, averages: HashMap<String, Vec<f32>>) -> Result<(Vec<u8>, [u8; 32])> {
-    let config: MiniGenomeConfig = serde_json::from_slice(&files.config).context("Failed to parse MGM-1 config")?;
+/// Load a safetensors buffer into a CPU F32 weight snapshot.
+fn load_weights_snapshot(weights_bytes: &[u8], device: &Device) -> Result<HashMap<String, Tensor>> {
+    candle_core::safetensors::load_buffer(weights_bytes, device).context("Failed to load safetensors weights into snapshot")
+}
+
+/// Serialize a weight snapshot to a safetensors byte vector.
+fn serialize_weight_snapshot(weights: &HashMap<String, Tensor>) -> Result<Vec<u8>> {
+    let tensors: Vec<(String, &Tensor)> = weights.iter().map(|(k, v)| (k.clone(), v)).collect();
+    safetensors::tensor::serialize(tensors, &None).map_err(|e| anyhow!("Failed to serialize MGM-1 weights: {}", e))
+}
+
+/// Apply averaged gradients to a weight snapshot with a simple SGD step.
+fn apply_gradient_to_snapshot(
+    weights: &HashMap<String, Tensor>,
+    averages: &HashMap<String, Vec<f32>>,
+    lr: f64,
+    device: &Device,
+) -> Result<HashMap<String, Tensor>> {
+    let mut updated = HashMap::with_capacity(weights.len());
+    for (name, theta) in weights {
+        let grad_vec = match averages.get(name) {
+            Some(g) => g,
+            None => continue,
+        };
+        let shape = theta.shape().clone();
+        let grad = Tensor::from_vec(grad_vec.clone(), shape, device)
+            .with_context(|| format!("Failed to build gradient tensor for {}", name))?
+            .to_dtype(theta.dtype())?;
+        let grad = grad.to_device(theta.device())?;
+        let grad_scaled = (grad * lr)?;
+        let next = (theta - &grad_scaled)?;
+        updated.insert(name.clone(), next);
+    }
+    Ok(updated)
+}
+
+/// Compute `updated - base` for each shared weight.
+fn compute_weight_delta(base: &HashMap<String, Tensor>, updated: &HashMap<String, Tensor>) -> Result<HashMap<String, Tensor>> {
+    let mut delta = HashMap::with_capacity(base.len());
+    for (name, base_t) in base {
+        let updated_t = updated.get(name).ok_or_else(|| anyhow!("Updated weights missing variable {}", name))?;
+        let d = (updated_t - base_t)?;
+        delta.insert(name.clone(), d);
+    }
+    Ok(delta)
+}
+
+/// Add a weight-space delta to an active checkpoint snapshot.
+fn add_weight_delta(base: &HashMap<String, Tensor>, delta: &HashMap<String, Tensor>) -> Result<HashMap<String, Tensor>> {
+    let mut result = HashMap::with_capacity(base.len());
+    for (name, base_t) in base {
+        let new = if let Some(d) = delta.get(name) { (base_t + d)? } else { base_t.copy().context("Failed to copy tensor")? };
+        result.insert(name.clone(), new);
+    }
+    Ok(result)
+}
+
+/// Build the new MGM-1 checkpoint from `files` and averaged gradients.
+///
+/// If `base_snapshot` is `Some`, the gradient is applied to that stale base,
+/// the resulting weight-space delta is computed, and the delta is added to the
+/// active weights from `files`. For an active-base update `base_snapshot` is
+/// `None` and the gradient is applied directly to the active weights.
+///
+/// Returns the serialized new weights, their hash, and the old active weights
+/// snapshot so the caller can store it for future rebases.
+#[allow(clippy::type_complexity)]
+fn apply_mgm1_gradients_sync(
+    files: RawModelFiles,
+    averages: HashMap<String, Vec<f32>>,
+    base_snapshot: Option<HashMap<String, Tensor>>,
+) -> Result<(Vec<u8>, [u8; 32], HashMap<String, Tensor>)> {
     let device = Device::Cpu;
-    let mut varmap = VarMap::new();
-    let vb = candle_nn::VarBuilder::from_varmap(&varmap, DType::F32, &device);
-    let _model = MiniGenomeModel::new(vb, config).context("Failed to build MGM-1 model for aggregation")?;
+    let active_weights = load_weights_snapshot(&files.weights, &device)?;
 
-    let tmp_load = std::env::temp_dir().join(format!("mgm1_seed_load_{}.safetensors", rand::random::<u64>()));
-    std::fs::write(&tmp_load, &files.weights).context("Failed to write temporary MGM-1 weights")?;
-    varmap.load(&tmp_load).map_err(|e| anyhow!("Failed to load MGM-1 weights into VarMap: {}", e))?;
-    let _ = std::fs::remove_file(&tmp_load);
-
-    let named_grads = {
-        let data = varmap.data().lock().map_err(|e| anyhow!("VarMap poisoned: {}", e))?;
-        let mut named_grads = HashMap::with_capacity(averages.len());
-        for (name, avg) in averages {
-            let var = data.get(&name).ok_or_else(|| anyhow!("Model has no variable named {}", name))?;
-            let shape = var.as_tensor().shape().clone();
-            let grad = Tensor::from_vec(avg, shape, &device)
-                .with_context(|| format!("Failed to build gradient tensor for {}", name))?
-                .to_dtype(DType::F32)?;
-            named_grads.insert(name, grad);
-        }
-        named_grads
+    let new_weights = if let Some(base) = base_snapshot {
+        let rebased =
+            apply_gradient_to_snapshot(&base, &averages, 1e-5f64, &device).context("Failed to apply gradient to stale MGM-1 base")?;
+        let delta = compute_weight_delta(&base, &rebased).context("Failed to compute MGM-1 rebase delta")?;
+        add_weight_delta(&active_weights, &delta).context("Failed to apply MGM-1 rebase delta")?
+    } else {
+        apply_gradient_to_snapshot(&active_weights, &averages, 1e-5f64, &device)
+            .context("Failed to apply gradient to active MGM-1 weights")?
     };
 
-    let lr = 1e-5f64;
-    {
-        let data = varmap.data().lock().map_err(|e| anyhow!("VarMap poisoned: {}", e))?;
-        for (name, var) in data.iter() {
-            if let Some(grad) = named_grads.get(name) {
-                let theta = var.as_tensor();
-                let grad = grad.to_device(theta.device())?.to_dtype(theta.dtype())?;
-                let grad_scaled = (grad * lr)?;
-                let updated = (theta - &grad_scaled)?;
-                var.set(&updated)?;
-            }
-        }
-    }
-
-    let tmp_save = std::env::temp_dir().join(format!("mgm1_seed_save_{}.safetensors", rand::random::<u64>()));
-    varmap.save(&tmp_save).map_err(|e| anyhow!("Failed to save updated MGM-1 weights: {}", e))?;
-    let weights = std::fs::read(&tmp_save).context("Failed to read updated MGM-1 weights")?;
-    let _ = std::fs::remove_file(&tmp_save);
-
+    let weights = serialize_weight_snapshot(&new_weights).context("Failed to serialize updated MGM-1 weights")?;
     let new_hash = <[u8; 32]>::from(blake3::hash(&weights));
-    Ok((weights, new_hash))
+    Ok((weights, new_hash, active_weights))
 }
 
 use super::checkpoint::{ModelCheckpoint, ModelMetrics};
@@ -116,8 +155,6 @@ use super::storage::ModelStorage;
 use super::{EncryptedModelFiles, RawModelFiles};
 
 use candle_core::{DType, Device, Tensor};
-use candle_nn::VarMap;
-use mini_genome_model::{MiniGenomeConfig, MiniGenomeModel};
 use model_crypto;
 use xenom_miner::lora::LoraConfig;
 use xenom_miner::model::DnaBert2Config;
@@ -694,10 +731,6 @@ impl ModelManager {
         let base = update.base_checkpoint;
         let is_active = base == active_hash;
 
-        if update.model_id.contains("mgm-1") && !is_active {
-            bail!("MGM-1 FedAvg only supports active-base gradients currently");
-        }
-
         if !is_active && !self.is_ancestor_of_active(&update.model_id, base).await {
             bail!(
                 "Gradient base {} is not active nor an ancestor of active {} for {}",
@@ -708,13 +741,25 @@ impl ModelManager {
         }
 
         let first_layer = payload.layer_gradients.keys().next().unwrap().clone();
-        let (old_head, averages) = {
+        let (old_head, averages, base_snapshot) = {
             let mut entry_guard = entry.lock().await;
             entry_guard.last_used = Instant::now();
 
             if entry_guard.model_id != update.model_id {
                 bail!("Gradient base checkpoint belongs to model {} not {}", entry_guard.model_id, update.model_id);
             }
+
+            let base_snapshot = if is_active {
+                None
+            } else {
+                Some(
+                    entry_guard
+                        .snapshots
+                        .get(&base)
+                        .map(|s| s.weights.clone())
+                        .ok_or_else(|| anyhow!("Missing snapshot for rebase base {}", hex::encode(base)))?,
+                )
+            };
 
             if is_active {
                 // Active checkpoint: aggregate directly into the main aggregator.
@@ -750,7 +795,7 @@ impl ModelManager {
                 let old_head = entry_guard.head_hash;
                 entry_guard.aggregator.reset();
                 entry_guard.epoch_started = None;
-                (old_head, averages)
+                (old_head, averages, base_snapshot)
             } else {
                 // Stale-but-related base: aggregate into a separate pending rebase.
                 let config = entry_guard.fedavg_config.clone();
@@ -789,26 +834,30 @@ impl ModelManager {
 
                 let averages = pending.aggregator.compute_all_averages().context("Failed to compute averaged gradients")?;
                 entry_guard.pending_rebases.remove(&base);
-                (entry_guard.head_hash, averages)
+                (entry_guard.head_hash, averages, base_snapshot)
             }
         };
 
-        // MGM-1: load the current model files, build a MiniGenomeModel on CPU, and
-        // apply the averaged gradients with a simple SGD step.
+        // MGM-1: load the current model files, apply the averaged gradients on CPU,
+        // and support both active and stale (delta-rebase) base checkpoints.
         if update.model_id.contains("mgm-1") {
             let files = self
                 .storage
                 .load_model_files(&update.model_id)
                 .await
                 .map_err(|e| anyhow!("Failed to load MGM-1 model files: {}", e))?;
-            let (weights, new_hash) = tokio::task::spawn_blocking(move || apply_mgm1_gradients_sync(files, averages))
-                .await
-                .context("MGM-1 gradient aggregation task panicked")??;
+            let (weights, new_hash, old_active_snapshot) =
+                tokio::task::spawn_blocking(move || apply_mgm1_gradients_sync(files, averages, base_snapshot))
+                    .await
+                    .context("MGM-1 gradient aggregation task panicked")??;
 
             {
                 let mut entry_guard = entry.lock().await;
                 entry_guard.head_hash = new_hash;
                 entry_guard.last_used = Instant::now();
+                entry_guard
+                    .snapshots
+                    .insert(old_head, CheckpointSnapshot { weights: old_active_snapshot, optimizer: ManualAdamW::new(1e-5) });
             }
 
             self.finalize_new_head(&update.model_id, weights, old_head, new_hash, entry.clone()).await?;
