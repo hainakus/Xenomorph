@@ -2,6 +2,10 @@
 //! Transformer pequeno (~1-2M parametros) para MLM em sequencias de DNA
 //! Otimizado para treinamento rapido em CPU/GPU via Candle
 
+fn default_label_smoothing() -> f64 {
+    0.1
+}
+
 use candle_core::{DType, Device, Module, Result, Tensor};
 use candle_nn::{embedding, layer_norm, linear, Dropout, Embedding, Init, LayerNorm, Linear, Optimizer};
 use serde::{Deserialize, Serialize};
@@ -27,18 +31,23 @@ pub struct MiniGenomeConfig {
     pub max_seq_len: usize,
     /// Dropout rate
     pub dropout: f64,
+    /// Label smoothing for MLM cross-entropy (0 = hard targets).  A small value
+    /// (e.g. 0.1) prevents the model from becoming overconfident and collapsing
+    /// to a single nucleotide prediction.
+    #[serde(default = "default_label_smoothing")]
+    pub label_smoothing: f64,
 }
 
 impl Default for MiniGenomeConfig {
     fn default() -> Self {
-        Self { vocab_size: 8, d_model: 128, n_heads: 4, n_layers: 4, d_ff: 512, max_seq_len: 512, dropout: 0.1 }
+        Self { vocab_size: 8, d_model: 128, n_heads: 4, n_layers: 4, d_ff: 512, max_seq_len: 512, dropout: 0.1, label_smoothing: default_label_smoothing() }
     }
 }
 
 impl MiniGenomeConfig {
     /// Configuracao ultra-pequena para testes rapidos
     pub fn tiny() -> Self {
-        Self { vocab_size: 8, d_model: 64, n_heads: 2, n_layers: 2, d_ff: 256, max_seq_len: 256, dropout: 0.1 }
+        Self { vocab_size: 8, d_model: 64, n_heads: 2, n_layers: 2, d_ff: 256, max_seq_len: 256, dropout: 0.1, label_smoothing: 0.0 }
     }
 
     /// Numero total de parametros (estimativa)
@@ -312,37 +321,72 @@ impl MiniGenomeModel {
     /// o loss e para a acuracia. Isso evita que o modelo aprenda a simplesmente
     /// copiar as bases nao mascaradas e foca a previsao das bases reais do
     /// genoma que foram escondidas.
+    ///
+    /// Only the first 4 logits (A, C, G, T) are used for MLM; the special-token
+    /// logits are masked to -inf so the model cannot waste capacity predicting
+    /// [MASK], pad, [CLS] or [SEP] during genomic pre-training.  This makes the
+    /// random-initialized loss ~ln(4) and removes a common source of collapse.
     pub fn compute_mlm_loss(&self, input_ids: &Tensor, labels: &Tensor, class_weights: Option<&Tensor>) -> Result<(Tensor, f32)> {
         let logits = self.forward(input_ids)?;
-        let (batch, seq_len, vocab_size) = logits.dims3()?;
+        let (batch, seq_len, _vocab_size) = logits.dims3()?;
 
-        let logits_flat = logits.reshape((batch * seq_len, vocab_size))?;
+        // Mask out special tokens (ids 4..vocab_size) from the output distribution.
+        let logits_dna = logits.narrow(candle_core::D::Minus1, 0, 4)?;
+        let logits_flat = logits_dna.reshape((batch * seq_len, 4))?;
         let labels_u32 = labels.to_dtype(DType::U32)?;
         let labels_flat = labels_u32.reshape((batch * seq_len,))?;
 
-        // Per-position negative log-likelihood of the target class.
+        // Mask: train only on positions where the input was masked (input != label).
+        // Padding positions also have input == label (mask token == mask token) and
+        // are therefore ignored, which is the desired behavior.  Compute this with
+        // the original labels before clamping special-token ids to the valid range.
+        let mask = input_ids
+            .to_dtype(DType::U32)?
+            .ne(&labels.to_dtype(DType::U32)?)?
+            .to_dtype(DType::F32)?
+            .reshape((batch * seq_len,))?;
+
+        // Clamp labels to the four valid DNA bases so that padding labels (e.g.
+        // the [MASK] token id) do not cause gather/argmax out-of-bounds.  Those
+        // positions are excluded by `mask` so the clamped value is harmless.
+        let min_label = Tensor::new(0u32, input_ids.device())?;
+        let max_label = Tensor::new(3u32, input_ids.device())?;
+        let labels_flat = labels_flat.broadcast_maximum(&min_label)?.broadcast_minimum(&max_label)?;
+
+        // Per-position log-probabilities over the four DNA bases.
         let log_probs = candle_nn::ops::log_softmax(&logits_flat, candle_core::D::Minus1)?;
         let labels_flat_unsqueezed = labels_flat.unsqueeze(1)?;
         let target_log_probs = log_probs.gather(&labels_flat_unsqueezed, candle_core::D::Minus1)?;
-        let mut nll = target_log_probs.neg()?.reshape((batch * seq_len,))?;
+
+        let smoothing = self.config.label_smoothing;
+        let mut nll = if smoothing > 0.0 {
+            // KL loss with uniform smoothing over the 4 active classes.
+            let sum_log_probs = log_probs.sum(1)?.unsqueeze(1)?;
+            let other_log_probs = (&sum_log_probs - &target_log_probs)?;
+            let nll = ((&target_log_probs * (smoothing - 1.0))? - (&other_log_probs * (smoothing / 3.0))?)?;
+            nll.reshape((batch * seq_len,))?
+        } else {
+            target_log_probs.neg()?.reshape((batch * seq_len,))?
+        };
 
         // Optionally reweight classes (e.g. inverse-frequency) to combat class imbalance.
+        // Only the first 4 weights are meaningful; special-token weights are ignored.
         if let Some(cw) = class_weights {
-            let cw_per_token = cw.index_select(&labels_flat, 0)?.reshape((batch * seq_len,))?;
+            let cw_dna = cw.narrow(0, 0, 4)?;
+            let cw_per_token = cw_dna.index_select(&labels_flat, 0)?.reshape((batch * seq_len,))?;
             nll = nll.mul(&cw_per_token)?;
         }
 
-        // Mask: train only on positions where the input was masked (input != label).
-        // Padding positions also have input == label (mask token == mask token) and
-        // are therefore ignored, which is the desired behavior.
-        let mask =
-            input_ids.to_dtype(DType::U32)?.ne(&labels.to_dtype(DType::U32)?)?.to_dtype(DType::F32)?.reshape((batch * seq_len,))?;
         let masked_nll = (&nll * &mask)?;
         let mask_sum = mask.sum_all()?;
         let mask_sum_f = mask_sum.to_vec0::<f32>()?;
-        let loss = if mask_sum_f == 0.0 { nll.mean_all()? } else { masked_nll.sum_all()?.div(&mask_sum)? };
+        let loss = if mask_sum_f == 0.0 {
+            Tensor::new(0.0f32, input_ids.device())?
+        } else {
+            masked_nll.sum_all()?.div(&mask_sum)?
+        };
 
-        // Accuracy over the masked positions only.
+        // Accuracy over the masked positions only, restricted to the 4 bases.
         let predictions = logits_flat.argmax(candle_core::D::Minus1)?;
         let correct = predictions.eq(&labels_flat)?.to_dtype(DType::F32)?;
         let masked_correct = (&correct * &mask)?;

@@ -171,6 +171,25 @@ pub(crate) fn average_grad_maps(grads: &[HashMap<String, Tensor>]) -> Result<Has
     Ok(out)
 }
 
+/// Clip a gradient map by its global L2 norm. Returns a new map of F32 tensors.
+pub(crate) fn clip_grad_norm(named_grads: &HashMap<String, Tensor>, max_norm: f64) -> Result<HashMap<String, Tensor>> {
+    let mut total_sq = 0.0f64;
+    for t in named_grads.values() {
+        let t_f32 = t.to_dtype(DType::F32)?;
+        total_sq += t_f32.sqr()?.sum_all()?.to_vec0::<f32>()? as f64;
+    }
+    let norm = total_sq.sqrt();
+    if norm <= max_norm || norm == 0.0 {
+        let mut out = HashMap::with_capacity(named_grads.len());
+        for (k, v) in named_grads {
+            out.insert(k.clone(), v.to_dtype(DType::F32)?.copy()?);
+        }
+        Ok(out)
+    } else {
+        scale_grad_map(named_grads.clone(), max_norm / norm)
+    }
+}
+
 /// Element-wise addition of two gradient maps.
 pub(crate) fn add_grad_maps(a: HashMap<String, Tensor>, b: HashMap<String, Tensor>) -> Result<HashMap<String, Tensor>> {
     let mut out = HashMap::with_capacity(a.len().max(b.len()));

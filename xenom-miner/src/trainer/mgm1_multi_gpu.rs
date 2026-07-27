@@ -201,13 +201,6 @@ impl Mgm1MultiGpuTrainer {
         let used_input_ids = input_ids_full.narrow(0, 0, usable)?.to_device(&master_device)?;
         let used_labels = labels_full.narrow(0, 0, usable)?.to_device(&master_device)?;
 
-        // Compute class weights on the full usable batch so every micro-batch uses
-        // the same reweighting. This keeps the averaged gradient identical (up to
-        // device numerics) to a single-device full-batch step.
-        let class_weights = self.trainers[0]
-            .class_weights_for_batch(&used_input_ids, &used_labels)
-            .context("Failed to compute full-batch class weights for multi-GPU training")?;
-
         let mut accumulated_grads: Option<HashMap<String, Tensor>> = None;
         let mut total_masked: f64 = 0.0;
 
@@ -218,13 +211,11 @@ impl Mgm1MultiGpuTrainer {
                     let Some((ids, lbls)) = maybe_micro else { continue };
                     let trainer = self.trainers[gpu_idx].clone();
                     let master_device = master_device.clone();
-                    let class_weights = class_weights.clone();
                     let handle = s.spawn(move || -> Result<MicroResult> {
                         let ids = ids.to_device(trainer.device())?;
                         let lbls = lbls.to_device(trainer.device())?;
-                        let cw = class_weights.to_device(trainer.device())?;
                         let (_, _, grads) = trainer
-                            .compute_gradients(&ids, &lbls, 1.0, Some(&cw))
+                            .compute_gradients(&ids, &lbls, 1.0, None)
                             .with_context(|| format!("Gradient computation failed on GPU {}", gpu_idx))?;
                         // Weight the gradient by the number of masked positions in this
                         // micro-batch so the global average is identical to a full-batch
@@ -402,7 +393,9 @@ impl Trainer for Mgm1MultiGpuTrainer {
         seed[..8].copy_from_slice(&msg.batch.batch_id.to_le_bytes());
         let batch_indices: Vec<u64> = msg.batch.data_indices.iter().map(|s| s.chunk_idx).collect();
 
-        let (input_ids, labels) = self.trainers[0].prepare_sequences(&msg.sequences, seed)?;
+        let mask_ratio = msg.batch.mask_ratio as f64;
+        let target_len = msg.batch.seq_length;
+        let (input_ids, labels) = self.trainers[0].prepare_sequences(&msg.sequences, seed, mask_ratio, target_len)?;
         let (result, _, _, _) = self.train_batch(
             &input_ids,
             &labels,
@@ -426,7 +419,9 @@ impl Trainer for Mgm1MultiGpuTrainer {
         seed[..8].copy_from_slice(&msg.batch.batch_id.to_le_bytes());
         let batch_indices: Vec<u64> = msg.batch.data_indices.iter().map(|s| s.chunk_idx).collect();
 
-        let (input_ids, labels) = self.trainers[0].prepare_sequences(&msg.sequences, seed)?;
+        let mask_ratio = msg.batch.mask_ratio as f64;
+        let target_len = msg.batch.seq_length;
+        let (input_ids, labels) = self.trainers[0].prepare_sequences(&msg.sequences, seed, mask_ratio, target_len)?;
         let (mut result, weight_delta, participant_weight, metadata) = self.train_batch(
             &input_ids,
             &labels,
