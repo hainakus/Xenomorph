@@ -323,6 +323,7 @@ impl Trainer for Mgm1Trainer {
 
         let mut seed = [0u8; 32];
         seed.copy_from_slice(&msg.base_checkpoint);
+        seed[..8].copy_from_slice(&msg.batch.batch_id.to_le_bytes());
         let batch_indices: Vec<u64> = msg.batch.data_indices.iter().map(|s| s.chunk_idx).collect();
 
         let (input_ids, labels) = self.prepare_sequences(&msg.sequences, seed)?;
@@ -336,6 +337,7 @@ impl Trainer for Mgm1Trainer {
 
         let mut seed = [0u8; 32];
         seed.copy_from_slice(&msg.base_checkpoint);
+        seed[..8].copy_from_slice(&msg.batch.batch_id.to_le_bytes());
         let batch_indices: Vec<u64> = msg.batch.data_indices.iter().map(|s| s.chunk_idx).collect();
 
         let (input_ids, labels) = self.prepare_sequences(&msg.sequences, seed)?;
