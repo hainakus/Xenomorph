@@ -105,6 +105,11 @@ pub struct GradientPayload {
 }
 
 /// Gradient update submitted by a miner to the aggregator.
+///
+/// Includes a short training proof so the node can reject useless or adversarial
+/// updates before they enter FedAvg. The `loss_*` fields and the
+/// `gradients_commitment` are checked against the decrypted payload by the
+/// aggregator.
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub struct GradientUpdate {
     pub model_id: String,
@@ -112,6 +117,15 @@ pub struct GradientUpdate {
     pub encrypted_payload: Vec<u8>,
     /// Relative weight of this participant in the average (e.g. dataset size).
     pub participant_weight: f32,
+    pub loss_before: f64,
+    pub loss_after: f64,
+    /// Deterministic hash of the plaintext gradients/weight-delta contained in
+    /// `encrypted_payload`.
+    pub gradients_commitment: [u8; 32],
+    /// Batch indices that produced this update so the node can re-run a subset
+    /// for spot-checking.
+    pub batch_indices: Vec<u64>,
+    pub compute_time_ms: u64,
 }
 
 /// Request messages sent from the miner to the Xenomorph node.

@@ -10,6 +10,7 @@ use rayon::prelude::*;
 
 use crate::rpc::messages::{GradientLayer, GradientPayload, GradientUpdate};
 use crate::trainer::mixed_precision::to_grad_dtype;
+use crate::trainer::TrainingResult;
 
 /// Compute a deterministic gradient commitment hash from a name -> tensor map.
 pub(crate) fn gradient_commitment(grads: &HashMap<String, Tensor>) -> Result<[u8; 32]> {
@@ -35,8 +36,13 @@ pub(crate) fn build_gradient_update(
     named_grads: HashMap<String, Tensor>,
     participant_weight: f32,
     top_k_ratio: f32,
+    result: &TrainingResult,
 ) -> Result<GradientUpdate> {
     let top_k_ratio = top_k_ratio.clamp(0.0, 1.0);
+
+    // The commitment is over the plaintext gradients/weight-delta that the node
+    // will receive after decryption. Compute it before the HashMap is consumed.
+    let gradients_commitment = gradient_commitment(&named_grads)?;
 
     let mut pairs: Vec<(String, Tensor)> = named_grads.into_iter().collect();
     pairs.sort_by(|a, b| a.0.cmp(&b.0));
@@ -62,7 +68,17 @@ pub(crate) fn build_gradient_update(
     let encrypted_payload =
         model_crypto::encrypt(&payload_bytes, &model_crypto::derive_encryption_key()).context("Failed to encrypt gradient payload")?;
 
-    Ok(GradientUpdate { model_id: model_id.to_string(), base_checkpoint, encrypted_payload, participant_weight })
+    Ok(GradientUpdate {
+        model_id: model_id.to_string(),
+        base_checkpoint,
+        encrypted_payload,
+        participant_weight,
+        loss_before: result.loss_before,
+        loss_after: result.loss_after,
+        gradients_commitment,
+        batch_indices: result.batch_indices.clone(),
+        compute_time_ms: result.compute_time_ms,
+    })
 }
 
 /// Keep only the `k` largest absolute values of `flat` and return them together

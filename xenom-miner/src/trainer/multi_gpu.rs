@@ -573,6 +573,7 @@ impl Trainer for MultiGpuTrainer {
             named_grads,
             participant_weight,
             self.config.gradient_top_k_ratio,
+            &result,
         )?;
         info!("Gradient update build time: {} ms", build_start.elapsed().as_millis());
         Ok((result, Some(update)))
@@ -607,6 +608,7 @@ impl Trainer for MultiGpuTrainer {
             named_grads,
             participant_weight,
             self.config.gradient_top_k_ratio,
+            &result,
         )?;
         info!("Genome gradient update build time: {} ms", build_start.elapsed().as_millis());
         Ok((result, Some(update)))

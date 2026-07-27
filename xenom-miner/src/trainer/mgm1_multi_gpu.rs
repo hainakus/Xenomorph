@@ -256,7 +256,8 @@ impl Mgm1MultiGpuTrainer {
             .compute_loss_scalar(&used_input_ids, &used_labels)
             .context("Failed to compute post-update loss on master replica")?;
 
-        let gradients_commitment = gradient_commitment(&final_grads)?;
+        // The commitment is over the weight-delta that will be sent in the FedAvg payload.
+        let gradients_commitment = gradient_commitment(&weight_delta)?;
 
         // Restore replicas to base so the next batch starts from the same point.
         self.restore_base().context("Failed to restore replicas to base checkpoint")?;
@@ -286,8 +287,16 @@ impl Mgm1MultiGpuTrainer {
         base_checkpoint: [u8; 32],
         named_grads: HashMap<String, Tensor>,
         participant_weight: f32,
+        result: &TrainingResult,
     ) -> Result<GradientUpdate> {
-        build_gradient_update(&self.model_id, base_checkpoint, named_grads, participant_weight, self.config.gradient_top_k_ratio)
+        build_gradient_update(
+            &self.model_id,
+            base_checkpoint,
+            named_grads,
+            participant_weight,
+            self.config.gradient_top_k_ratio,
+            result,
+        )
     }
 }
 
@@ -313,7 +322,7 @@ impl Trainer for Mgm1MultiGpuTrainer {
         let (input_ids, labels) = self.trainers[0].prepare_random(n, seed)?;
         let (result, weight_delta, participant_weight) =
             self.train_batch(&input_ids, &labels, batch.base_checkpoint, batch.data_indices.clone(), batch.learning_rate)?;
-        let update = self.build_gradient_update_for(batch.base_checkpoint, weight_delta, participant_weight)?;
+        let update = self.build_gradient_update_for(batch.base_checkpoint, weight_delta, participant_weight, &result)?;
         Ok((result, Some(update)))
     }
 
@@ -345,7 +354,7 @@ impl Trainer for Mgm1MultiGpuTrainer {
         let (input_ids, labels) = self.trainers[0].prepare_sequences(&msg.sequences, seed)?;
         let (result, weight_delta, participant_weight) =
             self.train_batch(&input_ids, &labels, msg.base_checkpoint, batch_indices, self.lr as f32)?;
-        let update = self.build_gradient_update_for(msg.base_checkpoint, weight_delta, participant_weight)?;
+        let update = self.build_gradient_update_for(msg.base_checkpoint, weight_delta, participant_weight, &result)?;
         Ok((result, Some(update)))
     }
 

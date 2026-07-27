@@ -121,7 +121,10 @@ impl Coordinator {
             genome_file_path = Some(path);
         }
 
-        let difficulty = DifficultyTarget { min_improvement: -1.0, max_loss_after: f64::MAX };
+        // Reject gradient updates that do not improve (or even worsen) the loss and
+        // cap the post-update loss to prevent an adversarial or broken miner from
+        // pushing the active model into a degenerate region.
+        let difficulty = DifficultyTarget { min_improvement: 0.0, max_loss_after: 10.0 };
 
         let coordinator = Self {
             inner: Arc::new(CoordinatorInner {
@@ -560,6 +563,34 @@ impl Coordinator {
                 "Gradient update for {} does not match active model {}",
                 update.model_id,
                 self.inner.active_model_id
+            ));
+        }
+
+        if !update.loss_before.is_finite() || !update.loss_after.is_finite() {
+            return Err(anyhow::anyhow!(
+                "Gradient update for {} contains non-finite loss values (before={}, after={})",
+                update.model_id,
+                update.loss_before,
+                update.loss_after
+            ));
+        }
+
+        let improvement = update.loss_before - update.loss_after;
+        if improvement < self.inner.difficulty.min_improvement {
+            return Err(anyhow::anyhow!(
+                "Gradient update for {} does not meet difficulty target: improvement {} < {}",
+                update.model_id,
+                improvement,
+                self.inner.difficulty.min_improvement
+            ));
+        }
+
+        if update.loss_after > self.inner.difficulty.max_loss_after {
+            return Err(anyhow::anyhow!(
+                "Gradient update for {} exceeds max loss after: {} > {}",
+                update.model_id,
+                update.loss_after,
+                self.inner.difficulty.max_loss_after
             ));
         }
 

@@ -690,10 +690,10 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
             model_id: args.active_model_id.clone(),
             weights_hash,
             reward_per_block: 0,
-            // Devnet uses synthetic/random batches; a single AdamW step on a pre-trained
-            // DNABERT-2 model may not lower the loss on every batch. Allow the loss to
-            // increase by up to 1.0 while still rejecting proofs where the loss explodes.
-            difficulty: kaspa_consensus_core::pow::DifficultyTarget { min_improvement: -1.0, max_loss_after: f64::MAX },
+            // Reject blocks/gradients that do not improve the loss and cap the
+            // post-update loss to prevent a broken or adversarial miner from
+            // degrading the active model.
+            difficulty: kaspa_consensus_core::pow::DifficultyTarget { min_improvement: 0.0, max_loss_after: 10.0 },
         };
         async_runtime.register(TrainingBlockService::new(
             training_rpc_listen,

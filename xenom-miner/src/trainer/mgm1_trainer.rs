@@ -346,10 +346,9 @@ impl Trainer for Mgm1Trainer {
         self.apply_gradients(&grads, batch.learning_rate)?;
         let new_weights = self.varmap_snapshot()?;
         let weight_delta = Self::compute_weight_delta(&old_weights, &new_weights)?;
-        let update =
-            build_gradient_update(&self.model_id, batch.base_checkpoint, weight_delta, participant_weight, self.gradient_top_k_ratio)?;
         let loss_after = self.compute_loss_scalar(&input_ids, &labels)?;
-        let gradients_commitment = gradient_commitment(&grads)?;
+        // The commitment is over the weight-delta that will be sent in the FedAvg payload.
+        let gradients_commitment = gradient_commitment(&weight_delta)?;
 
         let result = TrainingResult {
             model_id: self.model_id.clone(),
@@ -360,6 +359,14 @@ impl Trainer for Mgm1Trainer {
             gradients_commitment,
             compute_time_ms: start.elapsed().as_millis() as u64,
         };
+        let update = build_gradient_update(
+            &self.model_id,
+            batch.base_checkpoint,
+            weight_delta,
+            participant_weight,
+            self.gradient_top_k_ratio,
+            &result,
+        )?;
         Ok((result, Some(update)))
     }
 
@@ -396,10 +403,9 @@ impl Trainer for Mgm1Trainer {
         self.apply_gradients(&grads, self.learning_rate as f32)?;
         let new_weights = self.varmap_snapshot()?;
         let weight_delta = Self::compute_weight_delta(&old_weights, &new_weights)?;
-        let update =
-            build_gradient_update(&self.model_id, msg.base_checkpoint, weight_delta, participant_weight, self.gradient_top_k_ratio)?;
         let loss_after = self.compute_loss_scalar(&input_ids, &labels)?;
-        let gradients_commitment = gradient_commitment(&grads)?;
+        // The commitment is over the weight-delta that will be sent in the FedAvg payload.
+        let gradients_commitment = gradient_commitment(&weight_delta)?;
 
         let result = TrainingResult {
             model_id: self.model_id.clone(),
@@ -410,6 +416,14 @@ impl Trainer for Mgm1Trainer {
             gradients_commitment,
             compute_time_ms: start.elapsed().as_millis() as u64,
         };
+        let update = build_gradient_update(
+            &self.model_id,
+            msg.base_checkpoint,
+            weight_delta,
+            participant_weight,
+            self.gradient_top_k_ratio,
+            &result,
+        )?;
         Ok((result, Some(update)))
     }
 

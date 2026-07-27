@@ -25,6 +25,24 @@ fn build_named_grads(trainer: &DnaBert2Trainer, averages: HashMap<String, Vec<f3
     Ok(named_grads)
 }
 
+/// Compute a deterministic commitment hash over named gradient tensors.
+/// Mirrors `xenom_miner::trainer::gradient::gradient_commitment`.
+fn gradient_commitment(grads: &HashMap<String, Tensor>) -> Result<[u8; 32]> {
+    let mut hasher = blake3::Hasher::new();
+    let mut names: Vec<_> = grads.keys().cloned().collect();
+    names.sort();
+    for name in names {
+        let grad = &grads[&name];
+        let grad_f32 = grad.to_dtype(DType::F32)?;
+        let values = grad_f32.flatten_all()?.to_vec1::<f32>()?;
+        hasher.update(name.as_bytes());
+        for value in values {
+            hasher.update(&value.to_le_bytes());
+        }
+    }
+    Ok(*hasher.finalize().as_bytes())
+}
+
 /// Decompress a possibly sparse `GradientLayer` into a full flattened `Vec<f32>`.
 /// Dense layers are validated and cloned; compressed layers scatter the stored
 /// values back into a zero vector of the original shape.
@@ -715,6 +733,26 @@ impl ModelManager {
             bail!("Gradient payload contains no layers");
         }
 
+        // Reconstruct the decrypted payload as named tensors and verify that its
+        // commitment matches the one signed in the update. This prevents a miner
+        // from claiming one set of gradients while sending another.
+        let mut reconstructed = HashMap::with_capacity(payload.layer_gradients.len());
+        for (name, layer) in &payload.layer_gradients {
+            let flat = decompress_gradient_layer(layer)?;
+            let tensor = Tensor::from_vec(flat, layer.shape.clone(), &Device::Cpu)?;
+            reconstructed.insert(name.clone(), tensor);
+        }
+        let expected = update.gradients_commitment;
+        let actual = gradient_commitment(&reconstructed)?;
+        if actual != expected {
+            bail!(
+                "Gradient commitment mismatch for {}: expected {}, got {}. Rejecting update.",
+                update.model_id,
+                hex::encode(expected),
+                hex::encode(actual)
+            );
+        }
+
         // Make sure the target model and its active checkpoint are cached.
         self.ensure_checkpoint_cached(&update.model_id).await?;
 
@@ -1295,7 +1333,26 @@ mod tests {
     fn encrypted_update(model_id: &str, base: [u8; 32], payload: GradientPayload, key: &[u8; 32]) -> GradientUpdate {
         let plaintext = borsh::to_vec(&payload).unwrap();
         let encrypted_payload = model_crypto::encrypt(&plaintext, key).unwrap();
-        GradientUpdate { model_id: model_id.to_string(), base_checkpoint: base, encrypted_payload, participant_weight: 1.0 }
+
+        let mut reconstructed = HashMap::with_capacity(payload.layer_gradients.len());
+        for (name, layer) in &payload.layer_gradients {
+            let flat = decompress_gradient_layer(layer).unwrap();
+            let tensor = Tensor::from_vec(flat, layer.shape.clone(), &Device::Cpu).unwrap();
+            reconstructed.insert(name.clone(), tensor);
+        }
+        let gradients_commitment = gradient_commitment(&reconstructed).unwrap();
+
+        GradientUpdate {
+            model_id: model_id.to_string(),
+            base_checkpoint: base,
+            encrypted_payload,
+            participant_weight: 1.0,
+            loss_before: 1.0,
+            loss_after: 0.9,
+            gradients_commitment,
+            batch_indices: vec![0, 1, 2],
+            compute_time_ms: 100,
+        }
     }
 
     #[tokio::test]
