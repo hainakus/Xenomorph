@@ -299,6 +299,11 @@ impl MiniGenomeModel {
     }
 
     /// Calcula loss para MLM. Returns (loss, accuracy)
+    ///
+    /// Apenas as posicoes mascaradas (onde input_ids != labels) contribuem para
+    /// o loss e para a acuracia. Isso evita que o modelo aprenda a simplesmente
+    /// copiar as bases nao mascaradas e foca a previsao das bases reais do
+    /// genoma que foram escondidas.
     pub fn compute_mlm_loss(&self, input_ids: &Tensor, labels: &Tensor) -> Result<(Tensor, f32)> {
         let logits = self.forward(input_ids)?;
         let (batch, seq_len, vocab_size) = logits.dims3()?;
@@ -307,11 +312,27 @@ impl MiniGenomeModel {
         let labels_u32 = labels.to_dtype(DType::U32)?;
         let labels_flat = labels_u32.reshape((batch * seq_len,))?;
 
-        let loss = candle_nn::loss::cross_entropy(&logits_flat, &labels_flat)?;
+        // Per-position negative log-likelihood of the target class.
+        let log_probs = candle_nn::ops::log_softmax(&logits_flat, candle_core::D::Minus1)?;
+        let labels_flat_unsqueezed = labels_flat.unsqueeze(1)?;
+        let target_log_probs = log_probs.gather(&labels_flat_unsqueezed, candle_core::D::Minus1)?;
+        let nll = target_log_probs.neg()?.reshape((batch * seq_len,))?;
 
+        // Mask: train only on positions where the input was masked (input != label).
+        // Padding positions also have input == label (mask token == mask token) and
+        // are therefore ignored, which is the desired behavior.
+        let mask =
+            input_ids.to_dtype(DType::U32)?.ne(&labels.to_dtype(DType::U32)?)?.to_dtype(DType::F32)?.reshape((batch * seq_len,))?;
+        let masked_nll = (&nll * &mask)?;
+        let mask_sum = mask.sum_all()?;
+        let mask_sum_f = mask_sum.to_vec0::<f32>()?;
+        let loss = if mask_sum_f == 0.0 { nll.mean_all()? } else { masked_nll.sum_all()?.div(&mask_sum)? };
+
+        // Accuracy over the masked positions only.
         let predictions = logits_flat.argmax(candle_core::D::Minus1)?;
         let correct = predictions.eq(&labels_flat)?.to_dtype(DType::F32)?;
-        let accuracy = correct.mean_all()?.to_scalar::<f32>()?;
+        let masked_correct = (&correct * &mask)?;
+        let accuracy = if mask_sum_f == 0.0 { 0.0 } else { masked_correct.sum_all()?.to_vec0::<f32>()? / mask_sum_f };
 
         Ok((loss, accuracy))
     }
