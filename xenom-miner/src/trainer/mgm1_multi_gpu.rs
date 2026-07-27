@@ -39,8 +39,6 @@ struct Mgm1BatchMetadata {
 
 /// Result of computing gradients for one micro-batch.
 struct MicroResult {
-    loss: f64,
-    weight: f32,
     grads: Option<HashMap<String, Tensor>>,
 }
 
@@ -199,12 +197,17 @@ impl Mgm1MultiGpuTrainer {
         let usable = batch_size.min(max_usable);
 
         let master_device = self.trainers[0].device().clone();
-        let used_input_ids = input_ids_full.narrow(0, 0, usable)?;
-        let used_labels = labels_full.narrow(0, 0, usable)?;
+        let used_input_ids = input_ids_full.narrow(0, 0, usable)?.to_device(&master_device)?;
+        let used_labels = labels_full.narrow(0, 0, usable)?.to_device(&master_device)?;
+
+        // Compute class weights on the full usable batch so every micro-batch uses
+        // the same reweighting. This keeps the averaged gradient identical (up to
+        // device numerics) to a single-device full-batch step.
+        let class_weights = self.trainers[0]
+            .class_weights_for_batch(&used_input_ids, &used_labels)
+            .context("Failed to compute full-batch class weights for multi-GPU training")?;
 
         let mut accumulated_grads: Option<HashMap<String, Tensor>> = None;
-        let mut loss_before_sum: f64 = 0.0;
-        let mut loss_before_weight: f32 = 0.0;
 
         for step in grid {
             let step_results: Vec<std::thread::Result<Result<MicroResult>>> = std::thread::scope(|s| {
@@ -213,16 +216,17 @@ impl Mgm1MultiGpuTrainer {
                     let Some((ids, lbls)) = maybe_micro else { continue };
                     let trainer = self.trainers[gpu_idx].clone();
                     let master_device = master_device.clone();
+                    let class_weights = class_weights.clone();
                     let handle = s.spawn(move || -> Result<MicroResult> {
                         let ids = ids.to_device(trainer.device())?;
                         let lbls = lbls.to_device(trainer.device())?;
-                        let (loss, _accuracy, grads) = trainer
-                            .compute_gradients(&ids, &lbls, 1.0)
+                        let cw = class_weights.to_device(trainer.device())?;
+                        let (_, _, grads) = trainer
+                            .compute_gradients(&ids, &lbls, 1.0, Some(&cw))
                             .with_context(|| format!("Gradient computation failed on GPU {}", gpu_idx))?;
-                        let weight = ids.elem_count() as f32;
                         let grads = move_grads_to_device(grads, &master_device)
                             .with_context(|| format!("Failed to move gradients from GPU {} to master", gpu_idx))?;
-                        Ok(MicroResult { loss, weight, grads: Some(grads) })
+                        Ok(MicroResult { grads: Some(grads) })
                     });
                     handles.push(handle);
                 }
@@ -233,8 +237,6 @@ impl Mgm1MultiGpuTrainer {
             for result in step_results {
                 let micro = result.map_err(|e| anyhow::anyhow!("GPU thread panicked: {:?}", e))??;
                 if let Some(grads) = micro.grads {
-                    loss_before_sum += micro.loss * micro.weight as f64;
-                    loss_before_weight += micro.weight;
                     step_grads.push(grads);
                 }
             }
@@ -251,13 +253,11 @@ impl Mgm1MultiGpuTrainer {
         }
 
         let final_grads = accumulated_grads.ok_or_else(|| anyhow::anyhow!("No gradients were produced by any GPU"))?;
-        let loss_before = if loss_before_weight > 0.0 { loss_before_sum / loss_before_weight as f64 } else { 0.0 };
+        let participant_weight = used_input_ids.elem_count() as f32;
 
-        let used_input_ids = used_input_ids.to_device(&master_device)?;
-        let used_labels = used_labels.to_device(&master_device)?;
-        let (_, accuracy_before) = self.trainers[0]
+        let (loss_before, accuracy_before) = self.trainers[0]
             .compute_loss_and_accuracy(&used_input_ids, &used_labels)
-            .context("Failed to compute pre-update accuracy on master replica")?;
+            .context("Failed to compute pre-update loss/accuracy on master replica")?;
         let label_dist = masked_label_distribution(&used_input_ids, &used_labels)?;
         let grad_norm = gradient_norm(&final_grads)?;
 
@@ -305,7 +305,7 @@ impl Mgm1MultiGpuTrainer {
 
         let metadata = Mgm1BatchMetadata { batch_id, learning_rate, genome_merkle_root, genome_slices };
 
-        Ok((result, weight_delta, loss_before_weight, metadata))
+        Ok((result, weight_delta, participant_weight, metadata))
     }
 
     /// Encrypt and package the averaged gradients as a `GradientUpdate`.

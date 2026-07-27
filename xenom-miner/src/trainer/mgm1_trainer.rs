@@ -158,7 +158,7 @@ impl Mgm1Trainer {
     /// of a batch.  The weights are clipped to [0.5, 2.0] so a small number of
     /// minority examples cannot dominate the gradient and collapse predictions to
     /// a single class.
-    fn class_weights_for_batch(&self, input_ids: &Tensor, labels: &Tensor) -> Result<Tensor> {
+    pub(crate) fn class_weights_for_batch(&self, input_ids: &Tensor, labels: &Tensor) -> Result<Tensor> {
         let mask = input_ids.ne(labels)?.to_dtype(DType::F32)?;
         let labels_u32 = labels.to_dtype(DType::U32)?;
         let flat = labels_u32.reshape((labels.elem_count(),))?;
@@ -199,14 +199,21 @@ impl Mgm1Trainer {
 
     /// Run a forward/backward pass and return the unscaled loss, accuracy, and
     /// per-variable gradients moved to the CPU (as F32).
+    ///
+    /// If `class_weights` is `None` they are computed from `(input_ids, labels)`
+    /// so that a single-device trainer and a multi-device trainer can share the
+    /// same per-batch weights and produce identical weight deltas.
     pub(crate) fn compute_gradients(
         &self,
         input_ids: &Tensor,
         labels: &Tensor,
         loss_scale: f32,
+        class_weights: Option<&Tensor>,
     ) -> Result<(f64, f32, HashMap<String, Tensor>)> {
-        let class_weights = self.class_weights_for_batch(input_ids, labels).ok();
-        let (loss, accuracy) = self.model.compute_mlm_loss(input_ids, labels, class_weights.as_ref())?;
+        let cw = class_weights
+            .cloned()
+            .or_else(|| self.class_weights_for_batch(input_ids, labels).ok());
+        let (loss, accuracy) = self.model.compute_mlm_loss(input_ids, labels, cw.as_ref())?;
         let loss_scalar = loss.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64;
         if !loss_scalar.is_finite() {
             anyhow::bail!("Loss is not finite ({}) before backward", loss_scalar);
@@ -263,15 +270,26 @@ impl Mgm1Trainer {
         let start = Instant::now();
         let effective_lr = learning_rate.min(MAX_LEARNING_RATE);
 
-        let (loss_before, accuracy_before, grads) = self.compute_gradients(input_ids, labels, 1.0)?;
+        // Snapshot the base weights so we can (a) compute the weight-space delta and
+        // (b) restore the model after producing the update. In gradient-update mode the
+        // trainer must always return to the shared base checkpoint; in plain `train` mode
+        // the updated weights are kept.
+        let base_weights = self.varmap_snapshot()?;
+
+        if return_update {
+            // Reset Adam moment estimates so the local weight delta is computed from the
+            // same clean state the node will use during validation.
+            self.reset_optimizer()?;
+        }
+
+        let (loss_before, accuracy_before, grads) = self.compute_gradients(input_ids, labels, 1.0, None)?;
         let grad_norm = gradient_norm(&grads)?;
         let label_dist = masked_label_distribution(input_ids, labels)?;
 
-        let old_weights = self.varmap_snapshot()?;
         self.apply_gradients(&grads, learning_rate)?;
-        let new_weights = self.varmap_snapshot()?;
+        let updated_weights = self.varmap_snapshot()?;
         let weight_delta = if return_update {
-            Some(Self::compute_weight_delta(&old_weights, &new_weights)?)
+            Some(Self::compute_weight_delta(&base_weights, &updated_weights)?)
         } else {
             None
         };
@@ -280,6 +298,7 @@ impl Mgm1Trainer {
         let logits = self.model.forward(input_ids)?;
         let pred_dist = masked_prediction_distribution(input_ids, labels, &logits)?;
 
+        // Commitment is over the payload that will be sent to the seed-node.
         let gradients_commitment = gradient_commitment(weight_delta.as_ref().unwrap_or(&grads))?;
         info!(
             "MGM-1 block: lr={:.3e} loss={:.4} -> {:.4} acc={:.2}% -> {:.2}% grad_norm={:.4}\n  labels A={:>3} C={:>3} G={:>3} T={:>3}\n  preds  A={:>3} C={:>3} G={:>3} T={:>3}",
@@ -288,6 +307,11 @@ impl Mgm1Trainer {
             label_dist[0], label_dist[1], label_dist[2], label_dist[3],
             pred_dist[0], pred_dist[1], pred_dist[2], pred_dist[3],
         );
+
+        if return_update {
+            self.restore_varmap(&base_weights)?;
+        }
+
         let result = TrainingResult {
             model_id: self.model_id.clone(),
             batch_indices,
