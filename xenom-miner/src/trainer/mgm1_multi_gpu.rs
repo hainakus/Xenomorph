@@ -13,12 +13,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
-use candle_core::Tensor;
+use candle_core::{DType, Tensor};
 use tracing::{info, warn};
 
 use crate::rpc::messages::{GenomeSlice, GenomeTrainingBatchMsg, GradientUpdate, TrainingBatch};
 use crate::trainer::gpu_trainer::GpuBackend;
-use crate::trainer::gradient::{add_grad_maps, average_grad_maps, build_gradient_update, gradient_commitment, move_grads_to_device};
+use crate::trainer::gradient::{add_grad_maps, build_gradient_update, gradient_commitment, move_grads_to_device, scale_grad_map, sum_grad_maps};
 use crate::trainer::mgm1_trainer::{gradient_norm, masked_label_distribution, masked_prediction_distribution, Mgm1Trainer, MAX_LEARNING_RATE};
 use crate::trainer::multi_gpu::{MultiGpuConfig, MultiGpuTrainer};
 use crate::trainer::{DeviceInfo, Trainer, TrainingResult};
@@ -40,6 +40,7 @@ struct Mgm1BatchMetadata {
 /// Result of computing gradients for one micro-batch.
 struct MicroResult {
     grads: Option<HashMap<String, Tensor>>,
+    masked_count: f64,
 }
 
 /// Multi-device data-parallel MGM-1 trainer.
@@ -208,6 +209,7 @@ impl Mgm1MultiGpuTrainer {
             .context("Failed to compute full-batch class weights for multi-GPU training")?;
 
         let mut accumulated_grads: Option<HashMap<String, Tensor>> = None;
+        let mut total_masked: f64 = 0.0;
 
         for step in grid {
             let step_results: Vec<std::thread::Result<Result<MicroResult>>> = std::thread::scope(|s| {
@@ -224,9 +226,16 @@ impl Mgm1MultiGpuTrainer {
                         let (_, _, grads) = trainer
                             .compute_gradients(&ids, &lbls, 1.0, Some(&cw))
                             .with_context(|| format!("Gradient computation failed on GPU {}", gpu_idx))?;
-                        let grads = move_grads_to_device(grads, &master_device)
+                        // Weight the gradient by the number of masked positions in this
+                        // micro-batch so the global average is identical to a full-batch
+                        // step on the validator node.
+                        let mask = ids.ne(&lbls)?.to_dtype(DType::F32)?;
+                        let masked_count = mask.sum_all()?.to_scalar::<f32>()? as f64;
+                        let scaled = scale_grad_map(grads, masked_count)
+                            .with_context(|| format!("Failed to scale gradients from GPU {}", gpu_idx))?;
+                        let scaled = move_grads_to_device(scaled, &master_device)
                             .with_context(|| format!("Failed to move gradients from GPU {} to master", gpu_idx))?;
-                        Ok(MicroResult { grads: Some(grads) })
+                        Ok(MicroResult { grads: Some(scaled), masked_count })
                     });
                     handles.push(handle);
                 }
@@ -234,9 +243,11 @@ impl Mgm1MultiGpuTrainer {
             });
 
             let mut step_grads = Vec::with_capacity(step_results.len());
+            let mut step_masked: f64 = 0.0;
             for result in step_results {
                 let micro = result.map_err(|e| anyhow::anyhow!("GPU thread panicked: {:?}", e))??;
                 if let Some(grads) = micro.grads {
+                    step_masked += micro.masked_count;
                     step_grads.push(grads);
                 }
             }
@@ -245,14 +256,20 @@ impl Mgm1MultiGpuTrainer {
                 continue;
             }
 
-            let avg = average_grad_maps(&step_grads).context("Failed to average gradients across GPUs")?;
+            let step_sum = sum_grad_maps(&step_grads).context("Failed to sum gradients across GPUs")?;
+            total_masked += step_masked;
             accumulated_grads = Some(match accumulated_grads {
-                None => avg,
-                Some(acc) => add_grad_maps(acc, avg)?,
+                None => step_sum,
+                Some(acc) => add_grad_maps(acc, step_sum)?,
             });
         }
 
         let final_grads = accumulated_grads.ok_or_else(|| anyhow::anyhow!("No gradients were produced by any GPU"))?;
+        let final_grads = if total_masked > 0.0 {
+            scale_grad_map(final_grads, 1.0 / total_masked).context("Failed to scale final averaged gradient")?
+        } else {
+            final_grads
+        };
         let participant_weight = used_input_ids.elem_count() as f32;
 
         let (loss_before, accuracy_before) = self.trainers[0]

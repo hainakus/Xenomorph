@@ -176,10 +176,11 @@ impl Mgm1Trainer {
 
         let total_masked: f32 = counts.iter().take(4).sum::<f32>().max(1.0);
         let active_classes = 4usize;
-        // Use a much smaller smoothing constant so minority classes in a batch get
-        // a strong inverse-frequency boost while the [0.5, 2.0] clamp still prevents
-        // absent classes from producing runaway gradients.
-        let smoothing = total_masked / (active_classes as f32 * 10.0);
+        // Reduce the additive smoothing by a factor of 3 compared to the original
+        // formula. This gives minority classes (C/G) a stronger inverse-frequency
+        // boost while staying far enough from the [0.5, 2.0] clamps to avoid the
+        // majority classes (A/T) being swamped.
+        let smoothing = total_masked / (active_classes as f32 * 3.0);
         let numerator = total_masked + active_classes as f32 * smoothing;
 
         let mut weights = vec![1.0f32; self.config.vocab_size];

@@ -189,6 +189,41 @@ pub(crate) fn add_grad_maps(a: HashMap<String, Tensor>, b: HashMap<String, Tenso
     Ok(out)
 }
 
+/// Scale every tensor in a named gradient map by a scalar factor.
+pub(crate) fn scale_grad_map(grads: HashMap<String, Tensor>, scale: f64) -> Result<HashMap<String, Tensor>> {
+    let mut out = HashMap::with_capacity(grads.len());
+    for (name, t) in grads {
+        let t = to_grad_dtype(&t)?;
+        out.insert(name, (&t * scale)?);
+    }
+    Ok(out)
+}
+
+/// Sum a list of named gradient maps, ignoring missing entries. The caller is
+/// expected to divide by the total weight afterwards when computing a weighted
+/// average.
+pub(crate) fn sum_grad_maps(grads: &[HashMap<String, Tensor>]) -> Result<HashMap<String, Tensor>> {
+    if grads.is_empty() {
+        anyhow::bail!("Cannot sum empty gradient list");
+    }
+
+    let mut acc: HashMap<String, Tensor> = HashMap::new();
+    for g in grads {
+        for (name, t) in g.iter() {
+            let t = to_grad_dtype(t)?;
+            match acc.get_mut(name) {
+                Some(sum) => {
+                    *sum = (&*sum + &t)?;
+                }
+                None => {
+                    acc.insert(name.clone(), t);
+                }
+            }
+        }
+    }
+    Ok(acc)
+}
+
 /// Move every tensor in a named gradient map to `device`.
 pub(crate) fn move_grads_to_device(grads: HashMap<String, Tensor>, device: &Device) -> Result<HashMap<String, Tensor>> {
     grads.into_iter().map(|(k, v)| Ok((k, v.to_device(device)?))).collect()
