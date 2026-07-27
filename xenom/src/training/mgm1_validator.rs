@@ -60,6 +60,16 @@ pub async fn validate_mgm1_update(
         bail!("No DNA sequences could be extracted for validation");
     }
 
+    // CPU-bound validation runs on the blocking pool so it does not stall the
+    // async runtime.
+    let update = update.clone();
+    let files = files.clone();
+    tokio::task::spawn_blocking(move || validate_on_cpu(&update, &files, sequences))
+        .await
+        .map_err(|e| anyhow::anyhow!("MGM-1 validation task panicked: {}", e))?
+}
+
+fn validate_on_cpu(update: &GradientUpdate, files: &RawModelFiles, sequences: Vec<String>) -> Result<()> {
     // The miner ignores the tokenizer bytes and uses the fixed DnaTokenizer, so we
     // pass an empty tokenizer buffer here as well.
     let trainer = Mgm1Trainer::new(
