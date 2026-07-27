@@ -256,6 +256,21 @@ impl Mgm1Trainer {
         Ok(snap)
     }
 
+    /// Compute `updated - base` for a pair of weight snapshots.
+    /// Used to turn a local AdamW step into the weight-space delta that is sent
+    /// to the seed-node for FedAvg aggregation.
+    pub(crate) fn compute_weight_delta(
+        base: &HashMap<String, Tensor>,
+        updated: &HashMap<String, Tensor>,
+    ) -> Result<HashMap<String, Tensor>> {
+        let mut delta = HashMap::with_capacity(base.len());
+        for (name, base_t) in base {
+            let updated_t = updated.get(name).ok_or_else(|| anyhow::anyhow!("Updated weights missing variable {}", name))?;
+            delta.insert(name.clone(), (updated_t.sub(base_t))?);
+        }
+        Ok(delta)
+    }
+
     /// Restore the trainable weights from a snapshot.
     pub(crate) fn restore_varmap(&self, snapshot: &HashMap<String, Tensor>) -> Result<()> {
         let locked = self.varmap.lock().map_err(|e| anyhow::anyhow!("VarMap mutex poisoned: {e}"))?;
@@ -293,14 +308,12 @@ impl Trainer for Mgm1Trainer {
 
         let start = Instant::now();
         let (loss_before, grads) = self.compute_gradients(&input_ids, &labels, 1.0)?;
-        let update = build_gradient_update(
-            &self.model_id,
-            batch.base_checkpoint,
-            grads.clone(),
-            participant_weight,
-            self.gradient_top_k_ratio,
-        )?;
+        let old_weights = self.varmap_snapshot()?;
         self.apply_gradients(&grads, batch.learning_rate)?;
+        let new_weights = self.varmap_snapshot()?;
+        let weight_delta = Self::compute_weight_delta(&old_weights, &new_weights)?;
+        let update =
+            build_gradient_update(&self.model_id, batch.base_checkpoint, weight_delta, participant_weight, self.gradient_top_k_ratio)?;
         let loss_after = self.compute_loss_scalar(&input_ids, &labels)?;
         let gradients_commitment = gradient_commitment(&grads)?;
 
@@ -345,9 +358,12 @@ impl Trainer for Mgm1Trainer {
 
         let start = Instant::now();
         let (loss_before, grads) = self.compute_gradients(&input_ids, &labels, 1.0)?;
-        let update =
-            build_gradient_update(&self.model_id, msg.base_checkpoint, grads.clone(), participant_weight, self.gradient_top_k_ratio)?;
+        let old_weights = self.varmap_snapshot()?;
         self.apply_gradients(&grads, self.learning_rate as f32)?;
+        let new_weights = self.varmap_snapshot()?;
+        let weight_delta = Self::compute_weight_delta(&old_weights, &new_weights)?;
+        let update =
+            build_gradient_update(&self.model_id, msg.base_checkpoint, weight_delta, participant_weight, self.gradient_top_k_ratio)?;
         let loss_after = self.compute_loss_scalar(&input_ids, &labels)?;
         let gradients_commitment = gradient_commitment(&grads)?;
 
@@ -439,6 +455,12 @@ mod tests {
         let (result, update) = trainer.train_with_gradients(&batch).unwrap();
         assert!(result.loss_before.is_finite());
         assert!(result.loss_after.is_finite());
+        assert!(
+            result.loss_after < result.loss_before,
+            "MGM-1 training should reduce loss: {} -> {}",
+            result.loss_before,
+            result.loss_after
+        );
         assert!(update.is_some(), "Expected a GradientUpdate for FedAvg");
         let update = update.unwrap();
         assert_eq!(update.model_id, "xeno/mgm-1");
@@ -468,6 +490,12 @@ mod tests {
         let (result, update) = trainer.train_genome_with_gradients(&msg).unwrap();
         assert!(result.loss_before.is_finite());
         assert!(result.loss_after.is_finite());
+        assert!(
+            result.loss_after < result.loss_before,
+            "MGM-1 training should reduce loss: {} -> {}",
+            result.loss_before,
+            result.loss_after
+        );
         assert!(update.is_some());
     }
 }

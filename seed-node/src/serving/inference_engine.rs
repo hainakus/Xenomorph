@@ -386,8 +386,12 @@ fn predict_masked_lm_mgm(
     let input_ids = Tensor::new(input_ids_u32.as_slice(), device)?.reshape((1, seq_len))?;
 
     let logits = model.forward(&input_ids)?;
-    let probs = softmax(&logits, candle_core::D::Minus1)?;
-    let predicted_ids = logits.argmax(candle_core::D::Minus1)?;
+    // Only the first four logits (A, C, G, T) are meaningful for DNA MLM.
+    // Restricting softmax/argmax to these bases prevents special tokens from
+    // being mapped to T by the previous `min(3)` clamp.
+    let logits_dna = logits.narrow(candle_core::D::Minus1, 0, 4)?;
+    let probs = softmax(&logits_dna, candle_core::D::Minus1)?;
+    let predicted_ids = logits_dna.argmax(candle_core::D::Minus1)?;
 
     // Gather confidence values on the CPU to avoid backend-specific gather kernels.
     let probs_cpu = probs.to_device(&Device::Cpu)?;
@@ -404,9 +408,7 @@ fn predict_masked_lm_mgm(
     let mut total_confidence = 0.0f32;
     for (i, &id) in input_ids_vec.iter().enumerate() {
         if id == MASK_TOKEN_ID {
-            // Clamp predicted ids to the four DNA bases for robustness; ignore specials.
-            let predicted = (predicted_ids_vec[i] as usize).min(3);
-            output_ids[i] = predicted;
+            output_ids[i] = predicted_ids_vec[i] as usize;
             total_confidence += gathered_probs_vec[i];
             mask_count += 1;
         }

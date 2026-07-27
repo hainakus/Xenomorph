@@ -3,7 +3,7 @@
 //! Otimizado para treinamento rapido em CPU/GPU via Candle
 
 use candle_core::{DType, Device, Module, Result, Tensor};
-use candle_nn::{embedding, layer_norm, linear, Dropout, Embedding, LayerNorm, Linear, Optimizer};
+use candle_nn::{embedding, layer_norm, linear, Dropout, Embedding, Init, LayerNorm, Linear, Optimizer};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -274,7 +274,15 @@ impl MiniGenomeModel {
         }
 
         let final_norm = layer_norm(config.d_model, 1e-5, vb.pp("final_norm"))?;
-        let head = linear(config.d_model, config.vocab_size, vb.pp("head"))?;
+        // Initialize the output head with very small random weights and zero bias.
+        // The token embeddings are N(0,1), so a large head init would produce
+        // confident random predictions and the model would need many steps to
+        // unlearn a random class bias (e.g. always predicting C). Small logits
+        // start near a uniform distribution and let MLM training progress from
+        // the first batches.
+        let head_weight = vb.get_with_hints((config.vocab_size, config.d_model), "weight", Init::Randn { mean: 0.0, stdev: 0.02 })?;
+        let head_bias = vb.get_with_hints(config.vocab_size, "bias", Init::Const(0.0))?;
+        let head = Linear::new(head_weight, Some(head_bias));
 
         Ok(Self { config, token_embedding, pos_embedding, transformer_blocks, final_norm, head, device })
     }

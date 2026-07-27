@@ -242,9 +242,13 @@ impl Mgm1MultiGpuTrainer {
         let final_grads = accumulated_grads.ok_or_else(|| anyhow::anyhow!("No gradients were produced by any GPU"))?;
         let loss_before = if loss_before_weight > 0.0 { loss_before_sum / loss_before_weight as f64 } else { 0.0 };
 
+        let old_weights = self.trainers[0].varmap_snapshot().context("Failed to snapshot master replica weights before update")?;
         self.trainers[0]
             .apply_gradients(&final_grads, learning_rate)
             .context("Failed to apply averaged gradients to master replica")?;
+        let new_weights = self.trainers[0].varmap_snapshot().context("Failed to snapshot master replica weights after update")?;
+        let weight_delta =
+            Mgm1Trainer::compute_weight_delta(&old_weights, &new_weights).context("Failed to compute MGM-1 multi-GPU weight delta")?;
 
         let used_input_ids = used_input_ids.to_device(&master_device)?;
         let used_labels = used_labels.to_device(&master_device)?;
@@ -273,7 +277,7 @@ impl Mgm1MultiGpuTrainer {
             compute_time_ms: total_ms,
         };
 
-        Ok((result, final_grads, loss_before_weight))
+        Ok((result, weight_delta, loss_before_weight))
     }
 
     /// Encrypt and package the averaged gradients as a `GradientUpdate`.
@@ -307,9 +311,9 @@ impl Trainer for Mgm1MultiGpuTrainer {
 
         let n = batch.data_indices.len().max(1);
         let (input_ids, labels) = self.trainers[0].prepare_random(n, seed)?;
-        let (result, final_grads, participant_weight) =
+        let (result, weight_delta, participant_weight) =
             self.train_batch(&input_ids, &labels, batch.base_checkpoint, batch.data_indices.clone(), batch.learning_rate)?;
-        let update = self.build_gradient_update_for(batch.base_checkpoint, final_grads, participant_weight)?;
+        let update = self.build_gradient_update_for(batch.base_checkpoint, weight_delta, participant_weight)?;
         Ok((result, Some(update)))
     }
 
@@ -339,9 +343,9 @@ impl Trainer for Mgm1MultiGpuTrainer {
         let batch_indices: Vec<u64> = msg.batch.data_indices.iter().map(|s| s.chunk_idx).collect();
 
         let (input_ids, labels) = self.trainers[0].prepare_sequences(&msg.sequences, seed)?;
-        let (result, final_grads, participant_weight) =
+        let (result, weight_delta, participant_weight) =
             self.train_batch(&input_ids, &labels, msg.base_checkpoint, batch_indices, self.lr as f32)?;
-        let update = self.build_gradient_update_for(msg.base_checkpoint, final_grads, participant_weight)?;
+        let update = self.build_gradient_update_for(msg.base_checkpoint, weight_delta, participant_weight)?;
         Ok((result, Some(update)))
     }
 

@@ -70,8 +70,10 @@ fn serialize_weight_snapshot(weights: &HashMap<String, Tensor>) -> Result<Vec<u8
     safetensors::tensor::serialize(tensors, &None).map_err(|e| anyhow!("Failed to serialize MGM-1 weights: {}", e))
 }
 
-/// Apply averaged gradients to a weight snapshot with a simple SGD step.
-fn apply_gradient_to_snapshot(
+/// Add an averaged weight-space delta to a weight snapshot.
+/// The `averages` are now weight deltas produced by the miner's local AdamW
+/// step, so `lr` is kept at 1.0 and the delta is added (not subtracted).
+fn apply_weight_delta_to_snapshot(
     weights: &HashMap<String, Tensor>,
     averages: &HashMap<String, Vec<f32>>,
     lr: f64,
@@ -79,17 +81,17 @@ fn apply_gradient_to_snapshot(
 ) -> Result<HashMap<String, Tensor>> {
     let mut updated = HashMap::with_capacity(weights.len());
     for (name, theta) in weights {
-        let grad_vec = match averages.get(name) {
-            Some(g) => g,
+        let delta_vec = match averages.get(name) {
+            Some(d) => d,
             None => continue,
         };
         let shape = theta.shape().clone();
-        let grad = Tensor::from_vec(grad_vec.clone(), shape, device)
-            .with_context(|| format!("Failed to build gradient tensor for {}", name))?
+        let delta = Tensor::from_vec(delta_vec.clone(), shape, device)
+            .with_context(|| format!("Failed to build delta tensor for {}", name))?
             .to_dtype(theta.dtype())?;
-        let grad = grad.to_device(theta.device())?;
-        let grad_scaled = (grad * lr)?;
-        let next = (theta - &grad_scaled)?;
+        let delta = delta.to_device(theta.device())?;
+        let delta_scaled = (delta * lr)?;
+        let next = (theta + &delta_scaled)?;
         updated.insert(name.clone(), next);
     }
     Ok(updated)
@@ -116,12 +118,14 @@ fn add_weight_delta(base: &HashMap<String, Tensor>, delta: &HashMap<String, Tens
     Ok(result)
 }
 
-/// Build the new MGM-1 checkpoint from `files` and averaged gradients.
+/// Build the new MGM-1 checkpoint from `files` and averaged weight deltas.
 ///
-/// If `base_snapshot` is `Some`, the gradient is applied to that stale base,
-/// the resulting weight-space delta is computed, and the delta is added to the
-/// active weights from `files`. For an active-base update `base_snapshot` is
-/// `None` and the gradient is applied directly to the active weights.
+/// `averages` now contain the weight-space change (`new - old`) produced by the
+/// miner's local AdamW step, not raw gradients. If `base_snapshot` is `Some`,
+/// the delta is first added to that stale base, the resulting weight-space
+/// delta is computed, and it is added to the active weights from `files`. For
+/// an active-base update `base_snapshot` is `None` and the delta is added
+/// directly to the active weights.
 ///
 /// Returns the serialized new weights, their hash, and the old active weights
 /// snapshot so the caller can store it for future rebases.
@@ -136,12 +140,12 @@ fn apply_mgm1_gradients_sync(
 
     let new_weights = if let Some(base) = base_snapshot {
         let rebased =
-            apply_gradient_to_snapshot(&base, &averages, 1e-5f64, &device).context("Failed to apply gradient to stale MGM-1 base")?;
+            apply_weight_delta_to_snapshot(&base, &averages, 1.0, &device).context("Failed to apply delta to stale MGM-1 base")?;
         let delta = compute_weight_delta(&base, &rebased).context("Failed to compute MGM-1 rebase delta")?;
         add_weight_delta(&active_weights, &delta).context("Failed to apply MGM-1 rebase delta")?
     } else {
-        apply_gradient_to_snapshot(&active_weights, &averages, 1e-5f64, &device)
-            .context("Failed to apply gradient to active MGM-1 weights")?
+        apply_weight_delta_to_snapshot(&active_weights, &averages, 1.0, &device)
+            .context("Failed to apply delta to active MGM-1 weights")?
     };
 
     let weights = serialize_weight_snapshot(&new_weights).context("Failed to serialize updated MGM-1 weights")?;
