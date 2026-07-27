@@ -99,6 +99,12 @@ impl LoadedModel {
     }
 }
 
+/// Cached model entry keyed by the checkpoint weights hash it was loaded from.
+struct CachedModel {
+    weights_hash: [u8; 32],
+    model: Arc<LoadedModel>,
+}
+
 /// Real inference engine for biological models.
 ///
 /// Caches loaded models in memory and exposes `predict` and `embed`.
@@ -107,7 +113,7 @@ impl LoadedModel {
 /// their respective pipelines.
 pub struct InferenceEngine {
     model_manager: Arc<ModelManager>,
-    cache: Mutex<HashMap<String, Arc<LoadedModel>>>,
+    cache: Mutex<HashMap<String, CachedModel>>,
     device: Device,
 }
 
@@ -124,7 +130,7 @@ impl InferenceEngine {
         self.model_manager.clone()
     }
 
-    fn load_sync(&self, model_id: &str) -> Result<Arc<LoadedModel>> {
+    fn load_sync(&self, model_id: &str) -> Result<(Arc<LoadedModel>, [u8; 32])> {
         let kind = kind_for_model_id(model_id);
 
         match kind {
@@ -134,36 +140,35 @@ impl InferenceEngine {
         }
     }
 
-    fn load_dnabert(&self, model_id: &str) -> Result<Arc<LoadedModel>> {
+    fn load_dnabert(&self, model_id: &str) -> Result<(Arc<LoadedModel>, [u8; 32])> {
         let runtime = tokio::runtime::Handle::try_current()?;
-        let (config, tokenizer, weights) = runtime.block_on(async {
+        let (checkpoint, files) = runtime.block_on(async {
             self.model_manager.ensure_model_downloaded(model_id).await?;
-            let (_checkpoint, files) = self.model_manager.get_model_checkpoint(model_id).await?;
-            Ok::<_, anyhow::Error>((files.config, files.tokenizer, files.weights))
+            self.model_manager.get_model_checkpoint(model_id).await
         })?;
 
-        let config = xenom_miner::model::DnaBert2Config::from_bytes(&config)
+        let config = xenom_miner::model::DnaBert2Config::from_bytes(&files.config)
             .with_context(|| format!("Failed to parse config for model {}", model_id))?;
-        let tokenizer = xenom_miner::tokenizer::DnaTokenizer::from_bytes(&tokenizer)
+        let tokenizer = xenom_miner::tokenizer::DnaTokenizer::from_bytes(&files.tokenizer)
             .with_context(|| format!("Failed to parse tokenizer for model {}", model_id))?;
         let lora_config = self.model_manager.lora_config();
-        let model = xenom_miner::dnabert2::DnaBert2ForMaskedLM::load(config.clone(), weights, DType::F32, &self.device, lora_config)
-            .with_context(|| format!("Failed to load DNABERT-2 weights for model {}", model_id))?;
+        let model =
+            xenom_miner::dnabert2::DnaBert2ForMaskedLM::load(config.clone(), files.weights, DType::F32, &self.device, lora_config)
+                .with_context(|| format!("Failed to load DNABERT-2 weights for model {}", model_id))?;
 
         info!("Loaded model for inference: {} (kind: MaskedLM/DNABERT)", model_id);
-        Ok(Arc::new(LoadedModel::DnaBert { model, tokenizer, config, kind: ModelKind::MaskedLM }))
+        Ok((Arc::new(LoadedModel::DnaBert { model, tokenizer, config, kind: ModelKind::MaskedLM }), checkpoint.weights_hash))
     }
 
-    fn load_mgm(&self, model_id: &str) -> Result<Arc<LoadedModel>> {
+    fn load_mgm(&self, model_id: &str) -> Result<(Arc<LoadedModel>, [u8; 32])> {
         let runtime = tokio::runtime::Handle::try_current()?;
-        let (config, _tokenizer, weights) = runtime.block_on(async {
+        let (checkpoint, files) = runtime.block_on(async {
             self.model_manager.ensure_model_downloaded(model_id).await?;
-            let (_checkpoint, files) = self.model_manager.get_model_checkpoint(model_id).await?;
-            Ok::<_, anyhow::Error>((files.config, files.tokenizer, files.weights))
+            self.model_manager.get_model_checkpoint(model_id).await
         })?;
 
         let config: mini_genome_model::MiniGenomeConfig =
-            serde_json::from_slice(&config).with_context(|| format!("Failed to parse MGM-1 config for {}", model_id))?;
+            serde_json::from_slice(&files.config).with_context(|| format!("Failed to parse MGM-1 config for {}", model_id))?;
 
         let mut varmap = VarMap::new();
         let model = {
@@ -172,28 +177,36 @@ impl InferenceEngine {
                 .with_context(|| format!("Failed to build MGM-1 model {}", model_id))?
         };
 
-        if !weights.is_empty() {
-            load_varmap_weights(&mut varmap, &weights, &self.device)
+        if !files.weights.is_empty() {
+            load_varmap_weights(&mut varmap, &files.weights, &self.device)
                 .with_context(|| format!("Failed to load MGM-1 weights for {}", model_id))?;
         }
 
         let tokenizer = mini_genome_model::DnaTokenizer::new();
         info!("Loaded model for inference: {} (kind: MaskedLM/MGM)", model_id);
-        Ok(Arc::new(LoadedModel::Mgm { model, tokenizer, config, varmap, kind: ModelKind::MaskedLM }))
+        Ok((Arc::new(LoadedModel::Mgm { model, tokenizer, config, varmap, kind: ModelKind::MaskedLM }), checkpoint.weights_hash))
     }
 
     fn get_or_load(&self, model_id: &str) -> Result<Arc<LoadedModel>> {
+        let runtime =
+            tokio::runtime::Handle::try_current().map_err(|e| anyhow!("No Tokio runtime available for model hash check: {}", e))?;
+
         {
             let cache = self.cache.lock().map_err(|e| anyhow!("Model cache poisoned: {}", e))?;
-            if let Some(loaded) = cache.get(model_id) {
-                return Ok(loaded.clone());
+            if let Some(entry) = cache.get(model_id) {
+                let model_manager = self.model_manager.clone();
+                let id = model_id.to_string();
+                let active_hash = runtime.block_on(async move { model_manager.active_hash(&id).await });
+                if active_hash == Some(entry.weights_hash) {
+                    return Ok(entry.model.clone());
+                }
             }
         }
 
-        let loaded = self.load_sync(model_id)?;
+        let (loaded, weights_hash) = self.load_sync(model_id)?;
         {
             let mut cache = self.cache.lock().map_err(|e| anyhow!("Model cache poisoned: {}", e))?;
-            cache.insert(model_id.to_string(), loaded.clone());
+            cache.insert(model_id.to_string(), CachedModel { weights_hash, model: loaded.clone() });
         }
         Ok(loaded)
     }
@@ -567,5 +580,68 @@ mod tests {
             assert!(!output.contains(' '));
             println!("masks={}: output_len={} elapsed={:?}", mask_count, output.len(), elapsed);
         }
+    }
+
+    fn build_mgm1_files_with_bias(biased_token: usize, bias_value: f32) -> crate::model::RawModelFiles {
+        use candle_nn::VarBuilder;
+
+        let device = Device::Cpu;
+        let config = mini_genome_model::MiniGenomeConfig::tiny();
+        let mut varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        mini_genome_model::MiniGenomeModel::new(vb, config.clone()).unwrap();
+
+        let mut bias_data = vec![0.0f32; config.vocab_size];
+        bias_data[biased_token] = bias_value;
+        for i in 4..config.vocab_size {
+            bias_data[i] = -100.0;
+        }
+        let bias_tensor = Tensor::new(bias_data.as_slice(), &device).unwrap();
+        varmap.set_one("bias", &bias_tensor).unwrap();
+
+        let tmp = std::env::temp_dir().join(format!("mgm1_test_{}.safetensors", rand::random::<u64>()));
+        varmap.save(&tmp).unwrap();
+        let weights = std::fs::read(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+
+        let config_bytes = serde_json::to_vec(&config).unwrap();
+        let tokenizer_bytes = br#"{"version":"1.0","truncation":null,"padding":null,"added_tokens":[],"normalizer":null,"pre_tokenizer":null,"post_processor":null,"decoder":null,"model":{"type":"BPE","vocab":{"A":0,"C":1,"G":2,"T":3,"[MASK]":4," ":5,"[CLS]":6,"[SEP]":7},"merges":[]}}"#.to_vec();
+
+        crate::model::RawModelFiles { config: config_bytes, tokenizer: tokenizer_bytes, weights }
+    }
+
+    #[tokio::test]
+    async fn test_inference_engine_reloads_when_checkpoint_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let base_path = dir.path().to_path_buf().to_string_lossy().to_string();
+        let model_id = "xeno/mgm-1";
+
+        let manager = Arc::new(ModelManager::new_with_key(base_path, [0u8; 32], None).await.unwrap());
+
+        let initial_files = build_mgm1_files_with_bias(0, 100.0);
+        manager.store_model_files(model_id, &initial_files, crate::model::checkpoint::ModelMetrics::default()).await.unwrap();
+
+        let mgr = manager.clone();
+        let first: String = tokio::task::spawn_blocking(move || {
+            let engine = InferenceEngine::new(mgr);
+            let (output, _, _, _) = engine.predict(model_id, "A[T").unwrap();
+            output
+        })
+        .await
+        .unwrap();
+        assert_eq!(first, "AAT", "initial model should predict A for every mask");
+
+        let updated_files = build_mgm1_files_with_bias(3, 100.0);
+        manager.store_model_files(model_id, &updated_files, crate::model::checkpoint::ModelMetrics::default()).await.unwrap();
+
+        let mgr = manager.clone();
+        let second: String = tokio::task::spawn_blocking(move || {
+            let engine = InferenceEngine::new(mgr);
+            let (output, _, _, _) = engine.predict(model_id, "A[T").unwrap();
+            output
+        })
+        .await
+        .unwrap();
+        assert_eq!(second, "ATT", "engine must reload the new checkpoint instead of returning the cached model");
     }
 }
