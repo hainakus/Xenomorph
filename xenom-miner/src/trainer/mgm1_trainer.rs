@@ -792,7 +792,7 @@ mod tests {
                 }
             }
         }
-        println!("\n[DIAGNOSE] Prediction distribution after 50 steps (same batch):");
+        println!("\n[DIAGNOSE] Prediction distribution after 30 steps (same batch):");
         for c in ['A', 'C', 'G', 'T'] {
             let n = predictions_after.get(&c).copied().unwrap_or(0);
             println!("  {}: {} ({:.1}%)", c, n, 100.0 * (n as f32) / mask_count.max(1) as f32);
