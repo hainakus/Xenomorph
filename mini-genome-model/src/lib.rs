@@ -312,12 +312,7 @@ impl MiniGenomeModel {
     /// o loss e para a acuracia. Isso evita que o modelo aprenda a simplesmente
     /// copiar as bases nao mascaradas e foca a previsao das bases reais do
     /// genoma que foram escondidas.
-    pub fn compute_mlm_loss(
-        &self,
-        input_ids: &Tensor,
-        labels: &Tensor,
-        class_weights: Option<&Tensor>,
-    ) -> Result<(Tensor, f32)> {
+    pub fn compute_mlm_loss(&self, input_ids: &Tensor, labels: &Tensor, class_weights: Option<&Tensor>) -> Result<(Tensor, f32)> {
         let logits = self.forward(input_ids)?;
         let (batch, seq_len, vocab_size) = logits.dims3()?;
 

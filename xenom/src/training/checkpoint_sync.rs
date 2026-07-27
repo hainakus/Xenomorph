@@ -20,9 +20,7 @@ use kaspa_p2p_flows::flow_context::FlowContext;
 use model_crypto::gossip::{Announcement, GossipRegistry};
 use parking_lot::Mutex;
 use seed_node::model::model_files::RawModelFiles;
-use seed_node::rpc::messages::{
-    GetModelCheckpointV2, ModelCheckpointV2 as RpcModelCheckpointV2, RpcRequest, RpcResponse,
-};
+use seed_node::rpc::messages::{GetModelCheckpointV2, ModelCheckpointV2 as RpcModelCheckpointV2, RpcRequest, RpcResponse};
 use tokio::time::{interval, timeout};
 use tokio_tungstenite::{connect_async_with_config, tungstenite::protocol::WebSocketConfig, tungstenite::Message};
 
@@ -55,11 +53,7 @@ pub struct CheckpointSyncService {
 }
 
 impl CheckpointSyncService {
-    pub fn new_with_local_addr(
-        coordinator: Coordinator,
-        flow_context: Arc<FlowContext>,
-        local_addr: Option<SocketAddr>,
-    ) -> Arc<Self> {
+    pub fn new_with_local_addr(coordinator: Coordinator, flow_context: Arc<FlowContext>, local_addr: Option<SocketAddr>) -> Arc<Self> {
         Arc::new(Self {
             coordinator,
             gossip_registry: flow_context.gossip_registry.clone(),
@@ -115,11 +109,7 @@ impl CheckpointSyncService {
 
         let checkpoint = fetch_checkpoint_v2(peer_addr, &model_id, None).await?;
         let hash = self.coordinator.load_external_checkpoint(model_id, raw_model_files_from_v2(checkpoint)).await?;
-        info!(
-            "Loaded synced checkpoint {} for {}",
-            hex::encode(hash.as_bytes()),
-            self.coordinator.active_model_id()
-        );
+        info!("Loaded synced checkpoint {} for {}", hex::encode(hash.as_bytes()), self.coordinator.active_model_id());
         Ok(())
     }
 }
@@ -161,10 +151,7 @@ async fn fetch_checkpoint_v2(peer: SocketAddr, model_id: &str, cached_base_hash:
     let request_id = 1u64;
     let request = seed_node::rpc::messages::RpcEnvelope {
         request_id,
-        payload: RpcRequest::GetModelCheckpointV2(GetModelCheckpointV2 {
-            model_id: model_id.to_string(),
-            cached_base_hash,
-        }),
+        payload: RpcRequest::GetModelCheckpointV2(GetModelCheckpointV2 { model_id: model_id.to_string(), cached_base_hash }),
     };
     let req_bytes = to_vec(&request).context("Failed to serialize checkpoint request")?;
     ws.send(Message::Binary(req_bytes)).await.with_context(|| format!("Failed to send checkpoint request to {}", peer))?;

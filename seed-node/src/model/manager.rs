@@ -445,14 +445,21 @@ impl ModelManager {
 
         let checkpoint = ModelCheckpoint::new(0, model_id.to_string(), 1, &files.weights, metrics);
 
+        // Preserve runtime flags (loaded / last_used) if the model is already known,
+        // so a checkpoint update does not flip the model to "inactive" in gRPC info.
+        let (loaded, last_used) = {
+            let models = self.models.read().await;
+            models.get(model_id).map(|info| (info.loaded, info.last_used)).unwrap_or((false, 0))
+        };
+
         let model_info = ModelInfo {
             id: model_id.to_string(),
             name: model_id.to_string(),
             version: 1,
             category: "NLP".to_string(),
             checkpoint,
-            loaded: false,
-            last_used: 0,
+            loaded,
+            last_used,
             lora_config: self.lora_config.clone(),
         };
 

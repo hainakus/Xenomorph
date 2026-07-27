@@ -150,9 +150,12 @@ impl Mgm1Trainer {
     }
 
     /// Compute inverse-frequency class weights from the masked positions of a batch.
-    /// Returns a 1-D tensor of length `vocab_size` with weights normalized so the
-    /// mean over present classes is 1.0.
+    ///
+    /// Weights are smoothed by `eps` and then normalized so the mean over the
+    /// present classes is 1.0.  This keeps the loss scale stable while still
+    /// up-weighting minority bases (C/G).
     fn class_weights_for_batch(&self, input_ids: &Tensor, labels: &Tensor) -> Result<Tensor> {
+        let eps = 1.0f32;
         let mask = input_ids.ne(labels)?.to_dtype(DType::F32)?;
         let labels_u32 = labels.to_dtype(DType::U32)?;
         let flat = labels_u32.reshape((labels.elem_count(),))?;
@@ -168,11 +171,11 @@ impl Mgm1Trainer {
             }
         }
 
-        let total: f32 = counts.iter().sum::<f32>().max(1.0);
         let active_classes = counts.iter().filter(|&&c| c > 0.0).count().max(1);
+        let inv_freq_sum: f32 = counts.iter().map(|&c| if c > 0.0 { 1.0 / (c + eps) } else { 0.0 }).sum::<f32>().max(1e-6);
         let mut weights = vec![0.0f32; self.config.vocab_size];
         for i in 0..self.config.vocab_size {
-            weights[i] = if counts[i] > 0.0 { total / (counts[i] * active_classes as f32) } else { 0.0 };
+            weights[i] = if counts[i] > 0.0 { (active_classes as f32 / inv_freq_sum) / (counts[i] + eps) } else { 0.0 };
         }
 
         Ok(Tensor::new(weights, &self.device)?)
