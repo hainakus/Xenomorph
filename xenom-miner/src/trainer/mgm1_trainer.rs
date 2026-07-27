@@ -407,7 +407,7 @@ impl Trainer for Mgm1Trainer {
         let (input_ids, labels) = self.prepare_random(n, seed)?;
         let participant_weight = (input_ids.dim(0)? * input_ids.dim(1)?) as f32;
 
-        let (result, weight_delta) =
+        let (mut result, weight_delta) =
             self.train_step(&input_ids, &labels, batch.data_indices.clone(), batch.learning_rate, true)?;
         let weight_delta = weight_delta.ok_or_else(|| anyhow::anyhow!("Weight delta was not produced"))?;
         let update = build_gradient_update(
@@ -422,6 +422,7 @@ impl Trainer for Mgm1Trainer {
             [0u8; 32],
             Vec::new(),
         )?;
+        result.gradients_commitment = update.gradients_commitment;
         Ok((result, Some(update)))
     }
 
@@ -452,7 +453,7 @@ impl Trainer for Mgm1Trainer {
         let (input_ids, labels) = self.prepare_sequences(&msg.sequences, seed)?;
         let participant_weight = (input_ids.dim(0)? * input_ids.dim(1)?) as f32;
 
-        let (result, weight_delta) =
+        let (mut result, weight_delta) =
             self.train_step(&input_ids, &labels, batch_indices, self.learning_rate as f32, true)?;
         let weight_delta = weight_delta.ok_or_else(|| anyhow::anyhow!("Weight delta was not produced"))?;
         let update = build_gradient_update(
@@ -467,6 +468,7 @@ impl Trainer for Mgm1Trainer {
             msg.batch.genome_merkle_root,
             msg.batch.data_indices.clone(),
         )?;
+        result.gradients_commitment = update.gradients_commitment;
         Ok((result, Some(update)))
     }
 

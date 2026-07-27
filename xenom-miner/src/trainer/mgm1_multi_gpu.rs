@@ -360,7 +360,7 @@ impl Trainer for Mgm1MultiGpuTrainer {
 
         let n = batch.data_indices.len().max(1);
         let (input_ids, labels) = self.trainers[0].prepare_random(n, seed)?;
-        let (result, weight_delta, participant_weight, metadata) = self.train_batch(
+        let (mut result, weight_delta, participant_weight, metadata) = self.train_batch(
             &input_ids,
             &labels,
             batch.base_checkpoint,
@@ -371,6 +371,7 @@ impl Trainer for Mgm1MultiGpuTrainer {
             Vec::new(),
         )?;
         let update = self.build_gradient_update_for(batch.base_checkpoint, weight_delta, participant_weight, &result, &metadata)?;
+        result.gradients_commitment = update.gradients_commitment;
         Ok((result, Some(update)))
     }
 
@@ -409,7 +410,7 @@ impl Trainer for Mgm1MultiGpuTrainer {
         let batch_indices: Vec<u64> = msg.batch.data_indices.iter().map(|s| s.chunk_idx).collect();
 
         let (input_ids, labels) = self.trainers[0].prepare_sequences(&msg.sequences, seed)?;
-        let (result, weight_delta, participant_weight, metadata) = self.train_batch(
+        let (mut result, weight_delta, participant_weight, metadata) = self.train_batch(
             &input_ids,
             &labels,
             msg.base_checkpoint,
@@ -420,6 +421,7 @@ impl Trainer for Mgm1MultiGpuTrainer {
             msg.batch.data_indices.clone(),
         )?;
         let update = self.build_gradient_update_for(msg.base_checkpoint, weight_delta, participant_weight, &result, &metadata)?;
+        result.gradients_commitment = update.gradients_commitment;
         Ok((result, Some(update)))
     }
 

@@ -567,20 +567,22 @@ impl Trainer for MultiGpuTrainer {
             batch.learning_rate,
         )?;
         let build_start = Instant::now();
+        let mut update_result = result;
         let update = build_gradient_update(
             &batch.model_id,
             batch.base_checkpoint,
             named_grads,
             participant_weight,
             self.config.gradient_top_k_ratio,
-            &result,
+            &update_result,
             batch.batch_id,
             batch.learning_rate,
             [0u8; 32],
             Vec::new(),
         )?;
+        update_result.gradients_commitment = update.gradients_commitment;
         info!("Gradient update build time: {} ms", build_start.elapsed().as_millis());
-        Ok((result, Some(update)))
+        Ok((update_result, Some(update)))
     }
 
     fn train_genome(&self, msg: &GenomeTrainingBatchMsg) -> Result<TrainingResult> {
@@ -603,7 +605,7 @@ impl Trainer for MultiGpuTrainer {
             .generate_from_sequences_with_indices(&msg.sequences, &batch.genome_merkle_root, batch.batch_id, Some(&batch_indices))
             .context("Failed to generate MLM batch from genome sequences")?;
 
-        let (result, named_grads, participant_weight) =
+        let (mut result, named_grads, participant_weight) =
             self.train_mlm_batch(&mlm_batch, &batch.model_id, msg.base_checkpoint, mlm_batch.batch_indices.clone(), 0.01)?;
         let build_start = Instant::now();
         let update = build_gradient_update(
@@ -618,6 +620,7 @@ impl Trainer for MultiGpuTrainer {
             msg.batch.genome_merkle_root,
             msg.batch.data_indices.clone(),
         )?;
+        result.gradients_commitment = update.gradients_commitment;
         info!("Genome gradient update build time: {} ms", build_start.elapsed().as_millis());
         Ok((result, Some(update)))
     }

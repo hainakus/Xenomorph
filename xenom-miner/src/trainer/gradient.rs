@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use borsh::to_vec as borsh_to_vec;
 use candle_core::{DType, Device, Tensor};
 use rayon::prelude::*;
@@ -44,10 +44,6 @@ pub(crate) fn build_gradient_update(
 ) -> Result<GradientUpdate> {
     let top_k_ratio = top_k_ratio.clamp(0.0, 1.0);
 
-    // The commitment is over the plaintext gradients/weight-delta that the node
-    // will receive after decryption. Compute it before the HashMap is consumed.
-    let gradients_commitment = gradient_commitment(&named_grads)?;
-
     let mut pairs: Vec<(String, Tensor)> = named_grads.into_iter().collect();
     pairs.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -66,6 +62,12 @@ pub(crate) fn build_gradient_update(
         let (name, layer) = entry?;
         layer_gradients.insert(name, layer);
     }
+
+    // The commitment must be computed over the exact plaintext the node will
+    // reconstruct after decryption. If top-k compression is enabled, the dropped
+    // entries become zeros; reconstruct that tensor map and hash it.
+    let reconstructed = reconstruct_from_layers(&layer_gradients)?;
+    let gradients_commitment = gradient_commitment(&reconstructed)?;
 
     let payload = GradientPayload { layer_gradients };
     let payload_bytes = borsh_to_vec(&payload).context("Failed to serialize gradient payload")?;
@@ -87,6 +89,35 @@ pub(crate) fn build_gradient_update(
         genome_slices,
         compute_time_ms: result.compute_time_ms,
     })
+}
+
+/// Reconstruct a dense `HashMap<String, Tensor>` from compressed `GradientLayer`s
+/// the same way the seed-node will after decrypting the payload.
+fn reconstruct_from_layers(layers: &HashMap<String, GradientLayer>) -> Result<HashMap<String, Tensor>> {
+    let device = Device::Cpu;
+    let mut reconstructed = HashMap::with_capacity(layers.len());
+    for (name, layer) in layers {
+        let total_len: usize = layer.shape.iter().product();
+        if layer.indices.is_empty() {
+            let tensor = Tensor::from_vec(layer.values.clone(), layer.shape.clone(), &device)?;
+            reconstructed.insert(name.clone(), tensor);
+            continue;
+        }
+
+        if layer.values.len() != layer.indices.len() {
+            bail!("Compressed gradient has {} values but {} indices", layer.values.len(), layer.indices.len());
+        }
+        let mut flat = vec![0.0f32; total_len];
+        for (idx, value) in layer.indices.iter().zip(layer.values.iter()) {
+            if *idx >= total_len {
+                bail!("Gradient index {} out of bounds for shape {:?}", idx, layer.shape);
+            }
+            flat[*idx] = *value;
+        }
+        let tensor = Tensor::from_vec(flat, layer.shape.clone(), &device)?;
+        reconstructed.insert(name.clone(), tensor);
+    }
+    Ok(reconstructed)
 }
 
 /// Keep only the `k` largest absolute values of `flat` and return them together
