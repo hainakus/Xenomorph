@@ -23,4 +23,5 @@ miner-data/
 scripts/*.tar.gz
 **/__pycache__/
 *.py[co]
+mgm1_eval_history.json
 
