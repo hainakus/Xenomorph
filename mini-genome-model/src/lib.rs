@@ -7,7 +7,7 @@ fn default_label_smoothing() -> f64 {
 }
 
 use candle_core::{DType, Device, Module, Result, Tensor};
-use candle_nn::{embedding, layer_norm, linear, Dropout, Embedding, Init, LayerNorm, Linear, Optimizer};
+use candle_nn::{layer_norm, linear, Dropout, Embedding, Init, LayerNorm, Linear, Optimizer};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -40,7 +40,16 @@ pub struct MiniGenomeConfig {
 
 impl Default for MiniGenomeConfig {
     fn default() -> Self {
-        Self { vocab_size: 8, d_model: 128, n_heads: 4, n_layers: 4, d_ff: 512, max_seq_len: 512, dropout: 0.1, label_smoothing: default_label_smoothing() }
+        Self {
+            vocab_size: 8,
+            d_model: 128,
+            n_heads: 4,
+            n_layers: 4,
+            d_ff: 512,
+            max_seq_len: 512,
+            dropout: 0.1,
+            label_smoothing: default_label_smoothing(),
+        }
     }
 }
 
@@ -272,7 +281,14 @@ impl MiniGenomeModel {
     pub fn new(vb: VarBuilder, config: MiniGenomeConfig) -> Result<Self> {
         let device = vb.device().clone();
 
-        let token_embedding = embedding(config.vocab_size, config.d_model, vb.pp("token_embedding"))?;
+        // Scale token embeddings by 1/sqrt(d_model).  N(0,1) embeddings produce
+        // hidden states with std ~1, which makes the attention scores too large
+        // and the training trajectory highly initialization-dependent.  Scaling
+        // down keeps the residual stream stable and lets the small head init
+        // produce near-uniform initial logits.
+        let emb_init = Init::Randn { mean: 0.0, stdev: 1.0 / (config.d_model as f64).sqrt() };
+        let token_emb_weight = vb.get_with_hints((config.vocab_size, config.d_model), "weight", emb_init)?;
+        let token_embedding = Embedding::new(token_emb_weight, config.d_model);
 
         let pos_embedding = SinusoidalPositionalEmbedding::new(config.max_seq_len, config.d_model);
 
@@ -284,11 +300,9 @@ impl MiniGenomeModel {
 
         let final_norm = layer_norm(config.d_model, 1e-5, vb.pp("final_norm"))?;
         // Initialize the output head with very small random weights and zero bias.
-        // The token embeddings are N(0,1), so a large head init would produce
-        // confident random predictions and the model would need many steps to
-        // unlearn a random class bias (e.g. always predicting C). Small logits
-        // start near a uniform distribution and let MLM training progress from
-        // the first batches.
+        // With scaled token embeddings the residual stream has std ~1/sqrt(d_model),
+        // so a stdev of 0.02 keeps the initial logits near a uniform distribution
+        // and prevents a random class bias (e.g. always predicting C) at start-up.
         let head_weight = vb.get_with_hints((config.vocab_size, config.d_model), "weight", Init::Randn { mean: 0.0, stdev: 0.02 })?;
         let head_bias = vb.get_with_hints(config.vocab_size, "bias", Init::Const(0.0))?;
         let head = Linear::new(head_weight, Some(head_bias));
@@ -340,11 +354,8 @@ impl MiniGenomeModel {
         // Padding positions also have input == label (mask token == mask token) and
         // are therefore ignored, which is the desired behavior.  Compute this with
         // the original labels before clamping special-token ids to the valid range.
-        let mask = input_ids
-            .to_dtype(DType::U32)?
-            .ne(&labels.to_dtype(DType::U32)?)?
-            .to_dtype(DType::F32)?
-            .reshape((batch * seq_len,))?;
+        let mask =
+            input_ids.to_dtype(DType::U32)?.ne(&labels.to_dtype(DType::U32)?)?.to_dtype(DType::F32)?.reshape((batch * seq_len,))?;
 
         // Clamp labels to the four valid DNA bases so that padding labels (e.g.
         // the [MASK] token id) do not cause gather/argmax out-of-bounds.  Those
@@ -380,11 +391,7 @@ impl MiniGenomeModel {
         let masked_nll = (&nll * &mask)?;
         let mask_sum = mask.sum_all()?;
         let mask_sum_f = mask_sum.to_vec0::<f32>()?;
-        let loss = if mask_sum_f == 0.0 {
-            Tensor::new(0.0f32, input_ids.device())?
-        } else {
-            masked_nll.sum_all()?.div(&mask_sum)?
-        };
+        let loss = if mask_sum_f == 0.0 { Tensor::new(0.0f32, input_ids.device())? } else { masked_nll.sum_all()?.div(&mask_sum)? };
 
         // Accuracy over the masked positions only, restricted to the 4 bases.
         let predictions = logits_flat.argmax(candle_core::D::Minus1)?;
@@ -543,8 +550,14 @@ mod tests {
         let loss_no_cw_f = loss_no_cw.to_scalar::<f32>().unwrap();
 
         assert!(loss_cw_f.is_finite() && loss_no_cw_f.is_finite());
-        // Up-weighting the masked C target should increase the loss because the
-        // model starts from random weights and has not yet learned to predict C.
-        assert!(loss_cw_f > loss_no_cw_f, "Weighted loss {} should exceed unweighted {}", loss_cw_f, loss_no_cw_f);
+        // Class weights must change the loss value.  With scaled embeddings the
+        // random model may already predict C better or worse than A, so we only
+        // assert the weights have a non-trivial effect, not the direction.
+        assert!(
+            (loss_cw_f - loss_no_cw_f).abs() > 1e-4,
+            "Class-weighted loss {} is too close to unweighted {}",
+            loss_cw_f,
+            loss_no_cw_f
+        );
     }
 }

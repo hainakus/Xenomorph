@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use candle_core::{D as TensorD, DType, Device, Tensor};
+use candle_core::{DType, Device, Tensor, D as TensorD};
 use candle_nn::VarMap;
 use mini_genome_model::{DnaTokenizer, MiniGenomeConfig, MiniGenomeModel};
 use rand::{Rng, SeedableRng};
@@ -22,7 +22,12 @@ use crate::trainer::{DeviceInfo, DeviceType, ManualAdamW, Trainer, TrainingResul
 
 const MASK_TOKEN_ID: usize = 4;
 const MASK_RATIO: f64 = 0.15;
-pub(crate) const MAX_LEARNING_RATE: f32 = 1e-4;
+/// Number of local gradient steps taken on each genome batch.  A single AdamW
+/// step on a masked language-modeling task only learns a marginal class bias
+/// (argmax collapses to the majority base); several steps are needed for the
+/// transformer to learn context and predict minority bases correctly.
+pub(crate) const MGM1_LOCAL_STEPS: usize = 8;
+pub(crate) const MAX_LEARNING_RATE: f32 = 1e-3;
 
 /// Trainer for the `xenom/mgm-1` model.
 pub struct Mgm1Trainer {
@@ -109,12 +114,7 @@ impl Mgm1Trainer {
     }
 
     /// Build masked-language-modeling input and label tensors from token IDs.
-    fn build_mlm_tensors(
-        &self,
-        token_ids: &[Vec<usize>],
-        rng: &mut ChaCha8Rng,
-        mask_ratio: f64,
-    ) -> Result<(Tensor, Tensor)> {
+    fn build_mlm_tensors(&self, token_ids: &[Vec<usize>], rng: &mut ChaCha8Rng, mask_ratio: f64) -> Result<(Tensor, Tensor)> {
         let batch = token_ids.len();
         let seq_len = token_ids[0].len();
         let mut input_data = Vec::with_capacity(batch * seq_len);
@@ -241,7 +241,7 @@ impl Mgm1Trainer {
         Ok(out)
     }
 
-    /// Run one training step on an (input_ids, labels) pair.
+    /// Run one or more local training steps on an (input_ids, labels) pair.
     ///
     /// Returns the `TrainingResult` and, if requested, the weight-space delta that
     /// will be sent to the seed-node for FedAvg aggregation.
@@ -252,6 +252,7 @@ impl Mgm1Trainer {
         batch_indices: Vec<u64>,
         learning_rate: f32,
         return_update: bool,
+        local_steps: usize,
     ) -> Result<(TrainingResult, Option<HashMap<String, Tensor>>)> {
         let start = Instant::now();
         let effective_lr = learning_rate.min(MAX_LEARNING_RATE);
@@ -268,24 +269,27 @@ impl Mgm1Trainer {
             self.reset_optimizer()?;
         }
 
-        let (loss_before, accuracy_before, grads) = self.compute_gradients(input_ids, labels, 1.0, None)?;
-        let grad_norm = gradient_norm(&grads)?;
+        let (loss_before, accuracy_before) = self.compute_loss_and_accuracy(input_ids, labels)?;
         let label_dist = masked_label_distribution(input_ids, labels)?;
 
-        self.apply_gradients(&grads, learning_rate)?;
-        let updated_weights = self.varmap_snapshot()?;
-        let weight_delta = if return_update {
-            Some(Self::compute_weight_delta(&base_weights, &updated_weights)?)
-        } else {
-            None
-        };
+        let mut grads_for_commitment = HashMap::new();
+        let mut grad_norm = 0.0;
+        for _ in 0..local_steps.max(1) {
+            let (_, _, grads) = self.compute_gradients(input_ids, labels, 1.0, None)?;
+            grad_norm = gradient_norm(&grads)?;
+            grads_for_commitment = grads;
+            self.apply_gradients(&grads_for_commitment, learning_rate)?;
+        }
 
         let (loss_after, accuracy_after) = self.compute_loss_and_accuracy(input_ids, labels)?;
         let logits = self.model.forward(input_ids)?;
         let pred_dist = masked_prediction_distribution(input_ids, labels, &logits)?;
 
+        let updated_weights = self.varmap_snapshot()?;
+        let weight_delta = if return_update { Some(Self::compute_weight_delta(&base_weights, &updated_weights)?) } else { None };
+
         // Commitment is over the payload that will be sent to the seed-node.
-        let gradients_commitment = gradient_commitment(weight_delta.as_ref().unwrap_or(&grads))?;
+        let gradients_commitment = gradient_commitment(weight_delta.as_ref().unwrap_or(&grads_for_commitment))?;
         info!(
             "MGM-1 block: lr={:.3e} loss={:.4} -> {:.4} acc={:.2}% -> {:.2}% grad_norm={:.4}\n  labels A={:>3} C={:>3} G={:>3} T={:>3}\n  preds  A={:>3} C={:>3} G={:>3} T={:>3}",
             effective_lr, loss_before, loss_after,
@@ -381,7 +385,7 @@ impl Trainer for Mgm1Trainer {
 
         let n = batch.data_indices.len().max(1);
         let (input_ids, labels) = self.prepare_random(n, seed)?;
-        self.train_step(&input_ids, &labels, batch.data_indices.clone(), batch.learning_rate, false).map(|(r, _)| r)
+        self.train_step(&input_ids, &labels, batch.data_indices.clone(), batch.learning_rate, false, 1).map(|(r, _)| r)
     }
 
     fn train_with_gradients(&self, batch: &TrainingBatch) -> Result<(TrainingResult, Option<GradientUpdate>)> {
@@ -394,7 +398,7 @@ impl Trainer for Mgm1Trainer {
         let participant_weight = (input_ids.dim(0)? * input_ids.dim(1)?) as f32;
 
         let (mut result, weight_delta) =
-            self.train_step(&input_ids, &labels, batch.data_indices.clone(), batch.learning_rate, true)?;
+            self.train_step(&input_ids, &labels, batch.data_indices.clone(), batch.learning_rate, true, 1)?;
         let weight_delta = weight_delta.ok_or_else(|| anyhow::anyhow!("Weight delta was not produced"))?;
         let update = build_gradient_update(
             &self.model_id,
@@ -425,7 +429,7 @@ impl Trainer for Mgm1Trainer {
         let mask_ratio = msg.batch.mask_ratio as f64;
         let target_len = msg.batch.seq_length;
         let (input_ids, labels) = self.prepare_sequences(&msg.sequences, seed, mask_ratio, target_len)?;
-        self.train_step(&input_ids, &labels, batch_indices, self.learning_rate as f32, false).map(|(r, _)| r)
+        self.train_step(&input_ids, &labels, batch_indices, self.learning_rate as f32, false, MGM1_LOCAL_STEPS).map(|(r, _)| r)
     }
 
     fn train_genome_with_gradients(&self, msg: &GenomeTrainingBatchMsg) -> Result<(TrainingResult, Option<GradientUpdate>)> {
@@ -444,7 +448,7 @@ impl Trainer for Mgm1Trainer {
         let participant_weight = (input_ids.dim(0)? * input_ids.dim(1)?) as f32;
 
         let (mut result, weight_delta) =
-            self.train_step(&input_ids, &labels, batch_indices, self.learning_rate as f32, true)?;
+            self.train_step(&input_ids, &labels, batch_indices, self.learning_rate as f32, true, MGM1_LOCAL_STEPS)?;
         let weight_delta = weight_delta.ok_or_else(|| anyhow::anyhow!("Weight delta was not produced"))?;
         let update = build_gradient_update(
             &self.model_id,
@@ -555,6 +559,49 @@ mod tests {
     }
 
     #[test]
+    fn test_mgm1_at_rich_local_training() {
+        let config_json = serde_json::json!({
+            "vocab_size": 8,
+            "d_model": 64,
+            "n_heads": 2,
+            "n_layers": 2,
+            "d_ff": 128,
+            "max_seq_len": 128,
+            "dropout": 0.0,
+            "label_smoothing": 0.1,
+        });
+        let config = config_json.to_string().into_bytes();
+        let trainer = Mgm1Trainer::new("xeno/mgm-1", &config, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-3, 1.0).unwrap();
+
+        // Simulate a human-genome-ish batch: A/T ~60%, C/G ~40%.
+        let seq_len = 128;
+        let batch_size = 4;
+        let total = seq_len * batch_size;
+        let mut raw = String::with_capacity(total);
+        raw.extend(std::iter::repeat_n('A', (total as f32 * 0.30) as usize));
+        raw.extend(std::iter::repeat_n('C', (total as f32 * 0.20) as usize));
+        raw.extend(std::iter::repeat_n('G', (total as f32 * 0.20) as usize));
+        raw.extend(std::iter::repeat_n('T', total - raw.len()));
+        let sequences: Vec<String> = raw.as_bytes().chunks(seq_len).map(|c| String::from_utf8_lossy(c).to_string()).collect();
+
+        let (input_ids, labels) = trainer.prepare_sequences(&sequences, [0u8; 32], MASK_RATIO, seq_len).unwrap();
+        let (result, _) = trainer.train_step(&input_ids, &labels, vec![1], 1e-3, false, MGM1_LOCAL_STEPS).unwrap();
+
+        let (_, acc_after) = trainer.compute_loss_and_accuracy(&input_ids, &labels).unwrap();
+        let logits = trainer.forward(&input_ids).unwrap();
+        let pred_dist = masked_prediction_distribution(&input_ids, &labels, &logits).unwrap();
+        let label_dist = masked_label_distribution(&input_ids, &labels).unwrap();
+
+        println!("AT-rich local training: loss {:.4} -> {:.4}, acc {:.2}%", result.loss_before, result.loss_after, acc_after * 100.0);
+        println!("labels A={:>3} C={:>3} G={:>3} T={:>3}", label_dist[0], label_dist[1], label_dist[2], label_dist[3]);
+        println!("preds  A={:>3} C={:>3} G={:>3} T={:>3}", pred_dist[0], pred_dist[1], pred_dist[2], pred_dist[3]);
+
+        assert!(result.loss_after < result.loss_before, "training did not reduce loss");
+        assert!(pred_dist[1] > 0, "C predictions collapsed to zero");
+        assert!(pred_dist[2] > 0, "G predictions collapsed to zero");
+    }
+
+    #[test]
     fn test_mgm1_trainer_loads_and_trains() {
         let config = default_config();
         let trainer = Mgm1Trainer::new("xeno/mgm-1", &config, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, 1.0).unwrap();
@@ -583,7 +630,7 @@ mod tests {
             base_checkpoint: [0u8; 32],
             data_indices: (0..4).collect(),
             target_improvement: 0.01,
-            learning_rate: 0.01,
+            learning_rate: 1e-4,
         };
         let (result, update) = trainer.train_with_gradients(&batch).unwrap();
         assert!(result.loss_before.is_finite());
@@ -635,8 +682,8 @@ mod tests {
     #[test]
     #[ignore = "diagnostic helper; run manually with -- --ignored --nocapture"]
     fn diagnose_mgm1_first_batch() {
-        use candle_nn::ops::softmax;
         use candle_core::D;
+        use candle_nn::ops::softmax;
 
         let config_json = serde_json::json!({
             "vocab_size": 8,
@@ -669,7 +716,11 @@ mod tests {
                 batch_id: 1,
                 model_id: "xeno/mgm-1".to_string(),
                 genome_merkle_root: [0u8; 32],
-                data_indices: sequences.iter().enumerate().map(|(i, s)| GenomeSlice { chunk_idx: i as u64, start_base: 0, length: s.len() as u32 }).collect(),
+                data_indices: sequences
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| GenomeSlice { chunk_idx: i as u64, start_base: 0, length: s.len() as u32 })
+                    .collect(),
                 mask_ratio: 0.15,
                 seq_length: 256,
             },
@@ -677,7 +728,8 @@ mod tests {
             base_checkpoint: [0u8; 32],
         };
 
-        let (input_ids, labels) = trainer.prepare_sequences(&msg.sequences, [0u8; 32], MASK_RATIO, trainer.config.max_seq_len).unwrap();
+        let (input_ids, labels) =
+            trainer.prepare_sequences(&msg.sequences, [0u8; 32], MASK_RATIO, trainer.config.max_seq_len).unwrap();
         let input_vec = input_ids.to_vec2::<i64>().unwrap();
         let label_vec = labels.to_vec2::<i64>().unwrap();
 
@@ -695,7 +747,15 @@ mod tests {
         println!("[DIAGNOSE] Label distribution among masked positions:");
         let base_name = |id: i64| -> char {
             match id {
-                0 => 'A', 1 => 'C', 2 => 'G', 3 => 'T', 4 => '[', 5 => ' ', 6 => ']', 7 => '|', _ => '?',
+                0 => 'A',
+                1 => 'C',
+                2 => 'G',
+                3 => 'T',
+                4 => '[',
+                5 => ' ',
+                6 => ']',
+                7 => '|',
+                _ => '?',
             }
         };
         let mut counts: Vec<_> = label_counts.iter().collect();
@@ -718,8 +778,14 @@ mod tests {
                     let true_id = label_vec[b][t];
                     println!(
                         "  batch[{}][{}] true={} pred={} | A={:.3} C={:.3} G={:.3} T={:.3}",
-                        b, t, base_name(true_id), base_name(pred_ids[b][t] as i64),
-                        probs_vec[b][t][0], probs_vec[b][t][1], probs_vec[b][t][2], probs_vec[b][t][3]
+                        b,
+                        t,
+                        base_name(true_id),
+                        base_name(pred_ids[b][t] as i64),
+                        probs_vec[b][t][0],
+                        probs_vec[b][t][1],
+                        probs_vec[b][t][2],
+                        probs_vec[b][t][3]
                     );
                     printed += 1;
                     if printed >= 20 {
@@ -779,7 +845,12 @@ mod tests {
             let n = predictions_after.get(&c).copied().unwrap_or(0);
             println!("  {}: {} ({:.1}%)", c, n, 100.0 * (n as f32) / mask_count.max(1) as f32);
         }
-        println!("[DIAGNOSE] Accuracy after 50 steps: {} / {} ({:.1}%)", correct, mask_count, 100.0 * (correct as f32) / mask_count.max(1) as f32);
+        println!(
+            "[DIAGNOSE] Accuracy after 50 steps: {} / {} ({:.1}%)",
+            correct,
+            mask_count,
+            100.0 * (correct as f32) / mask_count.max(1) as f32
+        );
 
         let (final_loss, final_acc) = trainer.model.compute_mlm_loss(&input_ids, &labels, None).unwrap();
         println!(
@@ -831,11 +902,18 @@ mod tests {
                 let true_id = label_vec[b][t] as usize;
                 println!(
                     "{} sample masked[{}][{}] true={} | A: {:7.3}/{:.3}  C: {:7.3}/{:.3}  G: {:7.3}/{:.3}  T: {:7.3}/{:.3}",
-                    prefix, b, t, true_id,
-                    l4[b][t][0], p4[b][t][0],
-                    l4[b][t][1], p4[b][t][1],
-                    l4[b][t][2], p4[b][t][2],
-                    l4[b][t][3], p4[b][t][3],
+                    prefix,
+                    b,
+                    t,
+                    true_id,
+                    l4[b][t][0],
+                    p4[b][t][0],
+                    l4[b][t][1],
+                    p4[b][t][1],
+                    l4[b][t][2],
+                    p4[b][t][2],
+                    l4[b][t][3],
+                    p4[b][t][3],
                 );
             }
         }
@@ -899,7 +977,8 @@ mod tests {
         }
 
         println!("\n========== AUDIT: IMBALANCED BATCH (no label smoothing, no class weights) ==========");
-        let trainer_b = Mgm1Trainer::new("xeno/mgm-1", &config_no_smooth_bytes, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, 1.0).unwrap();
+        let trainer_b =
+            Mgm1Trainer::new("xeno/mgm-1", &config_no_smooth_bytes, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, 1.0).unwrap();
         let (input_b, labels_b) = trainer_b.prepare_sequences(&sequences_a, [1u8; 32], MASK_RATIO, seq_len).unwrap();
         let logits_init_b = trainer_b.forward(&input_b).unwrap();
         inspect(&trainer_b, &input_b, &labels_b, &logits_init_b, "init");

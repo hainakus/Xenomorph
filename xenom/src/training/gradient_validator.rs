@@ -161,15 +161,9 @@ fn validate_mgm1_on_cpu(update: &GradientUpdate, files: &RawModelFiles, sequence
         seq_length: 512,
     };
 
-    let msg = GenomeTrainingBatchMsg {
-        batch: convert_batch(batch),
-        sequences,
-        base_checkpoint: update.base_checkpoint,
-    };
+    let msg = GenomeTrainingBatchMsg { batch: convert_batch(batch), sequences, base_checkpoint: update.base_checkpoint };
 
-    let (recomputed, _) = trainer
-        .train_genome_with_gradients(&msg)
-        .with_context(|| "MGM-1 validation training step failed")?;
+    let (recomputed, _) = trainer.train_genome_with_gradients(&msg).with_context(|| "MGM-1 validation training step failed")?;
 
     if !approx_eq(update.loss_before, recomputed.loss_before, LOSS_TOLERANCE) {
         bail!(

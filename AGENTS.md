@@ -201,9 +201,9 @@ In both cases the `xenom` full node:
 - The multi-GPU path uses one `Mgm1Trainer` replica per CUDA/Metal device and does not fall back to CPU; if no GPU is available it returns an error.
 - Each replica computes gradients on its micro-batch, gradients are gathered/averaged on the master device, the master is updated, and replicas are restored to the shared base checkpoint before the next batch.
 - MGM-1 trainers extract `GradientUpdate` payloads for seed-node FedAvg aggregation.
-- `seed-node` (`seed-node/src/model/manager.rs`) now aggregates MGM-1 gradients by building a CPU `MiniGenomeModel`, applying the weighted-average gradient with a simple SGD step (`lr = 1e-5`), and storing the new safetensors checkpoint.
+- `seed-node` (`seed-node/src/model/manager.rs`) aggregates MGM-1 gradients by loading the current model files, adding the FedAvg-averaged **weight-space delta** directly (`apply_mgm1_gradients_sync` with scale `1.0`), and storing the new safetensors checkpoint.  It does **not** re-optimize with a separate SGD step.
 - MGM-1 FedAvg currently supports active-base gradients only; stale-but-related base gradients are rejected.
-- `Mgm1Trainer` clamps the effective learning rate to `1e-4` and uses the shared `ManualAdamW` optimizer (also used by DNABERT-2) so named gradients can be applied directly.
+- `Mgm1Trainer` clamps the effective learning rate to `1e-3` and uses the shared `ManualAdamW` optimizer (also used by DNABERT-2) so named gradients can be applied directly.  Miners take `MGM1_LOCAL_STEPS = 8` local AdamW steps per genome batch so the small transformer can learn local context and avoid predicting only the majority base.
 
 ```bash
 # Multi-GPU MGM-1 training (CUDA example)

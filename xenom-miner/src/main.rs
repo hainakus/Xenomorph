@@ -350,7 +350,7 @@ async fn load_trainer(
     if model_id.contains("mgm-1") {
         if gpu_config.gpus.len() > 1 {
             let trainer =
-                Mgm1MultiGpuTrainer::new(&model_id, &config, &tokenizer, weights, base_checkpoint, gpu_config, backend, 1e-4, threads)
+                Mgm1MultiGpuTrainer::new(&model_id, &config, &tokenizer, weights, base_checkpoint, gpu_config, backend, 1e-3, threads)
                     .context("Failed to initialize multi-GPU MGM-1 trainer")?;
             info!("Loaded multi-GPU MGM-1 model checkpoint for {}", model_id);
             info!("Trainer device: {:?}", trainer.device_info());
@@ -360,7 +360,7 @@ async fn load_trainer(
         let device_index = gpu_config.gpus.first().copied().unwrap_or(0);
         let (device, _, _) = GpuTrainer::select_device(backend, device_index)?;
         let trainer =
-            Mgm1Trainer::new(&model_id, &config, &tokenizer, weights, base_checkpoint, device, 1e-4, gpu_config.gradient_top_k_ratio)
+            Mgm1Trainer::new(&model_id, &config, &tokenizer, weights, base_checkpoint, device, 1e-3, gpu_config.gradient_top_k_ratio)
                 .context("Failed to initialize MGM-1 trainer")?;
         info!("Loaded MGM-1 model checkpoint for {}", model_id);
         info!("Trainer device: {:?}", trainer.device_info());
