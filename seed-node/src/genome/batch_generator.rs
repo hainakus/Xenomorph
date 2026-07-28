@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -31,6 +32,15 @@ pub struct GenomeTrainingBatch {
 /// archive is dominated by N/poly-X stretches.
 const MAX_HOMOPOLYMER_RETRIES: u32 = 20;
 
+/// GC-content bins used for stratified sampling.  The goal is a balanced batch
+/// that covers AT-rich, balanced and GC-rich regions instead of over-sampling
+/// the genome-wide majority class.
+const GC_BINS: [(f64, f64); 4] = [(0.0, 0.35), (0.35, 0.45), (0.45, 0.55), (0.55, 1.0)];
+
+/// Maximum number of tries to find a slice inside a given GC bin before giving
+/// up and falling back to another bin or to an unconstrained slice.
+const MAX_STRATIFIED_RETRIES: usize = 100;
+
 /// Deterministic generator for `GenomeTrainingBatch` from a `.xenom` genome archive.
 pub struct GenomeBatchGenerator {
     archive: Arc<GenomeArchive>,
@@ -54,6 +64,16 @@ impl GenomeBatchGenerator {
         let Ok(seq) = self.extract_for_miner(slice) else { return false };
         let first = seq.as_bytes().first().copied().unwrap_or(b'A');
         seq.as_bytes().iter().all(|&b| b == first)
+    }
+
+    /// GC fraction (G + C over total length) of the extracted slice.
+    fn gc_fraction(&self, slice: &GenomeSlice) -> f64 {
+        let Ok(seq) = self.extract_for_miner(slice) else { return 0.0 };
+        if seq.is_empty() {
+            return 0.0;
+        }
+        let gc = seq.bytes().filter(|&b| b == b'G' || b == b'C').count() as f64;
+        gc / seq.len() as f64
     }
 
     /// Pick a fragment and contiguous start position that is not a homopolymer.
@@ -101,17 +121,41 @@ impl GenomeBatchGenerator {
         last_slice
     }
 
+    /// Sample a non-homopolymer slice whose GC content falls inside `target_bin`
+    /// and which has not been used yet in the current batch.
+    fn sample_in_bin(&mut self, max_seq_len: usize, target_bin: (f64, f64), used: &HashSet<(u64, u32, u32)>) -> Option<GenomeSlice> {
+        let fragment_count = self.archive.num_fragments();
+        if fragment_count == 0 {
+            return None;
+        }
+        let (lo, hi) = target_bin;
+        for _ in 0..MAX_STRATIFIED_RETRIES {
+            let fragment_idx = self.rng.gen_range(0..fragment_count);
+            let fragment_bases = self.archive.fragment_base_count(fragment_idx).unwrap_or(0) as usize;
+            let length = max_seq_len.min(fragment_bases);
+            if length == 0 {
+                continue;
+            }
+            let start_base = if fragment_bases == length { 0 } else { self.rng.gen_range(0..=(fragment_bases - length)) };
+            let slice = GenomeSlice { chunk_idx: fragment_idx, start_base: start_base as u32, length: length as u32 };
+            let key = (slice.chunk_idx, slice.start_base, slice.length);
+            if used.contains(&key) || self.is_homopolymer(&slice) {
+                continue;
+            }
+            let gc = self.gc_fraction(&slice);
+            if gc >= lo && gc <= hi {
+                return Some(slice);
+            }
+        }
+        None
+    }
+
     /// Generate a batch of `batch_size` genome slices, each up to `seq_len` bases long.
     ///
-    /// When the genome fragment is large enough, the slices are adjacent windows taken
-    /// from a single fragment, so a training batch covers a contiguous genomic region
-    /// instead of scattered random positions.  This gives the DNABERT-2 attention layers
-    /// meaningful local context.  If the fragment is too small, the generator falls back
-    /// to the original random-window behaviour.
-    ///
-    /// Regions that are all one base (e.g. poly-A tails or runs of unknown bases packed
-    /// as A) are skipped, because they provide no training signal and can collapse the
-    /// MLM head to a single class.
+    /// Uses GC-stratified sampling: the batch is filled from four GC-content bins
+    /// (very AT-rich, AT-leaning, balanced, GC-rich) so that a single miner does not
+    /// receive a batch dominated by the genome-wide majority class.  Within a batch
+    /// every (fragment, start, length) triple is unique to avoid repeated regions.
     ///
     /// The returned batch also includes a reproducible `batch_id` derived from the archive
     /// merkle root and the generator's RNG state.
@@ -131,26 +175,44 @@ impl GenomeBatchGenerator {
             };
         }
 
-        // Try to produce adjacent windows from a single fragment.  The step size is
-        // the window length so consecutive slices are contiguous.
-        if let Some((fragment_idx, start_base)) = self.pick_non_homopolymer_contiguous(batch_size, max_seq_len) {
-            let fragment_bases = self.archive.fragment_base_count(fragment_idx).unwrap_or(0) as usize;
-            let step = max_seq_len;
-            for i in 0..batch_size {
-                let s = start_base + i * step;
-                let length = max_seq_len.min(fragment_bases - s);
-                if length == 0 {
-                    continue;
-                }
-                slices.push(GenomeSlice { chunk_idx: fragment_idx, start_base: s as u32, length: length as u32 });
+        let mut used = HashSet::with_capacity(batch_size);
+        let mut quotas = vec![batch_size / GC_BINS.len(); GC_BINS.len()];
+        let remainder = batch_size % GC_BINS.len();
+        for i in 0..remainder {
+            quotas[i] += 1;
+        }
+
+        let max_retries = batch_size * MAX_STRATIFIED_RETRIES;
+        let mut retries = 0;
+        while slices.len() < batch_size && retries < max_retries {
+            let needy: Vec<usize> = quotas.iter().enumerate().filter(|(_, q)| **q > 0).map(|(i, _)| i).collect();
+            if needy.is_empty() {
+                break;
             }
-        } else {
-            // Fragment too small for contiguous windows, or all contiguous probes were
-            // homopolymers: fall back to random slices.
-            for _ in 0..batch_size {
-                if let Some(slice) = self.pick_non_homopolymer_slice(max_seq_len) {
+            let bin_idx = needy[self.rng.gen_range(0..needy.len())];
+            if let Some(slice) = self.sample_in_bin(max_seq_len, GC_BINS[bin_idx], &used) {
+                let key = (slice.chunk_idx, slice.start_base, slice.length);
+                if used.insert(key) {
+                    slices.push(slice);
+                    quotas[bin_idx] -= 1;
+                }
+            } else {
+                // This bin cannot be filled with the available genome; stop trying it
+                // for this batch so the generator can move on.
+                quotas[bin_idx] = 0;
+            }
+            retries += 1;
+        }
+
+        // Fill any remaining slots with non-duplicate, non-homopolymer slices.
+        while slices.len() < batch_size {
+            if let Some(slice) = self.pick_non_homopolymer_slice(max_seq_len) {
+                let key = (slice.chunk_idx, slice.start_base, slice.length);
+                if used.insert(key) {
                     slices.push(slice);
                 }
+            } else {
+                break;
             }
         }
 

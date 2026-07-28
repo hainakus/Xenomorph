@@ -25,10 +25,11 @@ const MASK_RATIO: f64 = 0.15;
 /// Number of local gradient steps taken on each genome batch.  A single AdamW
 /// step on a masked language-modeling task only learns a marginal class bias
 /// (argmax collapses to the majority base); several steps are needed for the
-/// transformer to learn context and predict minority bases correctly.  Sixteen
-/// steps with the 1e-3 learning rate give the small model enough iterations to
-/// fit local context while keeping the weight delta moderate for FedAvg.
-pub(crate) const MGM1_LOCAL_STEPS: usize = 16;
+/// transformer to learn context and predict minority bases correctly.  With
+/// gradient accumulation the effective batch per step is much larger, so four
+/// local steps are enough to fit local context without overfitting the same
+/// batch.
+pub(crate) const MGM1_LOCAL_STEPS: usize = 4;
 pub(crate) const MAX_LEARNING_RATE: f32 = 1e-3;
 
 /// Trainer for the `xenom/mgm-1` model.
@@ -652,7 +653,7 @@ mod tests {
 
         // Simulate a human-genome-ish batch: A/T ~60%, C/G ~40%.
         let seq_len = 128;
-        let batch_size = 4;
+        let batch_size = 32;
         let total = seq_len * batch_size;
         let mut raw = String::with_capacity(total);
         raw.extend(std::iter::repeat_n('A', (total as f32 * 0.30) as usize));
