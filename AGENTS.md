@@ -215,3 +215,31 @@ In both cases the `xenom` full node:
 ./target/debug/xenom-miner --rpc-url ws://xeno-node:17110 \
   --trainer cuda --gpus 0,1 --network mainnet
 ```
+
+## Evaluation Set Persistence (proposed)
+
+To make MGM-1 benchmarking reproducible and remove the need for every evaluator to
+download and parse the full `.xenom` genome archive, evaluation sets should be
+served by the seed-node / unified `xenom` node and persisted there.
+
+### Design
+
+1. **New RPC**: `GetEvaluationBatch { genome_merkle_root, model_id, n_sequences, seq_length, mask_ratio, benchmark_version }`.
+   - Response: `EvaluationBatchMsg { batch, sequences, mask_positions, base_checkpoint }`.
+   - `mask_positions` is a list of per-sequence token indices to mask, generated
+deterministically by the server so all evaluators see the exact same MLM task.
+2. **Deterministic seeding**: derive the generator seed from
+   `blake3(b"XENOM-EVAL" || genome_merkle_root || benchmark_version || n_sequences || seq_length || mask_ratio)`.
+   - This is separate from the training-batch seed space and is stable across restarts.
+3. **Server-side caching**: the first request for a given key generates the batch
+   and writes it to `models_dir/evaluations/eval-<key_hash>.borsh`.  Subsequent
+   requests load from disk.  Changing `benchmark_version` or the genome merkle
+   root invalidates the cache naturally because the key changes.
+4. **Evaluator update**: `scripts/evaluate_mgm1_training.py` should request the
+   evaluation set from the seed-node instead of parsing a local `.xenom` archive.
+   It applies the supplied `mask_positions` to build `input_ids`/`labels`, runs
+   local inference, and reports metrics as today.
+
+This keeps the benchmark artifacts off the client, guarantees every evaluator uses
+identical masked positions, and lets lightweight clients participate without
+holding the full genome.
