@@ -40,7 +40,7 @@ export interface IBinding {
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(extends = Object, typescript_type = "IBinding")]
-    #[derive(Clone, Debug, PartialEq, Eq)]
+    #[derive(Clone, Debug, PartialEq)]
     pub type BindingT;
 }
 

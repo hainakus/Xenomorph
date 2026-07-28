@@ -358,3 +358,7 @@ empty_docs = "allow"
 result_large_err = "allow"
 type_complexity = "allow"
 
+# Patches for upstream crates that fail to compile with the current toolchain.
+[patch.crates-io]
+workflow-node = { path = "patches/workflow-node" }
+

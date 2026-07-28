@@ -96,7 +96,7 @@ interface IGeneratorSettingsObject {
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(extends = Object, typescript_type = "IGeneratorSettingsObject")]
-    #[derive(Clone, Debug, PartialEq, Eq)]
+    #[derive(Clone, Debug, PartialEq)]
     pub type IGeneratorSettingsObject;
 }
 

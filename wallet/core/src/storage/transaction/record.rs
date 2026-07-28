@@ -288,7 +288,7 @@ export interface ITransactionRecord {
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(extends = Object, typescript_type = "ITransactionRecord")]
-    #[derive(Clone, Debug, PartialEq, Eq)]
+    #[derive(Clone, Debug, PartialEq)]
     pub type TransactionRecordT;
     #[wasm_bindgen(extends = Object, typescript_type = "ITransactionData")]
     pub type TransactionDataT;
