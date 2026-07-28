@@ -11,12 +11,14 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
+use borsh::from_slice as borsh_from_slice;
 use candle_core::Device;
-use seed_node::genome::{GenomeSlice as NodeGenomeSlice, GenomeStorage, GenomeTrainingBatch};
+use seed_node::genome::GenomeStorage;
 use seed_node::model::RawModelFiles;
 use seed_node::rpc::messages::GradientUpdate;
-use xenom_miner::rpc::messages::{GenomeSlice as MinerGenomeSlice, GenomeTrainingBatchMsg};
-use xenom_miner::trainer::{Mgm1Trainer, Trainer};
+use xenom_miner::rpc::messages::GradientPayload;
+use xenom_miner::trainer::gradient::{gradient_commitment, reconstruct_from_layers};
+use xenom_miner::trainer::Mgm1Trainer;
 
 /// Tolerance for comparing floating-point loss values between miner and validator.
 /// Multi-GPU forward/backward and cross-device tensor movement introduce
@@ -147,58 +149,66 @@ fn validate_mgm1_on_cpu(update: &GradientUpdate, files: &RawModelFiles, sequence
         files.weights.clone(),
         update.base_checkpoint,
         Device::Cpu,
-        update.learning_rate as f64,
+        1e-4,
         1.0,
     )
     .with_context(|| format!("Failed to build MGM-1 validator for {}", update.model_id))?;
 
-    let batch = GenomeTrainingBatch {
-        batch_id: update.batch_id,
-        model_id: update.model_id.clone(),
-        genome_merkle_root: update.genome_merkle_root,
-        data_indices: update.genome_slices.clone(),
-        mask_ratio: 0.15,
-        seq_length: 512,
-    };
+    // Build the same random seed the miner uses: base checkpoint with the first
+    // 8 bytes overwritten by the batch id.
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&update.base_checkpoint);
+    seed[..8].copy_from_slice(&update.batch_id.to_le_bytes());
 
-    let msg = GenomeTrainingBatchMsg { batch: convert_batch(batch), sequences, base_checkpoint: update.base_checkpoint };
+    let mask_ratio = 0.15f64;
+    let seq_length = 512usize;
+    let (input_ids, labels) = trainer
+        .prepare_sequences(&sequences, seed, mask_ratio, seq_length)
+        .with_context(|| "MGM-1 validator failed to prepare genome sequences")?;
 
-    let (recomputed, _) = trainer.train_genome_with_gradients(&msg).with_context(|| "MGM-1 validation training step failed")?;
-
-    if !approx_eq(update.loss_before, recomputed.loss_before, LOSS_TOLERANCE) {
+    // Loss on the base checkpoint: a single forward pass, so CPU/GPU drift is small.
+    let (loss_before, _) =
+        trainer.compute_loss_and_accuracy(&input_ids, &labels).with_context(|| "MGM-1 validator failed to compute loss_before")?;
+    if !approx_eq(update.loss_before, loss_before, LOSS_TOLERANCE) {
         bail!(
             "MGM-1 validation failed: claimed loss_before {} != recomputed {} (tolerance {})",
             update.loss_before,
-            recomputed.loss_before,
+            loss_before,
             LOSS_TOLERANCE
         );
     }
 
-    if !approx_eq(update.loss_after, recomputed.loss_after, LOSS_TOLERANCE) {
+    // Decrypt and reconstruct the weight-space delta, then verify the commitment.
+    let payload_bytes = model_crypto::decrypt(&update.encrypted_payload, &model_crypto::derive_encryption_key())
+        .context("Failed to decrypt MGM-1 gradient payload")?;
+    let payload: GradientPayload = borsh_from_slice(&payload_bytes).context("Failed to deserialize MGM-1 gradient payload")?;
+    let weight_delta = reconstruct_from_layers(&payload.layer_gradients).context("Failed to reconstruct MGM-1 gradient layers")?;
+    let reconstructed_commitment =
+        gradient_commitment(&weight_delta).context("Failed to compute gradient commitment over reconstructed payload")?;
+    if reconstructed_commitment != update.gradients_commitment {
+        bail!(
+            "MGM-1 validation failed: payload commitment mismatch {:?} != {:?}",
+            reconstructed_commitment,
+            update.gradients_commitment
+        );
+    }
+
+    // Apply the exact delta the seed-node will apply and measure the resulting loss.
+    // This removes the cross-device drift that made re-running 8+ local AdamW steps
+    // on CPU fail against a Metal/CUDA miner.
+    trainer.apply_weight_delta(&weight_delta).context("MGM-1 validator failed to apply weight delta")?;
+    let (loss_after, _) =
+        trainer.compute_loss_and_accuracy(&input_ids, &labels).with_context(|| "MGM-1 validator failed to compute loss_after")?;
+    if !approx_eq(update.loss_after, loss_after, LOSS_TOLERANCE) {
         bail!(
             "MGM-1 validation failed: claimed loss_after {} != recomputed {} (tolerance {})",
             update.loss_after,
-            recomputed.loss_after,
+            loss_after,
             LOSS_TOLERANCE
         );
     }
 
     Ok(())
-}
-
-fn convert_batch(batch: GenomeTrainingBatch) -> xenom_miner::rpc::messages::GenomeTrainingBatch {
-    xenom_miner::rpc::messages::GenomeTrainingBatch {
-        batch_id: batch.batch_id,
-        model_id: batch.model_id,
-        genome_merkle_root: batch.genome_merkle_root,
-        data_indices: batch.data_indices.into_iter().map(convert_slice).collect(),
-        mask_ratio: batch.mask_ratio,
-        seq_length: batch.seq_length,
-    }
-}
-
-fn convert_slice(slice: NodeGenomeSlice) -> MinerGenomeSlice {
-    MinerGenomeSlice { chunk_idx: slice.chunk_idx, start_base: slice.start_base, length: slice.length }
 }
 
 fn approx_eq(a: f64, b: f64, tolerance: f64) -> bool {

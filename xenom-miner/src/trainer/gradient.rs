@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use anyhow::{bail, Context, Result};
-use borsh::to_vec as borsh_to_vec;
+use borsh::{from_slice as borsh_from_slice, to_vec as borsh_to_vec};
 use candle_core::{DType, Device, Tensor};
 use rayon::prelude::*;
 
@@ -13,7 +13,7 @@ use crate::trainer::mixed_precision::to_grad_dtype;
 use crate::trainer::TrainingResult;
 
 /// Compute a deterministic gradient commitment hash from a name -> tensor map.
-pub(crate) fn gradient_commitment(grads: &HashMap<String, Tensor>) -> Result<[u8; 32]> {
+pub fn gradient_commitment(grads: &HashMap<String, Tensor>) -> Result<[u8; 32]> {
     let mut hasher = blake3::Hasher::new();
     let mut names: Vec<_> = grads.keys().cloned().collect();
     names.sort();
@@ -91,9 +91,19 @@ pub(crate) fn build_gradient_update(
     })
 }
 
+/// Decrypt and reconstruct the weight-space delta contained in a `GradientUpdate`.
+/// This is used by validators and seed-nodes to verify the commitment and to apply
+/// the update without having to re-run local training.
+pub fn reconstruct_gradient_update(update: &GradientUpdate) -> Result<HashMap<String, Tensor>> {
+    let payload_bytes = model_crypto::decrypt(&update.encrypted_payload, &model_crypto::derive_encryption_key())
+        .context("Failed to decrypt gradient payload")?;
+    let payload: GradientPayload = borsh_from_slice(&payload_bytes).context("Failed to deserialize gradient payload")?;
+    reconstruct_from_layers(&payload.layer_gradients)
+}
+
 /// Reconstruct a dense `HashMap<String, Tensor>` from compressed `GradientLayer`s
 /// the same way the seed-node will after decrypting the payload.
-fn reconstruct_from_layers(layers: &HashMap<String, GradientLayer>) -> Result<HashMap<String, Tensor>> {
+pub fn reconstruct_from_layers(layers: &HashMap<String, GradientLayer>) -> Result<HashMap<String, Tensor>> {
     let device = Device::Cpu;
     let mut reconstructed = HashMap::with_capacity(layers.len());
     for (name, layer) in layers {

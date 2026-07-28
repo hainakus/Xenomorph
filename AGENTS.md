@@ -203,7 +203,8 @@ In both cases the `xenom` full node:
 - MGM-1 trainers extract `GradientUpdate` payloads for seed-node FedAvg aggregation.
 - `seed-node` (`seed-node/src/model/manager.rs`) aggregates MGM-1 gradients by loading the current model files, adding the FedAvg-averaged **weight-space delta** directly (`apply_mgm1_gradients_sync` with scale `1.0`), and storing the new safetensors checkpoint.  It does **not** re-optimize with a separate SGD step.
 - MGM-1 FedAvg currently supports active-base gradients only; stale-but-related base gradients are rejected.
-- `Mgm1Trainer` clamps the effective learning rate to `1e-3` and uses the shared `ManualAdamW` optimizer (also used by DNABERT-2) so named gradients can be applied directly.  Miners take `MGM1_LOCAL_STEPS = 8` local AdamW steps per genome batch so the small transformer can learn local context and avoid predicting only the majority base.
+- `Mgm1Trainer` clamps the effective learning rate to `1e-3` and uses the shared `ManualAdamW` optimizer (also used by DNABERT-2) so named gradients can be applied directly.  Miners take `MGM1_LOCAL_STEPS = 16` local AdamW steps per genome batch so the small transformer can learn local context and avoid predicting only the majority base.
+- `xenom` (`xenom/src/training/gradient_validator.rs`) verifies MGM-1 `GradientUpdate` payloads by loading the base checkpoint, preparing the exact batch, recomputing `loss_before`, decrypting the payload, verifying the gradient commitment, applying the weight-space delta, and comparing the resulting `loss_after`.  This avoids the cross-device numerical drift that made full CPU re-execution fail against Metal/CUDA miners.
 
 ```bash
 # Multi-GPU MGM-1 training (CUDA example)

@@ -87,7 +87,7 @@ struct Args {
     genome_merkle: Option<String>,
 
     /// Number of DNA sequences to request per genome batch.
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = 8)]
     genome_batch_size: usize,
 
     /// Do not submit mined blocks; useful for local testing.

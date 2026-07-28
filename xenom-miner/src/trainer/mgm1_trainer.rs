@@ -25,8 +25,10 @@ const MASK_RATIO: f64 = 0.15;
 /// Number of local gradient steps taken on each genome batch.  A single AdamW
 /// step on a masked language-modeling task only learns a marginal class bias
 /// (argmax collapses to the majority base); several steps are needed for the
-/// transformer to learn context and predict minority bases correctly.
-pub(crate) const MGM1_LOCAL_STEPS: usize = 8;
+/// transformer to learn context and predict minority bases correctly.  Sixteen
+/// steps with the 1e-3 learning rate give the small model enough iterations to
+/// fit local context while keeping the weight delta moderate for FedAvg.
+pub(crate) const MGM1_LOCAL_STEPS: usize = 16;
 pub(crate) const MAX_LEARNING_RATE: f32 = 1e-3;
 
 /// Trainer for the `xenom/mgm-1` model.
@@ -160,7 +162,7 @@ impl Mgm1Trainer {
     /// `mask_ratio` and `target_len` are taken from the seed-node's batch message;
     /// they are clamped to safe ranges so the node can control masking/length without
     /// breaking the model's tensor assumptions.
-    pub(crate) fn prepare_sequences(
+    pub fn prepare_sequences(
         &self,
         sequences: &[String],
         seed: [u8; 32],
@@ -175,7 +177,7 @@ impl Mgm1Trainer {
     }
 
     /// Compute loss and accuracy for a batch without taking gradients.
-    pub(crate) fn compute_loss_and_accuracy(&self, input_ids: &Tensor, labels: &Tensor) -> Result<(f64, f32)> {
+    pub fn compute_loss_and_accuracy(&self, input_ids: &Tensor, labels: &Tensor) -> Result<(f64, f32)> {
         // Per-batch inverse-frequency class weights are intentionally disabled.
         // They amplify sampling noise and are a major cause of single-base collapse.
         let (loss, accuracy) = self.model.compute_mlm_loss(input_ids, labels, None)?;
@@ -226,6 +228,20 @@ impl Mgm1Trainer {
         optimizer.set_learning_rate(effective_lr);
         let varmap = self.varmap.lock().map_err(|e| anyhow::anyhow!("VarMap mutex poisoned: {e}"))?;
         optimizer.step(&varmap, &clipped).context("Optimizer step failed")?;
+        Ok(())
+    }
+
+    /// Add a raw weight-space delta to the current weights.  This is used by the
+    /// validator to apply the decrypted update directly instead of re-running the
+    /// full local training loop, which avoids cross-device numerical drift.
+    pub fn apply_weight_delta(&self, named_deltas: &HashMap<String, Tensor>) -> Result<()> {
+        let varmap = self.varmap.lock().map_err(|e| anyhow::anyhow!("VarMap mutex poisoned: {e}"))?;
+        let data = varmap.data().lock().map_err(|e: std::sync::PoisonError<_>| anyhow::anyhow!("VarMap data poisoned: {e}"))?;
+        for (name, var) in data.iter() {
+            let delta = named_deltas.get(name).with_context(|| format!("Missing weight delta for {name}"))?;
+            let updated = (var.as_tensor() + delta)?;
+            var.set(&updated).with_context(|| format!("Failed to apply weight delta to {name}"))?;
+        }
         Ok(())
     }
 
