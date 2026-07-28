@@ -12,6 +12,11 @@ use std::sync::Mutex;
 pub use candle_nn::var_builder::VarBuilder;
 pub use candle_nn::var_map::VarMap;
 
+/// Label value used to tell `compute_mlm_loss` that a position is not a masked
+/// MLM target and should be ignored.  The same constant is exported to the
+/// trainer so it can build label tensors consistently.
+pub const MLM_IGNORE_INDEX: i64 = -100;
+
 fn default_label_smoothing() -> f64 {
     0.0
 }
@@ -38,6 +43,18 @@ fn default_micro_batch_size() -> usize {
 
 fn default_gradient_accumulation_steps() -> usize {
     8
+}
+
+fn default_warmup_steps() -> usize {
+    500
+}
+
+fn default_training_steps() -> usize {
+    10000
+}
+
+fn default_min_learning_rate() -> f64 {
+    1e-5
 }
 
 /// Configuracao do MGM-1
@@ -78,6 +95,17 @@ pub struct MiniGenomeConfig {
     /// Number of gradient-accumulation steps before each optimizer update.
     #[serde(default = "default_gradient_accumulation_steps")]
     pub gradient_accumulation_steps: usize,
+    /// Linear-warmup steps at the start of training (learning rate goes from
+    /// 0 to the configured peak over these steps).
+    #[serde(default = "default_warmup_steps")]
+    pub warmup_steps: usize,
+    /// Total number of optimizer steps over which the cosine decay from the
+    /// peak learning rate down to `min_learning_rate` is applied.
+    #[serde(default = "default_training_steps")]
+    pub training_steps: usize,
+    /// Floor value for the cosine learning-rate schedule.
+    #[serde(default = "default_min_learning_rate")]
+    pub min_learning_rate: f64,
 }
 
 impl Default for MiniGenomeConfig {
@@ -96,6 +124,9 @@ impl Default for MiniGenomeConfig {
             label_smoothing: default_label_smoothing(),
             micro_batch_size: default_micro_batch_size(),
             gradient_accumulation_steps: default_gradient_accumulation_steps(),
+            warmup_steps: default_warmup_steps(),
+            training_steps: default_training_steps(),
+            min_learning_rate: default_min_learning_rate(),
         }
     }
 }
@@ -117,6 +148,9 @@ impl MiniGenomeConfig {
             label_smoothing: 0.0,
             micro_batch_size: 1,
             gradient_accumulation_steps: 1,
+            warmup_steps: default_warmup_steps(),
+            training_steps: default_training_steps(),
+            min_learning_rate: default_min_learning_rate(),
         }
     }
 
@@ -441,22 +475,21 @@ impl MiniGenomeModel {
         // Mask out special tokens (ids 4..vocab_size) from the output distribution.
         let logits_dna = logits.narrow(candle_core::D::Minus1, 0, 4)?;
         let logits_flat = logits_dna.reshape((batch * seq_len, 4))?;
-        let labels_u32 = labels.to_dtype(DType::U32)?;
-        let labels_flat = labels_u32.reshape((batch * seq_len,))?;
 
-        // Mask: train only on positions where the input was masked (input != label).
-        // Padding positions also have input == label (mask token == mask token) and
-        // are therefore ignored, which is the desired behavior.  Compute this with
-        // the original labels before clamping special-token ids to the valid range.
-        let mask =
-            input_ids.to_dtype(DType::U32)?.ne(&labels.to_dtype(DType::U32)?)?.to_dtype(DType::F32)?.reshape((batch * seq_len,))?;
+        // Mask: train only on positions whose label is a real masked target.
+        // Positions with MLM_IGNORE_INDEX are either genuine bases or padding and
+        // are ignored for the loss/accuracy.  Compute the mask before clamping.
+        let labels_i64 = labels.to_dtype(DType::I64)?;
+        let ignore = Tensor::new(MLM_IGNORE_INDEX, input_ids.device())?.broadcast_as(labels_i64.shape())?;
+        let mask = labels_i64.ne(&ignore)?.to_dtype(DType::F32)?.reshape((batch * seq_len,))?;
 
-        // Clamp labels to the four valid DNA bases so that padding labels (e.g.
-        // the [MASK] token id) do not cause gather/argmax out-of-bounds.  Those
+        // Clamp labels to the four valid DNA bases so that the ignore value and
+        // padding labels do not cause gather/argmax out-of-bounds.  Those
         // positions are excluded by `mask` so the clamped value is harmless.
-        let min_label = Tensor::new(0u32, input_ids.device())?;
-        let max_label = Tensor::new(3u32, input_ids.device())?;
-        let labels_flat = labels_flat.broadcast_maximum(&min_label)?.broadcast_minimum(&max_label)?;
+        let min_label = Tensor::new(0i64, input_ids.device())?;
+        let max_label = Tensor::new(3i64, input_ids.device())?;
+        let labels_clamped = labels_i64.broadcast_maximum(&min_label)?.broadcast_minimum(&max_label)?;
+        let labels_flat = labels_clamped.to_dtype(DType::U32)?.reshape((batch * seq_len,))?;
 
         // Per-position log-probabilities over the four DNA bases.
         let log_probs = candle_nn::ops::log_softmax(&logits_flat, candle_core::D::Minus1)?;
@@ -756,7 +789,7 @@ mod tests {
 
         // A small batch with one masked position per row.
         let input = Tensor::new(&[[0i64, 4i64], [4i64, 1i64]], &device).unwrap();
-        let labels = Tensor::new(&[[0i64, 0i64], [1i64, 1i64]], &device).unwrap();
+        let labels = Tensor::new(&[[MLM_IGNORE_INDEX, 0i64], [1i64, MLM_IGNORE_INDEX]], &device).unwrap();
 
         // Inverse-frequency-ish weights that penalize A and reward C.
         let weights = Tensor::new(&[0.5f32, 2.0f32, 1.0f32, 1.0f32, 0.0f32, 0.0f32, 0.0f32, 0.0f32], &device).unwrap();
@@ -790,7 +823,7 @@ mod tests {
         let model = MiniGenomeModel::new(vb, config).unwrap();
 
         let input = Tensor::new(&[[0i64, 4i64], [4i64, 1i64]], &device).unwrap();
-        let labels = Tensor::new(&[[0i64, 0i64], [1i64, 1i64]], &device).unwrap();
+        let labels = Tensor::new(&[[MLM_IGNORE_INDEX, 0i64], [1i64, MLM_IGNORE_INDEX]], &device).unwrap();
 
         let (loss, _) = model.compute_mlm_loss(&input, &labels, None).unwrap();
         let loss_f = loss.to_scalar::<f32>().unwrap();
@@ -809,7 +842,7 @@ mod tests {
 
         // A small batch with one masked position per row.
         let input = Tensor::new(&[[0i64, 4i64], [4i64, 1i64]], &device).unwrap();
-        let labels = Tensor::new(&[[0i64, 0i64], [1i64, 1i64]], &device).unwrap();
+        let labels = Tensor::new(&[[MLM_IGNORE_INDEX, 0i64], [1i64, MLM_IGNORE_INDEX]], &device).unwrap();
 
         let (_, _, grad_norm) = trainer.train_step(&input, &labels, 1e-3).unwrap();
         assert!(grad_norm <= 1.0, "grad_norm {} should be <= grad_clip_norm 1.0", grad_norm);
@@ -828,11 +861,13 @@ mod tests {
         let batch_size = 4;
         let seq_len = 64;
         let mut rng = rand::thread_rng();
-        let labels_data: Vec<i64> = (0..batch_size * seq_len).map(|_| rng.gen_range(0..4)).collect();
+        let mut labels_data: Vec<i64> = (0..batch_size * seq_len).map(|_| rng.gen_range(0..4)).collect();
         let mut input_data = labels_data.clone();
-        for v in input_data.iter_mut() {
+        for (i, v) in input_data.iter_mut().enumerate() {
             if rng.gen_bool(0.15) {
                 *v = 4; // [MASK]
+            } else {
+                labels_data[i] = MLM_IGNORE_INDEX;
             }
         }
 

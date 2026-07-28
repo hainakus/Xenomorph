@@ -5,13 +5,14 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
 use candle_core::{DType, Device, Tensor, D as TensorD};
 use candle_nn::VarMap;
-use mini_genome_model::{DnaTokenizer, MiniGenomeConfig, MiniGenomeModel};
+use mini_genome_model::{DnaTokenizer, MiniGenomeConfig, MiniGenomeModel, MLM_IGNORE_INDEX};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use tracing::info;
@@ -22,6 +23,12 @@ use crate::trainer::{DeviceInfo, DeviceType, ManualAdamW, Trainer, TrainingResul
 
 const MASK_TOKEN_ID: usize = 4;
 const MASK_RATIO: f64 = 0.15;
+
+/// Contiguous span of masked bases.  Longer spans make the model learn context
+/// beyond single-base prediction and reduce the chance of collapse to a single
+/// nucleotide.  Mean length 5 keeps the expected mask ratio close to 15%.
+const MIN_SPAN_LEN: usize = 3;
+const MAX_SPAN_LEN: usize = 7;
 /// Number of local gradient steps taken on each genome batch.  A single AdamW
 /// step on a masked language-modeling task only learns a marginal class bias
 /// (argmax collapses to the majority base); several steps are needed for the
@@ -45,6 +52,8 @@ pub struct Mgm1Trainer {
     model_id: String,
     gradient_top_k_ratio: f32,
     learning_rate: f64,
+    /// Global optimizer step counter used for the warmup/cosine LR schedule.
+    step_count: AtomicUsize,
 }
 
 impl Mgm1Trainer {
@@ -102,6 +111,7 @@ impl Mgm1Trainer {
             model_id,
             gradient_top_k_ratio,
             learning_rate: lr,
+            step_count: AtomicUsize::new(0),
         })
     }
 
@@ -130,20 +140,59 @@ impl Mgm1Trainer {
 
     /// Build masked-language-modeling input and label tensors from token IDs.
     ///
-    /// Uses the BERT-style 80/10/10 split for the selected MLM positions:
+    /// Uses span-level masking and the BERT-style 80/10/10 split for the selected
+    /// MLM positions:
     ///   - 80% replaced with [MASK]
     ///   - 10% replaced with a random DNA base
     ///   - 10% left unchanged
+    ///
+    /// Unselected positions (including padding [MASK] tokens) get the ignore
+    /// label so `compute_mlm_loss` does not train on them.
     fn build_mlm_tensors(&self, token_ids: &[Vec<usize>], rng: &mut ChaCha8Rng, mask_ratio: f64) -> Result<(Tensor, Tensor)> {
         let batch = token_ids.len();
         let seq_len = token_ids[0].len();
+        let mean_span_len = (MIN_SPAN_LEN + MAX_SPAN_LEN) as f64 / 2.0;
+        let start_prob = mask_ratio / mean_span_len;
+
         let mut input_data = Vec::with_capacity(batch * seq_len);
         let mut label_data = Vec::with_capacity(batch * seq_len);
 
         for row in token_ids {
-            for &tok in row {
-                let mask = rng.gen_bool(mask_ratio);
-                if mask {
+            // Build a boolean mask indicating which positions are selected.  Spans
+            // never start on [MASK] padding and never overflow into padding.
+            let mut selected = vec![false; seq_len];
+            let mut i = 0;
+            while i < seq_len {
+                if row[i] == MASK_TOKEN_ID || i + MIN_SPAN_LEN > seq_len {
+                    i += 1;
+                    continue;
+                }
+                if !rng.gen_bool(start_prob) {
+                    i += 1;
+                    continue;
+                }
+                let max_len = (MAX_SPAN_LEN).min(seq_len - i);
+                // Pick a span length and shrink it if it would hit padding.
+                let mut span_len = if max_len >= MIN_SPAN_LEN {
+                    rng.gen_range(MIN_SPAN_LEN..=max_len)
+                } else {
+                    max_len
+                };
+                while span_len > 0 && i + span_len <= seq_len && row[i + span_len - 1] == MASK_TOKEN_ID {
+                    span_len -= 1;
+                }
+                if span_len >= MIN_SPAN_LEN {
+                    for j in i..i + span_len {
+                        selected[j] = true;
+                    }
+                    i += span_len;
+                } else {
+                    i += 1;
+                }
+            }
+
+            for (t, &tok) in row.iter().enumerate() {
+                if selected[t] {
                     let roll: f64 = rng.gen();
                     let input_tok = if roll < 0.8 {
                         MASK_TOKEN_ID
@@ -154,9 +203,12 @@ impl Mgm1Trainer {
                     };
                     input_data.push(input_tok as i64);
                     label_data.push(tok as i64);
+                } else if tok == MASK_TOKEN_ID {
+                    input_data.push(tok as i64);
+                    label_data.push(MLM_IGNORE_INDEX);
                 } else {
                     input_data.push(tok as i64);
-                    label_data.push(tok as i64);
+                    label_data.push(MLM_IGNORE_INDEX);
                 }
             }
         }
@@ -244,13 +296,40 @@ impl Mgm1Trainer {
         Ok((loss_scalar, accuracy, named_grads))
     }
 
+    /// Compute the scheduled learning rate for the current optimizer step.
+    ///
+    /// Linear warmup from 0 to `peak_lr` over `warmup_steps`, then cosine decay
+    /// from `peak_lr` down to `min_learning_rate` over the remaining steps until
+    /// `training_steps`, after which it stays at the floor.
+    fn scheduled_lr(&self, peak_lr: f64) -> f64 {
+        let step = self.step_count.fetch_add(1, Ordering::Relaxed) + 1;
+        let warmup = self.config.warmup_steps;
+        let total = self.config.training_steps.max(warmup + 1);
+        let floor = self.config.min_learning_rate;
+
+        if step >= total {
+            return floor;
+        }
+        if warmup > 0 && step <= warmup {
+            // Linear warmup starting from 0 (not the floor) so very early steps
+            // are conservative and do not shock a fresh random model.
+            return peak_lr * (step as f64 / warmup as f64);
+        }
+
+        // Cosine annealing from peak to floor.
+        let progress = (step - warmup) as f64 / (total - warmup) as f64;
+        let cosine = 0.5 * (1.0 + (progress * std::f64::consts::PI).cos());
+        floor + (peak_lr - floor) * cosine
+    }
+
     /// Apply named gradients to this trainer using its AdamW optimizer.
     pub(crate) fn apply_gradients(&self, named_grads: &HashMap<String, Tensor>, learning_rate: f32) -> Result<()> {
         // Clip global gradient norm to prevent a single noisy batch from pushing
         // logits into a saturated softmax and collapsing predictions to one base.
         let clipped = clip_grad_norm(named_grads, self.config.grad_clip_norm as f64).context("Gradient clipping failed")?;
         let mut optimizer = self.optimizer.lock().map_err(|e| anyhow::anyhow!("Optimizer mutex poisoned: {e}"))?;
-        let effective_lr = learning_rate.min(MAX_LEARNING_RATE) as f64;
+        let peak_lr = (learning_rate as f64).min(MAX_LEARNING_RATE as f64);
+        let effective_lr = self.scheduled_lr(peak_lr);
         optimizer.set_learning_rate(effective_lr);
         let varmap = self.varmap.lock().map_err(|e| anyhow::anyhow!("VarMap mutex poisoned: {e}"))?;
         optimizer.step(&varmap, &clipped).context("Optimizer step failed")?;
@@ -585,8 +664,9 @@ pub(crate) fn gradient_norm(named_grads: &HashMap<String, Tensor>) -> Result<f64
 }
 
 /// Count how many masked labels belong to each DNA base (A, C, G, T).
-pub(crate) fn masked_label_distribution(input_ids: &Tensor, labels: &Tensor) -> Result<[usize; 4]> {
-    let mask = input_ids.ne(labels)?.to_dtype(DType::F32)?;
+pub(crate) fn masked_label_distribution(_input_ids: &Tensor, labels: &Tensor) -> Result<[usize; 4]> {
+    let ignore = Tensor::new(MLM_IGNORE_INDEX, _input_ids.device())?.broadcast_as(labels.shape())?;
+    let mask = labels.ne(&ignore)?.to_dtype(DType::F32)?;
     let labels_u32 = labels.to_dtype(DType::U32)?.to_vec2::<u32>()?;
     let mask_f = mask.to_vec2::<f32>()?;
     let mut dist = [0usize; 4];
@@ -604,8 +684,9 @@ pub(crate) fn masked_label_distribution(input_ids: &Tensor, labels: &Tensor) -> 
 }
 
 /// Count how many masked positions are predicted as each DNA base (A, C, G, T).
-pub(crate) fn masked_prediction_distribution(input_ids: &Tensor, labels: &Tensor, logits: &Tensor) -> Result<[usize; 4]> {
-    let mask = input_ids.ne(labels)?.to_dtype(DType::F32)?;
+pub(crate) fn masked_prediction_distribution(_input_ids: &Tensor, labels: &Tensor, logits: &Tensor) -> Result<[usize; 4]> {
+    let ignore = Tensor::new(MLM_IGNORE_INDEX, _input_ids.device())?.broadcast_as(labels.shape())?;
+    let mask = labels.ne(&ignore)?.to_dtype(DType::F32)?;
     let logits_dna = logits.narrow(TensorD::Minus1, 0, 4)?;
     let pred_ids = logits_dna.argmax(TensorD::Minus1)?.to_dtype(DType::U32)?.to_vec2::<u32>()?;
     let mask_f = mask.to_vec2::<f32>()?;
@@ -663,7 +744,7 @@ mod tests {
         // Simulate a balanced GC-stratified batch (25% each base) so the model
         // must learn to predict all four nucleotides, not collapse to the majority.
         let seq_len = 128;
-        let batch_size = 32;
+        let batch_size = 16;
         let total = seq_len * batch_size;
         let per_base = total / 4;
         let mut raw = String::with_capacity(total);
@@ -682,7 +763,9 @@ mod tests {
         let sequences: Vec<String> = raw.as_bytes().chunks(seq_len).map(|c| String::from_utf8_lossy(c).to_string()).collect();
 
         let (input_ids, labels) = trainer.prepare_sequences(&sequences, [0u8; 32], MASK_RATIO, seq_len).unwrap();
-        let (result, _) = trainer.train_step(&input_ids, &labels, vec![1], 1e-3, false, MGM1_LOCAL_STEPS).unwrap();
+        // Span masking makes the task harder; give the tiny test model more
+        // local steps than production so the unit test stays stable.
+        let (result, _) = trainer.train_step(&input_ids, &labels, vec![1], 1e-3, false, 16).unwrap();
 
         let (_, acc_after) = trainer.compute_loss_and_accuracy(&input_ids, &labels).unwrap();
         let logits = trainer.forward(&input_ids).unwrap();
@@ -834,7 +917,7 @@ mod tests {
         let mut mask_count = 0usize;
         for b in 0..input_vec.len() {
             for t in 0..input_vec[b].len() {
-                if input_vec[b][t] != label_vec[b][t] {
+                if label_vec[b][t] != MLM_IGNORE_INDEX {
                     mask_count += 1;
                     *label_counts.entry(label_vec[b][t]).or_insert(0) += 1;
                 }
@@ -871,7 +954,7 @@ mod tests {
         let mut printed = 0usize;
         'outer: for b in 0..input_vec.len() {
             for t in 0..input_vec[b].len() {
-                if input_vec[b][t] != label_vec[b][t] {
+                if label_vec[b][t] != MLM_IGNORE_INDEX {
                     let true_id = label_vec[b][t];
                     println!(
                         "  batch[{}][{}] true={} pred={} | A={:.3} C={:.3} G={:.3} T={:.3}",
@@ -895,7 +978,7 @@ mod tests {
         let mut all_predictions = HashMap::<char, usize>::new();
         for b in 0..input_vec.len() {
             for t in 0..input_vec[b].len() {
-                if input_vec[b][t] != label_vec[b][t] {
+                if label_vec[b][t] != MLM_IGNORE_INDEX {
                     let pred = base_name(pred_ids[b][t] as i64);
                     *all_predictions.entry(pred).or_insert(0) += 1;
                 }
@@ -928,7 +1011,7 @@ mod tests {
         let mut correct = 0usize;
         for b in 0..input_vec.len() {
             for t in 0..input_vec[b].len() {
-                if input_vec[b][t] != label_vec[b][t] {
+                if label_vec[b][t] != MLM_IGNORE_INDEX {
                     let pred = base_name(pred_ids_after[b][t] as i64);
                     *predictions_after.entry(pred).or_insert(0) += 1;
                     if pred == base_name(label_vec[b][t]) {
@@ -989,8 +1072,8 @@ mod tests {
             println!("{} preds  A={:>3} C={:>3} G={:>3} T={:>3}", prefix, pred_dist[0], pred_dist[1], pred_dist[2], pred_dist[3]);
             let input_vec = input_ids.to_vec2::<i64>().unwrap();
             let label_vec = labels.to_vec2::<i64>().unwrap();
-            if let Some((b, t)) = input_vec.iter().enumerate().find_map(|(bi, row)| {
-                row.iter().enumerate().find_map(|(ti, &v)| if v != label_vec[bi][ti] { Some((bi, ti)) } else { None })
+            if let Some((b, t)) = input_vec.iter().enumerate().find_map(|(bi, _row)| {
+                label_vec[bi].iter().enumerate().find_map(|(ti, &v)| if v != MLM_IGNORE_INDEX { Some((bi, ti)) } else { None })
             }) {
                 let logits_4 = logits.narrow(TensorD::Minus1, 0, 4).unwrap();
                 let probs = softmax(&logits_4, TensorD::Minus1).unwrap();
