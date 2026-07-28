@@ -19,7 +19,7 @@ use tracing::info;
 
 use crate::rpc::messages::{GenomeTrainingBatchMsg, GradientUpdate, TrainingBatch};
 use crate::trainer::gradient::{add_grad_maps, build_gradient_update, clip_grad_norm, gradient_commitment, scale_grad_map};
-use crate::trainer::{DeviceInfo, DeviceType, ManualAdamW, Trainer, TrainingResult};
+use crate::trainer::{DeviceInfo, DeviceType, ManualAdamW, MultiGpuConfig, Trainer, TrainingResult};
 
 const MASK_TOKEN_ID: usize = 4;
 const MASK_RATIO: f64 = 0.15;
@@ -70,11 +70,18 @@ impl Mgm1Trainer {
         base_checkpoint: [u8; 32],
         device: Device,
         lr: f64,
-        gradient_top_k_ratio: f32,
+        gpu_config: &MultiGpuConfig,
     ) -> Result<Self> {
         let model_id = model_id.into();
-        let config: MiniGenomeConfig =
+        let mut config: MiniGenomeConfig =
             serde_json::from_slice(config_bytes).with_context(|| format!("Failed to parse MGM-1 config for {model_id}"))?;
+
+        // The CLI/JSON config may not reflect the user's selected micro-batch and
+        // accumulation settings.  Override the model defaults with the multi-GPU
+        // config so single-GPU MGM-1 respects the same --micro-batch-size and
+        // --gradient-accumulation flags as DNABERT-2.
+        config.micro_batch_size = gpu_config.micro_batch_size.max(1);
+        config.gradient_accumulation_steps = gpu_config.gradient_accumulation_steps.max(1);
 
         let varmap = Mutex::new(VarMap::new());
         let model = {
@@ -109,7 +116,7 @@ impl Mgm1Trainer {
             device,
             base_checkpoint: Mutex::new(base_checkpoint),
             model_id,
-            gradient_top_k_ratio,
+            gradient_top_k_ratio: gpu_config.gradient_top_k_ratio,
             learning_rate: lr,
             step_count: AtomicUsize::new(0),
         })
@@ -720,6 +727,7 @@ fn load_varmap_weights(varmap: &Mutex<VarMap>, weights: &[u8], _device: &Device)
 mod tests {
     use super::*;
     use crate::rpc::messages::{GenomeSlice, GenomeTrainingBatch, GenomeTrainingBatchMsg};
+    use crate::trainer::MultiGpuConfig;
     use rand::seq::SliceRandom;
 
     fn default_config() -> Vec<u8> {
@@ -739,7 +747,7 @@ mod tests {
             "label_smoothing": 0.1,
         });
         let config = config_json.to_string().into_bytes();
-        let trainer = Mgm1Trainer::new("xeno/mgm-1", &config, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-3, 1.0).unwrap();
+        let trainer = Mgm1Trainer::new("xeno/mgm-1", &config, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-3, &MultiGpuConfig::default()).unwrap();
 
         // Simulate a balanced GC-stratified batch (25% each base) so the model
         // must learn to predict all four nucleotides, not collapse to the majority.
@@ -784,7 +792,7 @@ mod tests {
     #[test]
     fn test_mgm1_trainer_loads_and_trains() {
         let config = default_config();
-        let trainer = Mgm1Trainer::new("xeno/mgm-1", &config, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, 1.0).unwrap();
+        let trainer = Mgm1Trainer::new("xeno/mgm-1", &config, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default()).unwrap();
 
         let batch = TrainingBatch {
             batch_id: 1,
@@ -802,7 +810,7 @@ mod tests {
     #[test]
     fn test_mgm1_trainer_extracts_gradient_update() {
         let config = default_config();
-        let trainer = Mgm1Trainer::new("xeno/mgm-1", &config, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, 1.0).unwrap();
+        let trainer = Mgm1Trainer::new("xeno/mgm-1", &config, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default()).unwrap();
 
         let batch = TrainingBatch {
             batch_id: 1,
@@ -831,7 +839,7 @@ mod tests {
     #[test]
     fn test_mgm1_trainer_genome_batch() {
         let config = default_config();
-        let trainer = Mgm1Trainer::new("xeno/mgm-1", &config, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, 1.0).unwrap();
+        let trainer = Mgm1Trainer::new("xeno/mgm-1", &config, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default()).unwrap();
 
         let sequences = vec!["ACGTACGTACGT".to_string(), "TGCATGCATGCA".to_string(), "AAAACCCCGGGGTTTT".to_string()];
         let batch = GenomeTrainingBatch {
@@ -875,7 +883,7 @@ mod tests {
             "dropout": 0.1,
         });
         let config_bytes = config_json.to_string().into_bytes();
-        let trainer = Mgm1Trainer::new("xeno/mgm-1", &config_bytes, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, 1.0).unwrap();
+        let trainer = Mgm1Trainer::new("xeno/mgm-1", &config_bytes, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default()).unwrap();
 
         // Synthetic batch matching the distribution from the user's log:
         // A=72 C=70 G=55 T=117 across ~314 masked positions.
@@ -1137,7 +1145,7 @@ mod tests {
         let sequences_b: Vec<String> = raw_b.as_bytes().chunks(seq_len).map(|c| String::from_utf8_lossy(c).to_string()).collect();
 
         println!("\n========== AUDIT: IMBALANCED BATCH (label smoothing 0.1, no class weights) ==========");
-        let trainer_a = Mgm1Trainer::new("xeno/mgm-1", &config_bytes, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, 1.0).unwrap();
+        let trainer_a = Mgm1Trainer::new("xeno/mgm-1", &config_bytes, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default()).unwrap();
         let (input_a, labels_a) = trainer_a.prepare_sequences(&sequences_a, [0u8; 32], MASK_RATIO, seq_len).unwrap();
         let logits_init_a = trainer_a.forward(&input_a).unwrap();
         inspect(&trainer_a, &input_a, &labels_a, &logits_init_a, "init");
@@ -1158,7 +1166,7 @@ mod tests {
 
         println!("\n========== AUDIT: IMBALANCED BATCH (no label smoothing, no class weights) ==========");
         let trainer_b =
-            Mgm1Trainer::new("xeno/mgm-1", &config_no_smooth_bytes, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, 1.0).unwrap();
+            Mgm1Trainer::new("xeno/mgm-1", &config_no_smooth_bytes, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default()).unwrap();
         let (input_b, labels_b) = trainer_b.prepare_sequences(&sequences_a, [1u8; 32], MASK_RATIO, seq_len).unwrap();
         let logits_init_b = trainer_b.forward(&input_b).unwrap();
         inspect(&trainer_b, &input_b, &labels_b, &logits_init_b, "init");
@@ -1174,7 +1182,7 @@ mod tests {
         }
 
         println!("\n========== AUDIT: BALANCED BATCH (label smoothing 0.1, no class weights) ==========");
-        let trainer_c = Mgm1Trainer::new("xeno/mgm-1", &config_bytes, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, 1.0).unwrap();
+        let trainer_c = Mgm1Trainer::new("xeno/mgm-1", &config_bytes, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default()).unwrap();
         let (input_c, labels_c) = trainer_c.prepare_sequences(&sequences_b, [2u8; 32], MASK_RATIO, seq_len).unwrap();
         let logits_init_c = trainer_c.forward(&input_c).unwrap();
         inspect(&trainer_c, &input_c, &labels_c, &logits_init_c, "init");

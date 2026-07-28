@@ -97,7 +97,7 @@ impl Mgm1MultiGpuTrainer {
                 base_checkpoint,
                 device.clone(),
                 lr,
-                gpu_config.gradient_top_k_ratio,
+                &gpu_config,
             )
             .with_context(|| format!("Failed to load MGM-1 replica {idx} on device {:?}", device))?;
             trainers.push(Arc::new(trainer));
