@@ -2,22 +2,40 @@
 //! Transformer pequeno (~1-2M parametros) para MLM em sequencias de DNA
 //! Otimizado para treinamento rapido em CPU/GPU via Candle
 
-fn default_label_smoothing() -> f64 {
-    0.1
-}
-
-use candle_core::{DType, Device, Module, Result, Tensor};
-use candle_nn::{layer_norm, linear, Dropout, Embedding, Init, LayerNorm, Linear, Optimizer};
+use candle_core::{backprop::GradStore, DType, Device, Module, Result, Tensor, Var};
+use candle_nn::{layer_norm, linear, AdamW, Dropout, Embedding, Init, LayerNorm, Linear, Optimizer, ParamsAdamW};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 pub use candle_nn::var_builder::VarBuilder;
 pub use candle_nn::var_map::VarMap;
 
+fn default_label_smoothing() -> f64 {
+    0.1
+}
+
+fn default_dropout() -> f64 {
+    0.2
+}
+
+fn default_grad_clip_norm() -> f32 {
+    1.0
+}
+
+fn default_weight_decay() -> f64 {
+    0.01
+}
+
+fn default_class_weights() -> Option<Vec<f32>> {
+    Some(vec![1.5f32, 1.5, 1.5, 1.0, 1.0, 1.0, 1.0, 1.0])
+}
+
 /// Configuracao do MGM-1
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MiniGenomeConfig {
-    /// Tamanho do vocabulario (A, C, G, T, [MASK], [PAD], [CLS], [SEP])
+    /// Tamanho do vocabulario (A, C, G, T, [MASK],  , [CLS], [SEP])
     pub vocab_size: usize,
     /// Dimensao dos embeddings
     pub d_model: usize,
@@ -30,7 +48,17 @@ pub struct MiniGenomeConfig {
     /// Tamanho maximo da sequencia
     pub max_seq_len: usize,
     /// Dropout rate
+    #[serde(default = "default_dropout")]
     pub dropout: f64,
+    /// Global L2 gradient clipping threshold.
+    #[serde(default = "default_grad_clip_norm")]
+    pub grad_clip_norm: f32,
+    /// AdamW weight decay (decoupled L2 penalty).
+    #[serde(default = "default_weight_decay")]
+    pub weight_decay: f64,
+    /// Per-class loss weights for the four DNA bases (only the first 4 entries are used).
+    #[serde(default = "default_class_weights")]
+    pub class_weights: Option<Vec<f32>>,
     /// Label smoothing for MLM cross-entropy (0 = hard targets).  A small value
     /// (e.g. 0.1) prevents the model from becoming overconfident and collapsing
     /// to a single nucleotide prediction.
@@ -47,7 +75,10 @@ impl Default for MiniGenomeConfig {
             n_layers: 4,
             d_ff: 512,
             max_seq_len: 512,
-            dropout: 0.1,
+            dropout: default_dropout(),
+            grad_clip_norm: default_grad_clip_norm(),
+            weight_decay: default_weight_decay(),
+            class_weights: default_class_weights(),
             label_smoothing: default_label_smoothing(),
         }
     }
@@ -56,7 +87,19 @@ impl Default for MiniGenomeConfig {
 impl MiniGenomeConfig {
     /// Configuracao ultra-pequena para testes rapidos
     pub fn tiny() -> Self {
-        Self { vocab_size: 8, d_model: 64, n_heads: 2, n_layers: 2, d_ff: 256, max_seq_len: 256, dropout: 0.1, label_smoothing: 0.0 }
+        Self {
+            vocab_size: 8,
+            d_model: 64,
+            n_heads: 2,
+            n_layers: 2,
+            d_ff: 256,
+            max_seq_len: 256,
+            dropout: default_dropout(),
+            grad_clip_norm: default_grad_clip_norm(),
+            weight_decay: default_weight_decay(),
+            class_weights: default_class_weights(),
+            label_smoothing: 0.0,
+        }
     }
 
     /// Numero total de parametros (estimativa)
@@ -91,7 +134,7 @@ impl DnaTokenizer {
             ('G', 2),
             ('T', 3),
             ('[', 4), // [MASK]
-            (' ', 5), // [PAD]
+            (' ', 5), //
             (']', 6), // [CLS]
             ('|', 7), // [SEP]
         ];
@@ -173,10 +216,8 @@ impl MultiHeadAttention {
 
         Ok(Self { w_q, w_k, w_v, w_o, n_heads, d_k, dropout: Dropout::new(dropout as f32) })
     }
-}
 
-impl Module for MultiHeadAttention {
-    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+    fn forward_train(&self, xs: &Tensor, train: bool) -> Result<Tensor> {
         let (batch, seq_len, d_model) = xs.dims3()?;
 
         // Projecoes lineares
@@ -196,7 +237,7 @@ impl Module for MultiHeadAttention {
 
         // Softmax
         let attn_weights = candle_nn::ops::softmax(&scores, candle_core::D::Minus1)?;
-        let attn_weights = self.dropout.forward(&attn_weights, false)?;
+        let attn_weights = self.dropout.forward(&attn_weights, train)?;
 
         // Aplicar atencao aos valores
         let attn_output = attn_weights.matmul(&v)?;
@@ -205,6 +246,12 @@ impl Module for MultiHeadAttention {
         let attn_output = attn_output.transpose(1, 2)?.contiguous()?.reshape((batch, seq_len, d_model))?;
 
         self.w_o.forward(&attn_output)
+    }
+}
+
+impl Module for MultiHeadAttention {
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+        self.forward_train(xs, false)
     }
 }
 
@@ -222,13 +269,17 @@ impl FeedForward {
 
         Ok(Self { w1, w2, dropout: Dropout::new(dropout as f32) })
     }
+
+    fn forward_train(&self, x: &Tensor, train: bool) -> Result<Tensor> {
+        let hidden = self.w1.forward(x)?.relu()?;
+        let hidden = self.dropout.forward(&hidden, train)?;
+        self.w2.forward(&hidden)
+    }
 }
 
 impl Module for FeedForward {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let hidden = self.w1.forward(x)?.relu()?;
-        let hidden = self.dropout.forward(&hidden, false)?;
-        self.w2.forward(&hidden)
+        self.forward_train(x, false)
     }
 }
 
@@ -252,17 +303,21 @@ impl TransformerBlock {
 
         Ok(Self { attention, ffn, norm1, norm2, dropout: Dropout::new(config.dropout as f32) })
     }
+
+    fn forward_train(&self, x: &Tensor, train: bool) -> Result<Tensor> {
+        // Pre-norm architecture
+        let attn_output = self.attention.forward_train(&self.norm1.forward(x)?, train)?;
+        let x = x.add(&attn_output)?;
+        let x = self.dropout.forward(&x, train)?;
+
+        let ffn_output = self.ffn.forward_train(&self.norm2.forward(&x)?, train)?;
+        x.add(&ffn_output)
+    }
 }
 
 impl Module for TransformerBlock {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        // Pre-norm architecture
-        let attn_output = self.attention.forward(&self.norm1.forward(x)?)?;
-        let x = x.add(&attn_output)?;
-        let x = self.dropout.forward(&x, false)?;
-
-        let ffn_output = self.ffn.forward(&self.norm2.forward(&x)?)?;
-        x.add(&ffn_output)
+        self.forward_train(x, false)
     }
 }
 
@@ -275,6 +330,7 @@ pub struct MiniGenomeModel {
     final_norm: LayerNorm,
     head: Linear,
     device: Device,
+    is_training: AtomicBool,
 }
 
 impl MiniGenomeModel {
@@ -307,11 +363,23 @@ impl MiniGenomeModel {
         let head_bias = vb.get_with_hints(config.vocab_size, "bias", Init::Const(0.0))?;
         let head = Linear::new(head_weight, Some(head_bias));
 
-        Ok(Self { config, token_embedding, pos_embedding, transformer_blocks, final_norm, head, device })
+        Ok(Self {
+            config,
+            token_embedding,
+            pos_embedding,
+            transformer_blocks,
+            final_norm,
+            head,
+            device,
+            is_training: AtomicBool::new(false),
+        })
     }
 
-    /// Forward pass completo
-    pub fn forward(&self, input_ids: &Tensor) -> Result<Tensor> {
+    pub fn set_training(&self, training: bool) {
+        self.is_training.store(training, Ordering::Relaxed);
+    }
+
+    fn forward_impl(&self, input_ids: &Tensor, train: bool) -> Result<Tensor> {
         let (_batch, seq_len) = input_ids.dims2()?;
 
         let token_emb = self.token_embedding.forward(input_ids)?;
@@ -322,11 +390,16 @@ impl MiniGenomeModel {
         let mut x = token_emb.add(&pos_emb)?;
 
         for block in &self.transformer_blocks {
-            x = block.forward(&x)?;
+            x = block.forward_train(&x, train)?;
         }
 
         let x = self.final_norm.forward(&x)?;
         self.head.forward(&x)
+    }
+
+    /// Forward pass completo
+    pub fn forward(&self, input_ids: &Tensor) -> Result<Tensor> {
+        self.forward_impl(input_ids, self.is_training.load(Ordering::Relaxed))
     }
 
     /// Calcula loss para MLM. Returns (loss, accuracy)
@@ -340,6 +413,9 @@ impl MiniGenomeModel {
     /// logits are masked to -inf so the model cannot waste capacity predicting
     /// [MASK], pad, [CLS] or [SEP] during genomic pre-training.  This makes the
     /// random-initialized loss ~ln(4) and removes a common source of collapse.
+    ///
+    /// If no explicit `class_weights` tensor is supplied, the config's global
+    /// class weights are used (only the first four entries, one per DNA base).
     pub fn compute_mlm_loss(&self, input_ids: &Tensor, labels: &Tensor, class_weights: Option<&Tensor>) -> Result<(Tensor, f32)> {
         let logits = self.forward(input_ids)?;
         let (batch, seq_len, _vocab_size) = logits.dims3()?;
@@ -382,7 +458,18 @@ impl MiniGenomeModel {
 
         // Optionally reweight classes (e.g. inverse-frequency) to combat class imbalance.
         // Only the first 4 weights are meaningful; special-token weights are ignored.
-        if let Some(cw) = class_weights {
+        // If no explicit class weights are passed, use the model config's global weights.
+        let cw_tensor = match class_weights {
+            Some(cw) => Some(cw.to_device(input_ids.device())?),
+            None => match &self.config.class_weights {
+                Some(cw) => {
+                    let cw_4: Vec<f32> = cw.iter().take(4).copied().collect();
+                    Some(Tensor::new(cw_4.as_slice(), input_ids.device())?)
+                }
+                None => None,
+            },
+        };
+        if let Some(cw) = cw_tensor.as_ref() {
             let cw_dna = cw.narrow(0, 0, 4)?;
             let cw_per_token = cw_dna.index_select(&labels_flat, 0)?.reshape((batch * seq_len,))?;
             nll = nll.mul(&cw_per_token)?;
@@ -422,11 +509,33 @@ impl MiniGenomeModel {
 
 impl Module for MiniGenomeModel {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        self.forward(xs)
+        self.forward_impl(xs, false)
     }
 }
 
-/// Treinador simples
+fn clip_gradients(grads: &mut GradStore, vars: &[Var], max_norm: f32) -> Result<f64> {
+    let mut total_sq = 0.0f64;
+    for var in vars {
+        if let Some(g) = grads.get(var.as_tensor()) {
+            let g_f32 = g.to_dtype(DType::F32)?;
+            total_sq += g_f32.sqr()?.sum_all()?.to_vec0::<f32>()? as f64;
+        }
+    }
+    let norm = total_sq.sqrt();
+    let scale = if norm > max_norm as f64 && norm > 0.0 { max_norm as f64 / norm } else { 1.0 };
+    if scale < 1.0 {
+        for var in vars {
+            if grads.get(var.as_tensor()).is_some() {
+                let g = grads.remove(var.as_tensor()).unwrap();
+                let clipped = (g * scale)?;
+                grads.insert(var.as_tensor(), clipped);
+            }
+        }
+    }
+    Ok(norm * scale)
+}
+
+/// Treinador simples (compatibilidade com versões anteriores)
 pub struct Trainer {
     model: MiniGenomeModel,
     optimizer: candle_nn::optim::AdamW,
@@ -459,6 +568,96 @@ impl Trainer {
     /// Salvar modelo
     pub fn save(&self, path: &str) -> Result<()> {
         self.varmap.save(path)?;
+        Ok(())
+    }
+}
+
+/// Trainer for the Mini Genome Model (MGM-1) with built-in anti-overfitting
+/// regularizers: label smoothing, class-weighted loss, weight decay, gradient
+/// clipping and dropout.
+pub struct MiniGenomeTrainer {
+    model: MiniGenomeModel,
+    varmap: VarMap,
+    optimizer: Mutex<AdamW>,
+    config: MiniGenomeConfig,
+}
+
+impl MiniGenomeTrainer {
+    /// Build a new `MiniGenomeTrainer` from a `VarBuilder`.  The `VarBuilder` is
+    /// used only to determine dtype/device; a fresh `VarMap` is created to hold
+    /// the trainable variables, so the trainer can snapshot and restore them.
+    pub fn new(vb: VarBuilder, config: MiniGenomeConfig, device: &Device) -> Result<Self> {
+        let dtype = vb.dtype();
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, dtype, device);
+        let model = MiniGenomeModel::new(vb, config.clone())?;
+        let params = ParamsAdamW { lr: 0.0, weight_decay: config.weight_decay, ..Default::default() };
+        let optimizer = AdamW::new(varmap.all_vars(), params)?;
+        Ok(Self { model, varmap, optimizer: Mutex::new(optimizer), config })
+    }
+
+    /// Access the underlying model.
+    pub fn model(&self) -> &MiniGenomeModel {
+        &self.model
+    }
+
+    /// Run a single forward/backward/optimizer step. Returns `(loss, accuracy, grad_norm)`.
+    pub fn train_step(&self, input_ids: &Tensor, labels: &Tensor, learning_rate: f64) -> Result<(f64, f32, f64)> {
+        self.model.set_training(true);
+        let (loss, accuracy) = self.model.compute_mlm_loss(input_ids, labels, None)?;
+        let mut grads = loss.backward()?;
+
+        let vars = self.varmap.all_vars();
+        let grad_norm = clip_gradients(&mut grads, &vars, self.config.grad_clip_norm)?;
+
+        let params = ParamsAdamW { lr: learning_rate, weight_decay: self.config.weight_decay, ..Default::default() };
+        {
+            let mut opt = self
+                .optimizer
+                .lock()
+                .map_err(|e| candle_core::Error::Msg(format!("MiniGenomeTrainer optimizer lock poisoned: {e}")))?;
+            opt.set_params(params);
+            opt.step(&grads)?;
+        }
+
+        self.model.set_training(false);
+        let loss_val = loss.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64;
+        Ok((loss_val, accuracy, grad_norm))
+    }
+
+    /// Snapshot the current trainable weights as a deep copy in F32.
+    pub fn varmap_snapshot(&self) -> HashMap<String, Tensor> {
+        let data = self.varmap.data().lock().expect("VarMap poisoned");
+        let mut snap = HashMap::with_capacity(data.len());
+        for (name, var) in data.iter() {
+            let t = var.as_tensor();
+            let t_f32 = t.to_dtype(DType::F32).expect("snapshot to_dtype failed").copy().expect("snapshot copy failed");
+            snap.insert(name.clone(), t_f32);
+        }
+        snap
+    }
+
+    /// Restore the trainable weights from a snapshot.
+    pub fn restore_varmap(&self, snapshot: &HashMap<String, Tensor>) -> Result<()> {
+        let data = self.varmap.data().lock().map_err(|e| candle_core::Error::Msg(format!("VarMap poisoned: {e}")))?;
+        for (name, var) in data.iter() {
+            if let Some(snap) = snapshot.get(name) {
+                let t = var.as_tensor();
+                let snap = snap.to_dtype(t.dtype())?.to_device(t.device())?;
+                var.set(&snap)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Reset the AdamW optimizer (clear first/second moment estimates).  Call
+    /// this when starting from a shared base checkpoint.
+    pub fn reset_optimizer(&self) -> Result<()> {
+        let params = ParamsAdamW { lr: 0.0, weight_decay: self.config.weight_decay, ..Default::default() };
+        let vars = self.varmap.all_vars();
+        let mut opt =
+            self.optimizer.lock().map_err(|e| candle_core::Error::Msg(format!("MiniGenomeTrainer optimizer lock poisoned: {e}")))?;
+        *opt = AdamW::new(vars, params)?;
         Ok(())
     }
 }
@@ -533,6 +732,7 @@ mod tests {
         let device = Device::Cpu;
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+
         let config = MiniGenomeConfig::tiny();
         let model = MiniGenomeModel::new(vb, config).unwrap();
 
@@ -559,5 +759,81 @@ mod tests {
             loss_cw_f,
             loss_no_cw_f
         );
+    }
+
+    #[test]
+    fn test_label_smoothing() {
+        let device = Device::Cpu;
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+
+        let mut config = MiniGenomeConfig::tiny();
+        config.label_smoothing = 0.1;
+        let model = MiniGenomeModel::new(vb, config).unwrap();
+
+        let input = Tensor::new(&[[0i64, 4i64], [4i64, 1i64]], &device).unwrap();
+        let labels = Tensor::new(&[[0i64, 0i64], [1i64, 1i64]], &device).unwrap();
+
+        let (loss, _) = model.compute_mlm_loss(&input, &labels, None).unwrap();
+        let loss_f = loss.to_scalar::<f32>().unwrap();
+        assert!(loss_f.is_finite());
+        assert!(loss_f > 0.0, "smoothed MLM loss should be positive, got {}", loss_f);
+    }
+
+    #[test]
+    fn test_gradient_clipping() {
+        let device = Device::Cpu;
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+
+        let config = MiniGenomeConfig::tiny();
+        let trainer = MiniGenomeTrainer::new(vb, config, &device).unwrap();
+
+        // A small batch with one masked position per row.
+        let input = Tensor::new(&[[0i64, 4i64], [4i64, 1i64]], &device).unwrap();
+        let labels = Tensor::new(&[[0i64, 0i64], [1i64, 1i64]], &device).unwrap();
+
+        let (_, _, grad_norm) = trainer.train_step(&input, &labels, 1e-3).unwrap();
+        assert!(grad_norm <= 1.0, "grad_norm {} should be <= grad_clip_norm 1.0", grad_norm);
+    }
+
+    #[test]
+    fn test_mgm1_training_does_not_overfit_random_batch() {
+        let device = Device::Cpu;
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+
+        let mut config = MiniGenomeConfig::tiny();
+        config.label_smoothing = 0.1;
+        let trainer = MiniGenomeTrainer::new(vb, config, &device).unwrap();
+
+        let batch_size = 4;
+        let seq_len = 64;
+        let mut rng = rand::thread_rng();
+        let labels_data: Vec<i64> = (0..batch_size * seq_len).map(|_| rng.gen_range(0..4)).collect();
+        let mut input_data = labels_data.clone();
+        for v in input_data.iter_mut() {
+            if rng.gen_bool(0.15) {
+                *v = 4; // [MASK]
+            }
+        }
+
+        let input_ids = Tensor::new(input_data, &device).unwrap().reshape((batch_size, seq_len)).unwrap();
+        let labels = Tensor::new(labels_data, &device).unwrap().reshape((batch_size, seq_len)).unwrap();
+
+        let (loss_before, accuracy_before) = trainer.model().compute_mlm_loss(&input_ids, &labels, None).unwrap();
+        let loss_before = loss_before.to_scalar::<f32>().unwrap() as f64;
+
+        let lr = 1e-3;
+        for _ in 0..10 {
+            trainer.train_step(&input_ids, &labels, lr).unwrap();
+        }
+
+        let (loss_after, accuracy_after) = trainer.model().compute_mlm_loss(&input_ids, &labels, None).unwrap();
+        let loss_after = loss_after.to_scalar::<f32>().unwrap() as f64;
+
+        assert!(loss_after < loss_before, "loss did not decrease: {} -> {}", loss_before, loss_after);
+        assert!(accuracy_after < 1.0, "model overfit to a single random batch (accuracy {})", accuracy_after);
+        assert!(accuracy_after > accuracy_before, "accuracy should improve: {} -> {}", accuracy_before, accuracy_after);
     }
 }

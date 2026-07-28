@@ -498,6 +498,10 @@ impl ManualAdamW {
         self.lr = lr;
     }
 
+    pub fn set_weight_decay(&mut self, weight_decay: f64) {
+        self.weight_decay = weight_decay;
+    }
+
     /// Reset the AdamW step counter and first/second moment buffers.
     pub fn reset(&mut self) -> Result<()> {
         self.step_t = 0;

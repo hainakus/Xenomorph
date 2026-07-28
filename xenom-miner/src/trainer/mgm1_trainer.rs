@@ -37,6 +37,7 @@ pub struct Mgm1Trainer {
     varmap: Mutex<VarMap>,
     optimizer: Mutex<ManualAdamW>,
     config: MiniGenomeConfig,
+    class_weights: Option<Tensor>,
     tokenizer: DnaTokenizer,
     device: Device,
     base_checkpoint: Mutex<[u8; 32]>,
@@ -76,13 +77,24 @@ impl Mgm1Trainer {
             load_varmap_weights(&varmap, &weights, &device)?;
         }
 
-        let optimizer = ManualAdamW::new(lr);
+        let class_weights = config
+            .class_weights
+            .as_ref()
+            .map(|cw| {
+                let cw_4: Vec<f32> = cw.iter().take(4).copied().collect();
+                Tensor::new(cw_4.as_slice(), &device).with_context(|| "Failed to build MGM-1 class weights tensor")
+            })
+            .transpose()?;
+
+        let mut optimizer = ManualAdamW::new(lr);
+        optimizer.set_weight_decay(config.weight_decay);
 
         Ok(Self {
             model,
             varmap,
             optimizer: Mutex::new(optimizer),
             config,
+            class_weights,
             tokenizer: DnaTokenizer::new(),
             device,
             base_checkpoint: Mutex::new(base_checkpoint),
@@ -178,9 +190,9 @@ impl Mgm1Trainer {
 
     /// Compute loss and accuracy for a batch without taking gradients.
     pub fn compute_loss_and_accuracy(&self, input_ids: &Tensor, labels: &Tensor) -> Result<(f64, f32)> {
-        // Per-batch inverse-frequency class weights are intentionally disabled.
-        // They amplify sampling noise and are a major cause of single-base collapse.
-        let (loss, accuracy) = self.model.compute_mlm_loss(input_ids, labels, None)?;
+        // Use the model config's stable global class weights.  Per-batch
+        // reweighting is disabled because it amplifies sampling noise.
+        let (loss, accuracy) = self.model.compute_mlm_loss(input_ids, labels, self.class_weights.as_ref())?;
         let loss_scalar = loss.to_dtype(DType::F32)?.to_vec0::<f32>()? as f64;
         Ok((loss_scalar, accuracy))
     }
@@ -222,7 +234,7 @@ impl Mgm1Trainer {
     pub(crate) fn apply_gradients(&self, named_grads: &HashMap<String, Tensor>, learning_rate: f32) -> Result<()> {
         // Clip global gradient norm to prevent a single noisy batch from pushing
         // logits into a saturated softmax and collapsing predictions to one base.
-        let clipped = clip_grad_norm(named_grads, 1.0).context("Gradient clipping failed")?;
+        let clipped = clip_grad_norm(named_grads, self.config.grad_clip_norm as f64).context("Gradient clipping failed")?;
         let mut optimizer = self.optimizer.lock().map_err(|e| anyhow::anyhow!("Optimizer mutex poisoned: {e}"))?;
         let effective_lr = learning_rate.min(MAX_LEARNING_RATE) as f64;
         optimizer.set_learning_rate(effective_lr);
@@ -291,7 +303,7 @@ impl Mgm1Trainer {
         let mut grads_for_commitment = HashMap::new();
         let mut grad_norm = 0.0;
         for _ in 0..local_steps.max(1) {
-            let (_, _, grads) = self.compute_gradients(input_ids, labels, 1.0, None)?;
+            let (_, _, grads) = self.compute_gradients(input_ids, labels, 1.0, self.class_weights.as_ref())?;
             grad_norm = gradient_norm(&grads)?;
             grads_for_commitment = grads;
             self.apply_gradients(&grads_for_commitment, learning_rate)?;
