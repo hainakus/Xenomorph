@@ -87,7 +87,9 @@ struct Args {
     genome_merkle: Option<String>,
 
     /// Number of DNA sequences to request per genome batch.
-    #[arg(long, default_value_t = 8)]
+    /// With 5 GPUs × micro-batch 4 × gradient-accumulation 8 this gives an
+    /// effective batch of 160 sequences (≈1.5k masked labels for 512 bp).
+    #[arg(long, default_value_t = 160)]
     genome_batch_size: usize,
 
     /// Do not submit mined blocks; useful for local testing.

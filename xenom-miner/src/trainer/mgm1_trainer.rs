@@ -318,45 +318,53 @@ impl Mgm1Trainer {
         let mut grad_norm = 0.0;
         let micro_batch_size = self.config.micro_batch_size.max(1);
         let accumulation_steps = self.config.gradient_accumulation_steps.max(1);
+        let batch_size = input_ids.dim(0)?;
+        let effective_batch = micro_batch_size.saturating_mul(accumulation_steps);
+
         for _ in 0..local_steps.max(1) {
-            let mut accumulated_grads: Option<HashMap<String, Tensor>> = None;
-            let mut total_masked: f64 = 0.0;
-            for step in 0..accumulation_steps {
-                let start = step * micro_batch_size;
-                let batch_size = input_ids.dim(0)?;
-                if start >= batch_size {
-                    break;
+            let mut offset = 0usize;
+            while offset < batch_size {
+                let mut accumulated_grads: Option<HashMap<String, Tensor>> = None;
+                let mut total_masked: f64 = 0.0;
+                let mut micros = 0usize;
+
+                while micros < accumulation_steps && offset + micros * micro_batch_size < batch_size {
+                    let start = offset + micros * micro_batch_size;
+                    let end = (start + micro_batch_size).min(batch_size);
+                    let ids = input_ids.narrow(0, start, end - start)?;
+                    let lbls = labels.narrow(0, start, end - start)?;
+
+                    let (_, _, grads) = self.compute_gradients(&ids, &lbls, 1.0, self.class_weights.as_ref())?;
+
+                    // Weight gradients by the number of masked positions in this micro-batch
+                    // so that accumulating and then dividing by total_masked gives the
+                    // average gradient over the accumulated chunk.
+                    let mask = ids.ne(&lbls)?.to_dtype(DType::F32)?;
+                    let masked_count = mask.sum_all()?.to_vec0::<f32>()? as f64;
+                    let scaled = scale_grad_map(grads, masked_count).context("Failed to scale micro-batch gradients")?;
+
+                    accumulated_grads = Some(match accumulated_grads {
+                        None => scaled,
+                        Some(acc) => add_grad_maps(acc, scaled)?,
+                    });
+                    total_masked += masked_count;
+                    micros += 1;
                 }
-                let end = (start + micro_batch_size).min(batch_size);
-                let ids = input_ids.narrow(0, start, end - start)?;
-                let lbls = labels.narrow(0, start, end - start)?;
 
-                let (_, _, grads) = self.compute_gradients(&ids, &lbls, 1.0, self.class_weights.as_ref())?;
+                let final_grads = accumulated_grads
+                    .ok_or_else(|| anyhow::anyhow!("No gradients were produced by any micro-batch"))?;
+                let final_grads = if total_masked > 0.0 {
+                    scale_grad_map(final_grads, 1.0 / total_masked).context("Failed to scale accumulated gradient")?
+                } else {
+                    final_grads
+                };
 
-                // Weight gradients by the number of masked positions in this micro-batch
-                // so that accumulating and then dividing by total_masked gives the
-                // full-batch average gradient.
-                let mask = ids.ne(&lbls)?.to_dtype(DType::F32)?;
-                let masked_count = mask.sum_all()?.to_vec0::<f32>()? as f64;
-                let scaled = scale_grad_map(grads, masked_count).context("Failed to scale micro-batch gradients")?;
+                grad_norm = gradient_norm(&final_grads)?;
+                grads_for_commitment = final_grads.clone();
+                self.apply_gradients(&final_grads, learning_rate)?;
 
-                accumulated_grads = Some(match accumulated_grads {
-                    None => scaled,
-                    Some(acc) => add_grad_maps(acc, scaled)?,
-                });
-                total_masked += masked_count;
+                offset += effective_batch;
             }
-
-            let final_grads = accumulated_grads.ok_or_else(|| anyhow::anyhow!("No gradients were produced by any micro-batch"))?;
-            let final_grads = if total_masked > 0.0 {
-                scale_grad_map(final_grads, 1.0 / total_masked).context("Failed to scale accumulated gradient")?
-            } else {
-                final_grads
-            };
-
-            grad_norm = gradient_norm(&final_grads)?;
-            grads_for_commitment = final_grads.clone();
-            self.apply_gradients(&final_grads, learning_rate)?;
         }
 
         let (loss_after, accuracy_after) = self.compute_loss_and_accuracy(input_ids, labels)?;
@@ -631,13 +639,14 @@ fn load_varmap_weights(varmap: &Mutex<VarMap>, weights: &[u8], _device: &Device)
 mod tests {
     use super::*;
     use crate::rpc::messages::{GenomeSlice, GenomeTrainingBatch, GenomeTrainingBatchMsg};
+    use rand::seq::SliceRandom;
 
     fn default_config() -> Vec<u8> {
         serde_json::to_vec(&MiniGenomeConfig::default()).unwrap()
     }
 
     #[test]
-    fn test_mgm1_at_rich_local_training() {
+    fn test_mgm1_balanced_local_training() {
         let config_json = serde_json::json!({
             "vocab_size": 8,
             "d_model": 64,
@@ -651,15 +660,25 @@ mod tests {
         let config = config_json.to_string().into_bytes();
         let trainer = Mgm1Trainer::new("xeno/mgm-1", &config, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-3, 1.0).unwrap();
 
-        // Simulate a human-genome-ish batch: A/T ~60%, C/G ~40%.
+        // Simulate a balanced GC-stratified batch (25% each base) so the model
+        // must learn to predict all four nucleotides, not collapse to the majority.
         let seq_len = 128;
         let batch_size = 32;
         let total = seq_len * batch_size;
+        let per_base = total / 4;
         let mut raw = String::with_capacity(total);
-        raw.extend(std::iter::repeat_n('A', (total as f32 * 0.30) as usize));
-        raw.extend(std::iter::repeat_n('C', (total as f32 * 0.20) as usize));
-        raw.extend(std::iter::repeat_n('G', (total as f32 * 0.20) as usize));
+        raw.extend(std::iter::repeat_n('A', per_base));
+        raw.extend(std::iter::repeat_n('C', per_base));
+        raw.extend(std::iter::repeat_n('G', per_base));
         raw.extend(std::iter::repeat_n('T', total - raw.len()));
+
+        // Shuffle so the batch is not sorted by base; this avoids a positional
+        // collapse where the model learns that late positions are always T.
+        let mut chars: Vec<char> = raw.chars().collect();
+        let mut shuffle_rng = ChaCha8Rng::from_seed([5u8; 32]);
+        chars.shuffle(&mut shuffle_rng);
+        let raw: String = chars.into_iter().collect();
+
         let sequences: Vec<String> = raw.as_bytes().chunks(seq_len).map(|c| String::from_utf8_lossy(c).to_string()).collect();
 
         let (input_ids, labels) = trainer.prepare_sequences(&sequences, [0u8; 32], MASK_RATIO, seq_len).unwrap();
