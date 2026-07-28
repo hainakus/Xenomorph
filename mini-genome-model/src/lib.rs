@@ -13,7 +13,7 @@ pub use candle_nn::var_builder::VarBuilder;
 pub use candle_nn::var_map::VarMap;
 
 fn default_label_smoothing() -> f64 {
-    0.1
+    0.0
 }
 
 fn default_dropout() -> f64 {
@@ -29,7 +29,15 @@ fn default_weight_decay() -> f64 {
 }
 
 fn default_class_weights() -> Option<Vec<f32>> {
-    Some(vec![1.5f32, 1.5, 1.5, 1.0, 1.0, 1.0, 1.0, 1.0])
+    None
+}
+
+fn default_micro_batch_size() -> usize {
+    4
+}
+
+fn default_gradient_accumulation_steps() -> usize {
+    8
 }
 
 /// Configuracao do MGM-1
@@ -64,6 +72,12 @@ pub struct MiniGenomeConfig {
     /// to a single nucleotide prediction.
     #[serde(default = "default_label_smoothing")]
     pub label_smoothing: f64,
+    /// Micro-batch size used for gradient accumulation during single-device training.
+    #[serde(default = "default_micro_batch_size")]
+    pub micro_batch_size: usize,
+    /// Number of gradient-accumulation steps before each optimizer update.
+    #[serde(default = "default_gradient_accumulation_steps")]
+    pub gradient_accumulation_steps: usize,
 }
 
 impl Default for MiniGenomeConfig {
@@ -80,6 +94,8 @@ impl Default for MiniGenomeConfig {
             weight_decay: default_weight_decay(),
             class_weights: default_class_weights(),
             label_smoothing: default_label_smoothing(),
+            micro_batch_size: default_micro_batch_size(),
+            gradient_accumulation_steps: default_gradient_accumulation_steps(),
         }
     }
 }
@@ -99,6 +115,8 @@ impl MiniGenomeConfig {
             weight_decay: default_weight_decay(),
             class_weights: default_class_weights(),
             label_smoothing: 0.0,
+            micro_batch_size: 1,
+            gradient_accumulation_steps: 1,
         }
     }
 

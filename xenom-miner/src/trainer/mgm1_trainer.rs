@@ -17,7 +17,7 @@ use rand_chacha::ChaCha8Rng;
 use tracing::info;
 
 use crate::rpc::messages::{GenomeTrainingBatchMsg, GradientUpdate, TrainingBatch};
-use crate::trainer::gradient::{build_gradient_update, clip_grad_norm, gradient_commitment};
+use crate::trainer::gradient::{add_grad_maps, build_gradient_update, clip_grad_norm, gradient_commitment, scale_grad_map};
 use crate::trainer::{DeviceInfo, DeviceType, ManualAdamW, Trainer, TrainingResult};
 
 const MASK_TOKEN_ID: usize = 4;
@@ -128,6 +128,11 @@ impl Mgm1Trainer {
     }
 
     /// Build masked-language-modeling input and label tensors from token IDs.
+    ///
+    /// Uses the BERT-style 80/10/10 split for the selected MLM positions:
+    ///   - 80% replaced with [MASK]
+    ///   - 10% replaced with a random DNA base
+    ///   - 10% left unchanged
     fn build_mlm_tensors(&self, token_ids: &[Vec<usize>], rng: &mut ChaCha8Rng, mask_ratio: f64) -> Result<(Tensor, Tensor)> {
         let batch = token_ids.len();
         let seq_len = token_ids[0].len();
@@ -138,7 +143,15 @@ impl Mgm1Trainer {
             for &tok in row {
                 let mask = rng.gen_bool(mask_ratio);
                 if mask {
-                    input_data.push(MASK_TOKEN_ID as i64);
+                    let roll: f64 = rng.gen();
+                    let input_tok = if roll < 0.8 {
+                        MASK_TOKEN_ID
+                    } else if roll < 0.9 {
+                        rng.gen_range(0..4)
+                    } else {
+                        tok
+                    };
+                    input_data.push(input_tok as i64);
                     label_data.push(tok as i64);
                 } else {
                     input_data.push(tok as i64);
@@ -302,11 +315,47 @@ impl Mgm1Trainer {
 
         let mut grads_for_commitment = HashMap::new();
         let mut grad_norm = 0.0;
+        let micro_batch_size = self.config.micro_batch_size.max(1);
+        let accumulation_steps = self.config.gradient_accumulation_steps.max(1);
         for _ in 0..local_steps.max(1) {
-            let (_, _, grads) = self.compute_gradients(input_ids, labels, 1.0, self.class_weights.as_ref())?;
-            grad_norm = gradient_norm(&grads)?;
-            grads_for_commitment = grads;
-            self.apply_gradients(&grads_for_commitment, learning_rate)?;
+            let mut accumulated_grads: Option<HashMap<String, Tensor>> = None;
+            let mut total_masked: f64 = 0.0;
+            for step in 0..accumulation_steps {
+                let start = step * micro_batch_size;
+                let batch_size = input_ids.dim(0)?;
+                if start >= batch_size {
+                    break;
+                }
+                let end = (start + micro_batch_size).min(batch_size);
+                let ids = input_ids.narrow(0, start, end - start)?;
+                let lbls = labels.narrow(0, start, end - start)?;
+
+                let (_, _, grads) = self.compute_gradients(&ids, &lbls, 1.0, self.class_weights.as_ref())?;
+
+                // Weight gradients by the number of masked positions in this micro-batch
+                // so that accumulating and then dividing by total_masked gives the
+                // full-batch average gradient.
+                let mask = ids.ne(&lbls)?.to_dtype(DType::F32)?;
+                let masked_count = mask.sum_all()?.to_vec0::<f32>()? as f64;
+                let scaled = scale_grad_map(grads, masked_count).context("Failed to scale micro-batch gradients")?;
+
+                accumulated_grads = Some(match accumulated_grads {
+                    None => scaled,
+                    Some(acc) => add_grad_maps(acc, scaled)?,
+                });
+                total_masked += masked_count;
+            }
+
+            let final_grads = accumulated_grads.ok_or_else(|| anyhow::anyhow!("No gradients were produced by any micro-batch"))?;
+            let final_grads = if total_masked > 0.0 {
+                scale_grad_map(final_grads, 1.0 / total_masked).context("Failed to scale accumulated gradient")?
+            } else {
+                final_grads
+            };
+
+            grad_norm = gradient_norm(&final_grads)?;
+            grads_for_commitment = final_grads.clone();
+            self.apply_gradients(&final_grads, learning_rate)?;
         }
 
         let (loss_after, accuracy_after) = self.compute_loss_and_accuracy(input_ids, labels)?;
