@@ -62,7 +62,7 @@ impl Default for MultiGpuConfig {
         Self {
             gpus: vec![0],
             micro_batch_size: 4,
-            gradient_accumulation_steps: 1,
+            gradient_accumulation_steps: 8,
             use_mixed_precision: false,
             use_gradient_checkpointing: false,
             zero_optimization: 0,

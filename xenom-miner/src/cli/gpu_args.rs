@@ -14,7 +14,7 @@ pub struct GpuArgs {
     pub micro_batch_size: usize,
 
     /// Gradient accumulation steps. Effective batch = micro_batch_size * gpus * accumulation.
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 8)]
     pub gradient_accumulation: usize,
 
     /// Maximum sequence length per sample. The model config is capped at this value to save VRAM.
