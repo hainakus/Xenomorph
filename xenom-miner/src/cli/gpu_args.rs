@@ -2,6 +2,14 @@
 
 use clap::Parser;
 
+fn parse_bool_env(s: &str) -> Result<bool, String> {
+    match s.trim().to_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        _ => Err(format!("expected one of: true, false, 1, 0, yes, no, on, off; got '{s}'")),
+    }
+}
+
 /// GPU-specific training options.
 #[derive(Parser, Debug, Clone)]
 pub struct GpuArgs {
@@ -41,7 +49,7 @@ pub struct GpuArgs {
     pub gradient_top_k_ratio: f32,
 
     /// Enable LoRA (Low-Rank Adaptation) fine-tuning instead of full fine-tuning.
-    #[arg(long, env = "XENO_LORA", default_value_t = true)]
+    #[arg(long, env = "XENO_LORA", default_value_t = true, value_parser = parse_bool_env)]
     pub lora: bool,
 
     /// LoRA rank.

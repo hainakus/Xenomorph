@@ -243,7 +243,8 @@ export REDIS_URL
 # -----------------------------------------------------------------------------
 # Export the effective LoRA choice so the node's ModelManager uses it.
 # From-scratch training requires LoRA to be disabled (it needs a base checkpoint).
-export XENO_LORA="$LORA"
+# xenom-miner's clap parser only accepts "true"/"false" for boolean env vars.
+export XENO_LORA="$([ "$LORA" == "1" ] && echo true || echo false)"
 if [[ "$LORA" == "1" ]]; then
     export XENO_LORA_RANK="$LORA_RANK"
     export XENO_LORA_ALPHA="$LORA_ALPHA"

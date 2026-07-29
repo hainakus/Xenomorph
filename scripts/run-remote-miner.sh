@@ -188,9 +188,10 @@ if [[ "$TRAINER" == "dnabert2" || "$TRAINER" == "mgm1" || "$TRAINER" == "gpu" ||
 fi
 
 qlog "Starting xenom-miner against $RPC_URL (trainer=$TRAINER, gpus=$GPUS, micro_batch=$MICRO_BATCH_SIZE, acc=$GRADIENT_ACCUMULATION, max_seq_len=$MAX_SEQ_LEN, lora=$LORA, fp16=$FP16)..."
+XENO_LORA_VALUE="$([ "$LORA" == "1" ] && echo true || echo false)"
 XENO_WALLET_PASSWORD="${XENO_WALLET_PASSWORD:-devnet-password}" \
 RUST_LOG="${RUST_LOG:-info}" \
-XENO_LORA="$LORA" \
+XENO_LORA="$XENO_LORA_VALUE" \
     "$BIN_PREFIX/xenom-miner" \
     --rpc-url "$RPC_URL" \
     --model-id "${XENO_MODEL_ID:-xeno/mgm-1}" \
