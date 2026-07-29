@@ -80,6 +80,7 @@ export XENO_VERBOSE="${XENO_VERBOSE:-0}"
 
 # Honour XENO_* from .env/env, keeping CLI flags as fallbacks.
 BIND_IP="${XENO_BIND_IP:-$BIND_IP}"
+MODEL_ID="${XENO_MODEL_ID:-xeno/mgm-1}"
 
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
@@ -134,7 +135,6 @@ MINER_WS_PORT="${XENO_MINER_WS_PORT:-17110}"
 INFERENCE_GRPC_PORT="${XENO_INFERENCE_GRPC_PORT:-50051}"
 API_PORT="${XENO_API_PORT:-3000}"
 REDIS_PORT="${XENO_REDIS_PORT:-6379}"
-MODEL_ID="${XENO_MODEL_ID:-xeno/mgm-1}"
 
 # When binding to a specific IP, health-check waits on that IP; otherwise use localhost.
 WAIT_HOST="127.0.0.1"
