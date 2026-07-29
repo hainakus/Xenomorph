@@ -32,7 +32,8 @@ Options:
   --gradient-checkpointing        Enable gradient checkpointing (stub)
   --zero <n>                      ZeRO optimization level (stub, default 0)
   --max-seq-len <n>               Cap sequence length to save VRAM (default: 512)
-  --lora                          Enable LoRA (default: on)
+  --lora                          Enable LoRA (default: on; use --no-lora or XENO_LORA=0 to disable)
+  --no-lora                       Disable LoRA (required for from-scratch training)
   --lora-rank <n>                 LoRA rank (default: 8)
   --lora-alpha <n>                LoRA alpha (default: 16)
   --lora-dropout <f>              LoRA dropout (default: 0)
@@ -58,6 +59,12 @@ GRADIENT_CHECKPOINTING=0
 ZERO=0
 MAX_SEQ_LEN=512
 LORA=1
+if [[ -n "${XENO_LORA:-}" ]]; then
+    case "$XENO_LORA" in
+        0|false|no|off|FALSE) LORA=0 ;;
+        1|true|yes|on|TRUE) LORA=1 ;;
+    esac
+fi
 LORA_RANK="${XENO_LORA_RANK:-8}"
 LORA_ALPHA="${XENO_LORA_ALPHA:-16}"
 LORA_DROPOUT="${XENO_LORA_DROPOUT:-0}"
@@ -81,6 +88,7 @@ while [[ $# -gt 0 ]]; do
         --zero) ZERO="$2"; shift 2 ;;
         --max-seq-len) MAX_SEQ_LEN="$2"; shift 2 ;;
         --lora) LORA=1; shift ;;
+        --no-lora) LORA=0; shift ;;
         --lora-rank) LORA_RANK="$2"; shift 2 ;;
         --lora-alpha) LORA_ALPHA="$2"; shift 2 ;;
         --lora-dropout) LORA_DROPOUT="$2"; shift 2 ;;
@@ -182,6 +190,7 @@ fi
 qlog "Starting xenom-miner against $RPC_URL (trainer=$TRAINER, gpus=$GPUS, micro_batch=$MICRO_BATCH_SIZE, acc=$GRADIENT_ACCUMULATION, max_seq_len=$MAX_SEQ_LEN, lora=$LORA, fp16=$FP16)..."
 XENO_WALLET_PASSWORD="${XENO_WALLET_PASSWORD:-devnet-password}" \
 RUST_LOG="${RUST_LOG:-info}" \
+XENO_LORA="$LORA" \
     "$BIN_PREFIX/xenom-miner" \
     --rpc-url "$RPC_URL" \
     --model-id "${XENO_MODEL_ID:-xeno/mgm-1}" \

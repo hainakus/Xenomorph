@@ -23,7 +23,8 @@ Options:
                                   (optional; enables real Genome PoW)
   --bind-ip <ip>                  IP to bind node/API sockets to
                                   (default: \$XENO_BIND_IP or 0.0.0.0)
-  --lora                          Enable LoRA (default: on)
+  --lora                          Enable LoRA (default: on; use --no-lora or XENO_LORA=0 to disable)
+  --no-lora                       Disable LoRA (required for from-scratch training)
   --lora-rank <n>                 LoRA rank (default: 8)
   --lora-alpha <n>                LoRA alpha (default: 16)
   --lora-dropout <f>              LoRA dropout (default: 0)
@@ -43,6 +44,12 @@ DATA_DIR="${XENO_DATA_DIR:-$SCRIPT_DIR/../devnet-data-native}"
 GENOME_FILE="${XENO_GENOME_FILE:-}"
 BIND_IP="${XENO_BIND_IP:-0.0.0.0}"
 LORA=1
+if [[ -n "${XENO_LORA:-}" ]]; then
+    case "$XENO_LORA" in
+        0|false|no|off|FALSE) LORA=0 ;;
+        1|true|yes|on|TRUE) LORA=1 ;;
+    esac
+fi
 LORA_RANK="${XENO_LORA_RANK:-8}"
 REGISTER_FROM_SCRATCH="${XENO_REGISTER_FROM_SCRATCH:-0}"
 CONFIG_FILE=""
@@ -59,6 +66,7 @@ while [[ $# -gt 0 ]]; do
         --genome-file) GENOME_FILE="$2"; shift 2 ;;
         --bind-ip) BIND_IP="$2"; shift 2 ;;
         --lora) LORA=1; shift ;;
+        --no-lora) LORA=0; shift ;;
         --lora-rank) LORA_RANK="$2"; shift 2 ;;
         --lora-alpha) LORA_ALPHA="$2"; shift 2 ;;
         --lora-dropout) LORA_DROPOUT="$2"; shift 2 ;;
@@ -233,10 +241,10 @@ export REDIS_URL
 # -----------------------------------------------------------------------------
 # xeno-node (full node + training coordinator + inference gRPC)
 # -----------------------------------------------------------------------------
-# If LoRA is requested, export the LoRA env vars so the node's ModelManager
-# builds a LoRA-capable model and can aggregate LoRA gradients from miners.
+# Export the effective LoRA choice so the node's ModelManager uses it.
+# From-scratch training requires LoRA to be disabled (it needs a base checkpoint).
+export XENO_LORA="$LORA"
 if [[ "$LORA" == "1" ]]; then
-    export XENO_LORA=1
     export XENO_LORA_RANK="$LORA_RANK"
     export XENO_LORA_ALPHA="$LORA_ALPHA"
     export XENO_LORA_DROPOUT="$LORA_DROPOUT"

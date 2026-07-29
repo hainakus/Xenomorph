@@ -17,6 +17,8 @@ Options:
   --no-build                      Skip cargo build
   -t, --trainer <name>            Miner trainer: mock, cpu, dnabert2, mgm1, gpu, cuda, metal, rocm
                                   (default: \$XENO_MINER_TRAINER or mock)
+  --lora                          Enable LoRA (default: on; use --no-lora or XENO_LORA=0 to disable)
+  --no-lora                       Disable LoRA (required for from-scratch training)
   --active-model-id <id>          Active model id for the node (default: \$XENO_ACTIVE_MODEL_ID
                                   or \$XENO_MINER_MODEL_ID or xeno/mgm-1)
   --miner-model-id <id>           Model id the miner trains (default: \$XENO_MINER_MODEL_ID
@@ -62,6 +64,12 @@ GRADIENT_CHECKPOINTING=0
 ZERO=0
 MAX_SEQ_LEN=512
 LORA=1
+if [[ -n "${XENO_LORA:-}" ]]; then
+    case "$XENO_LORA" in
+        0|false|no|off|FALSE) LORA=0 ;;
+        1|true|yes|on|TRUE) LORA=1 ;;
+    esac
+fi
 LORA_RANK="${XENO_LORA_RANK:-8}"
 LORA_ALPHA="${XENO_LORA_ALPHA:-16}"
 LORA_DROPOUT="${XENO_LORA_DROPOUT:-0}"
@@ -86,6 +94,7 @@ while [[ $# -gt 0 ]]; do
         --zero) ZERO="$2"; shift 2 ;;
         --max-seq-len) MAX_SEQ_LEN="$2"; shift 2 ;;
         --lora) LORA=1; shift ;;
+        --no-lora) LORA=0; shift ;;
         --lora-rank) LORA_RANK="$2"; shift 2 ;;
         --lora-alpha) LORA_ALPHA="$2"; shift 2 ;;
         --lora-dropout) LORA_DROPOUT="$2"; shift 2 ;;
@@ -248,10 +257,10 @@ fi
 # -----------------------------------------------------------------------------
 # xeno-node
 # -----------------------------------------------------------------------------
-# If LoRA is requested, export the LoRA env vars so the node's ModelManager
-# builds a LoRA-capable model and can aggregate LoRA gradients from miners.
+# Export the effective LoRA choice so the node and miner use it.
+# From-scratch training requires LoRA to be disabled (it needs a base checkpoint).
+export XENO_LORA="$LORA"
 if [[ "$LORA" == "1" ]]; then
-    export XENO_LORA=1
     export XENO_LORA_RANK="$LORA_RANK"
     export XENO_LORA_ALPHA="$LORA_ALPHA"
     export XENO_LORA_DROPOUT="$LORA_DROPOUT"
