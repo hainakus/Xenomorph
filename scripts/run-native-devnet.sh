@@ -17,6 +17,10 @@ Options:
   --no-build                      Skip cargo build
   -t, --trainer <name>            Miner trainer: mock, cpu, dnabert2, mgm1, gpu, cuda, metal, rocm
                                   (default: \$XENO_MINER_TRAINER or mock)
+  --active-model-id <id>          Active model id for the node (default: \$XENO_ACTIVE_MODEL_ID
+                                  or \$XENO_MINER_MODEL_ID or xeno/mgm-1)
+  --miner-model-id <id>           Model id the miner trains (default: \$XENO_MINER_MODEL_ID
+                                  or the active model id)
   --features <features>           Extra cargo features for xenom-miner (e.g. cuda, metal).
                                   Overrides auto-detection. Also accepts \$XENO_MINER_FEATURES.
   --gpus <ids>                    Comma-separated GPU ordinals for multi-GPU training
@@ -46,6 +50,8 @@ Options:
 
 BUILD=1
 TRAINER="${XENO_MINER_TRAINER:-mock}"
+ACTIVE_MODEL_ID="${XENO_ACTIVE_MODEL_ID:-${XENO_MINER_MODEL_ID:-xeno/mgm-1}}"
+MINER_MODEL_ID="${XENO_MINER_MODEL_ID:-$ACTIVE_MODEL_ID}"
 FEATURES="${XENO_MINER_FEATURES:-}"
 GPUS="${XENO_MINER_GPUS:-0}"
 MICRO_BATCH_SIZE="${XENO_MINER_MICRO_BATCH_SIZE:-1}"
@@ -68,6 +74,8 @@ while [[ $# -gt 0 ]]; do
         -b|--build) BUILD=1; shift ;;
         --no-build) BUILD=0; shift ;;
         -t|--trainer) TRAINER="$2"; shift 2 ;;
+        --active-model-id) ACTIVE_MODEL_ID="$2"; shift 2 ;;
+        --miner-model-id) MINER_MODEL_ID="$2"; shift 2 ;;
         --features) FEATURES="$2"; shift 2 ;;
         --gpus) GPUS="$2"; shift 2 ;;
         --micro-batch-size) MICRO_BATCH_SIZE="$2"; shift 2 ;;
@@ -259,6 +267,7 @@ RUST_LOG="${RUST_LOG:-info}" "$BIN_PREFIX/xenom" \
     --listen="0.0.0.0:$NODE_P2P_PORT" \
     --miner-ws-listen="0.0.0.0:$MINER_WS_PORT" \
     --models-dir="$SEED_DATA_DIR" \
+    --active-model-id="$ACTIVE_MODEL_ID" \
     --disable-upnp \
     --nodnsseed \
     > "$LOG_DIR/xeno-node.log" 2>&1 &
@@ -301,7 +310,7 @@ XENO_WALLET_PASSWORD="${XENO_WALLET_PASSWORD:-devnet-password}" \
 RUST_LOG="${RUST_LOG:-info}" \
     "$BIN_PREFIX/xenom-miner" \
     --rpc-url "ws://127.0.0.1:$MINER_WS_PORT" \
-    --model-id "${XENO_MINER_MODEL_ID:-xeno/mgm-1}" \
+    --model-id "$MINER_MODEL_ID" \
     --threads "${XENO_MINER_THREADS:-4}" \
     --trainer "$TRAINER" \
     --network devnet \

@@ -28,6 +28,11 @@ Options:
   --lora-alpha <n>                LoRA alpha (default: 16)
   --lora-dropout <f>              LoRA dropout (default: 0)
   --lora-target-modules <list>    Comma-separated LoRA target modules
+  --register-from-scratch         Download config/tokenizer from HF and write
+                                  an empty weights.enc so the node trains the
+                                  active model from scratch.
+  --config-file <path>            Local config.json to use when registering.
+  --tokenizer-file <path>         Local tokenizer.json to use when registering.
   -q, --quiet                     Minimal output
   -v, --verbose                   Debug output
   -h, --help                      Show this help and exit
@@ -39,6 +44,9 @@ GENOME_FILE="${XENO_GENOME_FILE:-}"
 BIND_IP="${XENO_BIND_IP:-0.0.0.0}"
 LORA=1
 LORA_RANK="${XENO_LORA_RANK:-8}"
+REGISTER_FROM_SCRATCH="${XENO_REGISTER_FROM_SCRATCH:-0}"
+CONFIG_FILE=""
+TOKENIZER_FILE=""
 LORA_ALPHA="${XENO_LORA_ALPHA:-16}"
 LORA_DROPOUT="${XENO_LORA_DROPOUT:-0}"
 LORA_TARGET_MODULES=""
@@ -55,6 +63,9 @@ while [[ $# -gt 0 ]]; do
         --lora-alpha) LORA_ALPHA="$2"; shift 2 ;;
         --lora-dropout) LORA_DROPOUT="$2"; shift 2 ;;
         --lora-target-modules) LORA_TARGET_MODULES="$2"; shift 2 ;;
+        --register-from-scratch) REGISTER_FROM_SCRATCH=1; shift ;;
+        --config-file) CONFIG_FILE="$2"; shift 2 ;;
+        --tokenizer-file) TOKENIZER_FILE="$2"; shift 2 ;;
         -q|--quiet) XENO_QUIET=1; shift ;;
         -v|--verbose) XENO_VERBOSE=1; shift ;;
         -h|--help) print_help_and_exit "$USAGE" 0 ;;
@@ -80,6 +91,23 @@ REDIS_DATA_DIR="$DATA_DIR/redis"
 LOG_DIR="$DATA_DIR/logs"
 
 mkdir -p "$NODE_DATA_DIR" "$MODELS_DIR" "$REDIS_DATA_DIR" "$LOG_DIR"
+
+# For DNABERT-2 (or any HF model) from-scratch training, optionally register the
+# model in the local cache before the node starts.  This downloads only
+# config.json and tokenizer.json and writes an empty weights.enc marker.
+if [[ "$REGISTER_FROM_SCRATCH" == "1" || "$MODEL_ID" != "xeno/mgm-1" ]]; then
+    qlog "Ensuring from-scratch model $MODEL_ID is registered under $MODELS_DIR ..."
+    register_args=(
+        --models-dir "$MODELS_DIR"
+        --model-id "$MODEL_ID"
+    )
+    [[ -n "$CONFIG_FILE" ]] && register_args+=(--config-file "$CONFIG_FILE")
+    [[ -n "$TOKENIZER_FILE" ]] && register_args+=(--tokenizer-file "$TOKENIZER_FILE")
+    if ! python3 "$REPO_ROOT/scripts/register_dnabert2_from_scratch.py" "${register_args[@]}"; then
+        err "Failed to register $MODEL_ID from scratch. Make sure the Hugging Face repo has config.json and tokenizer.json, or provide them with --config-file/--tokenizer-file."
+        exit 1
+    fi
+fi
 
 BIN_PREFIX="${XENO_BIN_PREFIX:-$REPO_ROOT/target/release}"
 
@@ -225,6 +253,7 @@ NODE_ARGS=(
     --miner-ws-listen="$BIND_IP:$MINER_WS_PORT"
     --inference-grpc-listen="$BIND_IP:$INFERENCE_GRPC_PORT"
     --models-dir="$MODELS_DIR"
+    --active-model-id="$MODEL_ID"
     --disable-upnp
     --nodnsseed
     --addpeer="94.237.108.145:16111"
