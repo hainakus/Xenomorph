@@ -55,6 +55,7 @@ pub struct Coordinator {
 struct CoordinatorInner {
     network_type: NetworkType,
     active_model_id: String,
+    from_scratch: bool,
     active_weights_hash: RwLock<Option<Hash>>,
     difficulty: DifficultyTarget,
 
@@ -88,6 +89,7 @@ impl Coordinator {
     pub async fn new(
         network_type: NetworkType,
         active_model_id: String,
+        from_scratch: bool,
         models_dir: PathBuf,
         genome_cache_dir: PathBuf,
         genome_file: Option<PathBuf>,
@@ -109,8 +111,8 @@ impl Coordinator {
 
         // Pre-download the active model before accepting miner connections. This avoids the
         // 30s RPC request timeout in xenom-miner while the full node is still downloading.
-        info!("Pre-downloading active model {} ...", active_model_id);
-        model_manager.ensure_model_downloaded(&active_model_id).await?;
+        info!("Pre-downloading active model {} (from_scratch={}) ...", active_model_id, from_scratch);
+        model_manager.ensure_model_downloaded(&active_model_id, from_scratch).await?;
 
         let mut genome_storage = GenomeStorage::new(&genome_cache_dir).await?;
         let mut genome_file_path = None;
@@ -132,6 +134,7 @@ impl Coordinator {
             inner: Arc::new(CoordinatorInner {
                 network_type,
                 active_model_id: active_model_id.clone(),
+                from_scratch,
                 active_weights_hash: RwLock::new(None),
                 difficulty,
                 model_manager,
@@ -169,7 +172,7 @@ impl Coordinator {
         let weights_hash = match self.inner.model_manager.load_model(model_id).await {
             Ok(info) => info.checkpoint.weights_hash,
             Err(_) => {
-                self.inner.model_manager.ensure_model_downloaded(model_id).await?;
+                self.inner.model_manager.ensure_model_downloaded(model_id, self.inner.from_scratch).await?;
                 let (checkpoint, _) = self.inner.model_manager.get_model_checkpoint(model_id).await?;
                 checkpoint.weights_hash
             }
@@ -269,7 +272,7 @@ impl Coordinator {
             return RpcResponse::Error(format!("Unknown model id {} (active is {})", model_id, self.inner.active_model_id));
         }
 
-        if let Err(e) = self.inner.model_manager.ensure_model_downloaded(&model_id).await {
+        if let Err(e) = self.inner.model_manager.ensure_model_downloaded(&model_id, self.inner.from_scratch).await {
             return RpcResponse::Error(format!("Failed to download model: {}", e));
         }
 
@@ -310,7 +313,7 @@ impl Coordinator {
             return RpcResponse::Error(format!("Unknown model id {} (active is {})", model_id, self.inner.active_model_id));
         }
 
-        if let Err(e) = self.inner.model_manager.ensure_model_downloaded(&model_id).await {
+        if let Err(e) = self.inner.model_manager.ensure_model_downloaded(&model_id, self.inner.from_scratch).await {
             return RpcResponse::Error(format!("Failed to download model: {}", e));
         }
 

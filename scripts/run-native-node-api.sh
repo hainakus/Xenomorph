@@ -25,6 +25,7 @@ Options:
                                   (default: \$XENO_BIND_IP or 0.0.0.0)
   --lora                          Enable LoRA (default: on; use --no-lora or XENO_LORA=0 to disable)
   --no-lora                       Disable LoRA (required for from-scratch training)
+  --from-scratch                  Download only config/tokenizer from HF and train the active model from scratch
   --lora-rank <n>                 LoRA rank (default: 8)
   --lora-alpha <n>                LoRA alpha (default: 16)
   --lora-dropout <f>              LoRA dropout (default: 0)
@@ -51,6 +52,13 @@ if [[ -n "${XENO_LORA:-}" ]]; then
     esac
 fi
 LORA_RANK="${XENO_LORA_RANK:-8}"
+FROM_SCRATCH=0
+if [[ -n "${XENO_FROM_SCRATCH:-}" ]]; then
+    case "$XENO_FROM_SCRATCH" in
+        0|false|no|off|FALSE) FROM_SCRATCH=0 ;;
+        1|true|yes|on|TRUE) FROM_SCRATCH=1 ;;
+    esac
+fi
 REGISTER_FROM_SCRATCH="${XENO_REGISTER_FROM_SCRATCH:-0}"
 CONFIG_FILE=""
 TOKENIZER_FILE=""
@@ -67,6 +75,7 @@ while [[ $# -gt 0 ]]; do
         --bind-ip) BIND_IP="$2"; shift 2 ;;
         --lora) LORA=1; shift ;;
         --no-lora) LORA=0; shift ;;
+        --from-scratch) FROM_SCRATCH=1; shift ;;
         --lora-rank) LORA_RANK="$2"; shift 2 ;;
         --lora-alpha) LORA_ALPHA="$2"; shift 2 ;;
         --lora-dropout) LORA_DROPOUT="$2"; shift 2 ;;
@@ -101,11 +110,10 @@ LOG_DIR="$DATA_DIR/logs"
 
 mkdir -p "$NODE_DATA_DIR" "$MODELS_DIR" "$REDIS_DATA_DIR" "$LOG_DIR"
 
-# For DNABERT-2 (or any HF model) from-scratch training, optionally register the
-# model in the local cache before the node starts.  This downloads only
-# config.json and tokenizer.json and writes an empty weights.enc marker.
-if [[ "$REGISTER_FROM_SCRATCH" == "1" || "$MODEL_ID" != "xeno/mgm-1" ]]; then
-    qlog "Ensuring from-scratch model $MODEL_ID is registered under $MODELS_DIR ..."
+# Legacy Python pre-registration.  Use --from-scratch (or XENO_FROM_SCRATCH=1) instead:
+# the node now downloads config/tokenizer and creates the empty weights marker in Rust.
+if [[ "$REGISTER_FROM_SCRATCH" == "1" ]]; then
+    qlog "Ensuring from-scratch model $MODEL_ID is registered under $MODELS_DIR (Python helper)..."
     register_args=(
         --models-dir "$MODELS_DIR"
         --model-id "$MODEL_ID"
@@ -263,6 +271,9 @@ NODE_ARGS=(
     --inference-grpc-listen="$BIND_IP:$INFERENCE_GRPC_PORT"
     --models-dir="$MODELS_DIR"
     --active-model-id="$MODEL_ID"
+)
+[[ "$FROM_SCRATCH" == "1" ]] && NODE_ARGS+=(--from-scratch)
+NODE_ARGS+=(
     --disable-upnp
     --nodnsseed
     --addpeer="94.237.108.145:16111"

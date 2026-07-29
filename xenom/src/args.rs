@@ -98,6 +98,7 @@ pub struct Args {
     pub genome_file: Option<String>,
     pub active_model_id: String,
     pub active_model_weights_hash: Option<String>,
+    pub from_scratch: bool,
 
     // Unified training coordinator options (node = seed-node + full node)
     pub models_dir: Option<String>,
@@ -158,6 +159,7 @@ impl Default for Args {
             genome_file: None,
             active_model_id: "xeno/mgm-1".into(),
             active_model_weights_hash: None,
+            from_scratch: false,
 
             models_dir: None,
             genome_cache_dir: None,
@@ -439,6 +441,13 @@ Setting to 0 prevents the preallocation and sets the maximum to {}, leading to 0
                 .help("Hex weights-hash of the active model. If omitted the node computes it from the downloaded checkpoint."),
         )
         .arg(
+            Arg::new("from-scratch")
+                .long("from-scratch")
+                .num_args(0)
+                .action(clap::ArgAction::SetTrue)
+                .help("Download only config.json and tokenizer.json from Hugging Face and train the active model from scratch with random weights."),
+        )
+        .arg(
             Arg::new("models-dir")
                 .long("models-dir")
                 .value_name("PATH")
@@ -560,6 +569,7 @@ impl Args {
                 .get_one::<String>("active-model-weights-hash")
                 .cloned()
                 .or(defaults.active_model_weights_hash),
+            from_scratch: arg_match_unwrap_or::<bool>(&m, "from-scratch", defaults.from_scratch),
 
             models_dir: m.get_one::<String>("models-dir").cloned().or(defaults.models_dir),
             genome_cache_dir: m.get_one::<String>("genome-cache-dir").cloned().or(defaults.genome_cache_dir),

@@ -653,6 +653,7 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
         let genome_file = genome_file_path.as_ref().map(PathBuf::from);
 
         let active_model_id = args.active_model_id.clone();
+        let from_scratch = args.from_scratch;
 
         Some(Arc::new(
             tokio::runtime::Builder::new_multi_thread()
@@ -663,6 +664,7 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
                     let coordinator = Coordinator::new(
                         network.network_type,
                         active_model_id,
+                        from_scratch,
                         models_dir,
                         genome_cache_dir,
                         genome_file,

@@ -143,7 +143,8 @@ impl InferenceEngine {
     fn load_dnabert(&self, model_id: &str) -> Result<(Arc<LoadedModel>, [u8; 32])> {
         let runtime = tokio::runtime::Handle::try_current()?;
         let (checkpoint, files) = runtime.block_on(async {
-            self.model_manager.ensure_model_downloaded(model_id).await?;
+            // Inference always requires real weights; from-scratch (random) models are not useful.
+            self.model_manager.ensure_model_downloaded(model_id, false).await?;
             self.model_manager.get_model_checkpoint(model_id).await
         })?;
 
@@ -163,7 +164,8 @@ impl InferenceEngine {
     fn load_mgm(&self, model_id: &str) -> Result<(Arc<LoadedModel>, [u8; 32])> {
         let runtime = tokio::runtime::Handle::try_current()?;
         let (checkpoint, files) = runtime.block_on(async {
-            self.model_manager.ensure_model_downloaded(model_id).await?;
+            // Inference always requires real weights; from-scratch (random) models are not useful.
+            self.model_manager.ensure_model_downloaded(model_id, false).await?;
             self.model_manager.get_model_checkpoint(model_id).await
         })?;
 

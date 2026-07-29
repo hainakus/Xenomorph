@@ -398,7 +398,7 @@ impl ModelManager {
     /// If the stored files cannot be decrypted (e.g. the encryption key changed) or the
     /// weights are not a valid checkpoint (e.g. a stale git-lfs pointer), they are removed
     /// and re-downloaded.
-    pub async fn ensure_model_downloaded(&self, model_id: &str) -> Result<()> {
+    pub async fn ensure_model_downloaded(&self, model_id: &str, from_scratch: bool) -> Result<()> {
         // Check if a model file or checkpoint already exists for this id.
         if self.storage.model_exists(model_id).await {
             // Verify the files are actually loadable with the current key and contain valid weights.
@@ -423,8 +423,12 @@ impl ModelManager {
             self.delete_model(model_id).await?;
         }
 
-        info!("Model {} not found locally; downloading from Hugging Face", model_id);
-        let files = download_model(model_id).await?;
+        if from_scratch {
+            info!("Model {} not found locally; downloading config/tokenizer for from-scratch training", model_id);
+        } else {
+            info!("Model {} not found locally; downloading from Hugging Face", model_id);
+        }
+        let files = download_model(model_id, from_scratch).await?;
 
         let metrics = ModelMetrics::default();
         self.store_model_files(model_id, &files, metrics).await?;

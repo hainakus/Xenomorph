@@ -19,6 +19,7 @@ Options:
                                   (default: \$XENO_MINER_TRAINER or mock)
   --lora                          Enable LoRA (default: on; use --no-lora or XENO_LORA=0 to disable)
   --no-lora                       Disable LoRA (required for from-scratch training)
+  --from-scratch                  Download only config/tokenizer from HF and train the active model from scratch
   --active-model-id <id>          Active model id for the node (default: \$XENO_ACTIVE_MODEL_ID
                                   or \$XENO_MINER_MODEL_ID or xeno/mgm-1)
   --miner-model-id <id>           Model id the miner trains (default: \$XENO_MINER_MODEL_ID
@@ -70,6 +71,13 @@ if [[ -n "${XENO_LORA:-}" ]]; then
         1|true|yes|on|TRUE) LORA=1 ;;
     esac
 fi
+FROM_SCRATCH=0
+if [[ -n "${XENO_FROM_SCRATCH:-}" ]]; then
+    case "$XENO_FROM_SCRATCH" in
+        0|false|no|off|FALSE) FROM_SCRATCH=0 ;;
+        1|true|yes|on|TRUE) FROM_SCRATCH=1 ;;
+    esac
+fi
 LORA_RANK="${XENO_LORA_RANK:-8}"
 LORA_ALPHA="${XENO_LORA_ALPHA:-16}"
 LORA_DROPOUT="${XENO_LORA_DROPOUT:-0}"
@@ -95,6 +103,7 @@ while [[ $# -gt 0 ]]; do
         --max-seq-len) MAX_SEQ_LEN="$2"; shift 2 ;;
         --lora) LORA=1; shift ;;
         --no-lora) LORA=0; shift ;;
+        --from-scratch) FROM_SCRATCH=1; shift ;;
         --lora-rank) LORA_RANK="$2"; shift 2 ;;
         --lora-alpha) LORA_ALPHA="$2"; shift 2 ;;
         --lora-dropout) LORA_DROPOUT="$2"; shift 2 ;;
@@ -278,6 +287,7 @@ RUST_LOG="${RUST_LOG:-info}" "$BIN_PREFIX/xenom" \
     --miner-ws-listen="0.0.0.0:$MINER_WS_PORT" \
     --models-dir="$SEED_DATA_DIR" \
     --active-model-id="$ACTIVE_MODEL_ID" \
+    $([ "$FROM_SCRATCH" == "1" ] && echo --from-scratch) \
     --disable-upnp \
     --nodnsseed \
     > "$LOG_DIR/xeno-node.log" 2>&1 &

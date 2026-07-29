@@ -12,7 +12,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 /// Download a complete model checkpoint (config.json, tokenizer.json, weights) from Hugging Face.
 /// Prefers `model.safetensors`; falls back to `pytorch_model.bin` (zip format) if needed.
 /// Built-in models such as `xeno/mgm-1` are generated locally instead of downloaded.
-pub async fn download_model(model_id: &str) -> Result<RawModelFiles> {
+///
+/// If `from_scratch` is true and no weights file is available, an empty weights buffer
+/// is returned.  This lets the trainer initialize the model with random weights.
+pub async fn download_model(model_id: &str, from_scratch: bool) -> Result<RawModelFiles> {
     if model_id.contains("mgm-1") {
         info!("Generating default MGM-1 checkpoint for {}", model_id);
         return build_default_mgm1_files();
@@ -45,9 +48,19 @@ pub async fn download_model(model_id: &str) -> Result<RawModelFiles> {
         }
     }
 
-    let weights = weights.ok_or_else(|| {
-        anyhow!("Could not download valid safetensors or pytorch_model.bin weights for {} from Hugging Face", model_id)
-    })?;
+    let weights = match weights {
+        Some(w) => w,
+        None if from_scratch => {
+            warn!("No weights file found for {} and --from-scratch is set; training from scratch", model_id);
+            Vec::new()
+        }
+        None => {
+            return Err(anyhow!(
+                "Could not download valid safetensors or pytorch_model.bin weights for {} from Hugging Face",
+                model_id
+            ));
+        }
+    };
 
     Ok(RawModelFiles { config, tokenizer, weights })
 }
