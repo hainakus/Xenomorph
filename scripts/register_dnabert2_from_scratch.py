@@ -80,33 +80,74 @@ def hf_resolve_url(model_id: str, filename: str) -> str:
 
 
 def download_file(url: str) -> bytes:
-    """Download a single file using stdlib urllib (no external dependencies)."""
+    """Download a single file using stdlib urllib (no external dependencies).
+
+    Hugging Face sometimes blocks requests without a proper User-Agent or
+    requires a `?download=true` suffix, so we try both and set sensible headers.
+    """
+    headers = {
+        "User-Agent": "xenom-model-register/1.0",
+        "Accept": "*/*",
+        "Accept-Encoding": "identity",
+    }
+
     for variant in (url, f"{url}?download=true"):
+        req = urllib.request.Request(variant, headers=headers)
         try:
-            with urllib.request.urlopen(variant, timeout=REQUEST_TIMEOUT) as response:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:
                 return response.read()
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 continue
+            if e.code == 401:
+                raise RuntimeError(
+                    f"Could not download {variant}: HTTP 401 (Unauthorized). "
+                    "This usually means the repository is private, gated, or the model id is wrong. "
+                    "Use --config-file and --tokenizer-file with locally downloaded files, "
+                    "or log in with `huggingface-cli login` and use `huggingface-cli download`."
+                ) from e
             raise
     raise RuntimeError(f"Could not download {url} (HTTP 404)")
+
+
+def load_or_download(path: Optional[Path], hf_model_id: str, filename: str) -> bytes:
+    if path is not None:
+        print(f"Using local {filename} from {path} ...")
+        data = path.read_bytes()
+        if not data:
+            raise RuntimeError(f"Local file {path} is empty")
+        return data
+    print(f"Downloading {filename} for {hf_model_id} ...")
+    return download_file(hf_resolve_url(hf_model_id, filename))
 
 
 def register_from_scratch(
     models_dir: Path,
     model_id: str,
     hf_model_id: str,
+    config_file: Optional[Path],
+    tokenizer_file: Optional[Path],
+    force: bool,
 ) -> None:
     key = derive_encryption_key()
 
-    print(f"Downloading config.json for {hf_model_id} ...")
-    config = download_file(hf_resolve_url(hf_model_id, "config.json"))
-    print(f"Downloading tokenizer.json for {hf_model_id} ...")
-    tokenizer = download_file(hf_resolve_url(hf_model_id, "tokenizer.json"))
+    config = load_or_download(config_file, hf_model_id, "config.json")
+    tokenizer = load_or_download(tokenizer_file, hf_model_id, "tokenizer.json")
 
     safe_id = sanitize_model_id(model_id)
     model_path = models_dir / safe_id
     model_path.mkdir(parents=True, exist_ok=True)
+
+    weights_path = model_path / "weights.enc"
+    if weights_path.exists() and not force:
+        existing = weights_path.stat().st_size
+        if existing == 0:
+            print(f"[WARN] {model_path} already exists and looks like a from-scratch checkpoint.")
+            print("        Use --force to overwrite anyway.")
+        else:
+            print(f"[WARN] {weights_path} already exists and is {existing} bytes (not from-scratch).")
+            print("        Use --force to overwrite and risk losing a real checkpoint.")
+        return
 
     (model_path / "config.enc").write_bytes(encrypt(config, key))
     (model_path / "tokenizer.enc").write_bytes(encrypt(tokenizer, key))
@@ -140,10 +181,32 @@ def main(argv: Optional[list] = None) -> int:
         "--hf-model-id",
         help="Hugging Face repo to download config/tokenizer from. Defaults to --model-id.",
     )
+    parser.add_argument(
+        "--config-file",
+        type=Path,
+        help="Local config.json to use instead of downloading.",
+    )
+    parser.add_argument(
+        "--tokenizer-file",
+        type=Path,
+        help="Local tokenizer.json to use instead of downloading.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing model directory.",
+    )
     args = parser.parse_args(argv)
 
     hf_model_id = args.hf_model_id or args.model_id
-    register_from_scratch(args.models_dir, args.model_id, hf_model_id)
+    register_from_scratch(
+        args.models_dir,
+        args.model_id,
+        hf_model_id,
+        args.config_file,
+        args.tokenizer_file,
+        args.force,
+    )
     return 0
 
 
