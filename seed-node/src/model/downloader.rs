@@ -27,23 +27,28 @@ pub async fn download_model(model_id: &str, from_scratch: bool) -> Result<RawMod
         .build()
         .context("Failed to build HTTP client")?;
 
-    let config = download_file(&client, &model_url(model_id, "config.json")?).await.context("Failed to download config.json")?;
-    info!("Downloaded config.json for {}", model_id);
+    let config = download_first_file(&client, model_id, &["config.json", "model_config.json"])
+        .await
+        .context("Failed to download config.json")?;
+    info!("Downloaded config for {}", model_id);
 
-    let tokenizer =
-        download_file(&client, &model_url(model_id, "tokenizer.json")?).await.context("Failed to download tokenizer.json")?;
-    info!("Downloaded tokenizer.json for {}", model_id);
+    let tokenizer = download_first_file(&client, model_id, &["tokenizer.json", "tokenizer_config.json"])
+        .await
+        .context("Failed to download tokenizer.json")?;
+    info!("Downloaded tokenizer for {}", model_id);
 
     let mut weights: Option<Vec<u8>> = None;
-    for filename in ["model.safetensors", "pytorch_model.bin"] {
-        match download_and_validate_weights(&client, model_id, filename).await {
-            Ok(data) => {
-                info!("Downloaded {} ({:.2} MB) for {}", filename, data.len() as f64 / 1_048_576.0, model_id);
-                weights = Some(data);
-                break;
-            }
-            Err(e) => {
-                warn!("Could not use {} for {}: {}", filename, model_id, e);
+    if !from_scratch {
+        for filename in ["model.safetensors", "pytorch_model.bin"] {
+            match download_and_validate_weights(&client, model_id, filename).await {
+                Ok(data) => {
+                    info!("Downloaded {} ({:.2} MB) for {}", filename, data.len() as f64 / 1_048_576.0, model_id);
+                    weights = Some(data);
+                    break;
+                }
+                Err(e) => {
+                    warn!("Could not use {} for {}: {}", filename, model_id, e);
+                }
             }
         }
     }
@@ -144,6 +149,25 @@ async fn download_file(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
 
     let bytes = response.bytes().await.context("Failed to read response body")?;
     Ok(bytes.to_vec())
+}
+
+/// Try to download one of the listed filenames from the model repo.
+/// Returns the first successful download; errors are only reported for the
+/// final attempt so callers can add their own context.
+async fn download_first_file(client: &reqwest::Client, model_id: &str, filenames: &[&str]) -> Result<Vec<u8>> {
+    let mut last_err = None;
+    for filename in filenames {
+        let url = model_url(model_id, filename)?;
+        info!("Attempting to download {} from {}", filename, url);
+        match download_file(client, &url).await {
+            Ok(data) => return Ok(data),
+            Err(e) => {
+                warn!("Could not download {} from {}: {}", filename, model_id, e);
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow!("No filenames provided")))
 }
 
 /// Generate a fresh `xeno/mgm-1` checkpoint with random weights.
