@@ -494,6 +494,9 @@ impl Mgm1Trainer {
 
     /// Load trainable weights from an in-memory safetensors buffer.
     pub(crate) fn load_weights_from_bytes(&self, weights: &[u8]) -> Result<()> {
+        if weights.is_empty() {
+            return Ok(());
+        }
         let loaded =
             candle_core::safetensors::load_buffer(weights, &self.device).context("Failed to load MGM-1 safetensors buffer")?;
         let locked = self.varmap.lock().map_err(|e| anyhow::anyhow!("VarMap mutex poisoned: {e}"))?;

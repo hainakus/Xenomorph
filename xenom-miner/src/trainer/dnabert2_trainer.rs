@@ -272,6 +272,12 @@ impl DnaBert2Trainer {
     /// base (non-LoRA) checkpoint can be hot-reloaded; the LoRA matrices were already
     /// initialized to zero when the model was built.
     pub fn load_weights_from_bytes(&self, weights: &[u8]) -> Result<()> {
+        // An empty buffer means the node is serving a from-scratch checkpoint.  The
+        // VarMap already contains randomly-initialized variables, so there is
+        // nothing to load.
+        if weights.is_empty() {
+            return Ok(());
+        }
         let loaded = candle_core::safetensors::load_buffer(weights, &self.device).context("Failed to load safetensors weights")?;
         let data = self.varmap.data().lock().map_err(|e| anyhow::anyhow!("VarMap poisoned: {}", e))?;
         let is_lora = !self.base_weights.is_empty();
