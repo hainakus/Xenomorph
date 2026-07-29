@@ -33,11 +33,12 @@ fn decrypt_v2(cp: &ModelCheckpointV2) -> Result<ModelCheckpointV2> {
 }
 
 /// Return a human-readable error if `weights` is clearly a bad payload (HTML page,
-/// git-lfs pointer, empty). Both safetensors and PyTorch .bin/.pth are accepted;
-/// the trainer/inference engine validates the concrete format.
+/// git-lfs pointer). Both safetensors and PyTorch .bin/.pth are accepted; an
+/// empty buffer is also accepted and means the model should be trained from
+/// scratch. The trainer/inference engine validates the concrete format.
 fn validate_weights_payload(weights: &[u8]) -> Result<()> {
     if weights.is_empty() {
-        anyhow::bail!("weights buffer is empty");
+        return Ok(());
     }
     if weights.starts_with(b"version https://git-lfs.github.com/spec/v1") {
         anyhow::bail!("weights look like a git-lfs pointer instead of a checkpoint file");
@@ -148,7 +149,7 @@ pub async fn fetch_model_checkpoint(rpc: &mut XenomRpcClient, model_id: &str, ca
     };
 
     // Update the base cache whenever we receive a full checkpoint.
-    if !cp.is_adapter {
+    if !cp.is_adapter && !bundle.weights.is_empty() {
         match extract_base_weights(&bundle.weights) {
             Ok(base_weights) => {
                 if let Err(e) = cache.write_base(model_id, info.base_hash, &base_weights) {

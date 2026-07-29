@@ -404,13 +404,27 @@ impl DnaBert2ForMaskedLM {
         device: &Device,
         lora_config: Option<&LoraConfig>,
     ) -> CandleResult<(Self, VarMap, Arc<HashMap<String, Tensor>>)> {
-        if let Some(hint) = diagnose_weights(&weights) {
-            return Err(candle_core::Error::Msg(hint));
+        if !weights.is_empty() {
+            if let Some(hint) = diagnose_weights(&weights) {
+                return Err(candle_core::Error::Msg(hint));
+            }
         }
 
-        let all_tensors = load_weights(&weights, device).map_err(|e| {
-            candle_core::Error::Msg(format!("Failed to load weights: {}. {}", e, diagnose_weights(&weights).unwrap_or_default()))
-        })?;
+        // An empty weights buffer means we are training a DNABERT-2 model from
+        // scratch.  The VarBuilder below will create randomly-initialized tensors
+        // (Kaiming normal for Linear, Randn for Embedding, etc.).
+        let all_tensors = if weights.is_empty() {
+            if lora_config.is_some() {
+                return Err(candle_core::Error::Msg(
+                    "LoRA training requires a base checkpoint; from-scratch training needs --no-lora or no LoRA config".to_string(),
+                ));
+            }
+            HashMap::new()
+        } else {
+            load_weights(&weights, device).map_err(|e| {
+                candle_core::Error::Msg(format!("Failed to load weights: {}. {}", e, diagnose_weights(&weights).unwrap_or_default()))
+            })?
+        };
 
         let (base_weights, lora_weights): (HashMap<String, Tensor>, HashMap<String, Tensor>) = if lora_config.is_some() {
             let mut base = HashMap::with_capacity(all_tensors.len());

@@ -60,7 +60,7 @@ async fn download_and_validate_weights(client: &reqwest::Client, model_id: &str,
     for url in [&base_url, &format!("{}?download=true", base_url)] {
         info!("Attempting to download model weights from {}", url);
         match download_file(client, url).await {
-            Ok(data) if is_valid_weights(&data) => return Ok(data),
+            Ok(data) if !data.is_empty() && is_valid_weights(&data) => return Ok(data),
             Ok(data) => {
                 warn!("Downloaded {} but content does not look like valid weights ({} bytes); will retry if possible", url, data.len())
             }
@@ -77,9 +77,13 @@ async fn download_and_validate_weights(client: &reqwest::Client, model_id: &str,
 /// PyTorch `.bin` / `.pth` files (PK magic bytes). Legacy pickle-only `.bin`
 /// files (0x80) are not supported by the Rust loader and are rejected so they
 /// can be re-downloaded as safetensors.
+///
+/// An empty buffer is also accepted: it means the model should be trained from
+/// scratch, and the trainer will create randomly-initialized tensors from the
+/// model config.
 pub fn is_valid_weights(data: &[u8]) -> bool {
     if data.is_empty() {
-        return false;
+        return true;
     }
 
     // Fast reject of the most common non-checkpoint payloads.

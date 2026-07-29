@@ -18,7 +18,7 @@ use seed_node::model::RawModelFiles;
 use seed_node::rpc::messages::GradientUpdate;
 use xenom_miner::rpc::messages::GradientPayload;
 use xenom_miner::trainer::gradient::{gradient_commitment, reconstruct_from_layers};
-use xenom_miner::trainer::Mgm1Trainer;
+use xenom_miner::trainer::{Mgm1Trainer, MultiGpuConfig};
 
 /// Tolerance for comparing floating-point loss values between miner and validator.
 /// Multi-GPU forward/backward and cross-device tensor movement introduce
@@ -150,7 +150,7 @@ fn validate_mgm1_on_cpu(update: &GradientUpdate, files: &RawModelFiles, sequence
         update.base_checkpoint,
         Device::Cpu,
         1e-4,
-        1.0,
+        &MultiGpuConfig::default(),
     )
     .with_context(|| format!("Failed to build MGM-1 validator for {}", update.model_id))?;
 
