@@ -43,6 +43,8 @@ Options:
   --lora-alpha <n>                LoRA alpha (default: 16)
   --lora-dropout <f>              LoRA dropout (default: 0)
   --lora-target-modules <list>    Comma-separated LoRA target modules
+  --config-file <path>            Local config.json to use instead of downloading from Hugging Face
+  --tokenizer-file <path>         Local tokenizer.json to use instead of downloading from Hugging Face
   -d, --data-dir <dir>            Base data directory
                                   (default: \$XENO_DATA_DIR or ./devnet-data-native)
   --anvil                         Start a local anvil instance for EVM/governance tests
@@ -82,6 +84,8 @@ LORA_RANK="${XENO_LORA_RANK:-8}"
 LORA_ALPHA="${XENO_LORA_ALPHA:-16}"
 LORA_DROPOUT="${XENO_LORA_DROPOUT:-0}"
 LORA_TARGET_MODULES=""
+CONFIG_FILE=""
+TOKENIZER_FILE=""
 DATA_DIR="${XENO_DATA_DIR:-$SCRIPT_DIR/../devnet-data-native}"
 START_ANVIL=0
 
@@ -108,6 +112,8 @@ while [[ $# -gt 0 ]]; do
         --lora-alpha) LORA_ALPHA="$2"; shift 2 ;;
         --lora-dropout) LORA_DROPOUT="$2"; shift 2 ;;
         --lora-target-modules) LORA_TARGET_MODULES="$2"; shift 2 ;;
+        --config-file) CONFIG_FILE="$2"; shift 2 ;;
+        --tokenizer-file) TOKENIZER_FILE="$2"; shift 2 ;;
         -d|--data-dir) DATA_DIR="$2"; shift 2 ;;
         --anvil) START_ANVIL=1; shift ;;
         -q|--quiet) XENO_QUIET=1; shift ;;
@@ -288,6 +294,8 @@ RUST_LOG="${RUST_LOG:-info}" "$BIN_PREFIX/xenom" \
     --models-dir="$SEED_DATA_DIR" \
     --active-model-id="$ACTIVE_MODEL_ID" \
     $([ "$FROM_SCRATCH" == "1" ] && echo --from-scratch) \
+    $([ -n "$CONFIG_FILE" ] && echo --config-file="$CONFIG_FILE") \
+    $([ -n "$TOKENIZER_FILE" ] && echo --tokenizer-file="$TOKENIZER_FILE") \
     --disable-upnp \
     --nodnsseed \
     > "$LOG_DIR/xeno-node.log" 2>&1 &

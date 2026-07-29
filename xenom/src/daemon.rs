@@ -654,6 +654,8 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
 
         let active_model_id = args.active_model_id.clone();
         let from_scratch = args.from_scratch;
+        let config_file = args.config_file.clone();
+        let tokenizer_file = args.tokenizer_file.clone();
 
         Some(Arc::new(
             tokio::runtime::Builder::new_multi_thread()
@@ -665,6 +667,8 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
                         network.network_type,
                         active_model_id,
                         from_scratch,
+                        config_file,
+                        tokenizer_file,
                         models_dir,
                         genome_cache_dir,
                         genome_file,

@@ -1,6 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use borsh::BorshDeserialize;
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
@@ -256,6 +257,8 @@ pub struct CachedCheckpoint {
 pub struct ModelManager {
     base_path: String,
     storage: Arc<ModelStorage>,
+    config_file: Option<PathBuf>,
+    tokenizer_file: Option<PathBuf>,
     models: Arc<RwLock<HashMap<String, ModelInfo>>>,
     /// Maps a checkpoint hash (either an original base or a later head) to a
     /// shared, trainable checkpoint lineage. Multiple hashes may point to the
@@ -281,10 +284,16 @@ pub struct ModelManager {
 impl ModelManager {
     pub async fn new(base_path: String) -> Result<Self> {
         let key = ModelStorage::generate_key();
-        Self::new_with_key(base_path, key, LoraConfig::from_env()).await
+        Self::new_with_key(base_path, key, LoraConfig::from_env(), None, None).await
     }
 
-    pub async fn new_with_key(base_path: String, encryption_key: [u8; 32], lora_config: Option<LoraConfig>) -> Result<Self> {
+    pub async fn new_with_key(
+        base_path: String,
+        encryption_key: [u8; 32],
+        lora_config: Option<LoraConfig>,
+        config_file: Option<PathBuf>,
+        tokenizer_file: Option<PathBuf>,
+    ) -> Result<Self> {
         let storage = Arc::new(ModelStorage::new(base_path.clone(), encryption_key));
 
         // Create base directory if it doesn't exist
@@ -319,6 +328,8 @@ impl ModelManager {
         Ok(Self {
             base_path,
             storage,
+            config_file,
+            tokenizer_file,
             models: Arc::new(RwLock::new(HashMap::new())),
             checkpoint_cache: Arc::new(RwLock::new(HashMap::new())),
             cache_order: Arc::new(Mutex::new(VecDeque::new())),
@@ -428,7 +439,7 @@ impl ModelManager {
         } else {
             info!("Model {} not found locally; downloading from Hugging Face", model_id);
         }
-        let files = download_model(model_id, from_scratch).await?;
+        let files = download_model(model_id, from_scratch, self.config_file.as_deref(), self.tokenizer_file.as_deref()).await?;
 
         let metrics = ModelMetrics::default();
         self.store_model_files(model_id, &files, metrics).await?;
@@ -1371,7 +1382,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let key = [0u8; 32];
-        let manager = ModelManager::new_with_key(dir.path().to_string_lossy().to_string(), key, None).await.unwrap();
+        let manager = ModelManager::new_with_key(dir.path().to_string_lossy().to_string(), key, None, None, None).await.unwrap();
         let model_id = "dnabert2-tiny";
 
         let files = build_tiny_dnabert2_files();

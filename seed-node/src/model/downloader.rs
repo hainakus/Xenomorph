@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use reqwest::Url;
 use std::fs;
+use std::path::Path;
 use std::time::Duration;
 use tracing::{info, warn};
 
@@ -15,7 +16,15 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 ///
 /// If `from_scratch` is true and no weights file is available, an empty weights buffer
 /// is returned.  This lets the trainer initialize the model with random weights.
-pub async fn download_model(model_id: &str, from_scratch: bool) -> Result<RawModelFiles> {
+///
+/// `config_file` and `tokenizer_file` override the Hugging Face download and read the
+/// files from disk instead.
+pub async fn download_model(
+    model_id: &str,
+    from_scratch: bool,
+    config_file: Option<&Path>,
+    tokenizer_file: Option<&Path>,
+) -> Result<RawModelFiles> {
     if model_id.contains("mgm-1") {
         info!("Generating default MGM-1 checkpoint for {}", model_id);
         return build_default_mgm1_files();
@@ -27,15 +36,25 @@ pub async fn download_model(model_id: &str, from_scratch: bool) -> Result<RawMod
         .build()
         .context("Failed to build HTTP client")?;
 
-    let config = download_first_file(&client, model_id, &["config.json", "model_config.json"])
-        .await
-        .context("Failed to download config.json")?;
-    info!("Downloaded config for {}", model_id);
+    let config = if let Some(path) = config_file {
+        info!("Loading config for {} from {}", model_id, path.display());
+        tokio::fs::read(path).await.with_context(|| format!("Failed to read config file {}", path.display()))?
+    } else {
+        download_first_file(&client, model_id, &["config.json", "model_config.json"])
+            .await
+            .context("Failed to download config.json")?
+    };
+    info!("Loaded config for {}", model_id);
 
-    let tokenizer = download_first_file(&client, model_id, &["tokenizer.json", "tokenizer_config.json"])
-        .await
-        .context("Failed to download tokenizer.json")?;
-    info!("Downloaded tokenizer for {}", model_id);
+    let tokenizer = if let Some(path) = tokenizer_file {
+        info!("Loading tokenizer for {} from {}", model_id, path.display());
+        tokio::fs::read(path).await.with_context(|| format!("Failed to read tokenizer file {}", path.display()))?
+    } else {
+        download_first_file(&client, model_id, &["tokenizer.json", "tokenizer_config.json"])
+            .await
+            .context("Failed to download tokenizer.json")?
+    };
+    info!("Loaded tokenizer for {}", model_id);
 
     let mut weights: Option<Vec<u8>> = None;
     if !from_scratch {

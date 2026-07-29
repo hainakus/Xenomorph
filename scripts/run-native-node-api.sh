@@ -33,8 +33,8 @@ Options:
   --register-from-scratch         Download config/tokenizer from HF and write
                                   an empty weights.enc so the node trains the
                                   active model from scratch.
-  --config-file <path>            Local config.json to use when registering.
-  --tokenizer-file <path>         Local tokenizer.json to use when registering.
+  --config-file <path>            Local config.json to use when registering or with --from-scratch.
+  --tokenizer-file <path>         Local tokenizer.json to use when registering or with --from-scratch.
   -q, --quiet                     Minimal output
   -v, --verbose                   Debug output
   -h, --help                      Show this help and exit
@@ -273,6 +273,8 @@ NODE_ARGS=(
     --active-model-id="$MODEL_ID"
 )
 [[ "$FROM_SCRATCH" == "1" ]] && NODE_ARGS+=(--from-scratch)
+[[ -n "$CONFIG_FILE" ]] && NODE_ARGS+=(--config-file="$CONFIG_FILE")
+[[ -n "$TOKENIZER_FILE" ]] && NODE_ARGS+=(--tokenizer-file="$TOKENIZER_FILE")
 NODE_ARGS+=(
     --disable-upnp
     --nodnsseed

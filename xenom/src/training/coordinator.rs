@@ -90,6 +90,8 @@ impl Coordinator {
         network_type: NetworkType,
         active_model_id: String,
         from_scratch: bool,
+        config_file: Option<String>,
+        tokenizer_file: Option<String>,
         models_dir: PathBuf,
         genome_cache_dir: PathBuf,
         genome_file: Option<PathBuf>,
@@ -106,8 +108,16 @@ impl Coordinator {
         let encryption_key = ModelStorage::derive_encryption_key();
         let lora_config = LoraConfig::from_env();
 
-        let model_manager =
-            Arc::new(ModelManager::new_with_key(models_dir.to_string_lossy().to_string(), encryption_key, lora_config).await?);
+        let model_manager = Arc::new(
+            ModelManager::new_with_key(
+                models_dir.to_string_lossy().to_string(),
+                encryption_key,
+                lora_config,
+                config_file.map(PathBuf::from),
+                tokenizer_file.map(PathBuf::from),
+            )
+            .await?,
+        );
 
         // Pre-download the active model before accepting miner connections. This avoids the
         // 30s RPC request timeout in xenom-miner while the full node is still downloading.

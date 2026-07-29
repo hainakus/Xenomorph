@@ -32,16 +32,14 @@ async fn main() -> Result<()> {
     let grpc_addr = std::env::var("XENO_GRPC_ADDR").unwrap_or_else(|_| "0.0.0.0:50051".to_string());
     let miner_ws_addr = std::env::var("XENO_MINER_WS_ADDR").unwrap_or_else(|_| "0.0.0.0:17110".to_string());
     let default_model_id = std::env::var("XENO_DEFAULT_MODEL_ID").unwrap_or_else(|_| "xeno/mgm-1".to_string());
-    let from_scratch = matches!(
-        std::env::var("XENO_FROM_SCRATCH").ok().as_deref(),
-        Some("1") | Some("true") | Some("yes") | Some("on")
-    );
+    let from_scratch =
+        matches!(std::env::var("XENO_FROM_SCRATCH").ok().as_deref(), Some("1") | Some("true") | Some("yes") | Some("on"));
     let network_str = std::env::var("XENO_NETWORK").unwrap_or_else(|_| "devnet".to_string());
     let network_type = NetworkType::from_str(&network_str).unwrap_or(NetworkType::Devnet);
 
     let model_key = ModelStorage::derive_encryption_key();
     let lora_config = LoraConfig::from_env();
-    let model_manager = Arc::new(ModelManager::new_with_key(models_dir.clone(), model_key, lora_config).await?);
+    let model_manager = Arc::new(ModelManager::new_with_key(models_dir.clone(), model_key, lora_config, None, None).await?);
     let genome_storage = Arc::new(RwLock::new(GenomeStorage::new(PathBuf::from(models_dir.clone()).join("genomes")).await?));
 
     // The seed-node is only considered ready once the default model is available.
