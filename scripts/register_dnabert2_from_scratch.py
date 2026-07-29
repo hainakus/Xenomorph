@@ -66,6 +66,28 @@ def encrypt(data: bytes, key: bytes) -> bytes:
     return nonce + ciphertext
 
 
+def decrypt(data: bytes, key: bytes) -> bytes:
+    """AES-256-GCM; expect `nonce || ciphertext`."""
+    if len(data) < NONCE_LEN:
+        raise ValueError("ciphertext too short")
+    nonce, ciphertext = data[:NONCE_LEN], data[NONCE_LEN:]
+    aesgcm = AESGCM(key)
+    return aesgcm.decrypt(nonce, ciphertext, None)
+
+
+def is_from_scratch_weights(weights_path: Path, key: bytes) -> bool:
+    """Return True if an existing weights.enc is the encrypted empty marker."""
+    if not weights_path.exists():
+        return False
+    encrypted = weights_path.read_bytes()
+    if len(encrypted) < NONCE_LEN:
+        return False
+    try:
+        return decrypt(encrypted, key) == b""
+    except Exception:
+        return False
+
+
 def key_hash(key: bytes) -> bytes:
     return hashlib.sha256(key).digest()
 
@@ -139,14 +161,14 @@ def register_from_scratch(
     model_path.mkdir(parents=True, exist_ok=True)
 
     weights_path = model_path / "weights.enc"
+    if is_from_scratch_weights(weights_path, key) and not force:
+        print(f"[INFO] {model_path} already contains a from-scratch checkpoint; skipping registration.")
+        print("        Use --force to regenerate it.")
+        return
     if weights_path.exists() and not force:
         existing = weights_path.stat().st_size
-        if existing == 0:
-            print(f"[WARN] {model_path} already exists and looks like a from-scratch checkpoint.")
-            print("        Use --force to overwrite anyway.")
-        else:
-            print(f"[WARN] {weights_path} already exists and is {existing} bytes (not from-scratch).")
-            print("        Use --force to overwrite and risk losing a real checkpoint.")
+        print(f"[WARN] {weights_path} already exists and is {existing} bytes (not from-scratch).")
+        print("        Use --force to overwrite and risk losing a real checkpoint.")
         return
 
     (model_path / "config.enc").write_bytes(encrypt(config, key))
