@@ -36,7 +36,7 @@ pub struct DnaBert2Trainer {
 impl DnaBert2Trainer {
     /// Load a trainable DNABERT-2 model and build the MLM batch generator.
     pub fn new(
-        config: DnaBert2Config,
+        mut config: DnaBert2Config,
         weights: Vec<u8>,
         tokenizer: DnaTokenizer,
         device: Device,
@@ -44,6 +44,12 @@ impl DnaBert2Trainer {
         dtype: DType,
         lora_config: Option<LoraConfig>,
     ) -> Result<Self> {
+        // The official DNABERT-2 config.json does not include special token ids, and
+        // different tokenizers use different ids.  Make sure the model agrees with
+        // the tokenizer we are actually using.
+        config.pad_token_id = tokenizer.pad_token_id;
+        config.mask_token_id = tokenizer.mask_token_id;
+
         let (model, varmap, base_weights) =
             DnaBert2ForMaskedLM::load_for_training(config.clone(), weights, dtype, &device, lora_config.as_ref())
                 .context("Failed to load DNABERT-2 model for training")?;

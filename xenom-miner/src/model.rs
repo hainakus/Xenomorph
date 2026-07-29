@@ -14,16 +14,23 @@ pub struct DnaBert2Config {
     pub intermediate_size: usize,
     pub max_position_embeddings: usize,
     pub type_vocab_size: usize,
+    #[serde(default, alias = "hidden_dropout_prob")]
     pub hidden_dropout: f32,
+    #[serde(default, alias = "attention_probs_dropout_prob")]
     pub attention_dropout: f32,
     pub layer_norm_eps: f64,
     pub hidden_act: String,
     pub position_embedding_type: String,
     pub alibi_starting_size: Option<usize>,
+    #[serde(default)]
     pub tie_word_embeddings: bool,
+    #[serde(default)]
     pub pad_token_id: u32,
+    #[serde(default)]
     pub mask_token_id: u32,
+    #[serde(default)]
     pub bos_token_id: u32,
+    #[serde(default)]
     pub eos_token_id: u32,
     #[serde(default)]
     pub num_labels: Option<usize>,
@@ -96,5 +103,44 @@ mod tests {
         assert_eq!(config.type_vocab_size, 2);
         assert_eq!(config.position_embedding_type, "alibi");
         assert_eq!(config.alibi_starting_size, Some(512));
+    }
+
+    // Real zhihan1996/DNABERT-2-117M config.json uses the original BERT field names
+    // and does not include special token ids or tie_word_embeddings.
+    const HF_DNABERT2_CONFIG: &str = r#"{
+        "_name_or_path": "zhihan1996/DNABERT-2-117M",
+        "alibi_starting_size": 512,
+        "attention_probs_dropout_prob": 0.0,
+        "auto_map": {"AutoConfig": "configuration_bert.BertConfig"},
+        "classifier_dropout": null,
+        "gradient_checkpointing": false,
+        "hidden_act": "gelu",
+        "hidden_dropout_prob": 0.1,
+        "hidden_size": 768,
+        "initializer_range": 0.02,
+        "intermediate_size": 3072,
+        "layer_norm_eps": 1e-12,
+        "max_position_embeddings": 512,
+        "num_attention_heads": 12,
+        "num_hidden_layers": 12,
+        "position_embedding_type": "absolute",
+        "torch_dtype": "float32",
+        "transformers_version": "4.28.0",
+        "type_vocab_size": 2,
+        "use_cache": true,
+        "vocab_size": 4096
+    }"#;
+
+    #[test]
+    fn test_config_from_real_hf_dnabert2() {
+        let config = DnaBert2Config::from_bytes(HF_DNABERT2_CONFIG.as_bytes()).unwrap();
+        assert_eq!(config.vocab_size, 4096);
+        assert_eq!(config.hidden_size, 768);
+        assert_eq!(config.num_hidden_layers, 12);
+        assert_eq!(config.hidden_dropout, 0.1);
+        assert_eq!(config.attention_dropout, 0.0);
+        assert_eq!(config.position_embedding_type, "absolute");
+        assert_eq!(config.alibi_starting_size, Some(512));
+        assert!(!config.tie_word_embeddings);
     }
 }
