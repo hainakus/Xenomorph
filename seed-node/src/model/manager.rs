@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::consensus::fedavg::{FedAvgAggregator, FedAvgConfig, WeightingStrategy};
@@ -391,12 +391,22 @@ impl ModelManager {
 
         // Initialise the checkpoint cache for the loaded model's checkpoint, if we have the files.
         if let Some(files) = files_opt {
-            if let Ok(entry) = self.build_cached_checkpoint(model_id, model_info.checkpoint.weights_hash, files) {
-                let mut cache = self.checkpoint_cache.write().await;
-                let mut order = self.cache_order.lock().await;
-                cache.entry(model_info.checkpoint.weights_hash).or_insert(entry);
-                if !order.contains(&model_info.checkpoint.weights_hash) {
-                    order.push_back(model_info.checkpoint.weights_hash);
+            match self.build_cached_checkpoint(model_id, model_info.checkpoint.weights_hash, files) {
+                Ok(entry) => {
+                    let mut cache = self.checkpoint_cache.write().await;
+                    let mut order = self.cache_order.lock().await;
+                    cache.entry(model_info.checkpoint.weights_hash).or_insert(entry);
+                    if !order.contains(&model_info.checkpoint.weights_hash) {
+                        order.push_back(model_info.checkpoint.weights_hash);
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to build cached checkpoint for {} (hash {}): {:#}. Inference/training may fail until the model can be loaded.",
+                        model_id,
+                        hex::encode(model_info.checkpoint.weights_hash),
+                        e
+                    );
                 }
             }
         }
@@ -1058,7 +1068,15 @@ impl ModelManager {
             if !cache.contains_key(&active_hash) {
                 drop(cache);
                 let files = self.storage.load_model_files(model_id).await.map_err(|e| anyhow!("Failed to load model files: {}", e))?;
-                let entry = self.build_cached_checkpoint(model_id, active_hash, files)?;
+                let entry = self.build_cached_checkpoint(model_id, active_hash, files).map_err(|e| {
+                    warn!(
+                        "Failed to build cached checkpoint for {} (hash {}): {:#}",
+                        model_id,
+                        hex::encode(active_hash),
+                        e
+                    );
+                    e
+                })?;
                 let mut cache = self.checkpoint_cache.write().await;
                 let mut order = self.cache_order.lock().await;
                 cache.entry(active_hash).or_insert(entry);

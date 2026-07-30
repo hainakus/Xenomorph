@@ -202,7 +202,7 @@ impl Coordinator {
 
         let base_checkpoint = match self.active_weights_hash().await {
             Ok(hash) => hash.as_bytes(),
-            Err(e) => return RpcResponse::Error(format!("Failed to load active model: {}", e)),
+            Err(e) => return RpcResponse::Error(format!("Failed to load active model: {:#}", e)),
         };
 
         let batch_id = self.inner.current_epoch.load(Ordering::Relaxed);
@@ -224,7 +224,7 @@ impl Coordinator {
 
         let base_checkpoint = match self.active_weights_hash().await {
             Ok(hash) => hash.as_bytes(),
-            Err(e) => return RpcResponse::Error(format!("Failed to load active model: {}", e)),
+            Err(e) => return RpcResponse::Error(format!("Failed to load active model: {:#}", e)),
         };
 
         let archive = {
@@ -270,7 +270,7 @@ impl Coordinator {
 
         let base_checkpoint = match self.active_weights_hash().await {
             Ok(hash) => hash.as_bytes(),
-            Err(e) => return RpcResponse::Error(format!("Failed to load active model: {}", e)),
+            Err(e) => return RpcResponse::Error(format!("Failed to load active model: {:#}", e)),
         };
 
         RpcResponse::ModelCheckpointInfo(RpcModelCheckpointInfo { model_id, base_checkpoint })
@@ -310,7 +310,7 @@ impl Coordinator {
 
         let (combined_hash, base_hash) = match self.inner.model_manager.get_model_checkpoint_info_v2(&model_id).await {
             Ok(hashes) => hashes,
-            Err(e) => return RpcResponse::Error(format!("Failed to load active model: {}", e)),
+            Err(e) => return RpcResponse::Error(format!("Failed to load active model: {:#}", e)),
         };
 
         RpcResponse::ModelCheckpointInfoV2(RpcModelCheckpointInfoV2 { model_id, base_checkpoint: combined_hash, base_hash })
@@ -324,13 +324,13 @@ impl Coordinator {
         }
 
         if let Err(e) = self.inner.model_manager.ensure_model_downloaded(&model_id, self.inner.from_scratch).await {
-            return RpcResponse::Error(format!("Failed to download model: {}", e));
+            return RpcResponse::Error(format!("Failed to download model: {:#}", e));
         }
 
         let (files, combined_hash, base_hash, is_adapter) =
             match self.inner.model_manager.get_encrypted_model_checkpoint_v2(&model_id, cached_base_hash).await {
                 Ok(cp) => cp,
-                Err(e) => return RpcResponse::Error(format!("Failed to load model checkpoint: {}", e)),
+                Err(e) => return RpcResponse::Error(format!("Failed to load model checkpoint: {:#}", e)),
             };
 
         RpcResponse::ModelCheckpointV2(RpcModelCheckpointV2 {
@@ -369,7 +369,7 @@ impl Coordinator {
 
         let active_weights_hash = match self.active_weights_hash().await {
             Ok(h) => h,
-            Err(e) => return RpcResponse::Error(format!("Failed to load active model: {}", e)),
+            Err(e) => return RpcResponse::Error(format!("Failed to load active model: {:#}", e)),
         };
 
         let miner_proof = &block.training_proof;
