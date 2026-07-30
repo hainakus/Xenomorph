@@ -501,7 +501,7 @@ impl DnaBert2ForMaskedLM {
 }
 
 /// Load tensors from a safetensors buffer or a PyTorch .bin/.pth (zip) buffer.
-fn load_weights(weights: &[u8], device: &Device) -> CandleResult<HashMap<String, Tensor>> {
+pub(crate) fn load_weights(weights: &[u8], device: &Device) -> CandleResult<HashMap<String, Tensor>> {
     // Fast path: safetensors.
     if let Ok(tensors) = candle_core::safetensors::load_buffer(weights, device) {
         return Ok(tensors);
@@ -530,7 +530,7 @@ fn write_temp_pth(weights: &[u8]) -> CandleResult<PathBuf> {
 }
 
 /// Return a human-readable diagnostic if `weights` is clearly not a valid checkpoint.
-fn diagnose_weights(weights: &[u8]) -> Option<String> {
+pub(crate) fn diagnose_weights(weights: &[u8]) -> Option<String> {
     if weights.is_empty() {
         return Some("weights buffer is empty".to_string());
     }

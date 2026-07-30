@@ -8,7 +8,7 @@ use candle_core::{DType, Device, Tensor, Var};
 use candle_nn::loss;
 
 use crate::data::{MlmBatch, MlmBatchGenerator};
-use crate::dnabert2::DnaBert2ForMaskedLM;
+use crate::dnabert2::{diagnose_weights, load_weights, DnaBert2ForMaskedLM};
 use crate::lora::LoraConfig;
 use crate::model::DnaBert2Config;
 use crate::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch};
@@ -278,7 +278,13 @@ impl DnaBert2Trainer {
         if weights.is_empty() {
             return Ok(());
         }
-        let loaded = candle_core::safetensors::load_buffer(weights, &self.device).context("Failed to load safetensors weights")?;
+        let loaded = load_weights(weights, &self.device).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to load weights: {}. {}",
+                e,
+                diagnose_weights(weights).unwrap_or_default()
+            )
+        })?;
         let data = self.varmap.data().lock().map_err(|e| anyhow::anyhow!("VarMap poisoned: {}", e))?;
         let is_lora = !self.base_weights.is_empty();
         for (name, var) in data.iter() {
