@@ -177,7 +177,14 @@ def _extract_token_level_samples(
     prediction: PredictionResult,
     tagger: GenomicTagger,
 ) -> List[MaskedSample]:
-    """Build token-level ``MaskedSample`` instances using returned logits."""
+    """Build base-level ``MaskedSample`` instances from token-level predictions.
+
+    Each masked BPE/k-mer token is expanded into its individual characters. The
+    decoded predicted sequence is aligned with the original so that every masked
+    character gets a predicted *base* rather than a full token string. The token
+    string is preserved in ``logits_true_label`` for exact token-level CE/PPL
+    computation when logits are returned by the gRPC endpoint.
+    """
     if mask_result.tokens is None or mask_result.token_ids is None:
         raise ValueError("token-level masking requires token strings and ids")
 
@@ -196,10 +203,13 @@ def _extract_token_level_samples(
     samples: List[MaskedSample] = []
     for local_idx, true_pos in enumerate(masked_token_positions):
         true_token_id = masked_token_ids[local_idx]
+        true_token_str = token_id_to_str.get(true_token_id, "")
 
-        # Find the corresponding row in the server logits.  In the common case
-        # the server tokenization is identical to ours, so server_mask_positions
-        # is the same list as masked_token_positions.
+        # Character offset where the token starts in the original sequence.
+        char_pos = sum(len(tokens[i]) for i in range(true_pos))
+        token_len = max(1, len(true_token_str))
+
+        # Find the corresponding row in the server logits.
         logit_row = None
         if server_logits is not None and server_mask_positions is not None:
             try:
@@ -209,23 +219,16 @@ def _extract_token_level_samples(
             except ValueError:
                 pass
 
-        # Predicted token is the argmax of the logit row.  When logits are
-        # unavailable, fall back to aligning the predicted string at the
-        # character position of the token.
+        # Predicted token from logits when available.
+        predicted_token_id: Optional[int] = None
         if logit_row is not None:
             predicted_token_id = int(np.argmax(logit_row))
-        else:
-            char_pos = sum(len(tokens[i]) for i in range(true_pos))
-            predicted_token_id = -1
-            if char_pos < len(prediction.predicted_sequence):
-                predicted_token_str = prediction.predicted_sequence[char_pos]
-                predicted_token_id = tokens.index(predicted_token_str) if predicted_token_str in tokens else -1
 
-        true_token_str = token_id_to_str.get(true_token_id, "")
-        predicted_token_str = token_id_to_str.get(predicted_token_id, "")
+        # Shared per-token fields.
+        confidence = prediction.confidence
+        if not np.isfinite(confidence):
+            confidence = 0.0
 
-        # Character position for region tagging is the token start.
-        char_pos = sum(len(tokens[i]) for i in range(true_pos))
         region_tags = tagger.tag_position(
             mask_result.original,
             window.start,
@@ -234,25 +237,48 @@ def _extract_token_level_samples(
             window.fragment_size,
         )
 
-        confidence = prediction.confidence
-        if not np.isfinite(confidence):
-            confidence = 0.0
+        # Expand the masked token into one MaskedSample per character so base-level
+        # metrics (accuracy, F1, MCC, kappa, confusion matrix) are valid.
+        for j in range(token_len):
+            pos = char_pos + j
+            if pos >= len(mask_result.original):
+                break
 
-        samples.append(
-            MaskedSample(
-                sequence_id=sequence_id,
-                position=char_pos,
-                true_base=true_token_str,
-                predicted_base=predicted_token_str,
-                confidence=confidence,
-                logits=logit_row,
-                logits_labels=tokens if logit_row is not None else None,
-                region_tags=region_tags,
-                token_level=True,
-                true_token_id=true_token_id,
-                predicted_token_id=predicted_token_id if predicted_token_id >= 0 else None,
+            true_base = mask_result.original[pos]
+            pred_base = _align_prediction(mask_result.original, prediction.predicted_sequence, pos)
+
+            if pred_base not in BASE_SET:
+                logger.warning(
+                    "sequence %d position %d: aligned predicted base %r is not a DNA base; "
+                    "treating as incorrect",
+                    sequence_id,
+                    pos,
+                    pred_base,
+                )
+                pred_base = next(b for b in BASES if b != true_base)
+
+            # Logit row and token labels are attached to the first character only
+            # so token-level CE/PPL is not double-counted for multi-character tokens.
+            sample_logits = logit_row if j == 0 else None
+            sample_logits_labels = tokens if j == 0 and logit_row is not None else None
+            sample_logits_true_label = true_token_str if j == 0 and logit_row is not None else None
+
+            samples.append(
+                MaskedSample(
+                    sequence_id=sequence_id,
+                    position=pos,
+                    true_base=true_base,
+                    predicted_base=pred_base,
+                    confidence=confidence,
+                    logits=sample_logits,
+                    logits_labels=sample_logits_labels,
+                    logits_true_label=sample_logits_true_label,
+                    region_tags=region_tags,
+                    token_level=True,
+                    true_token_id=true_token_id,
+                    predicted_token_id=predicted_token_id,
+                )
             )
-        )
 
     return samples
 

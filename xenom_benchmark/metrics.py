@@ -36,14 +36,13 @@ class MaskedSample:
     confidence: float
     logits: Optional[np.ndarray] = None  # [vocab_size]
     logits_labels: Optional[List[str]] = None
+    logits_true_label: Optional[str] = None  # true token string for CE from logits
     region_tags: List[str] = field(default_factory=list)
     token_level: bool = False
     true_token_id: Optional[int] = None
     predicted_token_id: Optional[int] = None
 
     def __post_init__(self) -> None:
-        if self.token_level:
-            return
         if self.true_base not in BASE_SET:
             raise ValueError(f"invalid true_base: {self.true_base}")
         if self.predicted_base not in BASE_SET:
@@ -159,7 +158,7 @@ class MetricsComputer:
 
         self._warnings.append(
             "vocab_size could not be determined and was defaulted to 4. "
-            "Cross-entropy and top-k approximations may be inaccurate for BPE models."
+            "Cross-entropy and top-3/top-5 will not be reported without logits."
         )
         return 4
 
@@ -178,6 +177,7 @@ class MetricsComputer:
         y_true: np.ndarray,
         y_pred: np.ndarray,
         confidences: np.ndarray,
+        y_logits_true: np.ndarray,
         logits: Optional[np.ndarray],
         logits_labels: Optional[List[str]],
         vocab_size: int,
@@ -193,28 +193,15 @@ class MetricsComputer:
             return None, None, None, None
 
         if logits is not None and logits_labels is not None:
+            # Use the token-level true labels that match the logit rows.
+            logit_true = y_logits_true[: logits.shape[0]] if len(y_logits_true) >= logits.shape[0] else y_logits_true
             return self._cross_entropy_from_logits(
-                y_true, logits, logits_labels, vocab_size
+                logit_true, logits, logits_labels, vocab_size
             )
 
-        # No logits: use the reported confidence and a uniform tail.
-        nlls = np.empty(n, dtype=np.float64)
-        lbs = np.empty(n, dtype=np.float64)
-        for i in range(n):
-            pred = y_pred[i]
-            true = y_true[i]
-            conf = confidences[i]
-            p_true = self._imputed_prob(pred, true, conf, vocab_size)
-            nlls[i] = -safe_log(p_true)
-            # Lower bound: p(true) <= 1 - conf when wrong, = conf when correct.
-            p_lb = conf if pred == true else (1.0 - conf)
-            lbs[i] = -safe_log(p_lb)
-
-        nll = float(np.mean(nlls))
-        ce = nll  # for a single token per sample, CE == mean NLL
-        ppl = float(np.exp(ce))
-        ce_lb = float(np.mean(lbs))
-        return ce, nll, ppl, ce_lb
+        # No logits: do not impute CE / NLL / perplexity. They are undefined
+        # without a full probability distribution.
+        return None, None, None, None
 
     def _cross_entropy_from_logits(
         self,
@@ -286,27 +273,11 @@ class MetricsComputer:
             )
             return top1, top3, top5, False
 
-        # Approximate top-k under a uniform tail distribution.
-        if vocab_size <= 5:
-            top5 = 1.0
-        else:
-            top5 = None
-
-        if vocab_size <= 3:
-            top3 = 1.0
-        elif vocab_size is not None and vocab_size > 1:
-            # Probability true is in top-3 given it is not top-1 is min(1, 2/(V-1)).
-            factor = min(1.0, 2.0 / (vocab_size - 1))
-            top3 = top1 + (1.0 - top1) * factor
-        else:
-            top3 = None
-
-        if top3 is None or top5 is None:
-            self._warnings.append(
-                "top-3/top-5 accuracy could not be determined because neither "
-                "logits nor a reliable vocab_size are available."
-            )
-        return top1, top3, top5, True
+        # No logits / top-k payload: top-3/top-5 cannot be computed.
+        self._warnings.append(
+            "top-3/top-5 accuracy not reported: the gRPC response does not expose logits."
+        )
+        return top1, None, None, False
 
     def _top_k_from_logits(
         self,
@@ -372,13 +343,13 @@ class MetricsComputer:
 
         return {
             "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
-            "precision": float(precision_score(y_true, y_pred, average="macro", zero_division=0, labels=labels)),
-            "recall": float(recall_score(y_true, y_pred, average="macro", zero_division=0, labels=labels)),
-            "macro_f1": float(f1_score(y_true, y_pred, average="macro", zero_division=0, labels=labels)),
-            "micro_f1": float(f1_score(y_true, y_pred, average="micro", zero_division=0, labels=labels)),
-            "weighted_f1": float(f1_score(y_true, y_pred, average="weighted", zero_division=0, labels=labels)),
+            "precision": float(precision_score(y_true, y_pred, average="macro", zero_division=0)),
+            "recall": float(recall_score(y_true, y_pred, average="macro", zero_division=0)),
+            "macro_f1": float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
+            "micro_f1": float(f1_score(y_true, y_pred, average="micro", zero_division=0)),
+            "weighted_f1": float(f1_score(y_true, y_pred, average="weighted", zero_division=0)),
             "mcc": float(matthews_corrcoef(y_true, y_pred)),
-            "kappa": float(cohen_kappa_score(y_true, y_pred, labels=labels)),
+            "kappa": float(cohen_kappa_score(y_true, y_pred)),
         }
 
     def _confusion_dict(self, y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, Dict[str, int]]:
@@ -470,29 +441,39 @@ class MetricsComputer:
 
     def _build_arrays(
         self, samples: Sequence[MaskedSample]
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray], Optional[List[str]], Optional[np.ndarray], Optional[np.ndarray]]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray], Optional[List[str]], Optional[np.ndarray], Optional[np.ndarray], List[int], Optional[List[str]]]:
         """Convert MaskedSample list into parallel arrays."""
         n = len(samples)
         y_true = np.empty(n, dtype=object)
         y_pred = np.empty(n, dtype=object)
         confidences = np.empty(n, dtype=np.float64)
+        y_logits_true = np.empty(n, dtype=object)
+        y_pred_token = np.empty(n, dtype=object)
         logits = None
         logits_labels = None
         top_k_indices = None
         top_k_probs = None
 
-        has_logits = all(s.logits is not None for s in samples)
         for i, s in enumerate(samples):
             y_true[i] = s.true_base
             y_pred[i] = s.predicted_base
             confidences[i] = s.confidence
-            if has_logits and s.logits is not None:
-                if logits is None:
-                    logits = np.empty((n, s.logits.shape[0]), dtype=np.float64)
-                    logits_labels = s.logits_labels
-                logits[i] = s.logits
+            y_logits_true[i] = s.logits_true_label if s.logits_true_label is not None else s.true_base
+            y_pred_token[i] = ""
 
-        return y_true, y_pred, confidences, logits, logits_labels, top_k_indices, top_k_probs
+        # Only include samples that actually carry logits.
+        logit_indices = [i for i, s in enumerate(samples) if s.logits is not None]
+        if logit_indices:
+            n_logits = len(logit_indices)
+            logits = np.empty((n_logits, samples[logit_indices[0]].logits.shape[0]), dtype=np.float64)
+            for i, idx in enumerate(logit_indices):
+                logits[i] = samples[idx].logits
+            logits_labels = samples[logit_indices[0]].logits_labels
+            for idx in logit_indices:
+                if samples[idx].predicted_token_id is not None and 0 <= samples[idx].predicted_token_id < len(logits_labels):
+                    y_pred_token[idx] = logits_labels[samples[idx].predicted_token_id]
+
+        return y_true, y_pred, confidences, y_logits_true, y_pred_token, logits, logits_labels, top_k_indices, top_k_probs, logit_indices
 
     def _baseline_metrics(
         self, y_true: np.ndarray, vocab_size: int
@@ -704,55 +685,62 @@ class MetricsComputer:
         if n == 0:
             raise ValueError("cannot compute metrics from an empty sample list")
 
-        is_token_level = self.token_level or all(s.token_level for s in samples)
-        y_true, y_pred, confidences, logits, logits_labels, top_k_indices, top_k_probs = self._build_arrays(samples)
+        is_token_level = self.token_level or any(s.token_level for s in samples)
+        (
+            y_true, y_pred, confidences, y_logits_true, y_pred_token,
+            logits, logits_labels, top_k_indices, top_k_probs, logit_indices,
+        ) = self._build_arrays(samples)
         vocab_size = self._resolve_vocab_size(samples, logits_labels)
 
         avg_conf = self._average_confidence(samples)
 
-        # Top-k.
-        top1, top3, top5, top_k_approx = self._top_k_accuracy(
-            y_true, y_pred, confidences, top_k_indices, top_k_probs,
-            logits, logits_labels, vocab_size,
-        )
+        # Base-level top-1 is always computed from aligned bases.
+        top1 = float(np.mean(y_true == y_pred))
 
-        # Cross-entropy / NLL / perplexity.
-        ce, nll, ppl, ce_lb = self._cross_entropy(
-            y_true, y_pred, confidences, logits, logits_labels, vocab_size
-        )
+        # Top-3/5 and token-level CE require logits.
+        if logits is not None and logits_labels is not None:
+            y_logits_true_token = y_logits_true[logit_indices]
+            y_pred_token_logit = y_pred_token[logit_indices]
+            _, top3, top5, top_k_approx = self._top_k_accuracy(
+                y_logits_true_token, y_pred_token_logit, confidences[logit_indices],
+                top_k_indices, top_k_probs,
+                logits, logits_labels, vocab_size,
+            )
+            ce, nll, ppl, ce_lb = self._cross_entropy(
+                y_logits_true_token, y_pred_token_logit, confidences[logit_indices],
+                y_logits_true_token, logits, logits_labels, vocab_size
+            )
+        else:
+            top3, top5, top_k_approx = None, None, False
+            ce, nll, ppl, ce_lb = None, None, None, None
+            self._warnings.append(
+                "top-3/top-5 accuracy, cross-entropy, NLL and perplexity not "
+                "reported: the gRPC response does not expose logits."
+            )
 
         logits_available = logits is not None and logits_labels is not None
 
         approximation_note = ""
         if not logits_available:
             approximation_note = (
-                "Cross-entropy, NLL, perplexity and top-k are approximations "
-                "because the gRPC response does not expose logits. A uniform-tail "
-                f"distribution over the remaining {vocab_size - 1} tokens is assumed."
+                "Token-level CE / NLL / perplexity and top-3/top-5 not available "
+                "because the gRPC response does not expose logits. "
+                "Base-level reconstruction metrics are reported for all models."
             )
             self._warnings.append(approximation_note)
         elif is_token_level:
             approximation_note = (
                 "Token-level MLM metrics: cross-entropy, NLL and perplexity are "
-                "computed over the full model vocabulary. Base-level classification "
-                "metrics are not reported for token labels."
+                "computed over the full model vocabulary. "
+                "Base-level reconstruction metrics are also reported."
             )
 
-        if is_token_level:
-            pred_counts, true_freqs, pred_entropy = self._token_distributions(y_true)
-            sk = {k: 0.0 for k in [
-                "balanced_accuracy", "precision", "recall", "macro_f1",
-                "micro_f1", "weighted_f1", "mcc", "kappa",
-            ]}
-            confusion: Dict[str, Dict[str, int]] = {}
-            per_base: Dict[str, PerBaseMetrics] = {}
-            baselines: Dict[str, BaselineMetrics] = {}
-        else:
-            pred_counts, true_freqs, pred_entropy = self._distributions(y_true, y_pred)
-            sk = self._sklearn_metrics(y_true, y_pred)
-            confusion = self._confusion_dict(y_true, y_pred)
-            per_base = self._per_base_metrics(y_true, y_pred)
-            baselines = self._baseline_metrics(y_true, vocab_size)
+        # Always compute base-level classification metrics from aligned bases.
+        pred_counts, true_freqs, pred_entropy = self._distributions(y_true, y_pred)
+        sk = self._sklearn_metrics(y_true, y_pred)
+        confusion = self._confusion_dict(y_true, y_pred)
+        per_base = self._per_base_metrics(y_true, y_pred)
+        baselines = self._baseline_metrics(y_true, vocab_size)
 
         return MetricsResult(
             n_samples=int(np.unique([s.sequence_id for s in samples]).size),
