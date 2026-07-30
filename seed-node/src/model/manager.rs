@@ -1079,12 +1079,7 @@ impl ModelManager {
                 drop(cache);
                 let files = self.storage.load_model_files(model_id).await.map_err(|e| anyhow!("Failed to load model files: {}", e))?;
                 let entry = self.build_cached_checkpoint(model_id, active_hash, files).map_err(|e| {
-                    warn!(
-                        "Failed to build cached checkpoint for {} (hash {}): {:#}",
-                        model_id,
-                        hex::encode(active_hash),
-                        e
-                    );
+                    warn!("Failed to build cached checkpoint for {} (hash {}): {:#}", model_id, hex::encode(active_hash), e);
                     e
                 })?;
                 let mut cache = self.checkpoint_cache.write().await;
@@ -1286,6 +1281,19 @@ mod tests {
         vocab.insert("G".to_string(), 4);
         vocab.insert("<mask>".to_string(), 5);
 
+        // Add 2-mers so the test tokenizer is a realistic BPE/k-mer vocabulary.
+        let bases = ['A', 'T', 'C', 'G'];
+        let mut id = 6u32;
+        for a in bases {
+            for b in bases {
+                let mut kmer = String::with_capacity(2);
+                kmer.push(a);
+                kmer.push(b);
+                vocab.insert(kmer, id);
+                id += 1;
+            }
+        }
+
         let bpe = BPE::new(vocab, vec![]);
         let mut tokenizer = tokenizers::Tokenizer::new(bpe);
         tokenizer.add_special_tokens(&[AddedToken::from("<mask>", true), AddedToken::from("<pad>", true)]);
@@ -1301,8 +1309,9 @@ mod tests {
     }
 
     fn build_tiny_dnabert2_files() -> RawModelFiles {
+        // 22 = <pad>, A, T, C, G, <mask> (6) + 16 DNA 2-mers.
         let config = DnaBert2Config {
-            vocab_size: 8,
+            vocab_size: 22,
             hidden_size: 4,
             num_hidden_layers: 1,
             num_attention_heads: 2,
@@ -1423,7 +1432,7 @@ mod tests {
         let payload = GradientPayload {
             layer_gradients: HashMap::from([(
                 "lm_head.bias".to_string(),
-                GradientLayer { values: vec![0.1; 8], shape: vec![8], indices: vec![] },
+                GradientLayer { values: vec![0.1; 22], shape: vec![22], indices: vec![] },
             )]),
         };
         let h1 = manager

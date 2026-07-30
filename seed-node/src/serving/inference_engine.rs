@@ -9,6 +9,18 @@ use tracing::info;
 
 use crate::model::manager::ModelManager;
 
+/// Result of a masked-language-model evaluation, including the full logits at
+/// every masked position for client-side cross-entropy / perplexity computation.
+pub struct MaskedLlmResult {
+    pub output: String,
+    pub confidence: f32,
+    pub prompt_tokens: usize,
+    pub completion_tokens: usize,
+    pub masked_positions: Vec<u32>,
+    pub masked_logits: Vec<f32>,
+    pub logits_vocab_size: u32,
+}
+
 /// The kind of inference a biological model supports.
 ///
 /// The engine dispatches `predict` to the appropriate pipeline based on this kind.
@@ -83,6 +95,14 @@ impl LoadedModel {
         }
     }
 
+    /// Public masked-LM evaluation entry point.
+    pub fn evaluate_masked_lm(&self, input: &str, device: &Device) -> Result<MaskedLlmResult> {
+        match self.kind() {
+            ModelKind::MaskedLM => self.evaluate_masked_lm_inner(input, device),
+            _ => bail!("Model is a {:?} model and masked-LM evaluation is not implemented for this kind", self.kind()),
+        }
+    }
+
     /// Compute mean-pooled sequence embeddings for a DNA sequence.
     pub fn embed(&self, input: &str, device: &Device) -> Result<Vec<f32>> {
         match self {
@@ -93,8 +113,21 @@ impl LoadedModel {
 
     fn predict_masked_lm(&self, input: &str, device: &Device) -> Result<(String, f32, usize, usize)> {
         match self {
-            LoadedModel::DnaBert { model, tokenizer, .. } => predict_masked_lm_dnabert(model, tokenizer, input, device),
-            LoadedModel::Mgm { model, tokenizer, .. } => predict_masked_lm_mgm(model, tokenizer, input, device),
+            LoadedModel::DnaBert { model, tokenizer, .. } => {
+                let result = evaluate_masked_lm_dnabert(model, tokenizer, input, device)?;
+                Ok((result.output, result.confidence, result.prompt_tokens, result.completion_tokens))
+            }
+            LoadedModel::Mgm { model, tokenizer, .. } => {
+                let result = evaluate_masked_lm_mgm(model, tokenizer, input, device)?;
+                Ok((result.output, result.confidence, result.prompt_tokens, result.completion_tokens))
+            }
+        }
+    }
+
+    fn evaluate_masked_lm_inner(&self, input: &str, device: &Device) -> Result<MaskedLlmResult> {
+        match self {
+            LoadedModel::DnaBert { model, tokenizer, .. } => evaluate_masked_lm_dnabert(model, tokenizer, input, device),
+            LoadedModel::Mgm { model, tokenizer, .. } => evaluate_masked_lm_mgm(model, tokenizer, input, device),
         }
     }
 }
@@ -226,6 +259,14 @@ impl InferenceEngine {
         let loaded = self.get_or_load(model_id)?;
         loaded.embed(input, &self.device)
     }
+
+    /// Public masked-LM evaluation entry point.
+    ///
+    /// Returns the filled output together with the full logits at masked positions.
+    pub fn evaluate_masked_lm(&self, model_id: &str, input: &str) -> Result<MaskedLlmResult> {
+        let loaded = self.get_or_load(model_id)?;
+        loaded.evaluate_masked_lm(input, &self.device)
+    }
 }
 
 fn is_mgm_model(model_id: &str) -> bool {
@@ -249,12 +290,14 @@ fn load_varmap_weights(varmap: &mut VarMap, weights: &[u8], _device: &Device) ->
 /// * Runs `DnaBert2ForMaskedLM::forward` once.
 /// * Replaces each mask with the argmax-predicted token.
 /// * Decodes by concatenating raw token strings, producing a continuous DNA sequence.
-fn predict_masked_lm_dnabert(
+/// * Extracts and returns the full logits at every masked position for client-side
+///   cross-entropy / perplexity computation.
+fn evaluate_masked_lm_dnabert(
     model: &xenom_miner::dnabert2::DnaBert2ForMaskedLM,
     tokenizer: &xenom_miner::tokenizer::DnaTokenizer,
     input: &str,
     device: &Device,
-) -> Result<(String, f32, usize, usize)> {
+) -> Result<MaskedLlmResult> {
     let mask_token = tokenizer.mask_token();
 
     // Normalize common aliases to the tokenizer's mask token, but never hardcode `<mask>`.
@@ -290,7 +333,15 @@ fn predict_masked_lm_dnabert(
 
     if !normalized.contains(mask_token) {
         // No mask token in the prompt; return the input unchanged.
-        return Ok((normalized, 0.0, prompt_tokens, prompt_tokens));
+        return Ok(MaskedLlmResult {
+            output: normalized,
+            confidence: 0.0,
+            prompt_tokens,
+            completion_tokens: prompt_tokens,
+            masked_positions: Vec::new(),
+            masked_logits: Vec::new(),
+            logits_vocab_size: tokenizer.vocab_size as u32,
+        });
     }
 
     let seq_len = input_ids_vec.len();
@@ -333,7 +384,31 @@ fn predict_masked_lm_dnabert(
     // joins tokens with spaces for DNABERT-2 style BPE tokenizers.
     let output = tokenizer.decode_to_sequence(&output_ids, true)?;
     let confidence = if mask_count == 0 { 0.0 } else { total_confidence / mask_count as f32 };
-    Ok((output, confidence.clamp(0.0, 1.0), prompt_tokens, completion_tokens))
+
+    // Identify masked token positions and extract the full logits for each.
+    let masked_positions: Vec<u32> =
+        input_ids_vec.iter().enumerate().filter(|(_, &id)| id == mask_token_id).map(|(i, _)| i as u32).collect();
+
+    let vocab_size = tokenizer.vocab_size;
+    let n_masks = masked_positions.len();
+    let logits_flat = logits.reshape((seq_len, vocab_size))?;
+    let positions_i64: Vec<i64> = masked_positions.iter().map(|&i| i as i64).collect();
+    let positions_t = Tensor::new(positions_i64.as_slice(), device)?;
+    let masked_logits_t = logits_flat.index_select(&positions_t, 0)?;
+    let masked_logits = masked_logits_t
+        .reshape(n_masks * vocab_size)?
+        .to_vec1::<f32>()
+        .map_err(|e| anyhow!("Failed to flatten masked logits: {}", e))?;
+
+    Ok(MaskedLlmResult {
+        output,
+        confidence: confidence.clamp(0.0, 1.0),
+        prompt_tokens,
+        completion_tokens,
+        masked_positions,
+        masked_logits,
+        logits_vocab_size: vocab_size as u32,
+    })
 }
 
 fn embed_dnabert(
@@ -363,12 +438,12 @@ fn embed_dnabert(
 }
 
 /// Run Masked Language Modeling inference for the Mini Genome Model (MGM-1).
-fn predict_masked_lm_mgm(
+fn evaluate_masked_lm_mgm(
     model: &mini_genome_model::MiniGenomeModel,
     tokenizer: &mini_genome_model::DnaTokenizer,
     input: &str,
     device: &Device,
-) -> Result<(String, f32, usize, usize)> {
+) -> Result<MaskedLlmResult> {
     const MASK_CHAR: char = '[';
     const MASK_TOKEN_ID: usize = 4;
 
@@ -393,7 +468,15 @@ fn predict_masked_lm_mgm(
     let prompt_tokens = input_ids_vec.len();
 
     if !sanitized.contains(MASK_CHAR) {
-        return Ok((sanitized, 0.0, prompt_tokens, prompt_tokens));
+        return Ok(MaskedLlmResult {
+            output: sanitized,
+            confidence: 0.0,
+            prompt_tokens,
+            completion_tokens: prompt_tokens,
+            masked_positions: Vec::new(),
+            masked_logits: Vec::new(),
+            logits_vocab_size: 4,
+        });
     }
 
     let seq_len = input_ids_vec.len();
@@ -432,7 +515,30 @@ fn predict_masked_lm_mgm(
     let completion_tokens = output_ids.len();
     let output = tokenizer.decode(&output_ids);
     let confidence = if mask_count == 0 { 0.0 } else { total_confidence / mask_count as f32 };
-    Ok((output, confidence.clamp(0.0, 1.0), prompt_tokens, completion_tokens))
+
+    // Extract the four DNA logits at each masked position.
+    let masked_positions: Vec<u32> =
+        input_ids_vec.iter().enumerate().filter(|(_, &id)| id == MASK_TOKEN_ID).map(|(i, _)| i as u32).collect();
+
+    let n_masks = masked_positions.len();
+    let logits_dna_flat = logits_dna.reshape((seq_len, 4))?;
+    let positions_i64: Vec<i64> = masked_positions.iter().map(|&i| i as i64).collect();
+    let positions_t = Tensor::new(positions_i64.as_slice(), device)?;
+    let masked_logits_t = logits_dna_flat.index_select(&positions_t, 0)?;
+    let masked_logits = masked_logits_t
+        .reshape(n_masks * 4)?
+        .to_vec1::<f32>()
+        .map_err(|e| anyhow!("Failed to flatten masked logits for MGM-1: {}", e))?;
+
+    Ok(MaskedLlmResult {
+        output,
+        confidence: confidence.clamp(0.0, 1.0),
+        prompt_tokens,
+        completion_tokens,
+        masked_positions,
+        masked_logits,
+        logits_vocab_size: 4,
+    })
 }
 
 #[cfg(test)]
@@ -449,6 +555,21 @@ mod tests {
         for (id, token) in ["A", "T", "C", "G", "<mask>", "<pad>"].iter().enumerate() {
             vocab.insert(token.to_string(), id as u32);
         }
+
+        // Add DNA 2-mers so the test tokenizer is a realistic BPE/k-mer vocabulary
+        // rather than just four single bases.
+        let bases = ['A', 'T', 'C', 'G'];
+        let mut id = 6u32;
+        for a in bases {
+            for b in bases {
+                let mut kmer = String::with_capacity(2);
+                kmer.push(a);
+                kmer.push(b);
+                vocab.insert(kmer, id);
+                id += 1;
+            }
+        }
+
         let bpe = BPE::new(vocab, vec![]);
         let mut tokenizer = tokenizers::Tokenizer::new(bpe);
         tokenizer.add_special_tokens(&[AddedToken::from("<mask>", true), AddedToken::from("<pad>", true)]);
@@ -494,14 +615,17 @@ mod tests {
         let device = Device::Cpu;
         let mut varmap = VarMap::new();
 
-        // Pre-set the lm_head bias so argmax always picks a non-special nucleotide token.
-        // Token 0 (A) is made slightly higher than 1-3, and 4-5 (special tokens) are strongly negative.
+        // Pre-set the lm_head bias so argmax always picks a non-special DNA token.
+        // Single bases (0-3) and 2-mers (6-21) get a high logit; special tokens (4-5) are strongly negative.
         let vocab_size = tokenizer.vocab_size;
         let mut bias_data = vec![-100.0f32; vocab_size];
+        for i in 0..4 {
+            bias_data[i] = 100.0;
+        }
         bias_data[0] = 110.0;
-        bias_data[1] = 100.0;
-        bias_data[2] = 100.0;
-        bias_data[3] = 100.0;
+        for i in 6..vocab_size {
+            bias_data[i] = 100.0;
+        }
         let bias_tensor = Tensor::new(bias_data.as_slice(), &device).unwrap();
         varmap.get(vocab_size, "lm_head.bias", candle_nn::Init::Const(0.0), DType::F32, &device).unwrap();
         varmap.set_one("lm_head.bias", &bias_tensor).unwrap();
@@ -527,22 +651,24 @@ mod tests {
     #[test]
     fn test_single_mask_reconstruction() {
         let loaded = build_loaded_model();
-        let (output, confidence, _, _) = loaded.predict("ATCG<mask>GTA", &Device::Cpu).unwrap();
+        let (output, confidence, prompt_tokens, completion_tokens) = loaded.predict("ATCG<mask>GTA", &Device::Cpu).unwrap();
 
         assert!(!output.contains('<'), "output should not contain any special token: {}", output);
         assert!(!output.contains(' '), "output should not contain spaces: {}", output);
-        assert_eq!(output.len(), 8, "output should preserve the 8 token positions: {}", output);
+        assert!(output.chars().all(|c| matches!(c, 'A' | 'T' | 'C' | 'G')), "output should only contain DNA bases: {}", output);
+        assert_eq!(prompt_tokens, completion_tokens, "each mask must be replaced by exactly one token");
         assert!(confidence >= 0.0 && confidence <= 1.0);
     }
 
     #[test]
     fn test_multiple_mask_reconstruction() {
         let loaded = build_loaded_model();
-        let (output, confidence, _, _) = loaded.predict("AT<mask>G<mask>TA<mask>C", &Device::Cpu).unwrap();
+        let (output, confidence, prompt_tokens, completion_tokens) = loaded.predict("AT<mask>G<mask>TA<mask>C", &Device::Cpu).unwrap();
 
         assert!(!output.contains('<'), "output should not contain any special token: {}", output);
         assert!(!output.contains(' '), "output should not contain spaces: {}", output);
-        assert_eq!(output.len(), 9, "output should preserve the 9 token positions: {}", output);
+        assert!(output.chars().all(|c| matches!(c, 'A' | 'T' | 'C' | 'G')), "output should only contain DNA bases: {}", output);
+        assert_eq!(prompt_tokens, completion_tokens, "each mask must be replaced by exactly one token");
         assert!(confidence >= 0.0 && confidence <= 1.0);
     }
 
@@ -557,10 +683,11 @@ mod tests {
     #[test]
     fn test_bracket_mask_alias() {
         let loaded = build_loaded_model();
-        let (output, _confidence, _, _) = loaded.predict("ATCG[MASK]GTA", &Device::Cpu).unwrap();
+        let (output, _confidence, prompt_tokens, completion_tokens) = loaded.predict("ATCG[MASK]GTA", &Device::Cpu).unwrap();
         assert!(!output.contains('<'), "output should not contain any special token: {}", output);
         assert!(!output.contains(' '), "output should not contain spaces: {}", output);
-        assert_eq!(output.len(), 8);
+        assert!(output.chars().all(|c| matches!(c, 'A' | 'T' | 'C' | 'G')), "output should only contain DNA bases: {}", output);
+        assert_eq!(prompt_tokens, completion_tokens, "each mask must be replaced by exactly one token");
     }
 
     #[test]

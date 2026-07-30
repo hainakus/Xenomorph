@@ -67,6 +67,42 @@ impl Inference for InferenceService {
     }
 
     #[instrument(skip(self, request))]
+    async fn evaluate_masked_llm(
+        &self,
+        request: Request<EvaluateMaskedLlmRequest>,
+    ) -> Result<Response<EvaluateMaskedLlmResponse>, Status> {
+        let req = request.into_inner();
+        let start = Instant::now();
+        let model_id = req.model_id.clone();
+
+        info!("EvaluateMaskedLlm request for model: {}", model_id);
+
+        let input = String::from_utf8_lossy(&req.input_data).to_string();
+        let engine = self.engine.clone();
+        let result = tokio::task::spawn_blocking(move || engine.evaluate_masked_lm(&model_id, &input))
+            .await
+            .map_err(|e| Status::internal(format!("Inference task panicked: {}", e)))?
+            .map_err(|e| Status::internal(format!("Inference failed: {}", e)))?;
+
+        let latency_ms = start.elapsed().as_millis() as u64;
+
+        let response = EvaluateMaskedLlmResponse {
+            output_data: result.output.into_bytes(),
+            confidence: result.confidence,
+            prompt_tokens: result.prompt_tokens as u32,
+            completion_tokens: result.completion_tokens as u32,
+            masked_positions: result.masked_positions,
+            masked_logits: result.masked_logits,
+            logits_vocab_size: result.logits_vocab_size,
+            model_version: "1".to_string(),
+            latency_ms,
+        };
+
+        info!("EvaluateMaskedLlm completed in {}ms", latency_ms);
+        Ok(Response::new(response))
+    }
+
+    #[instrument(skip(self, request))]
     async fn embed(&self, request: Request<EmbedRequest>) -> Result<Response<EmbedResponse>, Status> {
         let req = request.into_inner();
         let start = Instant::now();

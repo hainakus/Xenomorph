@@ -292,8 +292,8 @@ impl MultiGpuTrainer {
         }
 
         let gather_start = Instant::now();
-        let grads =
-            move_grads_to_device(grads, master_device).with_context(|| format!("Failed to move gradients from GPU {} to master device", gpu_idx))?;
+        let grads = move_grads_to_device(grads, master_device)
+            .with_context(|| format!("Failed to move gradients from GPU {} to master device", gpu_idx))?;
         let gather_ms = gather_start.elapsed().as_millis() as u64;
 
         Ok(MicroResult { loss, weight, grads: Some(grads), compute_ms, gather_ms })

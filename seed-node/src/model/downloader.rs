@@ -60,9 +60,7 @@ pub async fn download_model(
     let mut weights: Option<Vec<u8>> = None;
     if let Some(path) = weights_file {
         info!("Loading weights for {} from {}", model_id, path.display());
-        let data = tokio::fs::read(path)
-            .await
-            .with_context(|| format!("Failed to read weights file {}", path.display()))?;
+        let data = tokio::fs::read(path).await.with_context(|| format!("Failed to read weights file {}", path.display()))?;
         if !data.is_empty() && !is_valid_weights(&data) {
             bail!(
                 "{} does not look like a valid safetensors or PyTorch zip checkpoint; \

@@ -81,7 +81,11 @@ async fn handle_connection(
                         let ascii = String::from_utf8_lossy(&bytes[..bytes.len().min(64)]).replace('\n', "\\n");
                         warn!(
                             "Failed to deserialize miner request from {}: {}. First {} bytes: {} (ascii: '{}')",
-                            peer, e, bytes.len().min(24), preview, ascii
+                            peer,
+                            e,
+                            bytes.len().min(24),
+                            preview,
+                            ascii
                         );
                         continue;
                     }

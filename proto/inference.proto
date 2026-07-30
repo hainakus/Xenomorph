@@ -8,7 +8,12 @@ option go_package = "xenom/ecosystem/proto/inference";
 service Inference {
   // Make a prediction using a specific model
   rpc Predict (PredictRequest) returns (PredictResponse);
-  
+
+  // Evaluate a masked language model, returning the argmax-filled sequence
+  // and the full logits at every masked position for literature-comparable
+  // cross-entropy / perplexity computation.
+  rpc EvaluateMaskedLlm (EvaluateMaskedLlmRequest) returns (EvaluateMaskedLlmResponse);
+
   // Generate embeddings for input data
   rpc Embed (EmbedRequest) returns (EmbedResponse);
   
@@ -42,6 +47,32 @@ message PredictResponse {
   bytes signature = 7;
   uint32 prompt_tokens = 8;
   uint32 completion_tokens = 9;
+}
+
+// Masked language model evaluation request.
+// The input is a sequence containing one or more mask tokens; the response
+// includes both the argmax-filled output and the per-mask-position logits.
+message EvaluateMaskedLlmRequest {
+  string model_id = 1;
+  bytes input_data = 2;
+  string query_id = 3;
+  bytes encryption_key = 4;
+  map<string, string> metadata = 5;
+}
+
+// Masked language model evaluation response.
+// masked_logits is flattened as [num_masks * logits_vocab_size]; positions are
+// token indices in the input tokenization.
+message EvaluateMaskedLlmResponse {
+  bytes output_data = 1;
+  float confidence = 2;
+  uint32 prompt_tokens = 3;
+  uint32 completion_tokens = 4;
+  repeated uint32 masked_positions = 5;
+  repeated float masked_logits = 6;
+  uint32 logits_vocab_size = 7;
+  string model_version = 8;
+  uint64 latency_ms = 9;
 }
 
 // Embed request

@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Xenomorph MLM Benchmark - Block 5000</title>
+
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #222; }
+      h1, h2, h3 { color: #1a1a1a; }
+      .metrics-table { border-collapse: collapse; margin: 1rem 0; width: 100%; max-width: 700px; }
+      .metrics-table th, .metrics-table td { border: 1px solid #ccc; padding: 0.4rem 0.6rem; text-align: left; }
+      .metrics-table th { background: #f5f5f5; }
+      img { max-width: 100%; height: auto; margin: 1rem 0; }
+      ul { max-width: 700px; }
+    </style>
+    
+</head>
+<body>
+<h1>Xenomorph MLM Benchmark</h1>
+<h2>Overview</h2>
+<table class='metrics-table'>
+<tr><th>Benchmark version</th><td>1.0.0</td></tr>
+<tr><th>Timestamp</th><td>2026-07-30T20:22:07.400992+00:00</td></tr>
+<tr><th>Block</th><td>5000</td></tr>
+<tr><th>Model</th><td>multimolecule/dnabert2</td></tr>
+<tr><th>Model version</th><td>1</td></tr>
+<tr><th>Model hash</th><td>5390e2c434f23cb8a46d0d7b25caac1eab076620711c0e4dd9a4b8bcc6323d0b</td></tr>
+<tr><th>Checkpoint</th><td>N/A</td></tr>
+<tr><th>Genome</th><td>/Users/ruimendes/.rusty-xenom/grch38.xenom</td></tr>
+<tr><th>Genome hash</th><td>8c672fe39f388e7072011a7229738c32f34a158112ed4906fbe7fef021fb287f</td></tr>
+<tr><th>Seed</th><td>42</td></tr>
+<tr><th>Samples</th><td>16</td></tr>
+<tr><th>Sequence length</th><td>512</td></tr>
+<tr><th>Mask probability</th><td>0.1500</td></tr>
+<tr><th>gRPC address</th><td>94.237.108.145:50051</td></tr>
+<tr><th>Vocab size</th><td>4</td></tr>
+<tr><th>Logits available</th><td>No</td></tr>
+<tr><th>Masked positions</th><td>1244</td></tr>
+</table>
+<h2>Core Metrics</h2>
+<table class='metrics-table'>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+<tr>
+<td>Cross Entropy</td>
+<td>1.8023</td>
+</tr>
+<tr>
+<td>NLL</td>
+<td>1.8023</td>
+</tr>
+<tr>
+<td>Perplexity</td>
+<td>6.0637</td>
+</tr>
+<tr>
+<td>Top-1 Accuracy</td>
+<td>36.17%</td>
+</tr>
+<tr>
+<td>Top-3 Accuracy</td>
+<td>78.72%</td>
+</tr>
+<tr>
+<td>Top-5 Accuracy</td>
+<td>100.00%</td>
+</tr>
+<tr>
+<td>Balanced Accuracy</td>
+<td>32.31%</td>
+</tr>
+<tr>
+<td>Precision</td>
+<td>32.25%</td>
+</tr>
+<tr>
+<td>Recall</td>
+<td>32.31%</td>
+</tr>
+<tr>
+<td>Macro F1</td>
+<td>0.3226</td>
+</tr>
+<tr>
+<td>Micro F1</td>
+<td>0.3617</td>
+</tr>
+<tr>
+<td>Weighted F1</td>
+<td>0.3604</td>
+</tr>
+<tr>
+<td>MCC</td>
+<td>0.1106</td>
+</tr>
+<tr>
+<td>Kappa</td>
+<td>0.1106</td>
+</tr>
+<tr>
+<td>Prediction Entropy</td>
+<td>1.3216</td>
+</tr>
+<tr>
+<td>Average Confidence</td>
+<td>0.0718</td>
+</tr>
+</table>
+<h2>Per-Base Metrics</h2>
+<table class='metrics-table'>
+<tr>
+<th>Base</th>
+<th>Count</th>
+<th>Correct</th>
+<th>Precision</th>
+<th>Recall</th>
+<th>F1</th>
+<th>Accuracy</th>
+</tr>
+<tr>
+<td>A</td>
+<td>488</td>
+<td>253</td>
+<td>0.5091</td>
+<td>0.5184</td>
+<td>0.5137</td>
+<td>0.5184</td>
+</tr>
+<tr>
+<td>C</td>
+<td>215</td>
+<td>60</td>
+<td>0.2609</td>
+<td>0.2791</td>
+<td>0.2697</td>
+<td>0.2791</td>
+</tr>
+<tr>
+<td>G</td>
+<td>225</td>
+<td>48</td>
+<td>0.2376</td>
+<td>0.2133</td>
+<td>0.2248</td>
+<td>0.2133</td>
+</tr>
+<tr>
+<td>T</td>
+<td>316</td>
+<td>89</td>
+<td>0.2825</td>
+<td>0.2816</td>
+<td>0.2821</td>
+<td>0.2816</td>
+</tr>
+</table>
+<h2>Baselines</h2>
+<table class='metrics-table'>
+<tr>
+<th>Baseline</th>
+<th>Accuracy</th>
+<th>Top-3</th>
+<th>Top-5</th>
+<th>Macro F1</th>
+<th>Perplexity</th>
+<th>Average Confidence</th>
+</tr>
+<tr>
+<td>Uniform</td>
+<td>25.00%</td>
+<td>75.00%</td>
+<td>100.00%</td>
+<td>0.2429</td>
+<td>4.0000</td>
+<td>0.2500</td>
+</tr>
+<tr>
+<td>Majority</td>
+<td>39.23%</td>
+<td>100.00%</td>
+<td>100.00%</td>
+<td>0.1409</td>
+<td>inf</td>
+<td>1.0000</td>
+</tr>
+<tr>
+<td>Frequency</td>
+<td>28.10%</td>
+<td>82.72%</td>
+<td>100.00%</td>
+<td>0.2500</td>
+<td>3.7730</td>
+<td>0.2810</td>
+</tr>
+</table>
+<h2>Confusion Matrix</h2>
+<table class='metrics-table'>
+<tr><th></th>
+<th>A</th>
+<th>C</th>
+<th>G</th>
+<th>T</th>
+</tr>
+<tr><th>A</th>
+<td>253</td>
+<td>70</td>
+<td>57</td>
+<td>108</td>
+</tr>
+<tr><th>C</th>
+<td>67</td>
+<td>60</td>
+<td>35</td>
+<td>53</td>
+</tr>
+<tr><th>G</th>
+<td>66</td>
+<td>46</td>
+<td>48</td>
+<td>65</td>
+</tr>
+<tr><th>T</th>
+<td>111</td>
+<td>54</td>
+<td>62</td>
+<td>89</td>
+</tr>
+</table>
+<h2>Genomic Region Metrics</h2>
+<table class='metrics-table'>
+<tr>
+<th>Region</th>
+<th>N Masked</th>
+<th>Top-1</th>
+<th>Balanced Acc</th>
+<th>Macro F1</th>
+<th>Perplexity</th>
+</tr>
+<tr>
+<td>at_rich</td>
+<td>543</td>
+<td>44.75%</td>
+<td>29.24%</td>
+<td>0.2915</td>
+<td>8.0967</td>
+</tr>
+</table>
+<h2>Plots</h2>
+<h3>Accuracy</h3>
+<img src='accuracy.png' alt='accuracy'>
+<h3>Loss</h3>
+<img src='loss.png' alt='loss'>
+<h3>Perplexity</h3>
+<img src='perplexity.png' alt='perplexity'>
+<h3>Confidence</h3>
+<img src='confidence.png' alt='confidence'>
+<h3>Confusion Matrix</h3>
+<img src='confusion_matrix.png' alt='confusion_matrix'>
+<h3>Prediction Distribution</h3>
+<img src='prediction_distribution.png' alt='prediction_distribution'>
+<h2>Warnings</h2>
+<ul>
+<li>Cross-entropy, NLL, perplexity and top-k are approximations because the gRPC response does not expose logits. A uniform-tail distribution over the remaining 3 tokens is assumed.</li>
+</ul>
+</body>
+</html>

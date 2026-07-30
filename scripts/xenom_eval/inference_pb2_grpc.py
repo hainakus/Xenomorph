@@ -40,6 +40,11 @@ class InferenceStub:
                 request_serializer=inference__pb2.PredictRequest.SerializeToString,
                 response_deserializer=inference__pb2.PredictResponse.FromString,
                 _registered_method=True)
+        self.EvaluateMaskedLlm = channel.unary_unary(
+                '/xenom.inference.Inference/EvaluateMaskedLlm',
+                request_serializer=inference__pb2.EvaluateMaskedLlmRequest.SerializeToString,
+                response_deserializer=inference__pb2.EvaluateMaskedLlmResponse.FromString,
+                _registered_method=True)
         self.Embed = channel.unary_unary(
                 '/xenom.inference.Inference/Embed',
                 request_serializer=inference__pb2.EmbedRequest.SerializeToString,
@@ -68,6 +73,15 @@ class InferenceServicer:
 
     def Predict(self, request, context):
         """Make a prediction using a specific model
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def EvaluateMaskedLlm(self, request, context):
+        """Evaluate a masked language model, returning the argmax-filled sequence
+        and the full logits at every masked position for literature-comparable
+        cross-entropy / perplexity computation.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -108,6 +122,11 @@ def add_InferenceServicer_to_server(servicer, server):
                     servicer.Predict,
                     request_deserializer=inference__pb2.PredictRequest.FromString,
                     response_serializer=inference__pb2.PredictResponse.SerializeToString,
+            ),
+            'EvaluateMaskedLlm': grpc.unary_unary_rpc_method_handler(
+                    servicer.EvaluateMaskedLlm,
+                    request_deserializer=inference__pb2.EvaluateMaskedLlmRequest.FromString,
+                    response_serializer=inference__pb2.EvaluateMaskedLlmResponse.SerializeToString,
             ),
             'Embed': grpc.unary_unary_rpc_method_handler(
                     servicer.Embed,
@@ -158,6 +177,33 @@ class Inference:
             '/xenom.inference.Inference/Predict',
             inference__pb2.PredictRequest.SerializeToString,
             inference__pb2.PredictResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def EvaluateMaskedLlm(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/xenom.inference.Inference/EvaluateMaskedLlm',
+            inference__pb2.EvaluateMaskedLlmRequest.SerializeToString,
+            inference__pb2.EvaluateMaskedLlmResponse.FromString,
             options,
             channel_credentials,
             insecure,

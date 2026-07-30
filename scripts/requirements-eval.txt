@@ -2,3 +2,5 @@ grpcio>=1.60
 protobuf>=4.25
 requests>=2.30
 websockets>=12.0
+scikit-learn>=1.5
+tokenizers>=0.19

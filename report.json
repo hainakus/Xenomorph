@@ -1,0 +1,550 @@
+{
+  "benchmark_version": "1.0.0",
+  "timestamp": "2026-07-30T20:22:07.400992+00:00",
+  "block": 5000,
+  "model_id": "multimolecule/dnabert2",
+  "model_version": "1",
+  "model_hash": "5390e2c434f23cb8a46d0d7b25caac1eab076620711c0e4dd9a4b8bcc6323d0b",
+  "checkpoint": null,
+  "genome_source": "/Users/ruimendes/.rusty-xenom/grch38.xenom",
+  "genome_hash": "8c672fe39f388e7072011a7229738c32f34a158112ed4906fbe7fef021fb287f",
+  "seed": 42,
+  "num_samples": 16,
+  "seq_length": 512,
+  "mask_prob": 0.15,
+  "grpc_address": "94.237.108.145:50051",
+  "vocab_size": 4,
+  "metrics": {
+    "n_samples": 16,
+    "n_masked": 1244,
+    "logits_available": false,
+    "vocab_size": 4,
+    "approximation_note": "Cross-entropy, NLL, perplexity and top-k are approximations because the gRPC response does not expose logits. A uniform-tail distribution over the remaining 3 tokens is assumed.",
+    "cross_entropy": 1.8023168024967209,
+    "nll": 1.8023168024967209,
+    "perplexity": 6.063679551273194,
+    "cross_entropy_lower_bound": 1.1011124960638596,
+    "top1_accuracy": 0.3617363344051447,
+    "top3_accuracy": 0.7872454448017148,
+    "top5_accuracy": 1.0,
+    "top_k_approximate": true,
+    "balanced_accuracy": 0.32312282333656667,
+    "precision": 0.3225218340222614,
+    "recall": 0.32312282333656667,
+    "macro_f1": 0.32257119466692047,
+    "micro_f1": 0.3617363344051447,
+    "weighted_f1": 0.36044403457834123,
+    "mcc": 0.11063838905452363,
+    "kappa": 0.11059645584209765,
+    "prediction_entropy": 1.3216194757689985,
+    "average_confidence": 0.07178683847135046,
+    "prediction_distribution": {
+      "A": 497,
+      "C": 230,
+      "G": 202,
+      "T": 315
+    },
+    "true_distribution": {
+      "A": 0.39228295819935693,
+      "C": 0.17282958199356913,
+      "G": 0.18086816720257234,
+      "T": 0.2540192926045016
+    },
+    "confusion_matrix": {
+      "A": {
+        "A": 253,
+        "C": 70,
+        "G": 57,
+        "T": 108
+      },
+      "C": {
+        "A": 67,
+        "C": 60,
+        "G": 35,
+        "T": 53
+      },
+      "G": {
+        "A": 66,
+        "C": 46,
+        "G": 48,
+        "T": 65
+      },
+      "T": {
+        "A": 111,
+        "C": 54,
+        "G": 62,
+        "T": 89
+      }
+    },
+    "per_base": {
+      "A": {
+        "count": 488,
+        "correct": 253,
+        "precision": 0.5090543259557344,
+        "recall": 0.5184426229508197,
+        "f1": 0.5137055837563452,
+        "accuracy": 0.5184426229508197
+      },
+      "C": {
+        "count": 215,
+        "correct": 60,
+        "precision": 0.2608695652173913,
+        "recall": 0.27906976744186046,
+        "f1": 0.2696629213483146,
+        "accuracy": 0.27906976744186046
+      },
+      "G": {
+        "count": 225,
+        "correct": 48,
+        "precision": 0.2376237623762376,
+        "recall": 0.21333333333333335,
+        "f1": 0.22482435597189696,
+        "accuracy": 0.21333333333333335
+      },
+      "T": {
+        "count": 316,
+        "correct": 89,
+        "precision": 0.28253968253968254,
+        "recall": 0.28164556962025317,
+        "f1": 0.2820919175911252,
+        "accuracy": 0.28164556962025317
+      }
+    },
+    "baselines": {
+      "uniform": {
+        "name": "uniform",
+        "accuracy": 0.25,
+        "top3_accuracy": 0.75,
+        "top5_accuracy": 1.0,
+        "balanced_accuracy": 0.25,
+        "precision": 0.25,
+        "recall": 0.25,
+        "macro_f1": 0.24290900771231466,
+        "micro_f1": 0.25,
+        "weighted_f1": 0.25709099228768534,
+        "mcc": 0.0,
+        "kappa": 0.0,
+        "cross_entropy": 1.3862943611198908,
+        "nll": 1.3862943611198908,
+        "perplexity": 4.000000000000001,
+        "prediction_entropy": 1.3862943611198906,
+        "average_confidence": 0.25,
+        "prediction_distribution": {
+          "A": 311,
+          "C": 311,
+          "G": 311,
+          "T": 311
+        },
+        "confusion_matrix": {
+          "A": {
+            "A": 122,
+            "C": 122,
+            "G": 122,
+            "T": 122
+          },
+          "C": {
+            "A": 54,
+            "C": 54,
+            "G": 54,
+            "T": 54
+          },
+          "G": {
+            "A": 56,
+            "C": 56,
+            "G": 56,
+            "T": 56
+          },
+          "T": {
+            "A": 79,
+            "C": 79,
+            "G": 79,
+            "T": 79
+          }
+        },
+        "note": ""
+      },
+      "majority": {
+        "name": "majority",
+        "accuracy": 0.39228295819935693,
+        "top3_accuracy": 1.0,
+        "top5_accuracy": 1.0,
+        "balanced_accuracy": 0.25,
+        "precision": 0.09807073954983923,
+        "recall": 0.25,
+        "macro_f1": 0.14087759815242495,
+        "micro_f1": 0.39228295819935693,
+        "weighted_f1": 0.22105552378901408,
+        "mcc": 0.0,
+        "kappa": 0.0,
+        "cross_entropy": "inf",
+        "nll": "inf",
+        "perplexity": "inf",
+        "prediction_entropy": 8.589333004928846e-11,
+        "average_confidence": 1.0,
+        "prediction_distribution": {
+          "A": 1244,
+          "C": 0,
+          "G": 0,
+          "T": 0
+        },
+        "confusion_matrix": {
+          "A": {
+            "A": 488,
+            "C": 0,
+            "G": 0,
+            "T": 0
+          },
+          "C": {
+            "A": 215,
+            "C": 0,
+            "G": 0,
+            "T": 0
+          },
+          "G": {
+            "A": 225,
+            "C": 0,
+            "G": 0,
+            "T": 0
+          },
+          "T": {
+            "A": 316,
+            "C": 0,
+            "G": 0,
+            "T": 0
+          }
+        },
+        "note": "degenerate for non-majority classes; cross-entropy is smoothed to avoid infinity."
+      },
+      "frequency": {
+        "name": "frequency",
+        "accuracy": 0.2809950786282193,
+        "top3_accuracy": 0.8271704180064309,
+        "top5_accuracy": 1.0,
+        "balanced_accuracy": 0.25000000000000006,
+        "precision": 0.25000000000000006,
+        "recall": 0.25000000000000006,
+        "macro_f1": 0.25000000000000006,
+        "micro_f1": 0.2809950786282193,
+        "weighted_f1": 0.2809950786282194,
+        "mcc": -6.119653627604678e-05,
+        "kappa": -6.119653627600918e-05,
+        "cross_entropy": 1.3278571896228852,
+        "nll": 1.3278571896228852,
+        "perplexity": 3.772950002952671,
+        "prediction_entropy": 1.3278571896228852,
+        "average_confidence": 0.2809950786282193,
+        "prediction_distribution": {
+          "A": 488,
+          "C": 215,
+          "G": 225,
+          "T": 316
+        },
+        "confusion_matrix": {
+          "A": {
+            "A": 191,
+            "C": 84,
+            "G": 88,
+            "T": 124
+          },
+          "C": {
+            "A": 84,
+            "C": 37,
+            "G": 39,
+            "T": 55
+          },
+          "G": {
+            "A": 88,
+            "C": 39,
+            "G": 41,
+            "T": 57
+          },
+          "T": {
+            "A": 124,
+            "C": 55,
+            "G": 57,
+            "T": 80
+          }
+        },
+        "note": ""
+      }
+    },
+    "warnings": [
+      "Cross-entropy, NLL, perplexity and top-k are approximations because the gRPC response does not expose logits. A uniform-tail distribution over the remaining 3 tokens is assumed."
+    ]
+  },
+  "region_metrics": {
+    "at_rich": {
+      "n_samples": 7,
+      "n_masked": 543,
+      "logits_available": false,
+      "vocab_size": 4,
+      "approximation_note": "Cross-entropy, NLL, perplexity and top-k are approximations because the gRPC response does not expose logits. A uniform-tail distribution over the remaining 3 tokens is assumed.",
+      "cross_entropy": 2.0914575694096573,
+      "nll": 2.0914575694096573,
+      "perplexity": 8.09670808173823,
+      "cross_entropy_lower_bound": 1.4844894541234088,
+      "top1_accuracy": 0.44751381215469616,
+      "top3_accuracy": 0.8158379373848987,
+      "top5_accuracy": 1.0,
+      "top_k_approximate": true,
+      "balanced_accuracy": 0.2923613418544138,
+      "precision": 0.29311403508771927,
+      "recall": 0.2923613418544138,
+      "macro_f1": 0.291516920007486,
+      "micro_f1": 0.44751381215469616,
+      "weighted_f1": 0.4387735436569656,
+      "mcc": 0.10533933491567868,
+      "kappa": 0.10509256715925941,
+      "prediction_entropy": 1.102762176881436,
+      "average_confidence": 0.05789101291550786,
+      "prediction_distribution": {
+        "A": 304,
+        "C": 45,
+        "G": 50,
+        "T": 144
+      },
+      "true_distribution": {
+        "A": 0.5340699815837937,
+        "C": 0.11233885819521179,
+        "G": 0.11233885819521179,
+        "T": 0.24125230202578268
+      },
+      "confusion_matrix": {
+        "A": {
+          "A": 191,
+          "C": 20,
+          "G": 18,
+          "T": 61
+        },
+        "C": {
+          "A": 36,
+          "C": 6,
+          "G": 4,
+          "T": 15
+        },
+        "G": {
+          "A": 21,
+          "C": 4,
+          "G": 7,
+          "T": 29
+        },
+        "T": {
+          "A": 56,
+          "C": 15,
+          "G": 21,
+          "T": 39
+        }
+      },
+      "per_base": {
+        "A": {
+          "count": 290,
+          "correct": 191,
+          "precision": 0.6282894736842105,
+          "recall": 0.6586206896551724,
+          "f1": 0.6430976430976431,
+          "accuracy": 0.6586206896551724
+        },
+        "C": {
+          "count": 61,
+          "correct": 6,
+          "precision": 0.13333333333333333,
+          "recall": 0.09836065573770492,
+          "f1": 0.11320754716981132,
+          "accuracy": 0.09836065573770492
+        },
+        "G": {
+          "count": 61,
+          "correct": 7,
+          "precision": 0.14,
+          "recall": 0.11475409836065574,
+          "f1": 0.12612612612612611,
+          "accuracy": 0.11475409836065574
+        },
+        "T": {
+          "count": 131,
+          "correct": 39,
+          "precision": 0.2708333333333333,
+          "recall": 0.29770992366412213,
+          "f1": 0.28363636363636363,
+          "accuracy": 0.29770992366412213
+        }
+      },
+      "baselines": {
+        "uniform": {
+          "name": "uniform",
+          "accuracy": 0.25,
+          "top3_accuracy": 0.75,
+          "top5_accuracy": 1.0,
+          "balanced_accuracy": 0.25,
+          "precision": 0.25,
+          "recall": 0.25,
+          "macro_f1": 0.22404046017175241,
+          "micro_f1": 0.25,
+          "weighted_f1": 0.2759595398282476,
+          "mcc": 0.0,
+          "kappa": 0.0,
+          "cross_entropy": 1.3862943611198904,
+          "nll": 1.3862943611198904,
+          "perplexity": 3.999999999999999,
+          "prediction_entropy": 1.3862943611198906,
+          "average_confidence": 0.25,
+          "prediction_distribution": {
+            "A": 136,
+            "C": 136,
+            "G": 136,
+            "T": 136
+          },
+          "confusion_matrix": {
+            "A": {
+              "A": 72,
+              "C": 72,
+              "G": 72,
+              "T": 72
+            },
+            "C": {
+              "A": 15,
+              "C": 15,
+              "G": 15,
+              "T": 15
+            },
+            "G": {
+              "A": 15,
+              "C": 15,
+              "G": 15,
+              "T": 15
+            },
+            "T": {
+              "A": 33,
+              "C": 33,
+              "G": 33,
+              "T": 33
+            }
+          },
+          "note": ""
+        },
+        "majority": {
+          "name": "majority",
+          "accuracy": 0.5340699815837937,
+          "top3_accuracy": 1.0,
+          "top5_accuracy": 1.0,
+          "balanced_accuracy": 0.25,
+          "precision": 0.13351749539594843,
+          "recall": 0.25,
+          "macro_f1": 0.17406962785114044,
+          "micro_f1": 0.5340699815837937,
+          "weighted_f1": 0.3718614517630256,
+          "mcc": 0.0,
+          "kappa": 0.0,
+          "cross_entropy": "inf",
+          "nll": "inf",
+          "perplexity": "inf",
+          "prediction_entropy": 8.589333004928846e-11,
+          "average_confidence": 1.0,
+          "prediction_distribution": {
+            "A": 543,
+            "C": 0,
+            "G": 0,
+            "T": 0
+          },
+          "confusion_matrix": {
+            "A": {
+              "A": 290,
+              "C": 0,
+              "G": 0,
+              "T": 0
+            },
+            "C": {
+              "A": 61,
+              "C": 0,
+              "G": 0,
+              "T": 0
+            },
+            "G": {
+              "A": 61,
+              "C": 0,
+              "G": 0,
+              "T": 0
+            },
+            "T": {
+              "A": 131,
+              "C": 0,
+              "G": 0,
+              "T": 0
+            }
+          },
+          "note": "degenerate for non-majority classes; cross-entropy is smoothed to avoid infinity."
+        },
+        "frequency": {
+          "name": "frequency",
+          "accuracy": 0.368673456582861,
+          "top3_accuracy": 0.8876611418047882,
+          "top5_accuracy": 1.0,
+          "balanced_accuracy": 0.25,
+          "precision": 0.25,
+          "recall": 0.25,
+          "macro_f1": 0.25,
+          "micro_f1": 0.368673456582861,
+          "weighted_f1": 0.368673456582861,
+          "mcc": 0.0008130252988131942,
+          "kappa": 0.0008130252988132192,
+          "cross_entropy": 1.1692217905916786,
+          "nll": 1.1692217905916786,
+          "perplexity": 3.219486228925914,
+          "prediction_entropy": 1.1692217905916786,
+          "average_confidence": 0.368673456582861,
+          "prediction_distribution": {
+            "A": 290,
+            "C": 61,
+            "G": 61,
+            "T": 131
+          },
+          "confusion_matrix": {
+            "A": {
+              "A": 155,
+              "C": 33,
+              "G": 33,
+              "T": 70
+            },
+            "C": {
+              "A": 33,
+              "C": 7,
+              "G": 7,
+              "T": 15
+            },
+            "G": {
+              "A": 33,
+              "C": 7,
+              "G": 7,
+              "T": 15
+            },
+            "T": {
+              "A": 70,
+              "C": 15,
+              "G": 15,
+              "T": 32
+            }
+          },
+          "note": ""
+        }
+      },
+      "warnings": [
+        "Cross-entropy, NLL, perplexity and top-k are approximations because the gRPC response does not expose logits. A uniform-tail distribution over the remaining 3 tokens is assumed."
+      ]
+    }
+  },
+  "warnings": [
+    "Cross-entropy, NLL, perplexity and top-k are approximations because the gRPC response does not expose logits. A uniform-tail distribution over the remaining 3 tokens is assumed."
+  ],
+  "output_files": [
+    "/Users/ruimendes/CLionProjects/Xenomorph/report.json",
+    "/Users/ruimendes/CLionProjects/Xenomorph/metrics.csv",
+    "/Users/ruimendes/CLionProjects/Xenomorph/benchmark.html",
+    "/Users/ruimendes/CLionProjects/Xenomorph/history.json",
+    "/Users/ruimendes/CLionProjects/Xenomorph/accuracy.png",
+    "/Users/ruimendes/CLionProjects/Xenomorph/loss.png",
+    "/Users/ruimendes/CLionProjects/Xenomorph/perplexity.png",
+    "/Users/ruimendes/CLionProjects/Xenomorph/confidence.png",
+    "/Users/ruimendes/CLionProjects/Xenomorph/confusion_matrix.png",
+    "/Users/ruimendes/CLionProjects/Xenomorph/prediction_distribution.png"
+  ]
+}

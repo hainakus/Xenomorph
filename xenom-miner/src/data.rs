@@ -148,8 +148,10 @@ impl MlmBatchGenerator {
     /// Generate an MLM batch from a non-genome `TrainingBatch`.
     ///
     /// This is a synthetic fallback used for devnet/dry-run when no real genome
-    /// archive is configured.  It builds random DNA strings from `data_indices`
-    /// and reuses the same masking/padding path as `generate_from_sequences`.
+    /// archive is configured.  When the tokenizer has a BPE/k-mer vocabulary it
+    /// samples whole tokens from that vocabulary and concatenates them, so the
+    /// encoded sequence contains real k-mer ids rather than single bases.  For a
+    /// minimal 4-base tokenizer it falls back to random A/T/C/G strings.
     pub fn generate(&self, batch: &TrainingBatch) -> Result<MlmBatch> {
         if batch.data_indices.is_empty() {
             return Ok(MlmBatch {
@@ -167,6 +169,10 @@ impl MlmBatchGenerator {
         let base_seed = u64::from_le_bytes(batch.base_checkpoint[..8].try_into().unwrap_or([0u8; 8]));
         let raw_len = (self.seq_len * 4).max(16);
 
+        let dna_token_ids = self.tokenizer.dna_token_ids();
+        let token_strings = self.tokenizer.token_strings();
+        let use_bpe = dna_token_ids.len() > 4;
+
         let factor = if self.reverse_complement { 2 } else { 1 };
         let mut sequences = Vec::with_capacity(batch.data_indices.len() * factor);
         let mut per_seq_seeds = Vec::with_capacity(batch.data_indices.len() * factor);
@@ -174,8 +180,19 @@ impl MlmBatchGenerator {
         for &index in &batch.data_indices {
             let mut rng = Self::seeded_rng(&batch.base_checkpoint, index);
 
-            // Generate a random DNA string long enough to tokenize into at least seq_len ids.
-            let sequence: String = (0..raw_len).map(|_| self.dna_bases[rng.gen_range(0..4)]).collect();
+            // Generate a synthetic sequence long enough to tokenize into at least seq_len ids.
+            // For BPE/k-mer tokenizers we sample token strings from the vocabulary so the
+            // encoded result contains real multi-base tokens, not just single bases.
+            let sequence: String = if use_bpe {
+                (0..raw_len)
+                    .map(|_| {
+                        let id = dna_token_ids[rng.gen_range(0..dna_token_ids.len())] as usize;
+                        token_strings[id].clone()
+                    })
+                    .collect()
+            } else {
+                (0..raw_len).map(|_| self.dna_bases[rng.gen_range(0..4)]).collect()
+            };
 
             sequences.push(sequence.clone());
             per_seq_seeds.push(base_seed ^ index);
@@ -327,6 +344,19 @@ mod tests {
         vocab.insert("<mask>".to_string(), 4);
         vocab.insert("<pad>".to_string(), 5);
 
+        // Add 2-mers so the test tokenizer is a realistic BPE/k-mer vocabulary.
+        let bases = ['A', 'T', 'C', 'G'];
+        let mut id = 6u32;
+        for a in bases {
+            for b in bases {
+                let mut kmer = String::with_capacity(2);
+                kmer.push(a);
+                kmer.push(b);
+                vocab.insert(kmer, id);
+                id += 1;
+            }
+        }
+
         let bpe = BPE::new(vocab, vec![]);
         let mut tokenizer = Tokenizer::new(bpe);
         tokenizer.add_special_tokens(&[AddedToken::from("<mask>", true), AddedToken::from("<pad>", true)]);
@@ -388,10 +418,11 @@ mod tests {
         let mlm = generator.generate_from_sequences(&sequences, &seed, 1).unwrap();
 
         assert_eq!(mlm.batch_size, 2);
-        assert_eq!(mlm.seq_len, 8);
-        assert_eq!(mlm.input_ids.len(), 16);
-        assert_eq!(mlm.labels.len(), 16);
-        assert_eq!(mlm.mask.len(), 16);
+        // Actual seq_len depends on how the BPE tokenizer splits the 8-character sequences.
+        assert!(mlm.seq_len > 0 && mlm.seq_len <= 8, "unexpected seq_len: {}", mlm.seq_len);
+        assert_eq!(mlm.input_ids.len(), mlm.batch_size * mlm.seq_len);
+        assert_eq!(mlm.labels.len(), mlm.batch_size * mlm.seq_len);
+        assert_eq!(mlm.mask.len(), mlm.batch_size * mlm.seq_len);
 
         // Determinism: same seed should produce the same batch.
         let mlm2 = generator.generate_from_sequences(&sequences, &seed, 1).unwrap();

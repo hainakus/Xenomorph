@@ -260,6 +260,15 @@ class GrpcInferenceClient:
             )
         )
 
+    def evaluate_masked_llm(self, model_id: str, input_data: str) -> inference_pb2.EvaluateMaskedLlmResponse:
+        return self.stub.EvaluateMaskedLlm(
+            inference_pb2.EvaluateMaskedLlmRequest(
+                model_id=model_id,
+                input_data=input_data.encode(),
+                query_id=f"eval-mlm-{int(time.time() * 1000)}",
+            )
+        )
+
 
 # -----------------------------------------------------------------------------
 # Minimal Borsh codec for the WebSocket RPC used by the miner

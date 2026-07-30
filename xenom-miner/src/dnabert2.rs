@@ -564,8 +564,9 @@ mod tests {
     use std::collections::HashMap;
 
     fn build_tiny_config() -> DnaBert2Config {
+        // 22 = <pad>, A, T, C, G, <mask> (6) + 16 DNA 2-mers.
         DnaBert2Config {
-            vocab_size: 8,
+            vocab_size: 22,
             hidden_size: 4,
             num_hidden_layers: 1,
             num_attention_heads: 2,
@@ -580,7 +581,7 @@ mod tests {
             alibi_starting_size: Some(16),
             tie_word_embeddings: true,
             pad_token_id: 0,
-            mask_token_id: 4,
+            mask_token_id: 5,
             bos_token_id: 1,
             eos_token_id: 2,
             num_labels: None,
@@ -689,7 +690,7 @@ mod tests {
         let attention_mask = Tensor::new(&[[1u32, 1, 1, 1, 1]], &device).unwrap();
         let logits = model.forward(&input_ids, None, Some(&attention_mask)).unwrap();
 
-        assert_eq!(logits.dims().to_vec(), vec![1, 5, 8]);
+        assert_eq!(logits.dims().to_vec(), vec![1, 5, 22]);
     }
 
     #[test]
@@ -704,6 +705,6 @@ mod tests {
         let attention_mask = Tensor::new(&[[1u32, 1, 1, 1, 1]], &device).unwrap();
         let logits = model.forward(&input_ids, None, Some(&attention_mask)).unwrap();
 
-        assert_eq!(logits.dims().to_vec(), vec![1, 5, 8]);
+        assert_eq!(logits.dims().to_vec(), vec![1, 5, 22]);
     }
 }

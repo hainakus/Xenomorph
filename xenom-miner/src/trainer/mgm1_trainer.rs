@@ -180,11 +180,7 @@ impl Mgm1Trainer {
                 }
                 let max_len = (MAX_SPAN_LEN).min(seq_len - i);
                 // Pick a span length and shrink it if it would hit padding.
-                let mut span_len = if max_len >= MIN_SPAN_LEN {
-                    rng.gen_range(MIN_SPAN_LEN..=max_len)
-                } else {
-                    max_len
-                };
+                let mut span_len = if max_len >= MIN_SPAN_LEN { rng.gen_range(MIN_SPAN_LEN..=max_len) } else { max_len };
                 while span_len > 0 && i + span_len <= seq_len && row[i + span_len - 1] == MASK_TOKEN_ID {
                     span_len -= 1;
                 }
@@ -437,8 +433,7 @@ impl Mgm1Trainer {
                     micros += 1;
                 }
 
-                let final_grads = accumulated_grads
-                    .ok_or_else(|| anyhow::anyhow!("No gradients were produced by any micro-batch"))?;
+                let final_grads = accumulated_grads.ok_or_else(|| anyhow::anyhow!("No gradients were produced by any micro-batch"))?;
                 let final_grads = if total_masked > 0.0 {
                     scale_grad_map(final_grads, 1.0 / total_masked).context("Failed to scale accumulated gradient")?
                 } else {
@@ -750,7 +745,9 @@ mod tests {
             "label_smoothing": 0.1,
         });
         let config = config_json.to_string().into_bytes();
-        let trainer = Mgm1Trainer::new("xeno/mgm-1", &config, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-3, &MultiGpuConfig::default()).unwrap();
+        let trainer =
+            Mgm1Trainer::new("xeno/mgm-1", &config, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-3, &MultiGpuConfig::default())
+                .unwrap();
 
         // Simulate a balanced GC-stratified batch (25% each base) so the model
         // must learn to predict all four nucleotides, not collapse to the majority.
@@ -795,7 +792,9 @@ mod tests {
     #[test]
     fn test_mgm1_trainer_loads_and_trains() {
         let config = default_config();
-        let trainer = Mgm1Trainer::new("xeno/mgm-1", &config, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default()).unwrap();
+        let trainer =
+            Mgm1Trainer::new("xeno/mgm-1", &config, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default())
+                .unwrap();
 
         let batch = TrainingBatch {
             batch_id: 1,
@@ -813,7 +812,9 @@ mod tests {
     #[test]
     fn test_mgm1_trainer_extracts_gradient_update() {
         let config = default_config();
-        let trainer = Mgm1Trainer::new("xeno/mgm-1", &config, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default()).unwrap();
+        let trainer =
+            Mgm1Trainer::new("xeno/mgm-1", &config, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default())
+                .unwrap();
 
         let batch = TrainingBatch {
             batch_id: 1,
@@ -842,7 +843,9 @@ mod tests {
     #[test]
     fn test_mgm1_trainer_genome_batch() {
         let config = default_config();
-        let trainer = Mgm1Trainer::new("xeno/mgm-1", &config, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default()).unwrap();
+        let trainer =
+            Mgm1Trainer::new("xeno/mgm-1", &config, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default())
+                .unwrap();
 
         let sequences = vec!["ACGTACGTACGT".to_string(), "TGCATGCATGCA".to_string(), "AAAACCCCGGGGTTTT".to_string()];
         let batch = GenomeTrainingBatch {
@@ -886,7 +889,9 @@ mod tests {
             "dropout": 0.1,
         });
         let config_bytes = config_json.to_string().into_bytes();
-        let trainer = Mgm1Trainer::new("xeno/mgm-1", &config_bytes, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default()).unwrap();
+        let trainer =
+            Mgm1Trainer::new("xeno/mgm-1", &config_bytes, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default())
+                .unwrap();
 
         // Synthetic batch matching the distribution from the user's log:
         // A=72 C=70 G=55 T=117 across ~314 masked positions.
@@ -1148,7 +1153,9 @@ mod tests {
         let sequences_b: Vec<String> = raw_b.as_bytes().chunks(seq_len).map(|c| String::from_utf8_lossy(c).to_string()).collect();
 
         println!("\n========== AUDIT: IMBALANCED BATCH (label smoothing 0.1, no class weights) ==========");
-        let trainer_a = Mgm1Trainer::new("xeno/mgm-1", &config_bytes, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default()).unwrap();
+        let trainer_a =
+            Mgm1Trainer::new("xeno/mgm-1", &config_bytes, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default())
+                .unwrap();
         let (input_a, labels_a) = trainer_a.prepare_sequences(&sequences_a, [0u8; 32], MASK_RATIO, seq_len).unwrap();
         let logits_init_a = trainer_a.forward(&input_a).unwrap();
         inspect(&trainer_a, &input_a, &labels_a, &logits_init_a, "init");
@@ -1168,8 +1175,17 @@ mod tests {
         }
 
         println!("\n========== AUDIT: IMBALANCED BATCH (no label smoothing, no class weights) ==========");
-        let trainer_b =
-            Mgm1Trainer::new("xeno/mgm-1", &config_no_smooth_bytes, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default()).unwrap();
+        let trainer_b = Mgm1Trainer::new(
+            "xeno/mgm-1",
+            &config_no_smooth_bytes,
+            &[],
+            Vec::new(),
+            [0u8; 32],
+            Device::Cpu,
+            1e-4,
+            &MultiGpuConfig::default(),
+        )
+        .unwrap();
         let (input_b, labels_b) = trainer_b.prepare_sequences(&sequences_a, [1u8; 32], MASK_RATIO, seq_len).unwrap();
         let logits_init_b = trainer_b.forward(&input_b).unwrap();
         inspect(&trainer_b, &input_b, &labels_b, &logits_init_b, "init");
@@ -1185,7 +1201,9 @@ mod tests {
         }
 
         println!("\n========== AUDIT: BALANCED BATCH (label smoothing 0.1, no class weights) ==========");
-        let trainer_c = Mgm1Trainer::new("xeno/mgm-1", &config_bytes, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default()).unwrap();
+        let trainer_c =
+            Mgm1Trainer::new("xeno/mgm-1", &config_bytes, &[], Vec::new(), [0u8; 32], Device::Cpu, 1e-4, &MultiGpuConfig::default())
+                .unwrap();
         let (input_c, labels_c) = trainer_c.prepare_sequences(&sequences_b, [2u8; 32], MASK_RATIO, seq_len).unwrap();
         let logits_init_c = trainer_c.forward(&input_c).unwrap();
         inspect(&trainer_c, &input_c, &labels_c, &logits_init_c, "init");

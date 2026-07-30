@@ -33,6 +33,30 @@ impl DnaTokenizer {
         self.mask_token_id
     }
 
+    /// Return the full token vocabulary as id -> token string.
+    pub fn token_strings(&self) -> Vec<String> {
+        let mut id_to_token = vec![String::new(); self.vocab_size];
+        for (token, id) in self.inner.get_vocab(true) {
+            let idx = id as usize;
+            if idx < self.vocab_size {
+                id_to_token[idx] = token;
+            }
+        }
+        id_to_token
+    }
+
+    /// Return the token id -> token string mapping for tokens whose string
+    /// consists only of DNA bases (A, T, C, G).  This is useful for generating
+    /// synthetic BPE/k-mer sequences that the tokenizer will recognise.
+    pub fn dna_token_ids(&self) -> Vec<u32> {
+        self.inner
+            .get_vocab(true)
+            .iter()
+            .filter(|(token, _)| !token.is_empty() && token.chars().all(|c| matches!(c.to_ascii_uppercase(), 'A' | 'T' | 'C' | 'G')))
+            .map(|(_, id)| *id)
+            .collect()
+    }
+
     /// Encode a DNA sequence (or any text) into token ids.
     pub fn encode(&self, text: &str, add_special_tokens: bool) -> Result<Vec<u32>> {
         let encoding = self.inner.encode(text, add_special_tokens).map_err(|e| anyhow!("Failed to encode sequence: {e}"))?;
@@ -117,5 +141,61 @@ mod tests {
         // Skipping special tokens removes <mask>/<pad> without inserting spaces.
         let ids_with_mask = vec![0, tokenizer.mask_token_id, 2, tokenizer.pad_token_id, 3];
         assert_eq!(tokenizer.decode_to_sequence(&ids_with_mask, true).unwrap(), "ACG");
+    }
+
+    fn build_bpe_test_tokenizer_bytes() -> Vec<u8> {
+        let mut vocab: Vocab = Vocab::new();
+        vocab.insert("A".to_string(), 0);
+        vocab.insert("T".to_string(), 1);
+        vocab.insert("C".to_string(), 2);
+        vocab.insert("G".to_string(), 3);
+        vocab.insert("<mask>".to_string(), 4);
+        vocab.insert("<pad>".to_string(), 5);
+
+        // Add 2-mers so the test tokenizer exercises BPE/k-mer tokenization.
+        let bases = ['A', 'T', 'C', 'G'];
+        let mut id = 6u32;
+        for a in bases {
+            for b in bases {
+                let mut kmer = String::with_capacity(2);
+                kmer.push(a);
+                kmer.push(b);
+                vocab.insert(kmer, id);
+                id += 1;
+            }
+        }
+
+        let bpe = BPE::new(vocab, vec![]);
+        let mut tokenizer = Tokenizer::new(bpe);
+        tokenizer.add_special_tokens(&[AddedToken::from("<mask>", true), AddedToken::from("<pad>", true)]);
+
+        serde_json::to_vec(&tokenizer).expect("failed to serialize test tokenizer")
+    }
+
+    #[test]
+    fn test_bpe_tokenizer_ids_and_strings() {
+        let bytes = build_bpe_test_tokenizer_bytes();
+        let tokenizer = DnaTokenizer::from_bytes(&bytes).unwrap();
+
+        let dna_ids = tokenizer.dna_token_ids();
+        // 4 single bases + 16 2-mers.
+        assert_eq!(dna_ids.len(), 20, "expected 20 DNA-only tokens");
+
+        let token_strings = tokenizer.token_strings();
+        assert_eq!(token_strings.len(), tokenizer.vocab_size);
+        assert_eq!(token_strings[0], "A");
+        assert_eq!(token_strings[4], "<mask>");
+    }
+
+    #[test]
+    fn test_bpe_encode_decode() {
+        let bytes = build_bpe_test_tokenizer_bytes();
+        let tokenizer = DnaTokenizer::from_bytes(&bytes).unwrap();
+
+        // "ATCG" should decode back to itself regardless of whether the BPE
+        // tokenizer preferred 2-mers or single bases.
+        let ids = tokenizer.encode("ATCG", false).unwrap();
+        assert!(!ids.is_empty(), "tokenizer produced no tokens for ATCG");
+        assert_eq!(tokenizer.decode_to_sequence(&ids, false).unwrap(), "ATCG");
     }
 }

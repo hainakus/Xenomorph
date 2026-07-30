@@ -193,7 +193,8 @@ In both cases the `xenom` full node:
 - This is full-node-side training proof validation (the block is rejected before being built/submitted if the proof is invalid). Consensus-level validation in `Header`/`UsefulPoW` is still dead code and not yet wired into the block pipeline.
 - `xenom-miner` `DnaBert2Trainer` clamps the batch `learning_rate` to `1e-5` for AdamW.
 - `TrainingBlockService` devnet `DifficultyTarget` allows the loss to increase by up to `1.0` per batch; with synthetic/random devnet batches a pre-trained model may not improve in a single step.
-- `TrainingBlockService` now mines the correct PoW for the active network: legacy KHeavyHash before `genome_pow_activation_daa_score`, and Genome PoW (with synthetic fragments) after it. This fixes the `block has invalid proof-of-work` rejections on devnet.
+- `TrainingBlockService` now mines the correct PoW for the active network: legacy KHeavyHash before `genome_pow_activation_daa_score`, and Genome PoW (with fragments) after it. This fixes the `block has invalid proof-of-work` rejections on devnet.
+- DNABERT-2 and other BPE/k-mer models must be evaluated over their full tokenizer vocabulary. The miner `MlmBatchGenerator` samples real BPE tokens for synthetic devnet batches, the `seed-node` masked-LM endpoint returns full `logits_vocab_size`, and `xenom_benchmark` keeps `use_token_level=True` for these models. Character-level/base-reconstruction is a valid but separate legacy metric used by MGM-1.
 
 ## MGM-1 multi-GPU and FedAvg
 
