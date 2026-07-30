@@ -656,6 +656,7 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
         let from_scratch = args.from_scratch;
         let config_file = args.config_file.clone();
         let tokenizer_file = args.tokenizer_file.clone();
+        let weights_file = args.weights_file.clone();
 
         Some(Arc::new(
             tokio::runtime::Builder::new_multi_thread()
@@ -669,6 +670,7 @@ do you confirm? (answer y/n or pass --yes to the Kaspad command line to confirm 
                         from_scratch,
                         config_file,
                         tokenizer_file,
+                        weights_file,
                         models_dir,
                         genome_cache_dir,
                         genome_file,

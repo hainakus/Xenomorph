@@ -35,6 +35,7 @@ Options:
                                   active model from scratch.
   --config-file <path>            Local config.json to use when registering or with --from-scratch.
   --tokenizer-file <path>         Local tokenizer.json to use when registering or with --from-scratch.
+  --weights-file <path>           Local model.safetensors or pytorch_model.bin to use instead of downloading.
   -q, --quiet                     Minimal output
   -v, --verbose                   Debug output
   -h, --help                      Show this help and exit
@@ -62,6 +63,7 @@ fi
 REGISTER_FROM_SCRATCH="${XENO_REGISTER_FROM_SCRATCH:-0}"
 CONFIG_FILE=""
 TOKENIZER_FILE=""
+WEIGHTS_FILE=""
 LORA_ALPHA="${XENO_LORA_ALPHA:-16}"
 LORA_DROPOUT="${XENO_LORA_DROPOUT:-0}"
 LORA_TARGET_MODULES=""
@@ -83,6 +85,7 @@ while [[ $# -gt 0 ]]; do
         --register-from-scratch) REGISTER_FROM_SCRATCH=1; shift ;;
         --config-file) CONFIG_FILE="$2"; shift 2 ;;
         --tokenizer-file) TOKENIZER_FILE="$2"; shift 2 ;;
+        --weights-file) WEIGHTS_FILE="$2"; shift 2 ;;
         -q|--quiet) XENO_QUIET=1; shift ;;
         -v|--verbose) XENO_VERBOSE=1; shift ;;
         -h|--help) print_help_and_exit "$USAGE" 0 ;;
@@ -275,6 +278,7 @@ NODE_ARGS=(
 [[ "$FROM_SCRATCH" == "1" ]] && NODE_ARGS+=(--from-scratch)
 [[ -n "$CONFIG_FILE" ]] && NODE_ARGS+=(--config-file="$CONFIG_FILE")
 [[ -n "$TOKENIZER_FILE" ]] && NODE_ARGS+=(--tokenizer-file="$TOKENIZER_FILE")
+[[ -n "$WEIGHTS_FILE" ]] && NODE_ARGS+=(--weights-file="$WEIGHTS_FILE")
 NODE_ARGS+=(
     --disable-upnp
     --nodnsseed

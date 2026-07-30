@@ -45,6 +45,7 @@ Options:
   --lora-target-modules <list>    Comma-separated LoRA target modules
   --config-file <path>            Local config.json to use instead of downloading from Hugging Face
   --tokenizer-file <path>         Local tokenizer.json to use instead of downloading from Hugging Face
+  --weights-file <path>           Local model.safetensors or pytorch_model.bin to use instead of downloading
   -d, --data-dir <dir>            Base data directory
                                   (default: \$XENO_DATA_DIR or ./devnet-data-native)
   --anvil                         Start a local anvil instance for EVM/governance tests
@@ -86,6 +87,7 @@ LORA_DROPOUT="${XENO_LORA_DROPOUT:-0}"
 LORA_TARGET_MODULES=""
 CONFIG_FILE=""
 TOKENIZER_FILE=""
+WEIGHTS_FILE=""
 DATA_DIR="${XENO_DATA_DIR:-$SCRIPT_DIR/../devnet-data-native}"
 START_ANVIL=0
 
@@ -114,6 +116,7 @@ while [[ $# -gt 0 ]]; do
         --lora-target-modules) LORA_TARGET_MODULES="$2"; shift 2 ;;
         --config-file) CONFIG_FILE="$2"; shift 2 ;;
         --tokenizer-file) TOKENIZER_FILE="$2"; shift 2 ;;
+        --weights-file) WEIGHTS_FILE="$2"; shift 2 ;;
         -d|--data-dir) DATA_DIR="$2"; shift 2 ;;
         --anvil) START_ANVIL=1; shift ;;
         -q|--quiet) XENO_QUIET=1; shift ;;
@@ -296,6 +299,7 @@ RUST_LOG="${RUST_LOG:-info}" "$BIN_PREFIX/xenom" \
     $([ "$FROM_SCRATCH" == "1" ] && echo --from-scratch) \
     $([ -n "$CONFIG_FILE" ] && echo --config-file="$CONFIG_FILE") \
     $([ -n "$TOKENIZER_FILE" ] && echo --tokenizer-file="$TOKENIZER_FILE") \
+    $([ -n "$WEIGHTS_FILE" ] && echo --weights-file="$WEIGHTS_FILE") \
     --disable-upnp \
     --nodnsseed \
     > "$LOG_DIR/xeno-node.log" 2>&1 &

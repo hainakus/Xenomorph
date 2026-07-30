@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use reqwest::Url;
 use std::fs;
 use std::path::Path;
@@ -17,13 +17,14 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 /// If `from_scratch` is true and no weights file is available, an empty weights buffer
 /// is returned.  This lets the trainer initialize the model with random weights.
 ///
-/// `config_file` and `tokenizer_file` override the Hugging Face download and read the
-/// files from disk instead.
+/// `config_file`, `tokenizer_file` and `weights_file` override the Hugging Face
+/// download and read the files from disk instead.
 pub async fn download_model(
     model_id: &str,
     from_scratch: bool,
     config_file: Option<&Path>,
     tokenizer_file: Option<&Path>,
+    weights_file: Option<&Path>,
 ) -> Result<RawModelFiles> {
     if model_id.contains("mgm-1") {
         info!("Generating default MGM-1 checkpoint for {}", model_id);
@@ -57,7 +58,20 @@ pub async fn download_model(
     info!("Loaded tokenizer for {}", model_id);
 
     let mut weights: Option<Vec<u8>> = None;
-    if !from_scratch {
+    if let Some(path) = weights_file {
+        info!("Loading weights for {} from {}", model_id, path.display());
+        let data = tokio::fs::read(path)
+            .await
+            .with_context(|| format!("Failed to read weights file {}", path.display()))?;
+        if !data.is_empty() && !is_valid_weights(&data) {
+            bail!(
+                "{} does not look like a valid safetensors or PyTorch zip checkpoint; \
+                legacy pickle .bin files are not supported. Convert to safetensors first.",
+                path.display()
+            );
+        }
+        weights = Some(data);
+    } else if !from_scratch {
         for filename in ["model.safetensors", "pytorch_model.bin"] {
             match download_and_validate_weights(&client, model_id, filename).await {
                 Ok(data) => {

@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
 
     let model_key = ModelStorage::derive_encryption_key();
     let lora_config = LoraConfig::from_env();
-    let model_manager = Arc::new(ModelManager::new_with_key(models_dir.clone(), model_key, lora_config, None, None).await?);
+    let model_manager = Arc::new(ModelManager::new_with_key(models_dir.clone(), model_key, lora_config, None, None, None).await?);
     let genome_storage = Arc::new(RwLock::new(GenomeStorage::new(PathBuf::from(models_dir.clone()).join("genomes")).await?));
 
     // The seed-node is only considered ready once the default model is available.

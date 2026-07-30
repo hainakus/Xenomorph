@@ -101,6 +101,7 @@ pub struct Args {
     pub from_scratch: bool,
     pub config_file: Option<String>,
     pub tokenizer_file: Option<String>,
+    pub weights_file: Option<String>,
 
     // Unified training coordinator options (node = seed-node + full node)
     pub models_dir: Option<String>,
@@ -164,6 +165,7 @@ impl Default for Args {
             from_scratch: false,
             config_file: None,
             tokenizer_file: None,
+            weights_file: None,
 
             models_dir: None,
             genome_cache_dir: None,
@@ -468,6 +470,14 @@ Setting to 0 prevents the preallocation and sets the maximum to {}, leading to 0
                 .help("Local tokenizer.json to use instead of downloading from Hugging Face."),
         )
         .arg(
+            Arg::new("weights-file")
+                .long("weights-file")
+                .value_name("PATH")
+                .require_equals(true)
+                .value_parser(clap::value_parser!(String))
+                .help("Local model.safetensors or pytorch_model.bin to use instead of downloading from Hugging Face."),
+        )
+        .arg(
             Arg::new("models-dir")
                 .long("models-dir")
                 .value_name("PATH")
@@ -592,6 +602,7 @@ impl Args {
             from_scratch: arg_match_unwrap_or::<bool>(&m, "from-scratch", defaults.from_scratch),
             config_file: m.get_one::<String>("config-file").cloned().or(defaults.config_file),
             tokenizer_file: m.get_one::<String>("tokenizer-file").cloned().or(defaults.tokenizer_file),
+            weights_file: m.get_one::<String>("weights-file").cloned().or(defaults.weights_file),
 
             models_dir: m.get_one::<String>("models-dir").cloned().or(defaults.models_dir),
             genome_cache_dir: m.get_one::<String>("genome-cache-dir").cloned().or(defaults.genome_cache_dir),

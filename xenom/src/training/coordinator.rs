@@ -92,6 +92,7 @@ impl Coordinator {
         from_scratch: bool,
         config_file: Option<String>,
         tokenizer_file: Option<String>,
+        weights_file: Option<String>,
         models_dir: PathBuf,
         genome_cache_dir: PathBuf,
         genome_file: Option<PathBuf>,
@@ -115,6 +116,7 @@ impl Coordinator {
                 lora_config,
                 config_file.map(PathBuf::from),
                 tokenizer_file.map(PathBuf::from),
+                weights_file.map(PathBuf::from),
             )
             .await?,
         );

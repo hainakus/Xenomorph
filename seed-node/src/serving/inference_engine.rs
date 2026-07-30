@@ -482,7 +482,7 @@ mod tests {
     fn test_engine() -> InferenceEngine {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("failed to build tokio runtime");
         let manager = rt
-            .block_on(ModelManager::new_with_key("/tmp/seed_node_test_models".to_string(), [0u8; 32], None, None, None))
+            .block_on(ModelManager::new_with_key("/tmp/seed_node_test_models".to_string(), [0u8; 32], None, None, None, None))
             .expect("failed to create test ModelManager");
         InferenceEngine::new(Arc::new(manager))
     }
@@ -618,7 +618,7 @@ mod tests {
         let base_path = dir.path().to_path_buf().to_string_lossy().to_string();
         let model_id = "xeno/mgm-1";
 
-        let manager = Arc::new(ModelManager::new_with_key(base_path, [0u8; 32], None, None, None).await.unwrap());
+        let manager = Arc::new(ModelManager::new_with_key(base_path, [0u8; 32], None, None, None, None).await.unwrap());
 
         let initial_files = build_mgm1_files_with_bias(0, 100.0);
         manager.store_model_files(model_id, &initial_files, crate::model::checkpoint::ModelMetrics::default()).await.unwrap();
