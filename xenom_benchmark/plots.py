@@ -45,6 +45,9 @@ def plot_confusion_matrix(
 ) -> Optional[Path]:
     """Render a heatmap of the confusion matrix."""
     labels = sorted(cm.keys())
+    if not labels:
+        # Token-level MLM does not produce a base-level confusion matrix.
+        return None
     matrix = np.array([[cm[t][p] for p in labels] for t in labels], dtype=int)
 
     fig, ax = plt.subplots(figsize=(6, 5))
@@ -70,12 +73,18 @@ def plot_prediction_distribution(
     true_dist: Optional[Dict[str, float]] = None,
     out_path: Optional[Path] = None,
 ) -> Optional[Path]:
-    """Bar plot comparing predicted and true base distributions."""
-    labels = sorted(pred_dist.keys())
+    """Bar plot comparing predicted and true token/base distributions."""
+    if not pred_dist:
+        return None
+
+    # For token-level BPE vocabularies, keep only the top 50 most frequent
+    # predicted tokens so the bar chart stays readable.
+    max_labels = 50
+    labels = sorted(pred_dist.keys(), key=lambda k: pred_dist[k], reverse=True)[:max_labels]
     pred_counts = np.array([pred_dist.get(b, 0) for b in labels], dtype=float)
     pred_freqs = pred_counts / pred_counts.sum() if pred_counts.sum() > 0 else pred_counts
 
-    fig, ax = plt.subplots(figsize=(6, 4))
+    fig, ax = plt.subplots(figsize=(max(6, len(labels) * 0.25), 4))
     x = np.arange(len(labels))
     width = 0.35
     ax.bar(x - width / 2, pred_freqs, width, label="Predicted", color="steelblue")
@@ -85,7 +94,7 @@ def plot_prediction_distribution(
         ax.bar(x + width / 2, true_freqs, width, label="True", color="coral")
 
     ax.set_xticks(x)
-    ax.set_xticklabels(labels)
+    ax.set_xticklabels(labels, rotation=45, ha="right")
     ax.set_ylabel("Frequency")
     ax.set_title("Prediction Distribution")
     ax.legend()
