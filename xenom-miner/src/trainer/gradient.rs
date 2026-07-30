@@ -47,15 +47,32 @@ pub(crate) fn build_gradient_update(
     let mut pairs: Vec<(String, Tensor)> = named_grads.into_iter().collect();
     pairs.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let layer_entries: Vec<Result<(String, GradientLayer)>> = pairs
-        .into_par_iter()
-        .map(|(name, grad)| {
-            let shape = grad.dims().to_vec();
-            let flat = grad.flatten_all()?.to_vec1::<f32>()?;
-            let (values, indices) = if top_k_ratio >= 1.0 { (flat, Vec::new()) } else { top_k_compress(&flat, top_k_ratio) };
-            Ok((name, GradientLayer { values, shape, indices }))
-        })
-        .collect();
+    // Metal uses a single command queue; concurrent readbacks from multiple
+    // threads can return `WouldBlock`. Fall back to sequential iteration when
+    // all gradients live on a Metal device. CPU/CUDA still benefit from Rayon.
+    let use_par = !pairs.iter().all(|(_, grad)| grad.device().is_metal());
+
+    let layer_entries: Vec<Result<(String, GradientLayer)>> = if use_par {
+        pairs
+            .into_par_iter()
+            .map(|(name, grad)| {
+                let shape = grad.dims().to_vec();
+                let flat = grad.flatten_all()?.to_vec1::<f32>()?;
+                let (values, indices) = if top_k_ratio >= 1.0 { (flat, Vec::new()) } else { top_k_compress(&flat, top_k_ratio) };
+                Ok((name, GradientLayer { values, shape, indices }))
+            })
+            .collect()
+    } else {
+        pairs
+            .into_iter()
+            .map(|(name, grad)| {
+                let shape = grad.dims().to_vec();
+                let flat = grad.flatten_all()?.to_vec1::<f32>()?;
+                let (values, indices) = if top_k_ratio >= 1.0 { (flat, Vec::new()) } else { top_k_compress(&flat, top_k_ratio) };
+                Ok((name, GradientLayer { values, shape, indices }))
+            })
+            .collect()
+    };
 
     let mut layer_gradients = HashMap::with_capacity(layer_entries.len());
     for entry in layer_entries {

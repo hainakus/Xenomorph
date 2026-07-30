@@ -35,6 +35,7 @@ Example:
 
 import argparse
 import asyncio
+import difflib
 import hashlib
 import json
 import math
@@ -68,18 +69,19 @@ except ImportError as e:  # pragma: no cover
 
 # Canonical GRCh38 merkle root used by the miner when no --genome-merkle is given.
 DEFAULT_GENOME_MERKLE = "577126c448d24d132ba77436517a7db2203d6fce0cd81e2b84db39875d43ee80"
-
-DEFAULT_GRPC_ADDR = "127.0.0.1:50051"
-DEFAULT_WS_URL = "ws://127.0.0.1:17110"
-DEFAULT_MODEL_ID = "xeno/mgm-1"
+DEFAULT_GRPC_ADDR = "94.237.108.145:50051"
+DEFAULT_WS_URL = "ws://94.237.108.145:17110"
+DEFAULT_MODEL_ID = "multimolecule/dnabert2"
 DEFAULT_SEQ_LEN = 512
 DEFAULT_MASK_RATIO = 0.15
 DEFAULT_N_SEQUENCES = 88
 DEFAULT_FRAGMENT_SIZE = 1_048_576
 GENOME_DOWNLOAD_URL = "https://github.com/hainakus/Xenomorph/releases/download/genome-grch38-v0/grch38.xenom"
+BENCHMARK_VERSION = "1.0.0"
 
 BASES = ("A", "T", "C", "G")
-MASK_CHARS = ("[", "<mask>", "[MASK]")
+MASK_TOKEN = "<mask>"
+MGM1_MASK_TOKEN = "["
 
 
 # -----------------------------------------------------------------------------
@@ -479,6 +481,7 @@ class Mgm1Evaluator:
         self.model_id = model_id
         self.seq_len = seq_len
         self.mask_ratio = mask_ratio
+        self.mask_token = MGM1_MASK_TOKEN if "mgm-1" in model_id.lower() else MASK_TOKEN
 
     def build_test_set(
         self, source: str, n: int = DEFAULT_N_SEQUENCES, seed: int = 42
@@ -491,20 +494,19 @@ class Mgm1Evaluator:
             return sample_fasta_sequences(source, n, self.seq_len, seed)
         raise ValueError(f"Unsupported genome source: {source} (use .xenom or .fasta)")
 
-    @staticmethod
-    def mask_sequence(seq: str, mask_ratio: float, seed: Optional[int]) -> Tuple[str, List[int]]:
+    def mask_sequence(self, seq: str, seed: Optional[int]) -> Tuple[str, List[int]]:
         rng = random.Random(seed)
-        indices = [i for i in range(len(seq)) if rng.random() < mask_ratio]
+        indices = [i for i in range(len(seq)) if rng.random() < self.mask_ratio]
         masked = list(seq)
         for i in indices:
-            masked[i] = "["
+            masked[i] = self.mask_token
         return "".join(masked), indices
 
     def evaluate(self, test_set: List[str], test_seed: int = 42) -> Dict:
         results = []
         for seq_idx, original in enumerate(test_set):
             masked, mask_positions = self.mask_sequence(
-                original, self.mask_ratio, test_seed + seq_idx
+                original, test_seed + seq_idx
             )
             if not mask_positions:
                 continue
@@ -527,32 +529,52 @@ class Mgm1Evaluator:
         mask_positions: List[int],
         confidence: float,
     ) -> Dict:
-        if len(predicted) != len(original):
-            print(
-                f"[WARN] Length mismatch for a sequence: "
-                f"expected {len(original)}, got {len(predicted)}"
-            )
+        # DNABERT-2 style BPE tokenizers can return a string whose length differs
+        # from the original because masked tokens may be multi-base subwords. Align
+        # the original and predicted sequences so we can still map each masked
+        # character position to the corresponding predicted character.
+        matcher = difflib.SequenceMatcher(None, original, predicted)
+        opcodes = matcher.get_opcodes()
+
+        def _predicted_at(original_pos: int) -> str:
+            for tag, i1, i2, j1, j2 in opcodes:
+                if i1 <= original_pos < i2:
+                    if tag == "equal":
+                        return predicted[j1 + (original_pos - i1)]
+                    if tag == "replace":
+                        # replace blocks have the same length on both sides.
+                        return predicted[j1 + (original_pos - i1)]
+                    if tag == "delete":
+                        return "?"
+            return "?"
 
         correct = 0
         per_base = {b: {"total": 0, "correct": 0} for b in BASES}
         predictions = []
+        confusion = {t: {p: 0 for p in BASES} for t in BASES}
 
         for pos in mask_positions:
             true_base = original[pos] if pos < len(original) else "?"
-            pred_base = predicted[pos] if pos < len(predicted) else "?"
+            pred_base = _predicted_at(pos)
             predictions.append(pred_base)
             per_base[true_base]["total"] += 1
             if pred_base in BASES and pred_base == true_base:
                 correct += 1
                 per_base[true_base]["correct"] += 1
+            if true_base in BASES and pred_base in BASES:
+                confusion[true_base][pred_base] += 1
 
         return {
             "mask_count": len(mask_positions),
             "correct": correct,
             "per_base": per_base,
+            "confusion": confusion,
             "predictions": predictions,
             "confidence": confidence,
             "valid_output": set(predicted).issubset(BASES),
+            "length_match": len(predicted) == len(original),
+            "original_len": len(original),
+            "predicted_len": len(predicted),
         }
 
     def _aggregate(self, results: List[Dict]) -> Dict:
@@ -567,10 +589,63 @@ class Mgm1Evaluator:
                 per_base[b]["correct"] += r["per_base"][b]["correct"]
 
         base_accuracy = {}
+        base_precision = {}
+        base_recall = {}
+        base_f1 = {}
         for b in BASES:
             t = per_base[b]["total"]
             c = per_base[b]["correct"]
             base_accuracy[b] = c / t if t else 0.0
+            base_recall[b] = base_accuracy[b]
+
+        # Confusion matrix and per-class precision
+        confusion = {t: {p: 0 for p in BASES} for t in BASES}
+        pred_counts = {b: 0 for b in BASES}
+        for r in results:
+            for t in BASES:
+                for p in BASES:
+                    confusion[t][p] += r["confusion"][t][p]
+                    pred_counts[p] += r["confusion"][t][p]
+
+        for b in BASES:
+            base_precision[b] = (confusion[b][b] / pred_counts[b]) if pred_counts[b] else 0.0
+            p = base_precision[b]
+            r = base_recall[b]
+            base_f1[b] = (2 * p * r / (p + r)) if (p + r) > 0.0 else 0.0
+
+        balanced_accuracy = sum(base_accuracy.values()) / len(BASES)
+        macro_f1 = sum(base_f1.values()) / len(BASES)
+
+        # Baselines derived from the true label distribution in the masked positions.
+        label_counts = {b: per_base[b]["total"] for b in BASES}
+        total_label_count = sum(label_counts.values())
+        label_frequencies = {b: (label_counts[b] / total_label_count if total_label_count else 0.0) for b in BASES}
+        majority_class = max(label_frequencies, key=label_frequencies.get) if total_label_count else "A"
+        majority_class_baseline_accuracy = label_frequencies[majority_class]
+
+        # Perplexity of the empirical label distribution.
+        entropy = 0.0
+        for p in label_frequencies.values():
+            if p > 0.0:
+                entropy -= p * math.log(p)
+        empirical_baseline_perplexity = math.exp(entropy) if total_label_count else float("inf")
+
+        uniform_baseline_accuracy = 1.0 / len(BASES)
+        uniform_baseline_perplexity = float(len(BASES))
+
+        # Context-aware gain: how much the model beats uniform random guessing.
+        context_aware_gain = token_accuracy - uniform_baseline_accuracy
+
+        accuracy_vs_uniform_pct = (
+            ((token_accuracy - uniform_baseline_accuracy) / uniform_baseline_accuracy) * 100.0
+            if uniform_baseline_accuracy > 0.0
+            else 0.0
+        )
+        accuracy_vs_majority_pct = (
+            ((token_accuracy - majority_class_baseline_accuracy) / majority_class_baseline_accuracy) * 100.0
+            if majority_class_baseline_accuracy > 0.0
+            else 0.0
+        )
 
         all_predictions = []
         for r in results:
@@ -596,17 +671,38 @@ class Mgm1Evaluator:
         else:
             perplexity = float("inf")
 
+        perplexity_vs_uniform_pct = (
+            ((uniform_baseline_perplexity - perplexity) / uniform_baseline_perplexity) * 100.0
+            if uniform_baseline_perplexity > 0.0
+            else 0.0
+        )
+
         invalid_outputs = sum(1 for r in results if not r["valid_output"])
 
         return {
             "total_sequences": len(results),
             "total_masks": total_masks,
             "token_accuracy": token_accuracy,
+            "balanced_accuracy": balanced_accuracy,
+            "macro_f1": macro_f1,
             "per_base_accuracy": base_accuracy,
+            "per_base_f1": base_f1,
+            "confusion_matrix": confusion,
             "prediction_distribution": pred_dist,
             "average_confidence": avg_confidence,
+            "mlm_loss": perplexity,
             "perplexity": perplexity,
             "invalid_outputs": invalid_outputs,
+            "majority_class": majority_class,
+            "label_frequencies": label_frequencies,
+            "majority_class_baseline_accuracy": majority_class_baseline_accuracy,
+            "empirical_baseline_perplexity": empirical_baseline_perplexity,
+            "uniform_baseline_accuracy": uniform_baseline_accuracy,
+            "uniform_baseline_perplexity": uniform_baseline_perplexity,
+            "context_aware_gain": context_aware_gain,
+            "accuracy_vs_uniform_pct": accuracy_vs_uniform_pct,
+            "accuracy_vs_majority_pct": accuracy_vs_majority_pct,
+            "perplexity_vs_uniform_pct": perplexity_vs_uniform_pct,
         }
 
 
@@ -647,6 +743,22 @@ def validate_metrics(metrics: Dict, warn_threshold: float = 0.05) -> List[str]:
             f"Token accuracy {metrics['token_accuracy']:.2%} is at or below random guessing "
             f"for 4-class MLM."
         )
+    if metrics["token_accuracy"] <= metrics["majority_class_baseline_accuracy"]:
+        warnings.append(
+            f"Token accuracy {metrics['token_accuracy']:.2%} is not better than the "
+            f"majority-class baseline {metrics['majority_class_baseline_accuracy']:.2%} "
+            f"(always predicting {metrics['majority_class']})."
+        )
+    if metrics["balanced_accuracy"] <= metrics["uniform_baseline_accuracy"]:
+        warnings.append(
+            f"Balanced accuracy {metrics['balanced_accuracy']:.2%} is at or below uniform "
+            f"guessing for 4-class MLM."
+        )
+    if metrics["macro_f1"] <= 0.25:
+        warnings.append(
+            f"Macro F1 {metrics['macro_f1']:.4f} is low; the model is not predicting "
+            f"minority bases effectively."
+        )
     if metrics["invalid_outputs"] > 0:
         warnings.append(
             f"{metrics['invalid_outputs']} sequences produced non-DNA characters."
@@ -654,6 +766,11 @@ def validate_metrics(metrics: Dict, warn_threshold: float = 0.05) -> List[str]:
     if metrics["perplexity"] > 2.5:
         warnings.append(
             f"Perplexity {metrics['perplexity']:.3f} is high (4-class uniform = 4.0)."
+        )
+    if metrics["perplexity"] >= metrics["empirical_baseline_perplexity"]:
+        warnings.append(
+            f"Perplexity {metrics['perplexity']:.3f} is not better than the "
+            f"label-frequency baseline {metrics['empirical_baseline_perplexity']:.3f}."
         )
     accs = [metrics["per_base_accuracy"][b] for b in BASES]
     if max(accs) - min(accs) > 0.15:
@@ -671,7 +788,7 @@ def validate_metrics(metrics: Dict, warn_threshold: float = 0.05) -> List[str]:
 def print_report(metrics: Dict, block: int, model_id: str, trend: str, warnings: List[str]):
     width = 70
     print("=" * width)
-    print(f" Real Genome MLM Evaluation - Block {block}")
+    print(f" MGM-1 Evaluation - Block {block}")
     print("=" * width)
     print(f" Model: {model_id}")
     print(f" Test set: {metrics['total_sequences']} sequences, "
@@ -679,27 +796,54 @@ def print_report(metrics: Dict, block: int, model_id: str, trend: str, warnings:
     print(f" Total masked positions: {metrics['total_masks']}")
     print("-" * width)
     print(" Core Metrics:")
-    print(f"   Perplexity:      {metrics['perplexity']:.3f} (lower is better)")
+    print(f"   MLM Loss:        {metrics['mlm_loss']:.3f} (perplexity proxy)")
+    print(f"   Perplexity:       {metrics['perplexity']:.3f} (lower is better)")
     # correct count
     correct = int(round(metrics['token_accuracy'] * metrics['total_masks']))
-    print(f"   Token Accuracy:  {metrics['token_accuracy']:.2%} ({correct}/{metrics['total_masks']})")
+    print(f"   Token Accuracy:   {metrics['token_accuracy']:.2%} ({correct}/{metrics['total_masks']})")
+    print(f"   Balanced Acc:     {metrics['balanced_accuracy']:.2%}")
+    print(f"   Macro F1:         {metrics['macro_f1']:.4f}")
+    print(f"   Context-aware:    {metrics['context_aware_gain']:.2%} above uniform")
     print("-" * width)
-    print(" Accuracy by Base:")
+    print(" Baselines:")
+    print(f"   Uniform baseline:            acc={metrics['uniform_baseline_accuracy']:.2%}  ppl={metrics['uniform_baseline_perplexity']:.3f}")
+    majority_freq = metrics['label_frequencies'].get(metrics['majority_class'], 0.0)
+    print(f"   Majority-class baseline:     acc={metrics['majority_class_baseline_accuracy']:.2%}  (class {metrics['majority_class']} @ {majority_freq:.2%})")
+    print(f"   Frequency-baseline ppl:      {metrics['empirical_baseline_perplexity']:.3f}")
+    print("-" * width)
+    print(" Improvement over baselines:")
+    acc_u = metrics['accuracy_vs_uniform_pct']
+    acc_m = metrics['accuracy_vs_majority_pct']
+    ppl_u = metrics['perplexity_vs_uniform_pct']
+    print(f"   Accuracy vs uniform:         {acc_u:+.2f}%")
+    print(f"   Accuracy vs majority:        {acc_m:+.2f}%")
+    print(f"   Perplexity vs uniform:       {ppl_u:+.2f}%")
+    print("-" * width)
+    print(" Accuracy by Base (with F1):")
     print(
         " | ".join(
-            f"{b}: {metrics['per_base_accuracy'][b]:.2%}"
+            f"{b}: acc={metrics['per_base_accuracy'][b]:.2%} f1={metrics['per_base_f1'][b]:.4f}"
             for b in BASES
         )
     )
     print("-" * width)
+    print(" Confusion Matrix (true \\ predicted):")
+    cm = metrics["confusion_matrix"]
+    print(f"      {' '.join(f'{b:>5}' for b in BASES)}")
+    for t in BASES:
+        row = " ".join(f"{cm[t][p]:>5}" for p in BASES)
+        print(f"   {t}:  {row}")
+    print("-" * width)
     print(" Prediction Distribution:")
     dist = metrics["prediction_distribution"]
+    total_pred = sum(dist.values())
+    if total_pred == 0:
+        total_pred = 1
     print(
         ", ".join(
-            f"'{b}': {dist.get(b, 0)}" for b in BASES
+            f"'{b}': {dist.get(b, 0)} ({dist.get(b, 0) / total_pred:.2%})" for b in BASES
         )
     )
-    print("-" * width)
     print(f" Average Confidence: {metrics['average_confidence']:.3f}")
     print(f" Trend: {trend}")
     if warnings:
@@ -770,6 +914,15 @@ async def run_batch_diagnostic(args):
 # Main
 # -----------------------------------------------------------------------------
 
+def sha256_file(path: str) -> str:
+    """Return the SHA-256 hex digest of a file, reading in chunks."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def resolve_genome_source(args) -> str:
     if args.genome:
         return args.genome
@@ -807,13 +960,18 @@ def resolve_genome_source(args) -> str:
 
 def run_evaluation(args):
     genome_source = resolve_genome_source(args)
+    genome_hash = sha256_file(genome_source)
 
     with GrpcInferenceClient(args.grpc_addr) as grpc_client:
-        # Verify the model is known to the seed-node.
+        # Verify the model is known to the seed-node and capture its hash.
+        model_hash = None
+        model_version = None
         try:
             info = grpc_client.get_model_info(args.model_id)
+            model_hash = info.model_hash.hex()
+            model_version = info.version
             print(f"Model info: {args.model_id} active={info.active} "
-                  f"version={info.version} hash={info.model_hash.hex()[:16]}...")
+                  f"version={info.version} hash={model_hash[:16]}...")
         except grpc.RpcError as e:
             print(f"[WARN] Could not get model info: {e}")
 
@@ -824,7 +982,7 @@ def run_evaluation(args):
             mask_ratio=args.mask_ratio,
         )
 
-        print(f"Building test set from {genome_source} ...")
+        print(f"Building test set from {genome_source} (sha256 {genome_hash[:16]}...) ...")
         test_set = evaluator.build_test_set(
             genome_source, n=args.n_sequences, seed=args.test_seed
         )
@@ -842,8 +1000,17 @@ def run_evaluation(args):
 
     record = {
         "timestamp": datetime.now().astimezone().isoformat(),
+        "benchmark_version": BENCHMARK_VERSION,
         "block": args.block,
         "model_id": args.model_id,
+        "model_version": model_version,
+        "model_hash": model_hash,
+        "genome_source": genome_source,
+        "genome_hash": genome_hash,
+        "seed": args.test_seed,
+        "n_sequences": args.n_sequences,
+        "seq_len": args.seq_len,
+        "mask_ratio": args.mask_ratio,
         "metrics": metrics,
         "trend": trend,
     }
@@ -905,9 +1072,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--test-seed",
+        "--seed",
         type=int,
         default=42,
-        help="Random seed used to sample the test set and mask positions.",
+        help="Random seed used to sample the test set and mask positions (default: 42).",
     )
     parser.add_argument(
         "--history",

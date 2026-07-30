@@ -257,6 +257,48 @@ impl MultiGpuTrainer {
         Ok(devices)
     }
 
+    /// Compute gradients for a single micro-batch on `trainer` and move them to the
+    /// master device.  This is a free function so the same logic can be used both
+    /// in the multi-threaded scope and when running single-GPU/Metal setups directly
+    /// on the calling thread (avoiding concurrent command buffers).
+    fn run_single_micro(
+        trainer: &DnaBert2Trainer,
+        micro: &MlmBatch,
+        loss_scale: f32,
+        master_device: &Device,
+        gpu_idx: usize,
+    ) -> Result<MicroResult> {
+        let weight = micro.mask.iter().filter(|&&m| m == 1).count() as f32;
+        if weight == 0.0 {
+            return Ok(MicroResult { loss: 0.0, weight: 0.0, grads: None, compute_ms: 0, gather_ms: 0 });
+        }
+
+        let compute_start = Instant::now();
+        let (loss, grads) = match trainer.compute_gradients(micro, loss_scale) {
+            Ok(v) => v,
+            Err(e) => {
+                let error_string = e.to_string().to_lowercase();
+                warn!("GPU {} gradient computation failed: {:?}; skipping micro-batch", gpu_idx, e);
+                if error_string.contains("out of memory") || error_string.contains("oom") || error_string.contains("cuda") {
+                    return Err(e);
+                }
+                return Ok(MicroResult { loss: 0.0, weight, grads: None, compute_ms: 0, gather_ms: 0 });
+            }
+        };
+        let compute_ms = compute_start.elapsed().as_millis() as u64;
+
+        if grads.is_empty() {
+            return Ok(MicroResult { loss, weight, grads: None, compute_ms, gather_ms: 0 });
+        }
+
+        let gather_start = Instant::now();
+        let grads =
+            move_grads_to_device(grads, master_device).with_context(|| format!("Failed to move gradients from GPU {} to master device", gpu_idx))?;
+        let gather_ms = gather_start.elapsed().as_millis() as u64;
+
+        Ok(MicroResult { loss, weight, grads: Some(grads), compute_ms, gather_ms })
+    }
+
     pub(crate) fn build_device_info(devices: &[Device], threads: usize) -> DeviceInfo {
         let mut device_type = DeviceType::Cpu;
         let mut name = format!("Multi-GPU CPU trainer ({} threads)", threads);
@@ -376,52 +418,37 @@ impl MultiGpuTrainer {
             let mut step_compute_ms: u64 = 0;
             let mut step_gather_ms: u64 = 0;
 
-            let step_results: Vec<std::thread::Result<Result<MicroResult>>> = std::thread::scope(|s| {
-                let mut handles = Vec::with_capacity(step.len());
+            // For a single replica (common for Metal/Apple GPUs), run the micro-batch
+            // directly on the calling thread.  Spawning a separate thread for one device
+            // can make the Metal command queue see concurrent buffers and return
+            // `WouldBlock`.  Multi-GPU setups still use the threaded scope.
+            let step_results: Vec<std::thread::Result<Result<MicroResult>>> = if step.len() == 1 {
+                let mut results: Vec<std::thread::Result<Result<MicroResult>>> = Vec::with_capacity(1);
                 for (gpu_idx, maybe_micro) in step.iter().enumerate() {
                     let Some(micro) = maybe_micro else { continue };
                     let trainer = self.trainers[gpu_idx].clone();
-                    let master_device = master_device.clone();
-                    let micro = micro.clone();
                     let loss_scale = scaler.scale();
-                    let handle = s.spawn(move || -> Result<MicroResult> {
-                        let weight = micro.mask.iter().filter(|&&m| m == 1).count() as f32;
-                        if weight == 0.0 {
-                            return Ok(MicroResult { loss: 0.0, weight: 0.0, grads: None, compute_ms: 0, gather_ms: 0 });
-                        }
-
-                        let compute_start = Instant::now();
-                        let (loss, grads) = match trainer.compute_gradients(&micro, loss_scale) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                let error_string = e.to_string().to_lowercase();
-                                warn!("GPU {} gradient computation failed: {:?}; skipping micro-batch", gpu_idx, e);
-                                if error_string.contains("out of memory")
-                                    || error_string.contains("oom")
-                                    || error_string.contains("cuda")
-                                {
-                                    return Err(e);
-                                }
-                                return Ok(MicroResult { loss: 0.0, weight, grads: None, compute_ms: 0, gather_ms: 0 });
-                            }
-                        };
-                        let compute_ms = compute_start.elapsed().as_millis() as u64;
-
-                        if grads.is_empty() {
-                            return Ok(MicroResult { loss, weight, grads: None, compute_ms, gather_ms: 0 });
-                        }
-
-                        let gather_start = Instant::now();
-                        let grads = move_grads_to_device(grads, &master_device)
-                            .with_context(|| format!("Failed to move gradients from GPU {} to master device", gpu_idx))?;
-                        let gather_ms = gather_start.elapsed().as_millis() as u64;
-
-                        Ok(MicroResult { loss, weight, grads: Some(grads), compute_ms, gather_ms })
-                    });
-                    handles.push(handle);
+                    let result = Self::run_single_micro(trainer.as_ref(), micro, loss_scale, &master_device, gpu_idx);
+                    results.push(std::thread::Result::Ok(result));
                 }
-                handles.into_iter().map(|h| h.join()).collect()
-            });
+                results
+            } else {
+                std::thread::scope(|s| {
+                    let mut handles = Vec::with_capacity(step.len());
+                    for (gpu_idx, maybe_micro) in step.iter().enumerate() {
+                        let Some(micro) = maybe_micro else { continue };
+                        let trainer = self.trainers[gpu_idx].clone();
+                        let master_device = master_device.clone();
+                        let micro = micro.clone();
+                        let loss_scale = scaler.scale();
+                        let handle = s.spawn(move || -> Result<MicroResult> {
+                            Self::run_single_micro(trainer.as_ref(), &micro, loss_scale, &master_device, gpu_idx)
+                        });
+                        handles.push(handle);
+                    }
+                    handles.into_iter().map(|h| h.join()).collect()
+                })
+            };
 
             let mut step_grads = Vec::with_capacity(step_results.len());
             for result in step_results {

@@ -77,7 +77,12 @@ async fn handle_connection(
                 let envelope: RpcEnvelope = match BorshDeserialize::try_from_slice(&bytes) {
                     Ok(env) => env,
                     Err(e) => {
-                        warn!("Failed to deserialize miner request from {}: {}", peer, e);
+                        let preview = bytes.iter().take(24).map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ");
+                        let ascii = String::from_utf8_lossy(&bytes[..bytes.len().min(64)]).replace('\n', "\\n");
+                        warn!(
+                            "Failed to deserialize miner request from {}: {}. First {} bytes: {} (ascii: '{}')",
+                            peer, e, bytes.len().min(24), preview, ascii
+                        );
                         continue;
                     }
                 };
