@@ -26,6 +26,51 @@ impl InferenceService {
     pub fn new(model_manager: Arc<ModelManager>) -> Self {
         Self { engine: Arc::new(InferenceEngine::new(model_manager)), proof_generator: ProofGenerator::new() }
     }
+
+    /// If `block_height` is non-zero, ensure the requested historical checkpoint
+    /// is loaded before inference.  Returns an error if the checkpoint is unknown.
+    async fn ensure_historical_checkpoint(&self, model_id: &str, block_height: u64) -> Result<(), Status> {
+        if block_height == 0 {
+            return Ok(());
+        }
+
+        let manager = self.engine.model_manager();
+        let current = manager
+            .active_hash(model_id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("Model {} not found", model_id)))?;
+
+        // Look up the checkpoint that was active at the requested block.
+        let historical_hash = manager
+            .checkpoint_at(block_height)
+            .await
+            .ok_or_else(|| {
+                Status::not_found(format!(
+                    "No checkpoint recorded for model {} at block {}",
+                    model_id, block_height
+                ))
+            })?;
+
+        // Already on the right checkpoint (active or previously loaded).
+        if historical_hash == current {
+            return Ok(());
+        }
+
+        // Verify the historical checkpoint belongs to the active model lineage.
+        if !manager.is_ancestor_of_active(model_id, historical_hash).await {
+            return Err(Status::not_found(format!(
+                "Checkpoint at block {} is not in the active lineage for {}",
+                block_height, model_id
+            )));
+        }
+
+        manager
+            .load_historical_checkpoint(model_id, historical_hash)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to load historical checkpoint: {}", e)))?;
+
+        Ok(())
+    }
 }
 
 #[tonic::async_trait]
@@ -38,6 +83,8 @@ impl Inference for InferenceService {
         let query_id = req.query_id.clone();
 
         info!("Predict request for model: {}", model_id);
+
+        self.ensure_historical_checkpoint(&model_id, req.block_height).await?;
 
         let input = String::from_utf8_lossy(&req.input_data).to_string();
         let engine = self.engine.clone();
@@ -76,6 +123,8 @@ impl Inference for InferenceService {
         let model_id = req.model_id.clone();
 
         info!("EvaluateMaskedLlm request for model: {}", model_id);
+
+        self.ensure_historical_checkpoint(&model_id, req.block_height).await?;
 
         let input = String::from_utf8_lossy(&req.input_data).to_string();
         let engine = self.engine.clone();
@@ -132,13 +181,53 @@ impl Inference for InferenceService {
     async fn get_model_info(&self, request: Request<ModelInfoRequest>) -> Result<Response<ModelInfoResponse>, Status> {
         let req = request.into_inner();
         let model_id = req.model_id;
+        let block_height = req.block_height;
 
-        let model_info = self
-            .engine
-            .model_manager()
-            .get_model(&model_id)
-            .await
-            .ok_or_else(|| Status::not_found(format!("Model {} not found", model_id)))?;
+        let manager = self.engine.model_manager();
+
+        // If a block height is provided, look up the checkpoint that was active
+        // at that point in the training chain and verify it is still loadable.
+        let model_info = if block_height > 0 {
+            let historical_hash = manager
+                .checkpoint_at(block_height)
+                .await
+                .ok_or_else(|| Status::not_found(format!("No checkpoint recorded for {} at block {}", model_id, block_height)))?;
+
+            // Ensure the model id is known and the historical hash is part of its lineage.
+            let current = manager
+                .get_model(&model_id)
+                .await
+                .ok_or_else(|| Status::not_found(format!("Model {} not found", model_id)))?;
+
+            if historical_hash != current.checkpoint.weights_hash
+                && !manager.is_ancestor_of_active(&model_id, historical_hash).await
+            {
+                return Err(Status::not_found(format!(
+                    "Checkpoint {} at block {} is not part of the active lineage for {}",
+                    hex::encode(historical_hash),
+                    block_height,
+                    model_id
+                )));
+            }
+
+            // Load the requested historical checkpoint if it is not the active one.
+            if historical_hash != current.checkpoint.weights_hash {
+                manager
+                    .load_historical_checkpoint(&model_id, historical_hash)
+                    .await
+                    .map_err(|e| Status::internal(format!("Failed to load historical checkpoint: {}", e)))?;
+            }
+
+            manager
+                .get_model(&model_id)
+                .await
+                .ok_or_else(|| Status::not_found(format!("Model {} not found", model_id)))?
+        } else {
+            manager
+                .get_model(&model_id)
+                .await
+                .ok_or_else(|| Status::not_found(format!("Model {} not found", model_id)))?
+        };
 
         let response = ModelInfoResponse {
             model_id: model_info.id,

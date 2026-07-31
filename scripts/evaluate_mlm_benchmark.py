@@ -324,8 +324,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         for i, block in enumerate(blocks):
             print(f"\n[Block {block}] Running benchmark ...")
+
+            # Tell the backend which historical checkpoint to use for this block.
+            backend.set_block_height(block)
+
             try:
-                info = backend.get_model_info(args.model)
+                info = backend.get_model_info(args.model, block)
                 current_hash = info.model_hash
             except Exception as exc:
                 current_hash = None

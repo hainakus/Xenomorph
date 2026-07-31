@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use borsh::BorshDeserialize;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -280,6 +280,9 @@ pub struct ModelManager {
     /// Maps a checkpoint hash to the hash of its direct parent, tracking the
     /// lineage of active checkpoints so stale-but-related bases can be rebased.
     lineage: Arc<RwLock<HashMap<[u8; 32], [u8; 32]>>>,
+    /// Maps a training block number to the active checkpoint hash at that block,
+    /// enabling historical model evaluation and learning curves.
+    checkpoint_history: Arc<RwLock<BTreeMap<u64, [u8; 32]>>>,
 }
 
 impl ModelManager {
@@ -343,6 +346,7 @@ impl ModelManager {
             epoch_duration,
             epoch_size_cap,
             lineage: Arc::new(RwLock::new(HashMap::new())),
+            checkpoint_history: Arc::new(RwLock::new(BTreeMap::new())),
         })
     }
 
@@ -660,6 +664,54 @@ impl ModelManager {
     /// Return the active checkpoint hash for `model_id`, if known.
     pub async fn active_hash(&self, model_id: &str) -> Option<[u8; 32]> {
         self.get_model(model_id).await.map(|info| info.checkpoint.weights_hash)
+    }
+
+    /// Record the active checkpoint hash for a given training block number.
+    pub async fn record_checkpoint(&self, model_id: &str, block_number: u64) -> Result<()> {
+        let hash = self
+            .active_hash(model_id)
+            .await
+            .ok_or_else(|| anyhow!("No active checkpoint for model {} to record at block {}", model_id, block_number))?;
+        let mut history = self.checkpoint_history.write().await;
+        history.insert(block_number, hash);
+        Ok(())
+    }
+
+    /// Load a historical checkpoint into the active slot so it can be used for
+    /// block-height-specific inference. The current active checkpoint is preserved
+    /// in storage and can be restored by loading the model without a block height.
+    pub async fn load_historical_checkpoint(&self, model_id: &str, weights_hash: [u8; 32]) -> Result<()> {
+        let files = self
+            .storage
+            .load_model_files_by_hash(model_id, weights_hash)
+            .await
+            .map_err(|e| anyhow!("Failed to load historical checkpoint for {}: {}", model_id, e))?;
+
+        // Temporarily store the historical files as the active checkpoint.
+        self.storage.store_model_files(model_id, &files).await.map_err(|e| anyhow!("Failed to activate historical checkpoint: {}", e))?;
+
+        // Reload the model metadata / weights from disk.
+        self.load_model(model_id)
+            .await
+            .map_err(|e| anyhow!("Failed to load model after activating historical checkpoint: {}", e))?;
+
+        // Update the in-memory active hash so it matches the requested historical one.
+        {
+            let mut models = self.models.write().await;
+            if let Some(model) = models.get_mut(model_id) {
+                model.checkpoint.weights_hash = weights_hash;
+            }
+        }
+
+        info!("Switched {} to historical checkpoint {}", model_id, hex::encode(weights_hash));
+        Ok(())
+    }
+
+    /// Return the active checkpoint hash at `block_number`, if recorded.
+    pub async fn checkpoint_at(&self, block_number: u64) -> Option<[u8; 32]> {
+        let history = self.checkpoint_history.read().await;
+        // Return the checkpoint active at or before the requested block.
+        history.range(..=block_number).next_back().map(|(_, h)| *h)
     }
 
     /// Check whether `ancestor` is in the active checkpoint lineage for `model_id`.
@@ -1034,6 +1086,10 @@ impl ModelManager {
         new_hash: [u8; 32],
         entry: Arc<Mutex<CachedCheckpoint>>,
     ) -> Result<()> {
+        // Persist the new weights as the active checkpoint and also as a historical
+        // snapshot keyed by its hash, so it can be re-served for block-height queries.
+        self.storage.store_historical_weights(model_id, new_hash, &weights).await.map_err(|e| anyhow!("Failed to store historical weights: {}", e))?;
+
         let files = self.storage.load_model_metadata(model_id).await.map_err(|e| anyhow!("Failed to load model metadata: {}", e))?;
         let new_files = RawModelFiles { config: files.config, tokenizer: files.tokenizer, weights };
         self.store_model_files(model_id, &new_files, ModelMetrics::default()).await?;

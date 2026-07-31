@@ -34,6 +34,8 @@ message PredictRequest {
   string query_id = 3;
   bytes encryption_key = 4;
   map<string, string> metadata = 5;
+  // Optional block height for historical checkpoint inference.
+  uint64 block_height = 6;
 }
 
 // Predict response
@@ -58,6 +60,8 @@ message EvaluateMaskedLlmRequest {
   string query_id = 3;
   bytes encryption_key = 4;
   map<string, string> metadata = 5;
+  // Optional block height for historical checkpoint inference.
+  uint64 block_height = 6;
 }
 
 // Masked language model evaluation response.
@@ -96,6 +100,9 @@ message EmbedResponse {
 // Model info request
 message ModelInfoRequest {
   string model_id = 1;
+  // Optional block height; if > 0 the server should return the checkpoint
+  // that was active at that block, enabling historical learning curves.
+  uint64 block_height = 2;
 }
 
 // Model info response

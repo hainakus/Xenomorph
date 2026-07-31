@@ -2,6 +2,7 @@
 
 import difflib
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -404,9 +405,17 @@ class Evaluator:
         genome_path = resolve_genome_source(self.config.genome)
         genome_hash = sha256_file(genome_path)
 
+        # Tell gRPC backends which historical checkpoint to use for this block.
+        set_block_height = getattr(self.backend, "set_block_height", None)
+        if set_block_height:
+            set_block_height(self.config.block)
+
         logger.info("Requesting model info for %s", self.config.model_id)
         try:
-            model_info = self.backend.get_model_info(self.config.model_id)
+            get_info = self.backend.get_model_info
+            if self.config.block:
+                get_info = partial(get_info, block_height=self.config.block)
+            model_info = get_info(self.config.model_id)
         except Exception as exc:
             logger.warning("could not get model info: %s", exc)
             model_info = None

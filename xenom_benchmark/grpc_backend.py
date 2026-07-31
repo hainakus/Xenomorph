@@ -97,11 +97,17 @@ class GrpcBackend(Backend):
         self,
         address: str = DEFAULT_GRPC_ADDR,
         timeout: float = DEFAULT_TIMEOUT,
+        block_height: int = 0,
     ):
         self.address = address
         self.timeout = timeout
+        self.block_height = block_height
         self.channel = grpc.insecure_channel(address)
         self.stub = inference_pb2_grpc.InferenceStub(self.channel)
+
+    def set_block_height(self, block_height: int) -> None:
+        """Set the checkpoint block height for subsequent inference calls."""
+        self.block_height = block_height
 
     def _call_evaluate_masked_llm(self, model_id: str, masked_sequence: str) -> inference_pb2.EvaluateMaskedLlmResponse:
         """Make the gRPC EvaluateMaskedLlm call with a deadline."""
@@ -110,6 +116,7 @@ class GrpcBackend(Backend):
             model_id=model_id,
             input_data=masked_sequence.encode("utf-8"),
             query_id=query_id,
+            block_height=self.block_height,
         )
         try:
             return self.stub.EvaluateMaskedLlm(request, timeout=self.timeout)
@@ -125,6 +132,7 @@ class GrpcBackend(Backend):
             model_id=model_id,
             input_data=masked_sequence.encode("utf-8"),
             query_id=query_id,
+            block_height=self.block_height,
         )
         try:
             return self.stub.Predict(request, timeout=self.timeout)
@@ -302,9 +310,12 @@ class GrpcBackend(Backend):
 
         return result
 
-    def get_model_info(self, model_id: str) -> ModelInfo:
+    def get_model_info(self, model_id: str, block_height: int = 0) -> ModelInfo:
         """Call the gRPC ``GetModelInfo`` endpoint."""
-        request = inference_pb2.ModelInfoRequest(model_id=model_id)
+        request = inference_pb2.ModelInfoRequest(
+            model_id=model_id,
+            block_height=block_height,
+        )
         try:
             response = self.stub.GetModelInfo(request, timeout=self.timeout)
         except grpc.RpcError as exc:

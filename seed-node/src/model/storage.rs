@@ -99,6 +99,28 @@ impl ModelStorage {
         Ok(())
     }
 
+    /// Store a historical weights file keyed by its hash so it can be reloaded
+    /// later for block-height-specific inference.
+    pub async fn store_historical_weights(&self, model_id: &str, weights_hash: [u8; 32], weights: &[u8]) -> Result<(), StorageError> {
+        let model_path = self.model_path(model_id);
+        fs::create_dir_all(&model_path).await?;
+        let path = format!("{}/weights_{}.enc", model_path, hex::encode(weights_hash));
+        self.write_encrypted_file(&path, weights).await?;
+        Ok(())
+    }
+
+    /// Load model files using a specific historical weights hash.
+    pub async fn load_model_files_by_hash(&self, model_id: &str, weights_hash: [u8; 32]) -> Result<RawModelFiles, StorageError> {
+        let model_path = self.model_path(model_id);
+
+        let config = self.read_encrypted_file(&format!("{}/config.enc", model_path)).await?;
+        let tokenizer = self.read_encrypted_file(&format!("{}/tokenizer.enc", model_path)).await?;
+        let weights_path = format!("{}/weights_{}.enc", model_path, hex::encode(weights_hash));
+        let weights = self.read_encrypted_file(&weights_path).await?;
+
+        Ok(RawModelFiles { config, tokenizer, weights })
+    }
+
     pub async fn load_model_files(&self, model_id: &str) -> Result<RawModelFiles, StorageError> {
         let model_path = self.model_path(model_id);
 

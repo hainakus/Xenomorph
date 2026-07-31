@@ -544,6 +544,17 @@ impl Coordinator {
         if accepted {
             info!("Accepted training block {} (hash {})", block.header.block_number, Hash::from(block_hash));
             self.inner.current_epoch.fetch_add(1, Ordering::Relaxed);
+
+            // Record the active checkpoint hash for this block so historical
+            // evaluation and learning curves can query model state by height.
+            if let Err(e) = self
+                .inner
+                .model_manager
+                .record_checkpoint(&block.model_id, block.header.block_number)
+                .await
+            {
+                warn!("Failed to record checkpoint for block {}: {}", block.header.block_number, e);
+            }
         } else {
             warn!("Consensus rejected training block {}: {:?}", block.header.block_number, submit_response.report);
         }
