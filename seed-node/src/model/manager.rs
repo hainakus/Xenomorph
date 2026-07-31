@@ -688,12 +688,13 @@ impl ModelManager {
             .map_err(|e| anyhow!("Failed to load historical checkpoint for {}: {}", model_id, e))?;
 
         // Temporarily store the historical files as the active checkpoint.
-        self.storage.store_model_files(model_id, &files).await.map_err(|e| anyhow!("Failed to activate historical checkpoint: {}", e))?;
+        self.storage
+            .store_model_files(model_id, &files)
+            .await
+            .map_err(|e| anyhow!("Failed to activate historical checkpoint: {}", e))?;
 
         // Reload the model metadata / weights from disk.
-        self.load_model(model_id)
-            .await
-            .map_err(|e| anyhow!("Failed to load model after activating historical checkpoint: {}", e))?;
+        self.load_model(model_id).await.map_err(|e| anyhow!("Failed to load model after activating historical checkpoint: {}", e))?;
 
         // Update the in-memory active hash so it matches the requested historical one.
         {
@@ -1088,7 +1089,10 @@ impl ModelManager {
     ) -> Result<()> {
         // Persist the new weights as the active checkpoint and also as a historical
         // snapshot keyed by its hash, so it can be re-served for block-height queries.
-        self.storage.store_historical_weights(model_id, new_hash, &weights).await.map_err(|e| anyhow!("Failed to store historical weights: {}", e))?;
+        self.storage
+            .store_historical_weights(model_id, new_hash, &weights)
+            .await
+            .map_err(|e| anyhow!("Failed to store historical weights: {}", e))?;
 
         let files = self.storage.load_model_metadata(model_id).await.map_err(|e| anyhow!("Failed to load model metadata: {}", e))?;
         let new_files = RawModelFiles { config: files.config, tokenizer: files.tokenizer, weights };

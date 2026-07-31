@@ -547,12 +547,7 @@ impl Coordinator {
 
             // Record the active checkpoint hash for this block so historical
             // evaluation and learning curves can query model state by height.
-            if let Err(e) = self
-                .inner
-                .model_manager
-                .record_checkpoint(&block.model_id, block.header.block_number)
-                .await
-            {
+            if let Err(e) = self.inner.model_manager.record_checkpoint(&block.model_id, block.header.block_number).await {
                 warn!("Failed to record checkpoint for block {}: {}", block.header.block_number, e);
             }
         } else {

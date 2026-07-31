@@ -35,21 +35,13 @@ impl InferenceService {
         }
 
         let manager = self.engine.model_manager();
-        let current = manager
-            .active_hash(model_id)
-            .await
-            .ok_or_else(|| Status::not_found(format!("Model {} not found", model_id)))?;
+        let current = manager.active_hash(model_id).await.ok_or_else(|| Status::not_found(format!("Model {} not found", model_id)))?;
 
         // Look up the checkpoint that was active at the requested block.
         let historical_hash = manager
             .checkpoint_at(block_height)
             .await
-            .ok_or_else(|| {
-                Status::not_found(format!(
-                    "No checkpoint recorded for model {} at block {}",
-                    model_id, block_height
-                ))
-            })?;
+            .ok_or_else(|| Status::not_found(format!("No checkpoint recorded for model {} at block {}", model_id, block_height)))?;
 
         // Already on the right checkpoint (active or previously loaded).
         if historical_hash == current {
@@ -194,14 +186,10 @@ impl Inference for InferenceService {
                 .ok_or_else(|| Status::not_found(format!("No checkpoint recorded for {} at block {}", model_id, block_height)))?;
 
             // Ensure the model id is known and the historical hash is part of its lineage.
-            let current = manager
-                .get_model(&model_id)
-                .await
-                .ok_or_else(|| Status::not_found(format!("Model {} not found", model_id)))?;
+            let current =
+                manager.get_model(&model_id).await.ok_or_else(|| Status::not_found(format!("Model {} not found", model_id)))?;
 
-            if historical_hash != current.checkpoint.weights_hash
-                && !manager.is_ancestor_of_active(&model_id, historical_hash).await
-            {
+            if historical_hash != current.checkpoint.weights_hash && !manager.is_ancestor_of_active(&model_id, historical_hash).await {
                 return Err(Status::not_found(format!(
                     "Checkpoint {} at block {} is not part of the active lineage for {}",
                     hex::encode(historical_hash),
@@ -218,15 +206,9 @@ impl Inference for InferenceService {
                     .map_err(|e| Status::internal(format!("Failed to load historical checkpoint: {}", e)))?;
             }
 
-            manager
-                .get_model(&model_id)
-                .await
-                .ok_or_else(|| Status::not_found(format!("Model {} not found", model_id)))?
+            manager.get_model(&model_id).await.ok_or_else(|| Status::not_found(format!("Model {} not found", model_id)))?
         } else {
-            manager
-                .get_model(&model_id)
-                .await
-                .ok_or_else(|| Status::not_found(format!("Model {} not found", model_id)))?
+            manager.get_model(&model_id).await.ok_or_else(|| Status::not_found(format!("Model {} not found", model_id)))?
         };
 
         let response = ModelInfoResponse {
