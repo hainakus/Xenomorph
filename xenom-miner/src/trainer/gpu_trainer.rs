@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use candle_core::Device;
-use tracing::warn;
+use tracing::{warn, info};
 
 use crate::gpu::monitor::GpuMonitor;
 use crate::lora::LoraConfig;
