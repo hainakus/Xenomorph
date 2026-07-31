@@ -136,10 +136,6 @@ pub struct MultiGpuTrainer {
 
 /// Result of computing gradients for a single GPU micro-batch.
 struct MicroResult {
-    /// Unscaled loss for this micro-batch, averaged over the masked positions.
-    loss: f64,
-    /// Number of masked positions in this micro-batch.
-    weight: f32,
     /// Gradients moved to the master device, if this micro-batch produced any.
     grads: Option<HashMap<String, Tensor>>,
     /// Time spent in forward + backward for this micro-batch.
@@ -268,13 +264,13 @@ impl MultiGpuTrainer {
         master_device: &Device,
         gpu_idx: usize,
     ) -> Result<MicroResult> {
-        let weight = micro.mask.iter().filter(|&&m| m == 1).count() as f32;
-        if weight == 0.0 {
-            return Ok(MicroResult { loss: 0.0, weight: 0.0, grads: None, compute_ms: 0, gather_ms: 0 });
+        let masked_count = micro.mask.iter().filter(|&&m| m == 1).count() as f32;
+        if masked_count == 0.0 {
+            return Ok(MicroResult { grads: None, compute_ms: 0, gather_ms: 0 });
         }
 
         let compute_start = Instant::now();
-        let (loss, grads) = match trainer.compute_gradients(micro, loss_scale) {
+        let (_loss, grads) = match trainer.compute_gradients(micro, loss_scale) {
             Ok(v) => v,
             Err(e) => {
                 let error_string = e.to_string().to_lowercase();
@@ -282,13 +278,13 @@ impl MultiGpuTrainer {
                 if error_string.contains("out of memory") || error_string.contains("oom") || error_string.contains("cuda") {
                     return Err(e);
                 }
-                return Ok(MicroResult { loss: 0.0, weight, grads: None, compute_ms: 0, gather_ms: 0 });
+                return Ok(MicroResult { grads: None, compute_ms: 0, gather_ms: 0 });
             }
         };
         let compute_ms = compute_start.elapsed().as_millis() as u64;
 
         if grads.is_empty() {
-            return Ok(MicroResult { loss, weight, grads: None, compute_ms, gather_ms: 0 });
+            return Ok(MicroResult { grads: None, compute_ms, gather_ms: 0 });
         }
 
         let gather_start = Instant::now();
@@ -296,7 +292,7 @@ impl MultiGpuTrainer {
             .with_context(|| format!("Failed to move gradients from GPU {} to master device", gpu_idx))?;
         let gather_ms = gather_start.elapsed().as_millis() as u64;
 
-        Ok(MicroResult { loss, weight, grads: Some(grads), compute_ms, gather_ms })
+        Ok(MicroResult { grads: Some(grads), compute_ms, gather_ms })
     }
 
     pub(crate) fn build_device_info(devices: &[Device], threads: usize) -> DeviceInfo {
@@ -373,6 +369,11 @@ impl MultiGpuTrainer {
     }
 
     /// Train on an already-materialised `MlmBatch`.
+    ///
+    /// Batches larger than `micro_batch_size * num_gpus * gradient_accumulation_steps`
+    /// are sliced into chunks. Gradients are accumulated across all chunks and a
+    /// single optimizer step is applied at the end, so the full server batch is
+    /// used and GPU utilisation stays high.
     fn train_mlm_batch(
         &self,
         mlm_batch: &MlmBatch,
@@ -384,25 +385,22 @@ impl MultiGpuTrainer {
         let start = Instant::now();
         self.ensure_base(base_checkpoint).context("Failed to reset replicas to base checkpoint")?;
 
-        let micro_batches =
-            split_mlm_batch(mlm_batch, self.trainers.len(), self.config.gradient_accumulation_steps, self.config.micro_batch_size);
+        let chunks =
+            chunk_mlm_batch(mlm_batch, self.trainers.len(), self.config.gradient_accumulation_steps, self.config.micro_batch_size);
+        let participant_weight = mlm_batch.mask.iter().filter(|&&m| m == 1).count() as f32;
 
-        // Only the first `usable` sequences are actually used for training. Compute
-        // post-update loss on that exact slice so the values are comparable.
-        let usable =
-            mlm_batch.batch_size.min(self.config.micro_batch_size * self.trainers.len() * self.config.gradient_accumulation_steps);
-        let used_batch = extract_mlm_batch(mlm_batch, 0, usable, mlm_batch.seq_len);
-        let participant_weight = used_batch.mask.iter().filter(|&&m| m == 1).count() as f32;
+        // Use the first chunk as the reference for loss_before / loss_after so the
+        // metric is computed on the same data before and after the update.
+        let reference_chunk = chunks.first().context("No chunks produced from batch")?;
 
         let master_device = self.trainers[0].device.clone();
         let mut accumulated_grads: Option<HashMap<String, Tensor>> = None;
         let mut any_overflow = false;
 
-        // loss_before is accumulated from each GPU's micro-batch loss (weighted by the
-        // number of masked positions). This avoids an extra full forward pass on the
-        // master replica before the backward steps begin.
-        let mut loss_before_sum: f64 = 0.0;
-        let mut loss_before_weight: f32 = 0.0;
+        // Compute a clean reference loss_before on the reference chunk.
+        let loss_before_start = Instant::now();
+        let loss_before = self.trainers[0].compute_loss_scalar(reference_chunk)?;
+        let loss_before_ms = loss_before_start.elapsed().as_millis() as u64;
 
         let mut compute_ms: u64 = 0;
         let mut gather_ms: u64 = 0;
@@ -413,75 +411,79 @@ impl MultiGpuTrainer {
         // Snapshot the scaler at the start of the batch; it is updated at the end.
         let mut scaler = *self.scaler.lock().map_err(|e| anyhow::anyhow!("Mixed-precision scaler poisoned: {}", e))?;
 
-        for step in &micro_batches {
-            let step_start = Instant::now();
-            let mut step_compute_ms: u64 = 0;
-            let mut step_gather_ms: u64 = 0;
+        for chunk in &chunks {
+            let micro_batches =
+                split_mlm_batch(chunk, self.trainers.len(), self.config.gradient_accumulation_steps, self.config.micro_batch_size);
 
-            // For a single replica (common for Metal/Apple GPUs), run the micro-batch
-            // directly on the calling thread.  Spawning a separate thread for one device
-            // can make the Metal command queue see concurrent buffers and return
-            // `WouldBlock`.  Multi-GPU setups still use the threaded scope.
-            let step_results: Vec<std::thread::Result<Result<MicroResult>>> = if step.len() == 1 {
-                let mut results: Vec<std::thread::Result<Result<MicroResult>>> = Vec::with_capacity(1);
-                for (gpu_idx, maybe_micro) in step.iter().enumerate() {
-                    let Some(micro) = maybe_micro else { continue };
-                    let trainer = self.trainers[gpu_idx].clone();
-                    let loss_scale = scaler.scale();
-                    let result = Self::run_single_micro(trainer.as_ref(), micro, loss_scale, &master_device, gpu_idx);
-                    results.push(std::thread::Result::Ok(result));
-                }
-                results
-            } else {
-                std::thread::scope(|s| {
-                    let mut handles = Vec::with_capacity(step.len());
+            for step in &micro_batches {
+                let step_start = Instant::now();
+                let mut step_compute_ms: u64 = 0;
+                let mut step_gather_ms: u64 = 0;
+
+                // For a single replica (common for Metal/Apple GPUs), run the micro-batch
+                // directly on the calling thread.  Spawning a separate thread for one device
+                // can make the Metal command queue see concurrent buffers and return
+                // `WouldBlock`.  Multi-GPU setups still use the threaded scope.
+                let step_results: Vec<std::thread::Result<Result<MicroResult>>> = if step.len() == 1 {
+                    let mut results: Vec<std::thread::Result<Result<MicroResult>>> = Vec::with_capacity(1);
                     for (gpu_idx, maybe_micro) in step.iter().enumerate() {
                         let Some(micro) = maybe_micro else { continue };
                         let trainer = self.trainers[gpu_idx].clone();
-                        let master_device = master_device.clone();
-                        let micro = micro.clone();
                         let loss_scale = scaler.scale();
-                        let handle = s.spawn(move || -> Result<MicroResult> {
-                            Self::run_single_micro(trainer.as_ref(), &micro, loss_scale, &master_device, gpu_idx)
-                        });
-                        handles.push(handle);
+                        let result = Self::run_single_micro(trainer.as_ref(), micro, loss_scale, &master_device, gpu_idx);
+                        results.push(std::thread::Result::Ok(result));
                     }
-                    handles.into_iter().map(|h| h.join()).collect()
-                })
-            };
-
-            let mut step_grads = Vec::with_capacity(step_results.len());
-            for result in step_results {
-                let micro = result.map_err(|e| anyhow::anyhow!("GPU thread panicked: {:?}", e))??;
-                if let Some(grads) = micro.grads {
-                    step_compute_ms = step_compute_ms.max(micro.compute_ms);
-                    step_gather_ms = step_gather_ms.max(micro.gather_ms);
-                    loss_before_sum += micro.loss * micro.weight as f64;
-                    loss_before_weight += micro.weight;
-                    step_grads.push(grads);
+                    results
                 } else {
-                    any_overflow = true;
+                    std::thread::scope(|s| {
+                        let mut handles = Vec::with_capacity(step.len());
+                        for (gpu_idx, maybe_micro) in step.iter().enumerate() {
+                            let Some(micro) = maybe_micro else { continue };
+                            let trainer = self.trainers[gpu_idx].clone();
+                            let master_device = master_device.clone();
+                            let micro = micro.clone();
+                            let loss_scale = scaler.scale();
+                            let handle = s.spawn(move || -> Result<MicroResult> {
+                                Self::run_single_micro(trainer.as_ref(), &micro, loss_scale, &master_device, gpu_idx)
+                            });
+                            handles.push(handle);
+                        }
+                        handles.into_iter().map(|h| h.join()).collect()
+                    })
+                };
+
+                let mut step_grads = Vec::with_capacity(step_results.len());
+                for result in step_results {
+                    let micro = result.map_err(|e| anyhow::anyhow!("GPU thread panicked: {:?}", e))??;
+                    if let Some(grads) = micro.grads {
+                        step_compute_ms = step_compute_ms.max(micro.compute_ms);
+                        step_gather_ms = step_gather_ms.max(micro.gather_ms);
+                        step_grads.push(grads);
+                    } else {
+                        any_overflow = true;
+                    }
                 }
+                compute_ms += step_compute_ms;
+                gather_ms += step_gather_ms;
+                // The remaining wall time for the step (averaging / accumulation) is captured below.
+                let _ = step_start.elapsed();
+
+                if step_grads.is_empty() {
+                    continue;
+                }
+
+                let avg_start = Instant::now();
+                let avg =
+                    average_grad_maps(&step_grads).context("Failed to average gradients across GPUs for an accumulation step")?;
+                avg_ms += avg_start.elapsed().as_millis() as u64;
+
+                let add_start = Instant::now();
+                accumulated_grads = Some(match accumulated_grads {
+                    None => avg,
+                    Some(acc) => add_grad_maps(acc, avg)?,
+                });
+                add_ms += add_start.elapsed().as_millis() as u64;
             }
-            compute_ms += step_compute_ms;
-            gather_ms += step_gather_ms;
-            // The remaining wall time for the step (averaging / accumulation) is captured below.
-            let _ = step_start.elapsed();
-
-            if step_grads.is_empty() {
-                continue;
-            }
-
-            let avg_start = Instant::now();
-            let avg = average_grad_maps(&step_grads).context("Failed to average gradients across GPUs for an accumulation step")?;
-            avg_ms += avg_start.elapsed().as_millis() as u64;
-
-            let add_start = Instant::now();
-            accumulated_grads = Some(match accumulated_grads {
-                None => avg,
-                Some(acc) => add_grad_maps(acc, avg)?,
-            });
-            add_ms += add_start.elapsed().as_millis() as u64;
         }
 
         // If every micro-batch overflowed, reduce the scale and bail so the next batch can retry.
@@ -492,8 +494,6 @@ impl MultiGpuTrainer {
         }
 
         let final_grads = accumulated_grads.unwrap();
-
-        let loss_before = if loss_before_weight > 0.0 { loss_before_sum / loss_before_weight as f64 } else { 0.0 };
 
         let final_overflow_start = Instant::now();
         let had_overflow = if self.config.use_mixed_precision {
@@ -523,10 +523,13 @@ impl MultiGpuTrainer {
             .context("Failed to apply averaged gradients to master replica")?;
         let apply_ms = apply_start.elapsed().as_millis() as u64;
 
-        // Compute post-update loss on the master replica using the same
-        // sequences that were actually trained.
+        // Compute post-update loss on the first chunk. This is a proxy for the full
+        // batch loss; computing it on the whole 320+ batch would require another
+        // expensive forward pass.  The chunk size is the accumulation grid, so it
+        // reflects the update applied after seeing all chunks.
         let loss_after_start = Instant::now();
-        let loss_after = self.trainers[0].compute_loss_scalar(&used_batch)?;
+        let used_batch = chunks.first().context("No chunks produced from batch")?;
+        let loss_after = self.trainers[0].compute_loss_scalar(used_batch)?;
         let loss_after_ms = loss_after_start.elapsed().as_millis() as u64;
 
         let commitment_start = Instant::now();
@@ -541,8 +544,8 @@ impl MultiGpuTrainer {
 
         let total_ms = start.elapsed().as_millis() as u64;
         info!(
-            "MultiGpuTrainer timings (ms): total={}, loss_before={:.6}, loss_after={:.6}, compute={}, gather={}, overflow_check={}, avg={}, add={}, apply={}, loss_after_ms={}, commitment={}, restore={}",
-            total_ms, loss_before, loss_after, compute_ms, gather_ms, overflow_check_ms, avg_ms, add_ms, apply_ms, loss_after_ms, commitment_ms, restore_ms
+            "MultiGpuTrainer timings (ms): total={}, chunks={}, loss_before={:.6}, loss_after={:.6}, compute={}, gather={}, overflow_check={}, avg={}, add={}, apply={}, loss_before_ms={}, loss_after_ms={}, commitment={}, restore={}",
+            total_ms, chunks.len(), loss_before, loss_after, compute_ms, gather_ms, overflow_check_ms, avg_ms, add_ms, apply_ms, loss_before_ms, loss_after_ms, commitment_ms, restore_ms
         );
 
         let result = TrainingResult {
@@ -689,6 +692,9 @@ impl DnaBert2Model {
 /// keeping each cell contiguous and respecting `micro_batch_size`. This avoids
 /// the old row-major behaviour where the first GPU(s) would eat the whole batch
 /// and leave the remaining GPUs idle.
+///
+/// The input `batch` is expected to fit within one accumulation grid. Callers
+/// with larger batches should slice it into chunks via `chunk_mlm_batch` first.
 fn split_mlm_batch(
     batch: &MlmBatch,
     num_gpus: usize,
@@ -703,13 +709,8 @@ fn split_mlm_batch(
         return grid;
     }
 
-    let max_usable = micro_batch_size.saturating_mul(num_gpus).saturating_mul(accumulation_steps);
-    if total > max_usable {
-        warn!("Batch size {} exceeds usable grid capacity {}; truncating to {}", total, max_usable, max_usable);
-    }
-
     let mut consumed = 0usize;
-    let usable = total.min(max_usable);
+    let usable = total;
     for step_row in grid.iter_mut().take(accumulation_steps) {
         if consumed >= usable {
             break;
@@ -735,6 +736,27 @@ fn split_mlm_batch(
     }
 
     grid
+}
+
+/// Split a large `MlmBatch` into chunks that each fit in the accumulation grid.
+///
+/// This keeps `micro_batch_size * num_gpus * accumulation_steps` sequences per
+/// outer chunk. The trainer then accumulates gradients across all chunks and
+/// applies a single optimizer step at the end, so the full server batch is used.
+fn chunk_mlm_batch(batch: &MlmBatch, num_gpus: usize, accumulation_steps: usize, micro_batch_size: usize) -> Vec<MlmBatch> {
+    let grid_capacity = micro_batch_size.saturating_mul(num_gpus).saturating_mul(accumulation_steps);
+    if grid_capacity == 0 || batch.batch_size == 0 {
+        return vec![batch.clone()];
+    }
+
+    let mut chunks = Vec::new();
+    let mut start = 0usize;
+    while start < batch.batch_size {
+        let end = (start + grid_capacity).min(batch.batch_size);
+        chunks.push(extract_mlm_batch(batch, start, end, batch.seq_len));
+        start = end;
+    }
+    chunks
 }
 
 /// Extract a contiguous slice of sequences from a flat `MlmBatch`.
