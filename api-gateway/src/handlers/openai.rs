@@ -151,7 +151,7 @@ pub async fn chat_completions(
 
     let (response, prompt_tokens, completion_tokens) = if let Some(mut client) = state.seed_client.clone() {
         let query_id = Uuid::new_v4().to_string();
-        match client.predict(&model_id, sanitized.as_bytes(), &query_id).await {
+        match client.predict(&model_id, sanitized.as_bytes(), &query_id, None).await {
             Ok(grpc_response) => {
                 let text = String::from_utf8_lossy(&grpc_response.output_data).to_string();
                 let prompt_tokens = if grpc_response.prompt_tokens > 0 {

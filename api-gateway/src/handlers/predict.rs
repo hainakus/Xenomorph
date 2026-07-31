@@ -67,7 +67,7 @@ pub async fn predict(
 
     // Forward to seed node if a gRPC client is configured, otherwise simulate
     let response = if let Some(mut client) = state.seed_client.clone() {
-        match client.predict(&model_id, request.input_data.as_bytes(), &query_id).await {
+        match client.predict(&model_id, request.input_data.as_bytes(), &query_id, None).await {
             Ok(grpc_response) => PredictResponse {
                 query_id: query_id.clone(),
                 prediction: String::from_utf8_lossy(&grpc_response.output_data).to_string(),

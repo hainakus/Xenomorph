@@ -37,7 +37,7 @@ pub async fn list_models(State(state): State<Arc<AppState>>) -> Result<Json<Mode
     let mut models = Vec::with_capacity(list_response.models.len());
     for grpc_model in list_response.models {
         // Augment the summary with full model info for description and query count.
-        let details = client.get_model_info(&grpc_model.model_id).await.unwrap_or_default();
+        let details = client.get_model_info(&grpc_model.model_id, None).await.unwrap_or_default();
 
         let name = if details.name.is_empty() { grpc_model.name } else { details.name };
         let description = if details.description.is_empty() { "Xenomorph scientific model".to_string() } else { details.description };
@@ -63,7 +63,7 @@ pub async fn list_models(State(state): State<Arc<AppState>>) -> Result<Json<Mode
 pub async fn get_model(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Result<Json<ModelInfo>, StatusCode> {
     let mut client = state.seed_client.clone().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
-    let details = client.get_model_info(&id).await.map_err(|e| {
+    let details = client.get_model_info(&id, None).await.map_err(|e| {
         error!("Seed node get_model_info failed for {}: {}", id, e);
         StatusCode::NOT_FOUND
     })?;

@@ -20,13 +20,20 @@ impl SeedNodeClient {
         Ok(Self { client })
     }
 
-    pub async fn predict(&mut self, model_id: &str, input_data: &[u8], query_id: &str) -> Result<GrpcPredictResponse> {
+    pub async fn predict(
+        &mut self,
+        model_id: &str,
+        input_data: &[u8],
+        query_id: &str,
+        block_height: Option<u64>,
+    ) -> Result<GrpcPredictResponse> {
         let request = tonic::Request::new(GrpcPredictRequest {
             model_id: model_id.to_string(),
             input_data: input_data.to_vec(),
             query_id: query_id.to_string(),
             encryption_key: Vec::new(),
             metadata: Default::default(),
+            block_height: block_height.unwrap_or(0),
         });
 
         let response = self.client.predict(request).await.map_err(|e| anyhow!("Seed node prediction failed: {}", e))?;
@@ -56,8 +63,9 @@ impl SeedNodeClient {
         Ok(response.into_inner())
     }
 
-    pub async fn get_model_info(&mut self, model_id: &str) -> Result<GrpcModelInfoResponse> {
-        let request = tonic::Request::new(GrpcModelInfoRequest { model_id: model_id.to_string() });
+    pub async fn get_model_info(&mut self, model_id: &str, block_height: Option<u64>) -> Result<GrpcModelInfoResponse> {
+        let request =
+            tonic::Request::new(GrpcModelInfoRequest { model_id: model_id.to_string(), block_height: block_height.unwrap_or(0) });
 
         let response = self.client.get_model_info(request).await.map_err(|e| anyhow!("Seed node get_model_info failed: {}", e))?;
 
