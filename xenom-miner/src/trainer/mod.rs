@@ -36,10 +36,18 @@ pub struct DeviceInfo {
     pub threads: usize,
     /// GPU memory currently in use, in bytes.
     pub memory_used: Option<u64>,
+    /// Total GPU memory, in bytes.
+    pub memory_total: Option<u64>,
+    /// Free GPU memory, in bytes.
+    pub memory_free: Option<u64>,
     /// GPU temperature in degrees Celsius.
     pub temperature: Option<u32>,
     /// GPU compute utilization percentage (0-100).
     pub utilization: Option<u32>,
+    /// GPU power draw in milliwatts.
+    pub power_draw_mw: Option<u32>,
+    /// NVIDIA compute capability (major, minor).
+    pub compute_capability: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

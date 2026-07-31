@@ -6,8 +6,18 @@ pub struct GpuStats {
     pub utilization: u32,
     /// GPU memory currently in use, in bytes.
     pub memory_used: u64,
+    /// Total GPU memory, in bytes.
+    pub memory_total: u64,
+    /// Free GPU memory, in bytes.
+    pub memory_free: u64,
     /// GPU temperature in degrees Celsius.
     pub temperature: u32,
+    /// GPU power draw in milliwatts.
+    pub power_draw_mw: Option<u32>,
+    /// NVIDIA compute capability (major, minor).
+    pub compute_capability: Option<(u32, u32)>,
+    /// GPU name.
+    pub name: String,
 }
 
 /// Monitor GPU metrics for the currently active training device.
@@ -25,8 +35,20 @@ impl GpuMonitor {
         let util = device.utilization_rates()?;
         let mem = device.memory_info()?;
         let temp = device.temperature(TemperatureSensor::Gpu)?;
+        let power_draw_mw = device.power_usage().ok().map(|p| p as u32);
+        let compute_capability = device.cuda_compute_capability().ok().map(|c| (c.major, c.minor));
+        let name = device.name().unwrap_or_default();
 
-        Ok(GpuStats { utilization: util.gpu, memory_used: mem.used, temperature: temp })
+        Ok(GpuStats {
+            utilization: util.gpu,
+            memory_used: mem.used,
+            memory_total: mem.total,
+            memory_free: mem.free,
+            temperature: temp,
+            power_draw_mw,
+            compute_capability,
+            name,
+        })
     }
 
     #[cfg(not(feature = "cuda"))]
