@@ -1,5 +1,6 @@
 pub mod checkpoint;
 pub mod downloader;
+pub mod lora_artifact;
 pub mod manager;
 pub mod model_files;
 pub mod storage;

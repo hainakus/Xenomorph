@@ -48,7 +48,23 @@ A minimal trainable LM head for the miner:
   `save_adapter()`, and `load_adapter()`.
 - Uses `ManualAdamW` so gradients flow only to `lora_a` / `lora_b`.
 
-### 5. Server stubs
+### 5. `LoraOnlyTrainer` (`xenom-miner/src/trainer/lora_only_trainer.rs`)
+
+Drives the full LoRA-only loop:
+
+- Calls `get_training_artifact`.
+- Builds `LoraLmHead` from the returned artifact.
+- Calls `attested_forward` with a batch.
+- Trains the LoRA adapter for `local_steps`.
+- Submits the adapter via `submit_lora_update`.
+
+### 6. `GetTrainingArtifact` in seed-node (`seed-node/src/model/lora_artifact.rs`)
+
+Extracts only the frozen LM head + tied embedding weights from a DNABERT-2
+safetensors checkpoint and packages them in a `TrainingArtifact`.  For this
+spike the artifact is not encrypted and the signature is a placeholder.
+
+### 7. Server stubs
 
 `seed-node/src/rpc/server.rs` now handles the new `RpcRequest` variants:
 
@@ -63,10 +79,17 @@ A minimal trainable LM head for the miner:
 ```bash
 cargo test -p xenom-miner lora_lm_head
 cargo test -p xenom-miner rpc
+cargo test -p xenom-miner --test lora_track_spike
+cargo test -p xenom-miner --test integration_tests
 ```
 
-All targeted tests pass.  Note that `test_mgm1_balanced_local_training` is
-pre-existing and unrelated to these changes.
+- `lora_lm_head` unit test: passes.
+- `rpc` roundtrip tests: pass.
+- `lora_track_spike` end-to-end integration test: passes.
+- `integration_tests`: all 3 existing tests still pass.
+
+Note that `test_mgm1_balanced_local_training` is pre-existing and unrelated to
+these changes.
 
 ### `seed-node`
 
@@ -78,8 +101,8 @@ All 46 tests pass.
 
 ## Limitations and next steps
 
-1. `GetTrainingArtifact` is not yet implemented on the orchestrator side; it
-   needs to:
+1. `GetTrainingArtifact` extracts the LM head but does **not** encrypt the
+   artifact or sign it.  It needs to:
    - Derive a session key from the miner's public key.
    - Encrypt the LM head base weights and LoRA seed.
    - Sign the artifact with the model auth key.
@@ -90,13 +113,10 @@ All 46 tests pass.
 3. `SubmitLoRAUpdate` must validate, decrypt, and merge the LoRA delta on the
    orchestrator.
 
-4. `LoraLmHead` currently receives a plain `HashMap<String, Tensor>` of base
-   weights.  In production this will be loaded from an encrypted `TrainingArtifact`.
+4. `LoraOnlyTrainer` is a spike.  It must be wired into `xenom-miner/src/main.rs`
+   behind `--trainer lora` or similar, and must fetch real training batches.
 
-5. The full miner training loop (fetch artifact → train from attested hidden
-   states → submit delta) is not yet wired into `main.rs`.
-
-6. A shared `rpc::messages` crate should be extracted from `xenom-miner` and
+5. A shared `rpc::messages` crate should be extracted from `xenom-miner` and
    `seed-node` to eliminate the duplicated message definitions.
 
 ## Files changed
@@ -105,10 +125,14 @@ All 46 tests pass.
 - `xenom-miner/src/rpc/client.rs`
 - `xenom-miner/src/trainer/mod.rs`
 - `xenom-miner/src/trainer/lora_lm_head.rs` (new)
+- `xenom-miner/src/trainer/lora_only_trainer.rs` (new)
 - `xenom-miner/src/lora.rs` (`varmap()` accessor, `get_base_tensor` is now `pub(crate)`)
 - `xenom-miner/tests/integration_tests.rs`
+- `xenom-miner/tests/lora_track_spike.rs` (new)
 - `seed-node/src/rpc/messages.rs`
 - `seed-node/src/rpc/server.rs`
 - `seed-node/src/serving/mod.rs`
 - `seed-node/src/serving/attested_forward.rs` (new)
+- `seed-node/src/model/mod.rs`
+- `seed-node/src/model/lora_artifact.rs` (new)
 - `docs/architecture/lora-track-phase1.md` (new)
