@@ -137,6 +137,7 @@ async fn test_rpc_client_against_mock_server() {
             loss_before: 2.45,
             loss_after: 2.41,
             gradients_commitment: [4u8; 32],
+            new_checkpoint: None,
             zk_proof: vec![0u8; 32],
             batch_indices: vec![0, 1, 2],
             compute_time_ms: 100,

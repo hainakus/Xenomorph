@@ -81,6 +81,7 @@ mod tests {
             loss_before: 2.45,
             loss_after: 2.41,
             gradients_commitment: [1u8; 32],
+            new_checkpoint: None,
             compute_time_ms: 100,
         }
     }

@@ -476,6 +476,7 @@ impl Mgm1Trainer {
             loss_before,
             loss_after,
             gradients_commitment,
+            new_checkpoint: None,
             compute_time_ms: start.elapsed().as_millis() as u64,
         };
         Ok((result, weight_delta))

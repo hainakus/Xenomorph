@@ -4,6 +4,7 @@
 //! it stores the active model, serves genome batches to miners, accepts completed
 //! training blocks, validates the training proof, builds a Kaspa block and mines it.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -27,9 +28,10 @@ use seed_node::model::manager::ModelManager;
 use seed_node::model::model_files::RawModelFiles;
 use seed_node::model::storage::ModelStorage;
 use seed_node::rpc::messages::{
-    GenomeTrainingBatchMsg, GetGenomeTrainingBatch, GradientUpdate, ModelCheckpoint as RpcModelCheckpoint,
-    ModelCheckpointInfo as RpcModelCheckpointInfo, ModelCheckpointInfoV2 as RpcModelCheckpointInfoV2,
-    ModelCheckpointV2 as RpcModelCheckpointV2, RpcResponse, TrainingBatch, TrainingBlock,
+    AttestedForwardRequest, GenomeSlice, GenomeTrainingBatch, GenomeTrainingBatchMsg, GetGenomeTrainingBatch, GetTrainingArtifact,
+    GradientUpdate, ModelCheckpoint as RpcModelCheckpoint, ModelCheckpointInfo as RpcModelCheckpointInfo,
+    ModelCheckpointInfoV2 as RpcModelCheckpointInfoV2, ModelCheckpointV2 as RpcModelCheckpointV2, RpcResponse, SubmitLoRAUpdate,
+    TrainingBatch, TrainingBlock,
 };
 use seed_node::LoraConfig;
 use tokio::sync::RwLock;
@@ -52,6 +54,12 @@ pub struct Coordinator {
     inner: Arc<CoordinatorInner>,
 }
 
+/// A LoRA delta that has been verified and merged but not yet committed in a mined block.
+struct PendingLoRAUpdate {
+    update: SubmitLoRAUpdate,
+    merged_files: RawModelFiles,
+}
+
 struct CoordinatorInner {
     network_type: NetworkType,
     active_model_id: String,
@@ -72,6 +80,9 @@ struct CoordinatorInner {
     /// Monotonic counter incremented for every genome batch request so each
     /// miner gets a different slice of the genome even before a block is accepted.
     batch_counter: AtomicU64,
+    /// LoRA updates that have been verified and merged but are waiting for a
+    /// mined training block to be activated as the new active checkpoint.
+    pending_lora_updates: Arc<RwLock<HashMap<[u8; 32], PendingLoRAUpdate>>>,
 }
 
 impl Coordinator {
@@ -158,6 +169,7 @@ impl Coordinator {
                 genome_pow_activation_daa_score,
                 current_epoch: AtomicU64::new(0),
                 batch_counter: AtomicU64::new(1),
+                pending_lora_updates: Arc::new(RwLock::new(HashMap::new())),
             }),
         };
 
@@ -260,6 +272,18 @@ impl Coordinator {
         batch.model_id = request.model_id;
 
         let sequences = generator.extract_sequences(&batch);
+        let batch = GenomeTrainingBatch {
+            batch_id: batch.batch_id,
+            model_id: batch.model_id,
+            genome_merkle_root: batch.genome_merkle_root,
+            data_indices: batch
+                .data_indices
+                .into_iter()
+                .map(|s| GenomeSlice { chunk_idx: s.chunk_idx, start_base: s.start_base, length: s.length })
+                .collect(),
+            mask_ratio: batch.mask_ratio,
+            seq_length: batch.seq_length,
+        };
         RpcResponse::GenomeTrainingBatch(GenomeTrainingBatchMsg { batch, sequences, base_checkpoint })
     }
 
@@ -347,6 +371,82 @@ impl Coordinator {
         })
     }
 
+    /// Return a LoRA-only training artifact for the active model.
+    pub async fn get_training_artifact(&self, request: GetTrainingArtifact) -> RpcResponse {
+        if request.model_id != self.inner.active_model_id {
+            return RpcResponse::Error(format!("Unknown model id {} (active is {})", request.model_id, self.inner.active_model_id));
+        }
+
+        if let Err(e) = self.inner.model_manager.ensure_model_downloaded(&request.model_id, self.inner.from_scratch).await {
+            return RpcResponse::Error(format!("Failed to download model: {:#}", e));
+        }
+
+        match seed_node::model::lora_artifact::build_training_artifact(&self.inner.model_manager, &request).await {
+            Ok(artifact) => RpcResponse::TrainingArtifact(artifact),
+            Err(e) => {
+                warn!("GetTrainingArtifact failed for {}: {}", request.model_id, e);
+                RpcResponse::Error(format!("GetTrainingArtifact failed: {}", e))
+            }
+        }
+    }
+
+    /// Run an attested forward pass and return signed hidden states for LoRA training.
+    pub async fn attested_forward(&self, request: AttestedForwardRequest) -> RpcResponse {
+        if request.model_id != self.inner.active_model_id {
+            return RpcResponse::Error(format!("Unknown model id {} (active is {})", request.model_id, self.inner.active_model_id));
+        }
+
+        if let Err(e) = self.inner.model_manager.ensure_model_downloaded(&request.model_id, self.inner.from_scratch).await {
+            return RpcResponse::Error(format!("Failed to download model: {:#}", e));
+        }
+
+        let model_id = request.model_id.clone();
+        match seed_node::serving::attested_forward::attested_forward(self.inner.model_manager.clone(), request).await {
+            Ok(response) => RpcResponse::AttestedForward(response),
+            Err(e) => {
+                warn!("AttestedForward failed for {}: {}", model_id, e);
+                RpcResponse::Error(format!("AttestedForward failed: {}", e))
+            }
+        }
+    }
+
+    /// Verify and merge a LoRA delta, then keep it pending until a block commits it.
+    pub async fn submit_lora_update(&self, update: SubmitLoRAUpdate) -> RpcResponse {
+        if update.model_id != self.inner.active_model_id {
+            return RpcResponse::Error(format!("Unknown model id {} (active is {})", update.model_id, self.inner.active_model_id));
+        }
+
+        let active_base = match self.active_weights_hash().await {
+            Ok(h) => h.as_bytes(),
+            Err(e) => return RpcResponse::Error(format!("Failed to load active model: {:#}", e)),
+        };
+
+        if update.base_checkpoint != active_base {
+            return RpcResponse::Error(format!(
+                "LoRA update base {} does not match active {}",
+                hex::encode(update.base_checkpoint),
+                hex::encode(active_base)
+            ));
+        }
+
+        if let Err(e) = self.inner.model_manager.ensure_model_downloaded(&update.model_id, self.inner.from_scratch).await {
+            return RpcResponse::Error(format!("Failed to download model: {:#}", e));
+        }
+
+        let model_id = update.model_id.clone();
+        match seed_node::model::lora_merge::verify_and_merge_lora_update(self.inner.model_manager.clone(), &update).await {
+            Ok((merged_files, new_checkpoint)) => {
+                let mut pending = self.inner.pending_lora_updates.write().await;
+                pending.insert(new_checkpoint, PendingLoRAUpdate { update, merged_files });
+                RpcResponse::LoRAUpdateAck { new_checkpoint: Some(new_checkpoint) }
+            }
+            Err(e) => {
+                warn!("SubmitLoRAUpdate failed for {}: {}", model_id, e);
+                RpcResponse::Error(format!("SubmitLoRAUpdate failed: {}", e))
+            }
+        }
+    }
+
     /// Accept a completed training block, validate it, build a Kaspa block and submit it.
     pub async fn submit_block(&self, block: TrainingBlock) -> RpcResponse {
         // Address prefix check.
@@ -389,6 +489,30 @@ impl Coordinator {
                 return RpcResponse::Error("Base checkpoint does not match active model weights hash".to_string());
             }
         }
+
+        // If the proof claims a LoRA merge, the new checkpoint must already be
+        // a verified/merged pending update.
+        let lora_new_checkpoint = if let Some(new_cp) = miner_proof.new_checkpoint {
+            let pending = self.inner.pending_lora_updates.read().await;
+            match pending.get(&new_cp) {
+                Some(pending_update)
+                    if pending_update.update.base_checkpoint == miner_proof.base_checkpoint
+                        && pending_update.update.lora_delta_hash == miner_proof.gradients_commitment =>
+                {
+                    Some(new_cp)
+                }
+                _ => {
+                    warn!(
+                        "Rejecting training block: new_checkpoint {} is not a pending LoRA update for base {}",
+                        hex::encode(new_cp),
+                        hex::encode(miner_proof.base_checkpoint)
+                    );
+                    return RpcResponse::Error("Unknown LoRA new checkpoint".to_string());
+                }
+            }
+        } else {
+            None
+        };
 
         if !miner_proof.loss_before.is_finite() || !miner_proof.loss_after.is_finite() {
             warn!(
@@ -544,6 +668,27 @@ impl Coordinator {
         if accepted {
             info!("Accepted training block {} (hash {})", block.header.block_number, Hash::from(block_hash));
             self.inner.current_epoch.fetch_add(1, Ordering::Relaxed);
+
+            // If the block claims a LoRA update, activate the pending merged checkpoint.
+            if let Some(new_cp) = lora_new_checkpoint {
+                let maybe_pending = {
+                    let mut pending = self.inner.pending_lora_updates.write().await;
+                    pending.remove(&new_cp)
+                };
+                if let Some(pending_update) = maybe_pending {
+                    if let Err(e) = self
+                        .inner
+                        .model_manager
+                        .set_active_checkpoint(&block.model_id, new_cp, &pending_update.merged_files, block.header.block_number)
+                        .await
+                    {
+                        warn!("Failed to activate LoRA checkpoint {} for {}: {}", hex::encode(new_cp), block.model_id, e);
+                    } else {
+                        *self.inner.active_weights_hash.write().await = Some(Hash::from_bytes(new_cp));
+                        info!("Activated LoRA checkpoint {} for {}", hex::encode(new_cp), block.model_id);
+                    }
+                }
+            }
 
             // Record the active checkpoint hash for this block so historical
             // evaluation and learning curves can query model state by height.

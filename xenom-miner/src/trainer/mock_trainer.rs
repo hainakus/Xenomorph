@@ -57,6 +57,7 @@ impl Trainer for MockTrainer {
             loss_before,
             loss_after,
             gradients_commitment,
+            new_checkpoint: None,
             compute_time_ms: start.elapsed().as_millis() as u64,
         })
     }

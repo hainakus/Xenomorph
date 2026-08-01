@@ -43,6 +43,7 @@ pub struct MinerTrainingProof {
     pub loss_before: f64,
     pub loss_after: f64,
     pub gradients_commitment: [u8; 32],
+    pub new_checkpoint: Option<[u8; 32]>,
     pub zk_proof: Vec<u8>,
     pub batch_indices: Vec<u64>,
     pub compute_time_ms: u64,

@@ -406,7 +406,7 @@ async fn test_lora_track_spike() {
         LoraConfig { rank: 2, alpha: 4.0, dropout: 0.0, target_modules: ["dense".to_string()].iter().cloned().collect() };
     let miner_secret = SecretKey::new(&mut rand::thread_rng());
     let mut trainer = LoraOnlyTrainer::new(client, 1e-2, 4, lora_config, miner_secret);
-    let (loss_after, _loss_before, _delta) =
+    let (loss_after, _loss_before, _delta, _new_checkpoint) =
         timeout(TEST_TIMEOUT, trainer.train_round("xeno/mgm-1", [1u8; 32], input_ids, attention_mask, labels, mask))
             .await
             .expect("train round timed out")

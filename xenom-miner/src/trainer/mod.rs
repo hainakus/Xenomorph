@@ -73,6 +73,7 @@ pub struct TrainingResult {
     pub loss_before: f64,
     pub loss_after: f64,
     pub gradients_commitment: [u8; 32],
+    pub new_checkpoint: Option<[u8; 32]>,
     pub compute_time_ms: u64,
 }
 

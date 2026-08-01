@@ -417,6 +417,7 @@ impl DnaBert2Trainer {
             loss_before: loss_before_scalar,
             loss_after: loss_after_scalar,
             gradients_commitment,
+            new_checkpoint: None,
             compute_time_ms: start.elapsed().as_millis() as u64,
         })
     }

@@ -21,10 +21,15 @@ const LORA_DENSE_KEY: &str = "lm_head.transform.dense.weight";
 const LORA_A_KEY: &str = "lm_head.transform.dense.lora_a";
 const LORA_B_KEY: &str = "lm_head.transform.dense.lora_b";
 
-/// Verify and merge a LoRA delta into the active checkpoint.
+/// Verify and merge a LoRA delta into the active checkpoint without storing it.
 ///
-/// Returns the hash of the new merged weights.
-pub async fn apply_lora_update(model_manager: Arc<ModelManager>, update: &SubmitLoRAUpdate) -> Result<[u8; 32]> {
+/// Returns the merged `RawModelFiles` and the hash of the new merged weights.
+/// The caller decides whether to activate the new checkpoint immediately or keep
+/// it pending until a training block is accepted.
+pub async fn verify_and_merge_lora_update(
+    model_manager: Arc<ModelManager>,
+    update: &SubmitLoRAUpdate,
+) -> Result<(RawModelFiles, [u8; 32])> {
     // Verify the miner signature over the plaintext delta hash and base checkpoint.
     let message = build_lora_delta_message_hash(&update.lora_delta_hash, update.base_checkpoint);
     let message = Message::from_digest(message);
@@ -89,17 +94,24 @@ pub async fn apply_lora_update(model_manager: Arc<ModelManager>, update: &Submit
 
     tensors.insert(LORA_DENSE_KEY.to_string(), new_weight);
 
-    // Serialize the merged checkpoint and store it as the new active checkpoint.
+    // Serialize the merged checkpoint.
     let merged_safetensors = serialize_safetensors(&tensors)?;
     let new_hash = blake3_hash(&merged_safetensors);
 
     let new_files = RawModelFiles { config: files.config.clone(), tokenizer: files.tokenizer.clone(), weights: merged_safetensors };
 
+    Ok((new_files, new_hash))
+}
+
+/// Verify, merge, and immediately store a LoRA delta as the active checkpoint.
+///
+/// Returns the hash of the new merged weights.
+pub async fn apply_lora_update(model_manager: Arc<ModelManager>, update: &SubmitLoRAUpdate) -> Result<[u8; 32]> {
+    let (new_files, new_hash) = verify_and_merge_lora_update(model_manager.clone(), update).await?;
     model_manager
         .store_model_files(&update.model_id, &new_files, Default::default())
         .await
         .with_context(|| format!("Failed to store merged checkpoint for {}", update.model_id))?;
-
     Ok(new_hash)
 }
 

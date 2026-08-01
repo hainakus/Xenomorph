@@ -892,14 +892,14 @@ async fn run_lora_iteration(
     }
 
     let train_result = lora_trainer.train_genome_round(&batch).await;
-    let (loss_after, loss_before, delta) = match train_result {
+    let (loss_after, loss_before, delta, new_checkpoint) = match train_result {
         Ok(v) => v,
         Err(e) => {
             return Err(e).context("LoRA train round failed");
         }
     };
 
-    // Build a synthetic training result from the LoRA delta.
+    // Build a training result from the LoRA delta.
     let gradients_commitment = *blake3::hash(&delta).as_bytes();
 
     let result = TrainingResult {
@@ -909,6 +909,7 @@ async fn run_lora_iteration(
         loss_before,
         loss_after,
         gradients_commitment,
+        new_checkpoint,
         compute_time_ms: start.elapsed().as_millis() as u64,
     };
 

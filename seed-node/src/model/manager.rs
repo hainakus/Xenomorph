@@ -727,6 +727,36 @@ impl ModelManager {
         Ok(())
     }
 
+    /// Replace the active checkpoint for `model_id` with `new_hash` and store
+    /// the supplied `new_files` as the current model files. Records lineage
+    /// `new_hash -> old_hash` so the previous active checkpoint remains valid
+    /// as an ancestor for block validation.
+    pub async fn set_active_checkpoint(
+        &self,
+        model_id: &str,
+        new_hash: [u8; 32],
+        new_files: &RawModelFiles,
+        block_height: u64,
+    ) -> Result<()> {
+        self.storage.store_model_files(model_id, new_files).await.map_err(|e| anyhow!("Failed to store active model files: {}", e))?;
+
+        let old_hash = {
+            let mut models = self.models.write().await;
+            let model = models.get_mut(model_id).ok_or_else(|| anyhow!("Model {} is not loaded", model_id))?;
+            let old_hash = model.checkpoint.weights_hash;
+            model.checkpoint.weights_hash = new_hash;
+            model.checkpoint.block_height = block_height;
+            old_hash
+        };
+
+        {
+            let mut lineage = self.lineage.write().await;
+            lineage.insert(new_hash, old_hash);
+        }
+
+        Ok(())
+    }
+
     /// Load a historical checkpoint into the active slot so it can be used for
     /// block-height-specific inference. The current active checkpoint is preserved
     /// in storage and can be restored by loading the model without a block height.

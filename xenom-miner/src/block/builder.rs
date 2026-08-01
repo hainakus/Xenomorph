@@ -36,6 +36,7 @@ impl BlockBuilder {
             loss_before: result.loss_before,
             loss_after: result.loss_after,
             gradients_commitment: result.gradients_commitment,
+            new_checkpoint: result.new_checkpoint,
             zk_proof,
             batch_indices: result.batch_indices.clone(),
             compute_time_ms: result.compute_time_ms,

@@ -212,6 +212,13 @@ async fn handle_connection(stream: tokio::net::TcpStream, state: Arc<Mutex<MockS
                         RpcResponse::Error("mock seed node does not serve genome batches".to_string())
                     }
                     RpcRequest::GetCheckpointPeers(_) => RpcResponse::CheckpointPeers(Vec::new()),
+                    RpcRequest::GetTrainingArtifact(_) => {
+                        RpcResponse::Error("mock node does not serve LoRA training artifacts".to_string())
+                    }
+                    RpcRequest::AttestedForward(_) => {
+                        RpcResponse::Error("mock node does not serve attested forward passes".to_string())
+                    }
+                    RpcRequest::SubmitLoRAUpdate(_) => RpcResponse::LoRAUpdateAck { new_checkpoint: None },
                     RpcRequest::SubmitBlock(block) => {
                         // The real proof has 1 version byte + 32 commitments + 32 hash.
                         let valid_proof =

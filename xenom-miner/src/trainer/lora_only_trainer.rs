@@ -112,14 +112,14 @@ impl LoraOnlyTrainer {
         self.miner_public_key
     }
 
-    /// Train one genome-backed batch and return `(loss_after, loss_before, lora_delta)`.
+    /// Train one genome-backed batch and return `(loss_after, loss_before, lora_delta, new_checkpoint)`.
     ///
     /// `loss_before` is the base LM head loss reported by the orchestrator in the
     /// `AttestedForward` response; `loss_after` is the LoRA LM head loss after the
     /// local training steps.  This fetches (or reuses) the training artifact,
     /// tokenizes the provided DNA sequences into an MLM batch, requests attested
     /// hidden states, trains, and submits a `LoRAUpdate`.
-    pub async fn train_genome_round(&mut self, msg: &GenomeTrainingBatchMsg) -> Result<(f64, f64, Vec<u8>)> {
+    pub async fn train_genome_round(&mut self, msg: &GenomeTrainingBatchMsg) -> Result<(f64, f64, Vec<u8>, Option<[u8; 32]>)> {
         let model_id = msg.batch.model_id.clone();
         let base_checkpoint = msg.base_checkpoint;
         let seed = msg.base_checkpoint;
@@ -150,7 +150,7 @@ impl LoraOnlyTrainer {
         self.train_round_tensors(&model_id, base_checkpoint, input_ids, attention_mask, labels, mask).await
     }
 
-    /// Run one training round from pre-tokenized tensors and return `(loss_after, loss_before, lora_delta)`.
+    /// Run one training round from pre-tokenized tensors and return `(loss_after, loss_before, lora_delta, new_checkpoint)`.
     pub async fn train_round(
         &mut self,
         model_id: &str,
@@ -159,7 +159,7 @@ impl LoraOnlyTrainer {
         attention_mask: Vec<Vec<u32>>,
         labels: Vec<Vec<u32>>,
         mask: Vec<Vec<u8>>,
-    ) -> Result<(f64, f64, Vec<u8>)> {
+    ) -> Result<(f64, f64, Vec<u8>, Option<[u8; 32]>)> {
         self.ensure_artifact(model_id, base_checkpoint).await?;
         self.train_round_tensors(model_id, base_checkpoint, input_ids, attention_mask, labels, mask).await
     }
@@ -190,7 +190,7 @@ impl LoraOnlyTrainer {
         attention_mask: Vec<Vec<u32>>,
         labels: Vec<Vec<u32>>,
         mask: Vec<Vec<u8>>,
-    ) -> Result<(f64, f64, Vec<u8>)> {
+    ) -> Result<(f64, f64, Vec<u8>, Option<[u8; 32]>)> {
         let base = self.base.as_ref().ok_or_else(|| anyhow!("No artifact loaded"))?;
 
         // 2. Build the LoRA LM head.
@@ -237,12 +237,12 @@ impl LoraOnlyTrainer {
         // 6. Save the adapter, encrypt it, and submit the update.
         let delta = head.save_adapter()?;
         let update = self.build_lora_update(model_id, base_checkpoint, &delta)?;
-        let _new_checkpoint = self.client.submit_lora_update(update).await?;
+        let new_checkpoint = self.client.submit_lora_update(update).await?;
 
         // The forward session has been used to encrypt the delta; securely erase it now.
         self.last_forward_session = None;
 
-        Ok((last_loss, base_loss, delta))
+        Ok((last_loss, base_loss, delta, new_checkpoint))
     }
 
     fn load_artifact(&self, artifact: &TrainingArtifact) -> Result<(DnaBert2Config, DnaTokenizer, HashMap<String, Tensor>)> {

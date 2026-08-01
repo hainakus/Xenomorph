@@ -332,6 +332,7 @@ impl Mgm1MultiGpuTrainer {
             loss_before,
             loss_after,
             gradients_commitment,
+            new_checkpoint: None,
             compute_time_ms: total_ms,
         };
 

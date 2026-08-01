@@ -161,6 +161,9 @@ async fn handle_request(
             }
             None => RpcResponse::Error("P2P gossip not enabled on this node".to_string()),
         },
+        RpcRequest::GetTrainingArtifact(request) => coordinator.get_training_artifact(request).await,
+        RpcRequest::AttestedForward(request) => coordinator.attested_forward(request).await,
+        RpcRequest::SubmitLoRAUpdate(update) => coordinator.submit_lora_update(update).await,
         RpcRequest::GetBalance { .. } => RpcResponse::Balance(10_000),
         RpcRequest::GetDifficulty => RpcResponse::Difficulty([0u8; 32]),
         RpcRequest::Heartbeat => RpcResponse::Pong,
