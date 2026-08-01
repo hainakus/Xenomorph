@@ -90,6 +90,11 @@ async fn start_mock_server() -> u16 {
                     }),
                     RpcRequest::SubmitGradients(_) => RpcResponse::GradientAck { new_checkpoint: None },
                     RpcRequest::GetCheckpointPeers(_req) => RpcResponse::CheckpointPeers(Vec::new()),
+                    RpcRequest::GetTrainingArtifact(_req) => {
+                        RpcResponse::Error("GetTrainingArtifact not supported in mock".to_string())
+                    }
+                    RpcRequest::AttestedForward(_req) => RpcResponse::Error("AttestedForward not supported in mock".to_string()),
+                    RpcRequest::SubmitLoRAUpdate(_req) => RpcResponse::LoRAUpdateAck { new_checkpoint: None },
                 };
 
                 let payload = to_vec(&response).unwrap();

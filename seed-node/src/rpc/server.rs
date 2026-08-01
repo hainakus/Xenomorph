@@ -287,6 +287,16 @@ async fn handle_request(
         RpcRequest::GetBalance { .. } => RpcResponse::Balance(10_000),
         RpcRequest::GetDifficulty => RpcResponse::Difficulty([0u8; 32]),
         RpcRequest::Heartbeat => RpcResponse::Pong,
+        RpcRequest::GetTrainingArtifact(_req) => RpcResponse::Error("GetTrainingArtifact not yet supported by seed-node".to_string()),
+        RpcRequest::AttestedForward(req) => match crate::serving::attested_forward::attested_forward(model_manager.clone(), req).await
+        {
+            Ok(resp) => RpcResponse::AttestedForward(resp),
+            Err(e) => {
+                warn!("AttestedForward failed: {}", e);
+                RpcResponse::Error(format!("AttestedForward failed: {}", e))
+            }
+        },
+        RpcRequest::SubmitLoRAUpdate(_req) => RpcResponse::LoRAUpdateAck { new_checkpoint: None },
     }
 }
 

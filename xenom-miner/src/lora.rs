@@ -165,6 +165,11 @@ impl ModelBuilder {
         self.lora_config.as_deref()
     }
 
+    /// Return the underlying `VarMap` shared with all tensors built by this builder.
+    pub fn varmap(&self) -> Arc<VarMap> {
+        self.varmap.clone()
+    }
+
     fn is_lora(&self) -> bool {
         self.lora_config.is_some()
     }
@@ -198,7 +203,7 @@ impl ModelBuilder {
         }
     }
 
-    fn get_base_tensor(&self, suffix: &str) -> CandleResult<Tensor> {
+    pub(crate) fn get_base_tensor(&self, suffix: &str) -> CandleResult<Tensor> {
         let key = self.full_key(suffix);
         let tensor = self.base_weights.get(&key).ok_or_else(|| candle_core::Error::Msg(format!("Missing base weight: {}", key)))?;
         tensor.to_device(&self.device)?.to_dtype(self.dtype)

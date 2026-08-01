@@ -140,6 +140,72 @@ pub struct GetModelCheckpointV2 {
     pub cached_base_hash: Option<[u8; 32]>,
 }
 
+/// Type of artifact returned by the orchestrator in a secure distribution model.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq, Eq)]
+pub enum ArtifactType {
+    Base,
+    LoRA,
+    Adapter,
+    GradientTask,
+}
+
+/// Request an encrypted LoRA/adapter artifact from the orchestrator.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct GetTrainingArtifact {
+    pub model_id: String,
+    pub base_checkpoint: [u8; 32],
+    pub cached_base_hash: Option<[u8; 32]>,
+    pub miner_public_key: [u8; 33],
+}
+
+/// Encrypted LoRA/adapter artifact returned to a miner.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct TrainingArtifact {
+    pub model_id: String,
+    pub base_checkpoint: [u8; 32],
+    pub base_hash: [u8; 32],
+    pub config: Vec<u8>,
+    pub tokenizer: Vec<u8>,
+    pub artifact: Vec<u8>,
+    pub artifact_type: ArtifactType,
+    pub artifact_hash: [u8; 32],
+    pub encrypted: bool,
+    pub recipient_key_fingerprint: [u8; 32],
+    pub signature: [u8; 64],
+}
+
+/// Request an attested forward pass from the orchestrator.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct AttestedForwardRequest {
+    pub model_id: String,
+    pub base_checkpoint: [u8; 32],
+    pub input_ids: Vec<Vec<u32>>,
+    pub attention_mask: Vec<Vec<u32>>,
+    pub labels: Vec<Vec<u32>>,
+    pub mask: Vec<Vec<u8>>,
+}
+
+/// Signed hidden states and loss returned by the orchestrator.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct AttestedForwardResponse {
+    pub hidden_states_hash: [u8; 32],
+    pub hidden_states: Vec<u8>,
+    pub loss: f64,
+    pub token_count: u32,
+    pub signature: [u8; 64],
+}
+
+/// Encrypted LoRA delta submitted by a miner.
+#[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
+pub struct SubmitLoRAUpdate {
+    pub model_id: String,
+    pub base_checkpoint: [u8; 32],
+    pub lora_delta: Vec<u8>,
+    pub gradient_commitment: [u8; 32],
+    pub participant_weight: f32,
+    pub miner_address: String,
+}
+
 /// V2 lightweight checkpoint metadata exposing both the combined and base hashes.
 #[derive(BorshSerialize, BorshDeserialize, Debug, Clone, PartialEq)]
 pub struct GetModelCheckpointInfoV2 {
@@ -249,6 +315,9 @@ pub enum RpcRequest {
     GetModelCheckpointInfoV2(GetModelCheckpointInfoV2),
     GetModelCheckpointV2(GetModelCheckpointV2),
     GetCheckpointPeers(GetCheckpointPeers),
+    GetTrainingArtifact(GetTrainingArtifact),
+    AttestedForward(AttestedForwardRequest),
+    SubmitLoRAUpdate(SubmitLoRAUpdate),
 }
 
 /// Response messages sent from the Xenomorph node to the miner.
@@ -269,6 +338,9 @@ pub enum RpcResponse {
     ModelCheckpointInfoV2(ModelCheckpointInfoV2),
     ModelCheckpointV2(ModelCheckpointV2),
     CheckpointPeers(Vec<PeerAnnouncement>),
+    TrainingArtifact(TrainingArtifact),
+    AttestedForward(AttestedForwardResponse),
+    LoRAUpdateAck { new_checkpoint: Option<[u8; 32]> },
 }
 
 /// Wire envelope used by the RPC client to tag requests.
@@ -352,6 +424,87 @@ mod tests {
         let bytes = to_vec(&checkpoint).unwrap();
         let decoded: ModelCheckpoint = ModelCheckpoint::try_from_slice(&bytes).unwrap();
         assert_eq!(checkpoint, decoded);
+    }
+
+    #[test]
+    fn test_roundtrip_training_artifact_rpc() {
+        let req = GetTrainingArtifact {
+            model_id: "xeno/mgm-1".to_string(),
+            base_checkpoint: [1u8; 32],
+            cached_base_hash: Some([2u8; 32]),
+            miner_public_key: [3u8; 33],
+        };
+        let env = RpcEnvelope { request_id: 10, payload: RpcRequest::GetTrainingArtifact(req) };
+        let bytes = to_vec(&env).unwrap();
+        let decoded: RpcEnvelope = RpcEnvelope::try_from_slice(&bytes).unwrap();
+        assert_eq!(env, decoded);
+
+        let artifact = TrainingArtifact {
+            model_id: "xeno/mgm-1".to_string(),
+            base_checkpoint: [1u8; 32],
+            base_hash: [2u8; 32],
+            config: b"{}".to_vec(),
+            tokenizer: b"[]".to_vec(),
+            artifact: vec![0u8; 64],
+            artifact_type: ArtifactType::LoRA,
+            artifact_hash: [4u8; 32],
+            encrypted: true,
+            recipient_key_fingerprint: [5u8; 32],
+            signature: [6u8; 64],
+        };
+        let resp = RpcResponse::TrainingArtifact(artifact);
+        let bytes = to_vec(&resp).unwrap();
+        let decoded: RpcResponse = RpcResponse::try_from_slice(&bytes).unwrap();
+        assert_eq!(resp, decoded);
+    }
+
+    #[test]
+    fn test_roundtrip_attested_forward_rpc() {
+        let req = AttestedForwardRequest {
+            model_id: "xeno/mgm-1".to_string(),
+            base_checkpoint: [1u8; 32],
+            input_ids: vec![vec![0, 1, 2]],
+            attention_mask: vec![vec![1, 1, 1]],
+            labels: vec![vec![0, 1, 2]],
+            mask: vec![vec![0, 1, 0]],
+        };
+        let env = RpcEnvelope { request_id: 11, payload: RpcRequest::AttestedForward(req) };
+        let bytes = to_vec(&env).unwrap();
+        let decoded: RpcEnvelope = RpcEnvelope::try_from_slice(&bytes).unwrap();
+        assert_eq!(env, decoded);
+
+        let resp = AttestedForwardResponse {
+            hidden_states_hash: [1u8; 32],
+            hidden_states: vec![0u8; 64],
+            loss: 1.23,
+            token_count: 128,
+            signature: [2u8; 64],
+        };
+        let resp = RpcResponse::AttestedForward(resp);
+        let bytes = to_vec(&resp).unwrap();
+        let decoded: RpcResponse = RpcResponse::try_from_slice(&bytes).unwrap();
+        assert_eq!(resp, decoded);
+    }
+
+    #[test]
+    fn test_roundtrip_submit_lora_update_rpc() {
+        let req = SubmitLoRAUpdate {
+            model_id: "xeno/mgm-1".to_string(),
+            base_checkpoint: [1u8; 32],
+            lora_delta: vec![0u8; 64],
+            gradient_commitment: [2u8; 32],
+            participant_weight: 1.0,
+            miner_address: "xenomdev:...".to_string(),
+        };
+        let env = RpcEnvelope { request_id: 12, payload: RpcRequest::SubmitLoRAUpdate(req) };
+        let bytes = to_vec(&env).unwrap();
+        let decoded: RpcEnvelope = RpcEnvelope::try_from_slice(&bytes).unwrap();
+        assert_eq!(env, decoded);
+
+        let resp = RpcResponse::LoRAUpdateAck { new_checkpoint: Some([3u8; 32]) };
+        let bytes = to_vec(&resp).unwrap();
+        let decoded: RpcResponse = RpcResponse::try_from_slice(&bytes).unwrap();
+        assert_eq!(resp, decoded);
     }
 
     #[test]

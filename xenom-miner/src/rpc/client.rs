@@ -10,9 +10,10 @@ use tokio_tungstenite::{
 use tracing::{debug, info, warn};
 
 use super::messages::{
-    BlockHash, DifficultyTarget, GenomeTrainingBatchMsg, GetCheckpointPeers, GetModelCheckpointInfo, GetModelCheckpointInfoV2,
-    GetModelCheckpointV2, GradientUpdate, ModelCheckpoint, ModelCheckpointInfo, ModelCheckpointInfoV2, ModelCheckpointV2,
-    PeerAnnouncement, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch, TrainingBlock,
+    AttestedForwardRequest, AttestedForwardResponse, BlockHash, DifficultyTarget, GenomeTrainingBatchMsg, GetCheckpointPeers,
+    GetModelCheckpointInfo, GetModelCheckpointInfoV2, GetModelCheckpointV2, GetTrainingArtifact, GradientUpdate, ModelCheckpoint,
+    ModelCheckpointInfo, ModelCheckpointInfoV2, ModelCheckpointV2, PeerAnnouncement, RpcEnvelope, RpcRequest, RpcResponse,
+    SubmitLoRAUpdate, TrainingArtifact, TrainingBatch, TrainingBlock,
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -211,6 +212,43 @@ impl XenomRpcClient {
             RpcResponse::Balance(balance) => Ok(balance),
             RpcResponse::Error(msg) => bail!("Node returned error: {}", msg),
             other => bail!("Unexpected response to GetBalance: {:?}", other),
+        }
+    }
+
+    /// Request an encrypted LoRA/adapter training artifact.
+    pub async fn get_training_artifact(
+        &mut self,
+        model_id: &str,
+        base_checkpoint: [u8; 32],
+        cached_base_hash: Option<[u8; 32]>,
+        miner_public_key: [u8; 33],
+    ) -> Result<TrainingArtifact> {
+        let request = GetTrainingArtifact { model_id: model_id.to_string(), base_checkpoint, cached_base_hash, miner_public_key };
+        let response = self.send_request(RpcRequest::GetTrainingArtifact(request)).await?;
+        match response {
+            RpcResponse::TrainingArtifact(artifact) => Ok(artifact),
+            RpcResponse::Error(msg) => bail!("Node returned error: {}", msg),
+            other => bail!("Unexpected response to GetTrainingArtifact: {:?}", other),
+        }
+    }
+
+    /// Request an attested forward pass from the orchestrator.
+    pub async fn attested_forward(&mut self, request: AttestedForwardRequest) -> Result<AttestedForwardResponse> {
+        let response = self.send_request(RpcRequest::AttestedForward(request)).await?;
+        match response {
+            RpcResponse::AttestedForward(resp) => Ok(resp),
+            RpcResponse::Error(msg) => bail!("Node returned error: {}", msg),
+            other => bail!("Unexpected response to AttestedForward: {:?}", other),
+        }
+    }
+
+    /// Submit an encrypted LoRA delta to the orchestrator.
+    pub async fn submit_lora_update(&mut self, update: SubmitLoRAUpdate) -> Result<Option<[u8; 32]>> {
+        let response = self.send_request(RpcRequest::SubmitLoRAUpdate(update)).await?;
+        match response {
+            RpcResponse::LoRAUpdateAck { new_checkpoint } => Ok(new_checkpoint),
+            RpcResponse::Error(msg) => bail!("Node rejected LoRA update: {}", msg),
+            other => bail!("Unexpected response to SubmitLoRAUpdate: {:?}", other),
         }
     }
 

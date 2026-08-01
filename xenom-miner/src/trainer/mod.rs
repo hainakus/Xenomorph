@@ -2,6 +2,7 @@ pub mod cpu_trainer;
 pub mod dnabert2_trainer;
 pub mod gpu_trainer;
 pub mod gradient;
+pub mod lora_lm_head;
 pub mod lora_spike;
 pub mod mgm1_multi_gpu;
 pub mod mgm1_trainer;

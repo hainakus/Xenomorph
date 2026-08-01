@@ -1,3 +1,4 @@
+pub mod attested_forward;
 pub mod inference;
 pub mod inference_engine;
 pub mod proof;
