@@ -158,8 +158,8 @@ All 46 tests pass.
    The LoRA delta itself is left in plaintext for the spike; encryption will be
    added when the `AttestedForward` session key is reused.
 
-7. The `TrainingArtifact` session nonce is fixed at `[0u8; 12]` in the spike.  In
-   production it must be random per artifact.
+7. Session nonces for `TrainingArtifact` and `AttestedForward` are generated
+   randomly per message using `rand::thread_rng().fill_bytes`.
 
 8. `xenom-rpc` only holds `rpc::messages`.  The WebSocket client/codec still
    lives in `xenom-miner` and could be moved later if `seed-node` or the unified

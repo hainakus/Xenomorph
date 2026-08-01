@@ -12,6 +12,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use candle_core::{DType, Device, Tensor};
 use model_crypto::artifact_sign::ArtifactSigner;
 use model_crypto::session;
+use rand::RngCore;
 use secp256k1::PublicKey;
 
 use crate::model::lora_artifact::load_or_create_hierarchy;
@@ -98,7 +99,8 @@ pub async fn attested_forward(model_manager: Arc<ModelManager>, request: Atteste
     // Encrypt the hidden states with a session key derived from ECDH.
     let miner_public_key = PublicKey::from_slice(&request.miner_public_key).map_err(|e| anyhow!("Invalid miner public key: {}", e))?;
     let (ephemeral_secret, ephemeral_public_key) = session::generate_ephemeral_keypair();
-    let session_nonce = [0u8; 12]; // Fixed nonce for the spike.
+    let mut session_nonce = [0u8; 12];
+    rand::thread_rng().fill_bytes(&mut session_nonce);
     let shared_secret = session::orchestrator_shared_secret(&ephemeral_secret, &miner_public_key);
     let session_key = session::derive_session_key(&shared_secret, &session_nonce)?;
     let encrypted_hidden_states = session_key.encrypt(&hidden_states_bytes)?;

@@ -11,6 +11,7 @@ use candle_core::{Device, Tensor};
 use model_crypto::artifact_sign::ArtifactSigner;
 use model_crypto::key_hierarchy::{ModelKeyHierarchy, ModelSecret};
 use model_crypto::session;
+use rand::RngCore;
 use secp256k1::PublicKey;
 
 use crate::model::manager::ModelManager;
@@ -74,7 +75,8 @@ pub async fn build_training_artifact(model_manager: &ModelManager, request: &Get
     // Encrypt the artifact with a per-miner session key.
     let miner_public_key = parse_public_key(&request.miner_public_key)?;
     let (ephemeral_secret, ephemeral_public_key) = session::generate_ephemeral_keypair();
-    let session_nonce = [0u8; 12]; // Fixed nonce for the spike; in production use a random nonce per artifact.
+    let mut session_nonce = [0u8; 12];
+    rand::thread_rng().fill_bytes(&mut session_nonce);
     let shared_secret = session::orchestrator_shared_secret(&ephemeral_secret, &miner_public_key);
     let session_key = session::derive_session_key(&shared_secret, &session_nonce)?;
     let encrypted_artifact = session_key.encrypt(&artifact)?;

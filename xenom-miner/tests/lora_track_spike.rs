@@ -15,6 +15,7 @@ use futures::{SinkExt, StreamExt};
 use model_crypto::artifact_sign::ArtifactSigner;
 use model_crypto::key_hierarchy::ModelKeyHierarchy;
 use model_crypto::session;
+use rand::RngCore;
 use secp256k1::{Message as SecpMessage, PublicKey, Secp256k1, SecretKey};
 use tokenizers::models::bpe::BPE;
 use tokenizers::{AddedToken, Tokenizer};
@@ -194,7 +195,8 @@ fn build_tiny_artifact(weights: &[u8], config: &DnaBert2Config, tokenizer: &[u8]
     // Encrypt the artifact to the miner's public key using ECDH.
     let miner_pk = PublicKey::from_slice(miner_public_key).unwrap();
     let (ephemeral_secret, ephemeral_public_key) = session::generate_ephemeral_keypair();
-    let session_nonce = [0u8; 12];
+    let mut session_nonce = [0u8; 12];
+    rand::thread_rng().fill_bytes(&mut session_nonce);
     let shared_secret = session::orchestrator_shared_secret(&ephemeral_secret, &miner_pk);
     let session_key = session::derive_session_key(&shared_secret, &session_nonce).unwrap();
     let encrypted_artifact = session_key.encrypt(&artifact).unwrap();
@@ -313,7 +315,8 @@ async fn start_mock_orchestrator(weights: Vec<u8>, config: DnaBert2Config, token
                         // Encrypt the hidden states to the miner's public key.
                         let miner_pk = PublicKey::from_slice(&req.miner_public_key).unwrap();
                         let (ephemeral_secret, ephemeral_public_key) = session::generate_ephemeral_keypair();
-                        let session_nonce = [0u8; 12];
+                        let mut session_nonce = [0u8; 12];
+                        rand::thread_rng().fill_bytes(&mut session_nonce);
                         let shared_secret = session::orchestrator_shared_secret(&ephemeral_secret, &miner_pk);
                         let session_key = session::derive_session_key(&shared_secret, &session_nonce).unwrap();
                         let encrypted_hidden_states = session_key.encrypt(&hidden_bytes).unwrap();
