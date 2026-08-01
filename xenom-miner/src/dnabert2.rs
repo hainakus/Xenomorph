@@ -482,6 +482,13 @@ impl DnaBert2ForMaskedLM {
         self.model.forward(input_ids, token_type_ids, attention_mask)
     }
 
+    /// Run the LM head on pre-computed hidden states.
+    /// This is used by the LoRA-only training spike where the base encoder
+    /// runs on the orchestrator and only the LM head is trained on the miner.
+    pub fn forward_from_hidden_states(&self, hidden_states: &Tensor) -> CandleResult<Tensor> {
+        self.lm_head.forward(hidden_states)
+    }
+
     /// Compute mean-pooled sentence embeddings from the encoder hidden states.
     /// Padding tokens (identified by `pad_token_id`) are excluded from the mean.
     pub fn embeddings(&self, input_ids: &Tensor) -> CandleResult<Tensor> {
