@@ -87,7 +87,16 @@ pub async fn attested_forward(model_manager: Arc<ModelManager>, request: Atteste
     // the orchestrator's model auth key.
     let signature = [0u8; 64];
 
-    Ok(AttestedForwardResponse { hidden_states_hash, hidden_states: hidden_states_bytes, loss: loss_scalar, token_count, signature })
+    Ok(AttestedForwardResponse {
+        hidden_states_hash,
+        hidden_states: hidden_states_bytes,
+        loss: loss_scalar,
+        token_count,
+        signature,
+        ephemeral_public_key: [0u8; 33],
+        session_nonce: [0u8; 12],
+        auth_public_key: [0u8; 33],
+    })
 }
 
 fn compute_mlm_loss(logits: &Tensor, labels: &Tensor, mask: &Tensor, device: &Device) -> Result<Tensor> {

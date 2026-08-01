@@ -64,8 +64,14 @@ Drives the full LoRA-only loop:
 ### 6. `GetTrainingArtifact` in seed-node (`seed-node/src/model/lora_artifact.rs`)
 
 Extracts only the frozen LM head + tied embedding weights from a DNABERT-2
-safetensors checkpoint and packages them in a `TrainingArtifact`.  For this
-spike the artifact is not encrypted and the signature is a placeholder.
+safetensors checkpoint and packages them in a `TrainingArtifact`.  The artifact
+is encrypted and signed using `model-crypto`:
+
+- ECDH with an ephemeral orchestrator key and the miner's public key.
+- HKDF-SHA256 session key derivation.
+- AES-256-GCM encryption.
+- secp256k1 artifact signature with the model auth key.
+- Orchestrator master key loaded from `XENO_MODEL_MASTER_KEY` or persisted to disk.
 
 ### 7. `--trainer lora` in `xenom-miner`
 
@@ -113,11 +119,14 @@ All 46 tests pass.
 
 ## Limitations and next steps
 
-1. `GetTrainingArtifact` extracts the LM head but does **not** encrypt the
-   artifact or sign it.  It needs to:
-   - Derive a session key from the miner's public key.
-   - Encrypt the LM head base weights and LoRA seed.
-   - Sign the artifact with the model auth key.
+1. `GetTrainingArtifact` now encrypts and signs the artifact:
+   - Uses ECDH between an ephemeral orchestrator key and the miner's public key.
+   - Derives a session key via HKDF with a per-artifact nonce.
+   - Encrypts the artifact with AES-256-GCM.
+   - Signs the plaintext artifact hash with the model auth key.
+   - The miner verifies the signature and decrypts with its secp256k1 secret.
+   - The orchestrator master key is loaded from `XENO_MODEL_MASTER_KEY` (hex 64)
+     or persisted to `<models_dir>/<model_id>/model_master.key`.
 
 2. `AttestedForward` response hidden states are currently returned in plaintext.
    They must be encrypted with the session key and signed by the orchestrator.
@@ -127,10 +136,19 @@ All 46 tests pass.
 
 4. `--trainer lora` is a spike.  It builds and submits a `TrainingBlock` but
    does not yet report a meaningful `loss_before`/`loss_after` (both are the
-   LoRA-only loss).  It also uses a dummy `miner_public_key` and does not derive
-   a real session key.
+   LoRA-only loss).  The miner secp256k1 key is randomly generated instead of
+   being derived from the wallet.
 
-5. `xenom-rpc` only holds `rpc::messages`.  The WebSocket client/codec still
+5. `AttestedForward` hidden states are not yet encrypted.  The same ECDH session
+   key and signature flow should be applied to `AttestedForwardResponse`.
+
+6. `SubmitLoRAUpdate` still returns a placeholder `LoRAUpdateAck`.  The
+   orchestrator must validate, decrypt, and merge the LoRA delta.
+
+7. The `TrainingArtifact` session nonce is fixed at `[0u8; 12]` in the spike.  In
+   production it must be random per artifact.
+
+8. `xenom-rpc` only holds `rpc::messages`.  The WebSocket client/codec still
    lives in `xenom-miner` and could be moved later if `seed-node` or the unified
    `xenom` node needs the same client.
 
@@ -148,6 +166,7 @@ All 46 tests pass.
 - `xenom-rpc/Cargo.toml` (new)
 - `xenom-rpc/src/lib.rs` (new)
 - `xenom-rpc/src/messages.rs` (new)
+- `crypto/model-crypto/src/session.rs` (new)
 - `Cargo.toml` (workspace members)
 - `seed-node/src/rpc/messages.rs`
 - `seed-node/src/rpc/server.rs`

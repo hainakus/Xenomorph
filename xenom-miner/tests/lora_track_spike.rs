@@ -12,6 +12,10 @@ use std::time::Duration;
 use borsh::{to_vec, BorshDeserialize};
 use candle_core::{DType, Device, Tensor};
 use futures::{SinkExt, StreamExt};
+use model_crypto::artifact_sign::ArtifactSigner;
+use model_crypto::key_hierarchy::ModelKeyHierarchy;
+use model_crypto::session;
+use secp256k1::PublicKey;
 use tokenizers::models::bpe::BPE;
 use tokenizers::{AddedToken, Tokenizer};
 use tokio::net::TcpListener;
@@ -163,7 +167,7 @@ fn build_test_tokenizer_bytes() -> Vec<u8> {
     serde_json::to_vec(&tokenizer).expect("failed to serialize test tokenizer")
 }
 
-fn build_tiny_artifact(weights: &[u8], config: &DnaBert2Config, tokenizer: &[u8]) -> TrainingArtifact {
+fn build_tiny_artifact(weights: &[u8], config: &DnaBert2Config, tokenizer: &[u8], miner_public_key: &[u8; 33]) -> TrainingArtifact {
     let device = Device::Cpu;
     let loaded = candle_core::safetensors::load_buffer(weights, &device).unwrap();
 
@@ -179,18 +183,37 @@ fn build_tiny_artifact(weights: &[u8], config: &DnaBert2Config, tokenizer: &[u8]
     let artifact = ::safetensors::tensor::serialize(artifact_tensors, &None).unwrap();
     let artifact_hash = *blake3::hash(&artifact).as_bytes();
 
+    // Sign the artifact with a dummy model hierarchy so the trainer's
+    // signature verification passes.
+    let hierarchy = ModelKeyHierarchy::random("xeno/mgm-1", 1);
+    let auth_key = hierarchy.auth_key().unwrap();
+    let signer = ArtifactSigner::from_auth_key(&auth_key).unwrap();
+    let auth_public_key = signer.public_key();
+    let signature = signer.sign(&artifact_hash, Some(&[2u8; 32])).unwrap();
+
+    // Encrypt the artifact to the miner's public key using ECDH.
+    let miner_pk = PublicKey::from_slice(miner_public_key).unwrap();
+    let (ephemeral_secret, ephemeral_public_key) = session::generate_ephemeral_keypair();
+    let session_nonce = [0u8; 12];
+    let shared_secret = session::orchestrator_shared_secret(&ephemeral_secret, &miner_pk);
+    let session_key = session::derive_session_key(&shared_secret, &session_nonce).unwrap();
+    let encrypted_artifact = session_key.encrypt(&artifact).unwrap();
+
     TrainingArtifact {
         model_id: "xeno/mgm-1".to_string(),
         base_checkpoint: [1u8; 32],
         base_hash: [2u8; 32],
         config: serde_json::to_vec(config).unwrap(),
         tokenizer: tokenizer.to_vec(),
-        artifact,
+        artifact: encrypted_artifact,
         artifact_type: ArtifactType::LoRA,
         artifact_hash,
-        encrypted: false,
+        encrypted: true,
         recipient_key_fingerprint: [0u8; 32],
-        signature: [0u8; 64],
+        signature: signature.signature,
+        ephemeral_public_key: ephemeral_public_key.serialize(),
+        session_nonce,
+        auth_public_key,
     }
 }
 
@@ -236,8 +259,8 @@ async fn start_mock_orchestrator(weights: Vec<u8>, config: DnaBert2Config, token
                 };
 
                 let response = match envelope.payload {
-                    RpcRequest::GetTrainingArtifact(_) => {
-                        let artifact = build_tiny_artifact(&weights, &config, &tokenizer);
+                    RpcRequest::GetTrainingArtifact(req) => {
+                        let artifact = build_tiny_artifact(&weights, &config, &tokenizer, &req.miner_public_key);
                         RpcResponse::TrainingArtifact(artifact)
                     }
                     RpcRequest::AttestedForward(req) => {
@@ -280,6 +303,9 @@ async fn start_mock_orchestrator(weights: Vec<u8>, config: DnaBert2Config, token
                             loss: loss_scalar,
                             token_count: (batch_size * seq_len) as u32,
                             signature: [0u8; 64],
+                            ephemeral_public_key: [0u8; 33],
+                            session_nonce: [0u8; 12],
+                            auth_public_key: [0u8; 33],
                         })
                     }
                     RpcRequest::SubmitLoRAUpdate(_req) => RpcResponse::LoRAUpdateAck { new_checkpoint: Some([3u8; 32]) },
@@ -322,11 +348,10 @@ async fn test_lora_track_spike() {
     let lora_config =
         LoraConfig { rank: 2, alpha: 4.0, dropout: 0.0, target_modules: ["dense".to_string()].iter().cloned().collect() };
     let mut trainer = LoraOnlyTrainer::new(client, 1e-2, 4, lora_config);
-    let (loss, _delta) =
-        timeout(TEST_TIMEOUT, trainer.train_round("xeno/mgm-1", [1u8; 32], [3u8; 33], input_ids, attention_mask, labels, mask))
-            .await
-            .expect("train round timed out")
-            .expect("train round failed");
+    let (loss, _delta) = timeout(TEST_TIMEOUT, trainer.train_round("xeno/mgm-1", [1u8; 32], input_ids, attention_mask, labels, mask))
+        .await
+        .expect("train round timed out")
+        .expect("train round failed");
 
     assert!(loss.is_finite(), "LoRA-only training produced non-finite loss: {}", loss);
     assert!(loss > 0.0, "LoRA-only training loss should be positive before convergence");

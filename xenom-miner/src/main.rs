@@ -889,8 +889,7 @@ async fn run_lora_iteration(
         }
     }
 
-    let miner_public_key = [0u8; 33];
-    let train_result = lora_trainer.train_genome_round(&batch, miner_public_key).await;
+    let train_result = lora_trainer.train_genome_round(&batch).await;
     let (loss, delta) = match train_result {
         Ok(v) => v,
         Err(e) => {

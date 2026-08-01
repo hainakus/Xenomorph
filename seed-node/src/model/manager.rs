@@ -286,6 +286,11 @@ pub struct ModelManager {
 }
 
 impl ModelManager {
+    /// Return the base directory where model data is stored.
+    pub fn base_path(&self) -> &str {
+        &self.base_path
+    }
+
     pub async fn new(base_path: String) -> Result<Self> {
         let key = ModelStorage::generate_key();
         Self::new_with_key(base_path, key, LoraConfig::from_env(), None, None, None).await

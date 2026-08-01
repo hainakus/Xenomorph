@@ -10,6 +10,7 @@ pub mod artifact_sign;
 pub mod gossip;
 pub mod key_hierarchy;
 pub mod secret_buffer;
+pub mod session;
 
 use aes_gcm::{
     aead::{Aead, KeyInit},

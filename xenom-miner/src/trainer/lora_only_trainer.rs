@@ -5,12 +5,17 @@
 //! requests attested hidden states for each batch, trains the adapter, and
 //! submits an encrypted LoRA delta.
 //!
-//! For this spike the artifact and hidden states are not encrypted.
+//! The artifact is encrypted with an ephemeral session key derived from ECDH
+//! between an ephemeral orchestrator key and the miner's secp256k1 public key.
+//! The miner uses its secp256k1 secret to decrypt and verify the signature.
 
 use std::collections::HashMap;
 
 use anyhow::{anyhow, bail, Context, Result};
 use candle_core::{DType, Device, Tensor};
+use model_crypto::artifact_sign::ArtifactVerifier;
+use model_crypto::session;
+use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 use crate::data::MlmBatchGenerator;
 use crate::lora::LoraConfig;
@@ -30,6 +35,10 @@ pub struct LoraOnlyTrainer {
     lora_config: LoraConfig,
     /// Cached artifact data across rounds.
     base: Option<ArtifactBase>,
+    /// Miner secp256k1 secret used to decrypt artifacts and hidden states.
+    miner_secret: SecretKey,
+    /// Miner secp256k1 public key sent to the orchestrator.
+    miner_public_key: [u8; 33],
 }
 
 struct ArtifactBase {
@@ -42,7 +51,10 @@ struct ArtifactBase {
 
 impl LoraOnlyTrainer {
     pub fn new(client: XenomRpcClient, learning_rate: f64, local_steps: usize, lora_config: LoraConfig) -> Self {
-        Self { client, device: Device::Cpu, learning_rate, local_steps, lora_config, base: None }
+        let secp = Secp256k1::new();
+        let miner_secret = SecretKey::new(&mut rand::thread_rng());
+        let miner_public_key = PublicKey::from_secret_key(&secp, &miner_secret).serialize();
+        Self { client, device: Device::Cpu, learning_rate, local_steps, lora_config, base: None, miner_secret, miner_public_key }
     }
 
     /// Return the active base checkpoint, if an artifact has been loaded.
@@ -55,18 +67,23 @@ impl LoraOnlyTrainer {
         self.base = None;
     }
 
+    /// Return the miner public key used for ECDH session key derivation.
+    pub fn miner_public_key(&self) -> [u8; 33] {
+        self.miner_public_key
+    }
+
     /// Train one genome-backed batch and return the final loss and LoRA delta.
     ///
     /// This fetches (or reuses) the training artifact, tokenizes the provided DNA
     /// sequences into an MLM batch, requests attested hidden states, trains, and
     /// submits a `LoRAUpdate`.
-    pub async fn train_genome_round(&mut self, msg: &GenomeTrainingBatchMsg, miner_public_key: [u8; 33]) -> Result<(f64, Vec<u8>)> {
+    pub async fn train_genome_round(&mut self, msg: &GenomeTrainingBatchMsg) -> Result<(f64, Vec<u8>)> {
         let model_id = msg.batch.model_id.clone();
         let base_checkpoint = msg.base_checkpoint;
         let seed = msg.base_checkpoint;
 
         // 1. Ensure we have the artifact for this base checkpoint.
-        self.ensure_artifact(&model_id, base_checkpoint, miner_public_key).await?;
+        self.ensure_artifact(&model_id, base_checkpoint).await?;
 
         // 2. Tokenize the sequences into an MLM batch.
         let base = self.base.as_ref().unwrap();
@@ -88,7 +105,7 @@ impl LoraOnlyTrainer {
         let mask: Vec<Vec<u8>> = mlm.mask.chunks(mlm.seq_len).map(|c| c.to_vec()).collect();
 
         // 4. Run the tensor-level round (which also reuses the loaded artifact).
-        self.train_round_tensors(&model_id, base_checkpoint, miner_public_key, input_ids, attention_mask, labels, mask).await
+        self.train_round_tensors(&model_id, base_checkpoint, input_ids, attention_mask, labels, mask).await
     }
 
     /// Run one training round from pre-tokenized tensors.
@@ -96,17 +113,16 @@ impl LoraOnlyTrainer {
         &mut self,
         model_id: &str,
         base_checkpoint: [u8; 32],
-        miner_public_key: [u8; 33],
         input_ids: Vec<Vec<u32>>,
         attention_mask: Vec<Vec<u32>>,
         labels: Vec<Vec<u32>>,
         mask: Vec<Vec<u8>>,
     ) -> Result<(f64, Vec<u8>)> {
-        self.ensure_artifact(model_id, base_checkpoint, miner_public_key).await?;
-        self.train_round_tensors(model_id, base_checkpoint, miner_public_key, input_ids, attention_mask, labels, mask).await
+        self.ensure_artifact(model_id, base_checkpoint).await?;
+        self.train_round_tensors(model_id, base_checkpoint, input_ids, attention_mask, labels, mask).await
     }
 
-    async fn ensure_artifact(&mut self, model_id: &str, base_checkpoint: [u8; 32], miner_public_key: [u8; 33]) -> Result<()> {
+    async fn ensure_artifact(&mut self, model_id: &str, base_checkpoint: [u8; 32]) -> Result<()> {
         if let Some(base) = self.base.as_ref() {
             if base.model_id == model_id && base.base_checkpoint == base_checkpoint {
                 return Ok(());
@@ -115,15 +131,11 @@ impl LoraOnlyTrainer {
 
         let artifact = self
             .client
-            .get_training_artifact(model_id, base_checkpoint, Some(base_checkpoint), miner_public_key)
+            .get_training_artifact(model_id, base_checkpoint, Some(base_checkpoint), self.miner_public_key)
             .await
             .with_context(|| format!("Failed to fetch training artifact for {}", model_id))?;
 
-        if artifact.encrypted {
-            bail!("Training artifact is encrypted, but decryption is not yet implemented in the spike");
-        }
-
-        let (config, tokenizer, base_weights) = Self::load_artifact(&artifact)?;
+        let (config, tokenizer, base_weights) = self.load_artifact(&artifact)?;
         self.base = Some(ArtifactBase { model_id: model_id.to_string(), base_checkpoint, config, tokenizer, base_weights });
         Ok(())
     }
@@ -132,7 +144,6 @@ impl LoraOnlyTrainer {
         &mut self,
         model_id: &str,
         base_checkpoint: [u8; 32],
-        _miner_public_key: [u8; 33],
         input_ids: Vec<Vec<u32>>,
         attention_mask: Vec<Vec<u32>>,
         labels: Vec<Vec<u32>>,
@@ -192,12 +203,30 @@ impl LoraOnlyTrainer {
         Ok((last_loss, delta))
     }
 
-    fn load_artifact(artifact: &TrainingArtifact) -> Result<(DnaBert2Config, DnaTokenizer, HashMap<String, Tensor>)> {
+    fn load_artifact(&self, artifact: &TrainingArtifact) -> Result<(DnaBert2Config, DnaTokenizer, HashMap<String, Tensor>)> {
         let config = DnaBert2Config::from_bytes(&artifact.config)?;
         let tokenizer = DnaTokenizer::from_bytes(&artifact.tokenizer)?;
 
+        let artifact_bytes = if artifact.encrypted {
+            // Decrypt the artifact with the session key derived from ECDH.
+            let ephemeral_public =
+                PublicKey::from_slice(&artifact.ephemeral_public_key).map_err(|e| anyhow!("Invalid ephemeral public key: {}", e))?;
+            let shared_secret = session::miner_shared_secret(&self.miner_secret, &ephemeral_public);
+            let session_key = session::derive_session_key(&shared_secret, &artifact.session_nonce)?;
+            session_key.decrypt(&artifact.artifact)?
+        } else {
+            artifact.artifact.clone()
+        };
+
+        // Verify the artifact signature before loading.
+        let verifier =
+            ArtifactVerifier::from_public_key(&artifact.auth_public_key).map_err(|e| anyhow!("Invalid auth public key: {}", e))?;
+        verifier
+            .verify(&artifact.artifact_hash, Some(&artifact.base_hash), &artifact.signature)
+            .map_err(|e| anyhow!("Artifact signature verification failed: {}", e))?;
+
         let device = Device::Cpu;
-        let loaded = candle_core::safetensors::load_buffer(&artifact.artifact, &device)
+        let loaded = candle_core::safetensors::load_buffer(&artifact_bytes, &device)
             .map_err(|e| anyhow!("Failed to load artifact safetensors: {}", e))?;
 
         let mut base_weights = HashMap::new();

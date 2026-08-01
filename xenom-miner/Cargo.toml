@@ -45,7 +45,7 @@ async-trait = "0.1"
 nvml-wrapper = { version = "0.9", optional = true }
 
 # Wallet
-secp256k1 = { version = "0.28", features = ["global-context", "rand-std"] }
+secp256k1 = { workspace = true, features = ["global-context", "rand-std"] }
 bip39 = "2.0"
 bip32 = "0.5"
 

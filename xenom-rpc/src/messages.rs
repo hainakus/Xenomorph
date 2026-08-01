@@ -172,6 +172,12 @@ pub struct TrainingArtifact {
     pub encrypted: bool,
     pub recipient_key_fingerprint: [u8; 32],
     pub signature: [u8; 64],
+    /// Ephemeral public key used for ECDH session key derivation (encrypted artifacts).
+    pub ephemeral_public_key: [u8; 33],
+    /// Nonce used as HKDF salt for the session key (encrypted artifacts).
+    pub session_nonce: [u8; 12],
+    /// Public key used to verify the artifact signature.
+    pub auth_public_key: [u8; 33],
 }
 
 /// Request an attested forward pass from the orchestrator.
@@ -193,6 +199,12 @@ pub struct AttestedForwardResponse {
     pub loss: f64,
     pub token_count: u32,
     pub signature: [u8; 64],
+    /// Ephemeral public key used for ECDH session key derivation (encrypted hidden states).
+    pub ephemeral_public_key: [u8; 33],
+    /// Nonce used as HKDF salt for the session key (encrypted hidden states).
+    pub session_nonce: [u8; 12],
+    /// Public key used to verify the response signature.
+    pub auth_public_key: [u8; 33],
 }
 
 /// Encrypted LoRA delta submitted by a miner.
@@ -451,6 +463,9 @@ mod tests {
             encrypted: true,
             recipient_key_fingerprint: [5u8; 32],
             signature: [6u8; 64],
+            ephemeral_public_key: [7u8; 33],
+            session_nonce: [8u8; 12],
+            auth_public_key: [9u8; 33],
         };
         let resp = RpcResponse::TrainingArtifact(artifact);
         let bytes = to_vec(&resp).unwrap();
@@ -479,6 +494,9 @@ mod tests {
             loss: 1.23,
             token_count: 128,
             signature: [2u8; 64],
+            ephemeral_public_key: [3u8; 33],
+            session_nonce: [4u8; 12],
+            auth_public_key: [5u8; 33],
         };
         let resp = RpcResponse::AttestedForward(resp);
         let bytes = to_vec(&resp).unwrap();
