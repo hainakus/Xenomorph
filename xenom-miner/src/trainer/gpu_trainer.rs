@@ -1,5 +1,7 @@
 use anyhow::{bail, Context, Result};
 use candle_core::Device;
+#[cfg(any(feature = "cuda", feature = "metal"))]
+use tracing::info;
 use tracing::warn;
 
 use crate::gpu::monitor::GpuMonitor;
@@ -78,7 +80,7 @@ impl GpuTrainer {
             GpuBackend::Cuda => {
                 #[cfg(feature = "cuda")]
                 match Device::new_cuda(_index) {
-                    Ok(device) => return Ok((device, DeviceType::Cuda, format!("NVIDIA CUDA device {}", _index))),
+                    Ok(device) => Ok((device, DeviceType::Cuda, format!("NVIDIA CUDA device {}", _index))),
                     Err(e) => bail!("CUDA device {} is not accessible: {}. Check NVIDIA drivers/runtime.", _index, e),
                 }
                 #[cfg(not(feature = "cuda"))]
@@ -87,7 +89,7 @@ impl GpuTrainer {
             GpuBackend::Metal => {
                 #[cfg(feature = "metal")]
                 match Device::new_metal(_index) {
-                    Ok(device) => return Ok((device, DeviceType::Metal, format!("Apple Metal device {}", _index))),
+                    Ok(device) => Ok((device, DeviceType::Metal, format!("Apple Metal device {}", _index))),
                     Err(e) => bail!("Metal device {} is not accessible: {}. Check macOS Metal support.", _index, e),
                 }
                 #[cfg(not(feature = "metal"))]

@@ -538,8 +538,12 @@ async fn main() -> Result<()> {
         let learning_rate = 1e-3;
         let local_steps = if args.gpu.gradient_accumulation > 0 { args.gpu.gradient_accumulation } else { 4 };
 
+        let backend = GpuBackend::Auto;
+        let device_index = args.gpu.gpus.first().copied().unwrap_or(0);
+
         let miner_secret = SecretKey::from_slice(&wallet.secret_bytes()).context("Failed to derive miner secret from wallet")?;
-        let mut lora_trainer = LoraOnlyTrainer::new(client, learning_rate, local_steps, lora_config, miner_secret);
+        let mut lora_trainer =
+            LoraOnlyTrainer::new(client, learning_rate, local_steps, lora_config, miner_secret, backend, device_index, args.gpu.fp16)?;
 
         let maybe_genome_merkle = genome_merkle.or_else(|| parse_genome_merkle(HUMAN_GENOME_MERKLE_ROOT).ok());
         run_lora_loop(

@@ -18,7 +18,7 @@ Required:
 Options:
   -b, --build                     Build release binary before starting (default)
   --no-build                      Skip cargo build
-  -t, --trainer <name>            Miner trainer: mock, cpu, dnabert2, mgm1, gpu, cuda, metal, rocm
+  -t, --trainer <name>            Miner trainer: mock, cpu, dnabert2, mgm1, gpu, cuda, metal, rocm, lora
                                   (default: \$XENO_MINER_TRAINER or mgm1)
   --features <features>           Extra cargo features for xenom-miner (e.g. cuda, metal).
                                   Overrides auto-detection. Also accepts \$XENO_MINER_FEATURES.
@@ -111,8 +111,8 @@ fi
 
 if [[ "$TRAINER" != "mock" && "$TRAINER" != "cpu" && "$TRAINER" != "dnabert2" && \
       "$TRAINER" != "mgm1" && "$TRAINER" != "gpu" && "$TRAINER" != "cuda" && \
-      "$TRAINER" != "metal" && "$TRAINER" != "rocm" ]]; then
-    err "Unknown trainer: $TRAINER. Use mock, cpu, dnabert2, mgm1, gpu, cuda, metal, or rocm."
+      "$TRAINER" != "metal" && "$TRAINER" != "rocm" && "$TRAINER" != "lora" ]]; then
+    err "Unknown trainer: $TRAINER. Use mock, cpu, dnabert2, mgm1, gpu, cuda, metal, rocm, or lora."
     exit 1
 fi
 
@@ -145,6 +145,16 @@ if [[ "$BUILD" == "1" ]]; then
         elif [[ "$TRAINER" == "metal" ]]; then
             FEATURES="metal"
             qlog "Building with --features metal"
+        elif [[ "$TRAINER" == "lora" ]]; then
+            if has_command nvidia-smi && has_command nvcc; then
+                FEATURES="cuda"
+                qlog "NVIDIA GPUs + nvcc detected; building with --features cuda"
+            elif [[ "$(uname -s)" == "Darwin" ]]; then
+                FEATURES="metal"
+                qlog "macOS detected; building with --features metal"
+            else
+                warn "No GPU backend detected for LoRA trainer; building CPU miner."
+            fi
         fi
     else
         qlog "Building xenom-miner with explicit features: $FEATURES"
@@ -167,7 +177,7 @@ require_command "$BIN_PREFIX/xenom-miner"
 RPC_URL="ws://${NODE_HOST}:${MINER_WS_PORT}"
 
 MINER_EXTRA_ARGS=()
-if [[ "$TRAINER" == "dnabert2" || "$TRAINER" == "mgm1" || "$TRAINER" == "gpu" || "$TRAINER" == "cuda" || "$TRAINER" == "metal" || "$TRAINER" == "rocm" ]]; then
+if [[ "$TRAINER" == "dnabert2" || "$TRAINER" == "mgm1" || "$TRAINER" == "gpu" || "$TRAINER" == "cuda" || "$TRAINER" == "metal" || "$TRAINER" == "rocm" || "$TRAINER" == "lora" ]]; then
     MINER_EXTRA_ARGS+=(
         --gpus "$GPUS"
         --micro-batch-size "$MICRO_BATCH_SIZE"

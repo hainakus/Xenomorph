@@ -16,8 +16,10 @@ use candle_core::{DType, Device, Tensor};
 use model_crypto::artifact_sign::ArtifactVerifier;
 use model_crypto::session;
 use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
+use tracing::info;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+use super::{GpuBackend, GpuTrainer};
 use crate::data::MlmBatchGenerator;
 use crate::lora::LoraConfig;
 use crate::model::DnaBert2Config;
@@ -33,6 +35,7 @@ use crate::trainer::ManualAdamW;
 pub struct LoraOnlyTrainer {
     client: XenomRpcClient,
     device: Device,
+    dtype: DType,
     learning_rate: f64,
     local_steps: usize,
     lora_config: LoraConfig,
@@ -81,12 +84,22 @@ impl LoraOnlyTrainer {
         local_steps: usize,
         lora_config: LoraConfig,
         miner_secret: SecretKey,
-    ) -> Self {
+        backend: GpuBackend,
+        device_index: usize,
+        fp16: bool,
+    ) -> Result<Self> {
+        let (device, _device_type, device_name) = GpuTrainer::select_device(backend, device_index)?;
+        info!("LoraOnlyTrainer using device: {}", device_name);
+
+        // Use FP16 only when explicitly requested and the selected device supports it.
+        let dtype = if fp16 && (device.is_cuda() || device.is_metal()) { DType::F16 } else { DType::F32 };
+
         let secp = Secp256k1::new();
         let miner_public_key = PublicKey::from_secret_key(&secp, &miner_secret).serialize();
-        Self {
+        Ok(Self {
             client,
-            device: Device::Cpu,
+            device,
+            dtype,
             learning_rate,
             local_steps,
             lora_config,
@@ -94,7 +107,7 @@ impl LoraOnlyTrainer {
             miner_secret,
             miner_public_key,
             last_forward_session: None,
-        }
+        })
     }
 
     /// Return the active base checkpoint, if an artifact has been loaded.
@@ -194,7 +207,7 @@ impl LoraOnlyTrainer {
         let base = self.base.as_ref().ok_or_else(|| anyhow!("No artifact loaded"))?;
 
         // 2. Build the LoRA LM head.
-        let head = LoraLmHead::load(&base.config, &base.base_weights, &self.lora_config, &self.device, DType::F32)?;
+        let head = LoraLmHead::load(&base.config, &base.base_weights, &self.lora_config, &self.device, self.dtype)?;
 
         // 3. Request attested hidden states.
         let forward_req = AttestedForwardRequest {
@@ -222,7 +235,7 @@ impl LoraOnlyTrainer {
 
         let hidden_floats: Vec<f32> =
             hidden_states_bytes.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
-        let hidden_states = Tensor::from_vec(hidden_floats, (batch_size, seq_len, hidden_size), &self.device)?;
+        let hidden_states = Tensor::from_vec(hidden_floats, (batch_size, seq_len, hidden_size), &self.device)?.to_dtype(self.dtype)?;
 
         let labels_t = Tensor::from_vec(labels.iter().flatten().copied().collect::<Vec<_>>(), (batch_size, seq_len), &self.device)?;
         let mask_t = Tensor::from_vec(mask.iter().flatten().copied().collect::<Vec<_>>(), (batch_size, seq_len), &self.device)?;
@@ -267,8 +280,7 @@ impl LoraOnlyTrainer {
             .verify(&artifact.artifact_hash, Some(&artifact.base_hash), &artifact.signature)
             .map_err(|e| anyhow!("Artifact signature verification failed: {}", e))?;
 
-        let device = Device::Cpu;
-        let loaded = candle_core::safetensors::load_buffer(&artifact_bytes, &device)
+        let loaded = candle_core::safetensors::load_buffer(&artifact_bytes, &self.device)
             .map_err(|e| anyhow!("Failed to load artifact safetensors: {}", e))?;
 
         let mut base_weights = HashMap::new();

@@ -31,6 +31,7 @@ use xenom_miner::model::DnaBert2Config;
 use xenom_miner::rpc::messages::{ArtifactType, AttestedForwardResponse, RpcEnvelope, RpcRequest, RpcResponse, TrainingArtifact};
 use xenom_miner::rpc::XenomRpcClient;
 use xenom_miner::trainer::lora_only_trainer::LoraOnlyTrainer;
+use xenom_miner::trainer::GpuBackend;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -405,7 +406,7 @@ async fn test_lora_track_spike() {
     let lora_config =
         LoraConfig { rank: 2, alpha: 4.0, dropout: 0.0, target_modules: ["dense".to_string()].iter().cloned().collect() };
     let miner_secret = SecretKey::new(&mut rand::thread_rng());
-    let mut trainer = LoraOnlyTrainer::new(client, 1e-2, 4, lora_config, miner_secret);
+    let mut trainer = LoraOnlyTrainer::new(client, 1e-2, 4, lora_config, miner_secret, GpuBackend::Auto, 0, false).unwrap();
     let (loss_after, _loss_before, _delta, _new_checkpoint) =
         timeout(TEST_TIMEOUT, trainer.train_round("xeno/mgm-1", [1u8; 32], input_ids, attention_mask, labels, mask))
             .await

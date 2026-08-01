@@ -77,6 +77,7 @@ cargo test -p xenom-miner -p seed-node
 - `--trainer gpu` — same as `dnabert2` (GPU auto-select).
 - `--trainer cuda` — force NVIDIA CUDA backend.
 - `--trainer metal` — force Apple Metal backend.
+- `--trainer lora` — secure LoRA-only training on the LM head using attested hidden states; auto-selects GPU (CUDA/Metal) with CPU fallback.
 - `--trainer rocm` — AMD ROCm/HIP (not yet implemented, returns a clear error).
 - `--mock-mode` / `--mock` are hidden aliases for `--trainer=mock`.
 - `--gpus <0,1,...>` — GPU device ordinals for multi-GPU training (default `0`).
@@ -137,7 +138,7 @@ Examples:
 - Compose: `docker-compose.devnet.yml`
 - Config template: `.env.example`
 - Native (no Docker): `scripts/run-native-devnet.sh` — builds/starts the unified `xenom` node and `xenom-miner` directly from `target/release`.
-  - GPU auto-detection: when `XENO_MINER_TRAINER` is `dnabert2`, `gpu`, or `cuda` and both `nvidia-smi` and `nvcc` are present, the script compiles `xenom-miner` with `--features cuda`.
+  - GPU auto-detection: when `XENO_MINER_TRAINER` is `dnabert2`, `gpu`, `cuda`, or `lora` and both `nvidia-smi` and `nvcc` are present, the script compiles `xenom-miner` with `--features cuda`. On macOS the `lora` trainer is compiled with `--features metal`.
   - Override with `--features <features>` or `XENO_MINER_FEATURES` (e.g. `XENO_MINER_FEATURES=cuda ./scripts/run-native-devnet.sh --trainer cuda`).
   - Multi-GPU options are forwarded to the miner: `--gpus`, `--micro-batch-size`, `--gradient-accumulation`, `--fp16`, `--gradient-checkpointing`, `--zero`.
 
