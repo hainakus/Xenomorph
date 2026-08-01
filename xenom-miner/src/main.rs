@@ -892,7 +892,7 @@ async fn run_lora_iteration(
     }
 
     let train_result = lora_trainer.train_genome_round(&batch).await;
-    let (loss, delta) = match train_result {
+    let (loss_after, loss_before, delta) = match train_result {
         Ok(v) => v,
         Err(e) => {
             return Err(e).context("LoRA train round failed");
@@ -906,30 +906,24 @@ async fn run_lora_iteration(
         model_id: config.model_id.clone(),
         batch_indices: vec![batch_id],
         base_checkpoint,
-        loss_before: loss,
-        loss_after: loss,
+        loss_before,
+        loss_after,
         gradients_commitment,
         compute_time_ms: start.elapsed().as_millis() as u64,
     };
 
-    let public_inputs = PublicInputs {
-        model_id: config.model_id.clone(),
-        batch_id,
-        loss_before: loss,
-        loss_after: loss,
-        gradients_commitment,
-        base_checkpoint,
-    };
+    let public_inputs =
+        PublicInputs { model_id: config.model_id.clone(), batch_id, loss_before, loss_after, gradients_commitment, base_checkpoint };
     let zk_proof = prover.generate_proof(&result, &public_inputs)?;
     let block = block_builder.build_block(&config.model_id, &result, zk_proof, [0u8; 32])?;
 
     if dry_run {
-        info!("Dry-run LoRA block {} built | loss {:.6}", *block_number, loss);
+        info!("Dry-run LoRA block {} built | loss_after {:.6}", *block_number, loss_after);
     } else {
         match submit_block(rpc_client, block).await {
             Ok(block_hash) => {
                 block_builder.set_prev_block(block_hash, *block_number);
-                info!("Submitted LoRA block {}: {} | loss {:.6}", *block_number, hex::encode(block_hash), loss);
+                info!("Submitted LoRA block {}: {} | loss_after {:.6}", *block_number, hex::encode(block_hash), loss_after);
             }
             Err(e) => warn!("Failed to submit LoRA block: {}", e),
         }

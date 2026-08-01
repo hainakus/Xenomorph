@@ -32,11 +32,9 @@ New message types:
 
 The seed-node can receive an `AttestedForwardRequest`, load the base DNABERT-2
 checkpoint, run `encode` up to the LM head, compute the base LM loss, and return
-an `AttestedForwardResponse` with hidden states, hidden-state hash, loss, and a
-placeholder signature.
-
-This is an initial skeleton: it does not yet encrypt hidden states to the miner's
-session key or sign them with the orchestrator auth key.
+an `AttestedForwardResponse` with hidden states, hidden-state hash, loss,
+ephemeral public key, session nonce, and a model auth signature.  The hidden
+states are encrypted to the miner's ECDH public key.
 
 ### 4. `LoraLmHead` (`xenom-miner/src/trainer/lora_lm_head.rs`)
 
@@ -117,9 +115,9 @@ cargo test -p seed-node
 
 All 46 tests pass.
 
-## Limitations and next steps
+## Implementation status
 
-1. `GetTrainingArtifact` now encrypts and signs the artifact:
+1. `GetTrainingArtifact` encrypts and signs the artifact:
    - Uses ECDH between an ephemeral orchestrator key and the miner's public key.
    - Derives a session key via HKDF with a per-artifact nonce.
    - Encrypts the artifact with AES-256-GCM.
@@ -133,36 +131,45 @@ All 46 tests pass.
    - The orchestrator runs the base model, serializes hidden states, and
      computes `hidden_states_hash`.
    - Signs `hidden_states_hash || base_checkpoint || loss` with the model auth key.
-   - Encrypts the hidden states with an ECDH session key.
+   - Encrypts the hidden states with an ECDH session key and a random nonce.
    - The miner decrypts with its secp256k1 secret and verifies the signature.
 
-3. `SubmitLoRAUpdate` validates, decrypts (placeholder in spike), and merges
-   the LoRA delta on the orchestrator:
-   - The miner signs the `lora_delta_hash || base_checkpoint` with its secp256k1
+3. `SubmitLoRAUpdate` is validated, decrypted, signed, and merged by the
+   orchestrator:
+   - The miner signs `lora_delta_hash || base_checkpoint` with its secp256k1
      secret.
+   - The LoRA delta is encrypted by reusing the `AttestedForward` ECDH session
+     key; the orchestrator caches the ephemeral secret keyed by its public key
+     and decrypts the delta before merging.
    - The orchestrator verifies the signature with `auth_public_key` (miner's
      public key).
-   - It verifies `lora_delta_hash` against the received delta.
+   - It verifies `lora_delta_hash` against the decrypted delta.
    - It loads the base checkpoint, merges `W_new = W_base + (alpha/rank) * (lora_b @ lora_a)`,
      stores the new active checkpoint, and returns the new `weights_hash`.
+   - Cached forward sessions have a 5-minute TTL and are evicted on lookup.
 
-4. `--trainer lora` is a spike.  It builds and submits a `TrainingBlock` but
-   does not yet report a meaningful `loss_before`/`loss_after` (both are the
-   LoRA-only loss).  The miner's secp256k1 identity is derived from the BIP39
-   wallet seed (`wallet.secret_bytes()`), so the same wallet always produces the
-   same ECDH public key and LoRA delta signatures.
+4. `--trainer lora` uses real `loss_before` and `loss_after`:
+   - `loss_before` is the base LM head loss reported by the orchestrator in the
+     `AttestedForward` response.
+   - `loss_after` is the LoRA LM head loss after the local training steps.
+   - The miner's secp256k1 identity is derived from the BIP39 wallet seed
+     (`wallet.secret_bytes()`), so the same wallet always produces the same ECDH
+     public key and LoRA delta signatures.
 
-5. `AttestedForward` hidden states are encrypted and signed.
-
-6. `SubmitLoRAUpdate` is validated, decrypted, signed, and merged by the
-   orchestrator.  The LoRA delta is encrypted by reusing the `AttestedForward`
-   ECDH session key; the orchestrator caches the ephemeral secret keyed by its
-   public key so it can decrypt the update.
-
-7. Session nonces for `TrainingArtifact` and `AttestedForward` are generated
+5. Session nonces for `TrainingArtifact` and `AttestedForward` are generated
    randomly per message using `rand::thread_rng().fill_bytes`.
 
-8. `xenom-rpc` only holds `rpc::messages`.  The WebSocket client/codec still
+## Limitations and next steps
+
+1. `--trainer lora` still requires a genome merkle root and does not yet
+   integrate with the full `TrainingBlock` / `TrainingProof` validation pipeline
+   in a way that reports the new checkpoint produced by `SubmitLoRAUpdate`.
+
+2. The `LoraOnlyTrainer` keeps the LM head artifact and the latest forward
+   session in memory between rounds.  Secure zeroization of LoRA weights and
+   session state on shutdown is not yet implemented.
+
+3. `xenom-rpc` only holds `rpc::messages`.  The WebSocket client/codec still
    lives in `xenom-miner` and could be moved later if `seed-node` or the unified
    `xenom` node needs the same client.
 

@@ -262,6 +262,11 @@ pub struct ForwardSession {
     pub session_nonce: [u8; 12],
 }
 
+/// How long an ephemeral forward session stays in the cache waiting for a `SubmitLoRAUpdate`.
+const FORWARD_SESSION_TTL: Duration = Duration::from_secs(300);
+
+type ForwardSessionCache = HashMap<[u8; 33], (Instant, ForwardSession)>;
+
 pub struct ModelManager {
     base_path: String,
     storage: Arc<ModelStorage>,
@@ -293,7 +298,8 @@ pub struct ModelManager {
     checkpoint_history: Arc<RwLock<BTreeMap<u64, [u8; 32]>>>,
     /// Recent ephemeral sessions keyed by the orchestrator's ephemeral public key.
     /// Used to decrypt a `SubmitLoRAUpdate` that reuses an `AttestedForward` session.
-    forward_sessions: Arc<Mutex<HashMap<[u8; 33], ForwardSession>>>,
+    /// Entries are stored with the timestamp they were created and expire after `FORWARD_SESSION_TTL`.
+    forward_sessions: Arc<Mutex<ForwardSessionCache>>,
 }
 
 impl ModelManager {
@@ -363,7 +369,7 @@ impl ModelManager {
             epoch_size_cap,
             lineage: Arc::new(RwLock::new(HashMap::new())),
             checkpoint_history: Arc::new(RwLock::new(BTreeMap::new())),
-            forward_sessions: Arc::new(Mutex::new(HashMap::new())),
+            forward_sessions: Arc::new(Mutex::new(ForwardSessionCache::new())),
         })
     }
 
@@ -376,13 +382,16 @@ impl ModelManager {
     /// `SubmitLoRAUpdate` can be decrypted with the same session key.
     pub async fn store_forward_session(&self, ephemeral_public_key: [u8; 33], session: ForwardSession) {
         let mut sessions = self.forward_sessions.lock().await;
-        sessions.insert(ephemeral_public_key, session);
+        sessions.insert(ephemeral_public_key, (Instant::now(), session));
     }
 
     /// Remove and return a cached forward session by ephemeral public key.
+    /// Also evicts any entries that have exceeded `FORWARD_SESSION_TTL`.
     pub async fn take_forward_session(&self, ephemeral_public_key: &[u8; 33]) -> Option<ForwardSession> {
+        let now = Instant::now();
         let mut sessions = self.forward_sessions.lock().await;
-        sessions.remove(ephemeral_public_key)
+        sessions.retain(|_, (ts, _)| now.duration_since(*ts) < FORWARD_SESSION_TTL);
+        sessions.remove(ephemeral_public_key).map(|(_, s)| s)
     }
 
     pub async fn load_model(&self, model_id: &str) -> Result<ModelInfo> {

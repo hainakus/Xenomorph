@@ -406,11 +406,12 @@ async fn test_lora_track_spike() {
         LoraConfig { rank: 2, alpha: 4.0, dropout: 0.0, target_modules: ["dense".to_string()].iter().cloned().collect() };
     let miner_secret = SecretKey::new(&mut rand::thread_rng());
     let mut trainer = LoraOnlyTrainer::new(client, 1e-2, 4, lora_config, miner_secret);
-    let (loss, _delta) = timeout(TEST_TIMEOUT, trainer.train_round("xeno/mgm-1", [1u8; 32], input_ids, attention_mask, labels, mask))
-        .await
-        .expect("train round timed out")
-        .expect("train round failed");
+    let (loss_after, _loss_before, _delta) =
+        timeout(TEST_TIMEOUT, trainer.train_round("xeno/mgm-1", [1u8; 32], input_ids, attention_mask, labels, mask))
+            .await
+            .expect("train round timed out")
+            .expect("train round failed");
 
-    assert!(loss.is_finite(), "LoRA-only training produced non-finite loss: {}", loss);
-    assert!(loss > 0.0, "LoRA-only training loss should be positive before convergence");
+    assert!(loss_after.is_finite(), "LoRA-only training produced non-finite loss: {}", loss_after);
+    assert!(loss_after > 0.0, "LoRA-only training loss should be positive before convergence");
 }
