@@ -41,6 +41,14 @@ pub struct LoraOnlyTrainer {
     miner_secret: SecretKey,
     /// Miner secp256k1 public key sent to the orchestrator.
     miner_public_key: [u8; 33],
+    /// Session info from the most recent AttestedForward, used to encrypt the LoRA delta.
+    last_forward_session: Option<ForwardSession>,
+}
+
+/// Session info needed to re-derive the AttestedForward session key on the miner side.
+struct ForwardSession {
+    ephemeral_public_key: [u8; 33],
+    session_nonce: [u8; 12],
 }
 
 struct ArtifactBase {
@@ -61,7 +69,17 @@ impl LoraOnlyTrainer {
     ) -> Self {
         let secp = Secp256k1::new();
         let miner_public_key = PublicKey::from_secret_key(&secp, &miner_secret).serialize();
-        Self { client, device: Device::Cpu, learning_rate, local_steps, lora_config, base: None, miner_secret, miner_public_key }
+        Self {
+            client,
+            device: Device::Cpu,
+            learning_rate,
+            local_steps,
+            lora_config,
+            base: None,
+            miner_secret,
+            miner_public_key,
+            last_forward_session: None,
+        }
     }
 
     /// Return the active base checkpoint, if an artifact has been loaded.
@@ -174,7 +192,8 @@ impl LoraOnlyTrainer {
         let forward = self.client.attested_forward(forward_req).await.with_context(|| "AttestedForward request failed")?;
 
         // 4. Decrypt and verify the attested hidden states.
-        let hidden_states_bytes = self.decrypt_and_verify_forward(&forward, base_checkpoint)?;
+        let (hidden_states_bytes, forward_session) = self.decrypt_and_verify_forward(&forward, base_checkpoint)?;
+        self.last_forward_session = Some(forward_session);
 
         // 5. Deserialize hidden states [batch, seq, hidden_size].
         let batch_size = input_ids.len();
@@ -240,7 +259,11 @@ impl LoraOnlyTrainer {
         Ok((config, tokenizer, base_weights))
     }
 
-    fn decrypt_and_verify_forward(&self, forward: &AttestedForwardResponse, base_checkpoint: [u8; 32]) -> Result<Vec<u8>> {
+    fn decrypt_and_verify_forward(
+        &self,
+        forward: &AttestedForwardResponse,
+        base_checkpoint: [u8; 32],
+    ) -> Result<(Vec<u8>, ForwardSession)> {
         if forward.hidden_states.is_empty() {
             bail!("AttestedForward hidden states are empty");
         }
@@ -266,12 +289,15 @@ impl LoraOnlyTrainer {
             .verify(&message_hash, None, &forward.signature)
             .map_err(|e| anyhow!("AttestedForward signature verification failed: {}", e))?;
 
-        Ok(decrypted)
+        let forward_session =
+            ForwardSession { ephemeral_public_key: forward.ephemeral_public_key, session_nonce: forward.session_nonce };
+
+        Ok((decrypted, forward_session))
     }
 }
 
 impl LoraOnlyTrainer {
-    fn build_lora_update(&self, model_id: &str, base_checkpoint: [u8; 32], delta: &[u8]) -> Result<SubmitLoRAUpdate> {
+    fn build_lora_update(&mut self, model_id: &str, base_checkpoint: [u8; 32], delta: &[u8]) -> Result<SubmitLoRAUpdate> {
         let delta_hash = blake3_hash(delta);
 
         let secp = Secp256k1::new();
@@ -281,20 +307,31 @@ impl LoraOnlyTrainer {
         let mut signature_bytes = [0u8; 64];
         signature_bytes.copy_from_slice(&signature.serialize_compact());
 
-        // The LoRA delta is left in plaintext for the spike.  Encryption will be
-        // added once the session key from AttestedForward is reused for the update.
+        // Encrypt the LoRA delta with the same session key used for AttestedForward.
+        // The orchestrator keeps the ephemeral secret keyed by its public key.
+        let (encrypted_delta, ephemeral_public_key, session_nonce) = match self.last_forward_session.as_ref() {
+            Some(session) => {
+                let ephemeral_public = PublicKey::from_slice(&session.ephemeral_public_key)
+                    .map_err(|e| anyhow!("Invalid cached ephemeral public key: {}", e))?;
+                let shared_secret = session::miner_shared_secret(&self.miner_secret, &ephemeral_public);
+                let session_key = session::derive_session_key(&shared_secret, &session.session_nonce)?;
+                (session_key.encrypt(delta)?, session.ephemeral_public_key, session.session_nonce)
+            }
+            None => (delta.to_vec(), [0u8; 33], [0u8; 12]),
+        };
+
         Ok(SubmitLoRAUpdate {
             model_id: model_id.to_string(),
             base_checkpoint,
-            lora_delta: delta.to_vec(),
+            lora_delta: encrypted_delta,
             lora_delta_hash: delta_hash,
             gradient_commitment: delta_hash,
             participant_weight: 1.0,
             miner_address: String::new(),
             miner_public_key: self.miner_public_key,
-            encrypted: false,
-            ephemeral_public_key: [0u8; 33],
-            session_nonce: [0u8; 12],
+            encrypted: self.last_forward_session.is_some(),
+            ephemeral_public_key,
+            session_nonce,
             signature: signature_bytes,
             auth_public_key: self.miner_public_key,
         })

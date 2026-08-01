@@ -154,9 +154,10 @@ All 46 tests pass.
 
 5. `AttestedForward` hidden states are encrypted and signed.
 
-6. `SubmitLoRAUpdate` is validated, signed, and merged by the orchestrator.
-   The LoRA delta itself is left in plaintext for the spike; encryption will be
-   added when the `AttestedForward` session key is reused.
+6. `SubmitLoRAUpdate` is validated, decrypted, signed, and merged by the
+   orchestrator.  The LoRA delta is encrypted by reusing the `AttestedForward`
+   ECDH session key; the orchestrator caches the ephemeral secret keyed by its
+   public key so it can decrypt the update.
 
 7. Session nonces for `TrainingArtifact` and `AttestedForward` are generated
    randomly per message using `rand::thread_rng().fill_bytes`.

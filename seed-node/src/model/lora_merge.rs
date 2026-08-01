@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 use candle_core::{Device, Tensor};
+use model_crypto::session;
 use secp256k1::{Message, PublicKey, Secp256k1};
 
 use crate::model::manager::ModelManager;
@@ -33,11 +34,23 @@ pub async fn apply_lora_update(model_manager: Arc<ModelManager>, update: &Submit
     let secp = Secp256k1::verification_only();
     secp.verify_ecdsa(&message, &signature, &public_key).map_err(|e| anyhow!("LoRA delta signature verification failed: {}", e))?;
 
+    // Decrypt the LoRA delta if it reuses an AttestedForward session key.
+    let delta_bytes = if update.encrypted {
+        let session = model_manager
+            .take_forward_session(&update.ephemeral_public_key)
+            .await
+            .ok_or_else(|| anyhow!("No cached AttestedForward session for LoRA delta decryption"))?;
+        let miner_public_key =
+            PublicKey::from_slice(&update.miner_public_key).map_err(|e| anyhow!("Invalid miner public key: {}", e))?;
+        let shared_secret = session::orchestrator_shared_secret(&session.ephemeral_secret, &miner_public_key);
+        let session_key = session::derive_session_key(&shared_secret, &session.session_nonce)?;
+        session_key.decrypt(&update.lora_delta)?
+    } else {
+        update.lora_delta.clone()
+    };
+
     // Verify the plaintext hash.
-    if update.encrypted {
-        bail!("Encrypted LoRA delta is not supported in this spike");
-    }
-    let plaintext_hash = blake3_hash(&update.lora_delta);
+    let plaintext_hash = blake3_hash(&delta_bytes);
     if plaintext_hash != update.lora_delta_hash {
         bail!("LoRA delta hash mismatch");
     }
@@ -61,7 +74,7 @@ pub async fn apply_lora_update(model_manager: Arc<ModelManager>, update: &Submit
         candle_core::safetensors::load_buffer(&files.weights, &device).map_err(|e| anyhow!("Failed to load base weights: {}", e))?;
 
     // Load the LoRA adapter.
-    let lora = candle_core::safetensors::load_buffer(&update.lora_delta, &device)
+    let lora = candle_core::safetensors::load_buffer(&delta_bytes, &device)
         .map_err(|e| anyhow!("Failed to load LoRA delta safetensors: {}", e))?;
 
     // Compute the merged dense weight: W_new = W_base + (alpha/rank) * (lora_b @ lora_a).

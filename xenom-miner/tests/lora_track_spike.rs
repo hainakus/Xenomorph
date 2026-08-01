@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 use borsh::{to_vec, BorshDeserialize};
 use candle_core::{DType, Device, Tensor};
@@ -242,8 +243,10 @@ async fn start_mock_orchestrator(weights: Vec<u8>, config: DnaBert2Config, token
     let config = Arc::new(config);
     let tokenizer = Arc::new(tokenizer);
     let weights = Arc::new(weights);
+    let forward_sessions: Arc<Mutex<HashMap<[u8; 33], (SecretKey, [u8; 12])>>> = Arc::new(Mutex::new(HashMap::new()));
 
     tokio::spawn(async move {
+        let forward_sessions = forward_sessions.clone();
         let device = Device::Cpu;
         let model = DnaBert2ForMaskedLM::load((*config).clone(), (*weights).clone(), DType::F32, &device, None).unwrap();
 
@@ -321,6 +324,9 @@ async fn start_mock_orchestrator(weights: Vec<u8>, config: DnaBert2Config, token
                         let session_key = session::derive_session_key(&shared_secret, &session_nonce).unwrap();
                         let encrypted_hidden_states = session_key.encrypt(&hidden_bytes).unwrap();
 
+                        let serialized_public = ephemeral_public_key.serialize();
+                        forward_sessions.lock().await.insert(serialized_public, (ephemeral_secret, session_nonce));
+
                         RpcResponse::AttestedForward(AttestedForwardResponse {
                             hidden_states_hash,
                             hidden_states: encrypted_hidden_states,
@@ -343,6 +349,20 @@ async fn start_mock_orchestrator(weights: Vec<u8>, config: DnaBert2Config, token
                         let public_key = PublicKey::from_slice(&req.auth_public_key).unwrap();
                         let secp = Secp256k1::verification_only();
                         secp.verify_ecdsa(&message, &signature, &public_key).unwrap();
+
+                        // Decrypt the LoRA delta using the cached AttestedForward session.
+                        let delta_bytes = if req.encrypted {
+                            let sessions = forward_sessions.lock().await;
+                            let (ephemeral_secret, session_nonce) = sessions.get(&req.ephemeral_public_key).unwrap();
+                            let miner_public_key = PublicKey::from_slice(&req.miner_public_key).unwrap();
+                            let shared_secret = session::orchestrator_shared_secret(ephemeral_secret, &miner_public_key);
+                            let session_key = session::derive_session_key(&shared_secret, session_nonce).unwrap();
+                            session_key.decrypt(&req.lora_delta).unwrap()
+                        } else {
+                            req.lora_delta.clone()
+                        };
+
+                        assert_eq!(blake3::hash(&delta_bytes).as_bytes(), &req.lora_delta_hash);
 
                         RpcResponse::LoRAUpdateAck { new_checkpoint: Some([3u8; 32]) }
                     }

@@ -254,6 +254,14 @@ pub struct CachedCheckpoint {
     pub fedavg_config: FedAvgConfig,
 }
 
+/// Ephemeral session state cached by the orchestrator so a miner can re-use the
+/// `AttestedForward` session key to encrypt a subsequent `SubmitLoRAUpdate`.
+#[derive(Clone)]
+pub struct ForwardSession {
+    pub ephemeral_secret: secp256k1::SecretKey,
+    pub session_nonce: [u8; 12],
+}
+
 pub struct ModelManager {
     base_path: String,
     storage: Arc<ModelStorage>,
@@ -283,6 +291,9 @@ pub struct ModelManager {
     /// Maps a training block number to the active checkpoint hash at that block,
     /// enabling historical model evaluation and learning curves.
     checkpoint_history: Arc<RwLock<BTreeMap<u64, [u8; 32]>>>,
+    /// Recent ephemeral sessions keyed by the orchestrator's ephemeral public key.
+    /// Used to decrypt a `SubmitLoRAUpdate` that reuses an `AttestedForward` session.
+    forward_sessions: Arc<Mutex<HashMap<[u8; 33], ForwardSession>>>,
 }
 
 impl ModelManager {
@@ -352,12 +363,26 @@ impl ModelManager {
             epoch_size_cap,
             lineage: Arc::new(RwLock::new(HashMap::new())),
             checkpoint_history: Arc::new(RwLock::new(BTreeMap::new())),
+            forward_sessions: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
     /// Return the LoRA configuration used by this manager.
     pub fn lora_config(&self) -> Option<&LoraConfig> {
         self.lora_config.as_ref()
+    }
+
+    /// Cache the ephemeral session used for an `AttestedForward` so a subsequent
+    /// `SubmitLoRAUpdate` can be decrypted with the same session key.
+    pub async fn store_forward_session(&self, ephemeral_public_key: [u8; 33], session: ForwardSession) {
+        let mut sessions = self.forward_sessions.lock().await;
+        sessions.insert(ephemeral_public_key, session);
+    }
+
+    /// Remove and return a cached forward session by ephemeral public key.
+    pub async fn take_forward_session(&self, ephemeral_public_key: &[u8; 33]) -> Option<ForwardSession> {
+        let mut sessions = self.forward_sessions.lock().await;
+        sessions.remove(ephemeral_public_key)
     }
 
     pub async fn load_model(&self, model_id: &str) -> Result<ModelInfo> {
@@ -1528,8 +1553,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_lora_merge_update() {
+        use crate::model::manager::ForwardSession;
         use crate::rpc::messages::SubmitLoRAUpdate;
         use candle_core::{Device, Tensor};
+        use model_crypto::session;
         use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 
         fn blake3_hash(data: &[u8]) -> [u8; 32] {
@@ -1590,18 +1617,28 @@ mod tests {
         let mut signature_bytes = [0u8; 64];
         signature_bytes.copy_from_slice(&signature.serialize_compact());
 
+        // Encrypt the LoRA delta with a session key and cache it in the manager,
+        // simulating that it was produced after an AttestedForward.
+        let (ephemeral_secret, ephemeral_public_key) = session::generate_ephemeral_keypair();
+        let session_nonce = [1u8; 12];
+        let miner_public_key_obj = PublicKey::from_secret_key(&secp, &miner_secret);
+        let shared_secret = session::orchestrator_shared_secret(&ephemeral_secret, &miner_public_key_obj);
+        let session_key = session::derive_session_key(&shared_secret, &session_nonce).unwrap();
+        let encrypted_delta = session_key.encrypt(&delta).unwrap();
+        manager.store_forward_session(ephemeral_public_key.serialize(), ForwardSession { ephemeral_secret, session_nonce }).await;
+
         let update = SubmitLoRAUpdate {
             model_id: model_id.to_string(),
             base_checkpoint: base_checkpoint.weights_hash,
-            lora_delta: delta,
+            lora_delta: encrypted_delta,
             lora_delta_hash: delta_hash,
             gradient_commitment: delta_hash,
             participant_weight: 1.0,
             miner_address: String::new(),
             miner_public_key,
-            encrypted: false,
-            ephemeral_public_key: [0u8; 33],
-            session_nonce: [0u8; 12],
+            encrypted: true,
+            ephemeral_public_key: ephemeral_public_key.serialize(),
+            session_nonce,
             signature: signature_bytes,
             auth_public_key: miner_public_key,
         };

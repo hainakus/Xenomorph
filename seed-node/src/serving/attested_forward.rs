@@ -105,6 +105,12 @@ pub async fn attested_forward(model_manager: Arc<ModelManager>, request: Atteste
     let session_key = session::derive_session_key(&shared_secret, &session_nonce)?;
     let encrypted_hidden_states = session_key.encrypt(&hidden_states_bytes)?;
 
+    // Cache the ephemeral secret so the miner can re-use the session key for SubmitLoRAUpdate.
+    let serialized_public = ephemeral_public_key.serialize();
+    model_manager
+        .store_forward_session(serialized_public, crate::model::manager::ForwardSession { ephemeral_secret, session_nonce })
+        .await;
+
     Ok(AttestedForwardResponse {
         hidden_states_hash,
         hidden_states: encrypted_hidden_states,
