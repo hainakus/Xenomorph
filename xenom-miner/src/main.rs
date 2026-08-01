@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
 use kaspa_consensus_core::network::NetworkType;
+use secp256k1::SecretKey;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -537,7 +538,8 @@ async fn main() -> Result<()> {
         let learning_rate = 1e-3;
         let local_steps = if args.gpu.gradient_accumulation > 0 { args.gpu.gradient_accumulation } else { 4 };
 
-        let mut lora_trainer = LoraOnlyTrainer::new(client, learning_rate, local_steps, lora_config);
+        let miner_secret = SecretKey::from_slice(&wallet.secret_bytes()).context("Failed to derive miner secret from wallet")?;
+        let mut lora_trainer = LoraOnlyTrainer::new(client, learning_rate, local_steps, lora_config, miner_secret);
 
         let maybe_genome_merkle = genome_merkle.or_else(|| parse_genome_merkle(HUMAN_GENOME_MERKLE_ROOT).ok());
         run_lora_loop(

@@ -15,7 +15,7 @@ use futures::{SinkExt, StreamExt};
 use model_crypto::artifact_sign::ArtifactSigner;
 use model_crypto::key_hierarchy::ModelKeyHierarchy;
 use model_crypto::session;
-use secp256k1::{Message as SecpMessage, PublicKey, Secp256k1};
+use secp256k1::{Message as SecpMessage, PublicKey, Secp256k1, SecretKey};
 use tokenizers::models::bpe::BPE;
 use tokenizers::{AddedToken, Tokenizer};
 use tokio::net::TcpListener;
@@ -381,7 +381,8 @@ async fn test_lora_track_spike() {
 
     let lora_config =
         LoraConfig { rank: 2, alpha: 4.0, dropout: 0.0, target_modules: ["dense".to_string()].iter().cloned().collect() };
-    let mut trainer = LoraOnlyTrainer::new(client, 1e-2, 4, lora_config);
+    let miner_secret = SecretKey::new(&mut rand::thread_rng());
+    let mut trainer = LoraOnlyTrainer::new(client, 1e-2, 4, lora_config, miner_secret);
     let (loss, _delta) = timeout(TEST_TIMEOUT, trainer.train_round("xeno/mgm-1", [1u8; 32], input_ids, attention_mask, labels, mask))
         .await
         .expect("train round timed out")

@@ -52,9 +52,14 @@ struct ArtifactBase {
 }
 
 impl LoraOnlyTrainer {
-    pub fn new(client: XenomRpcClient, learning_rate: f64, local_steps: usize, lora_config: LoraConfig) -> Self {
+    pub fn new(
+        client: XenomRpcClient,
+        learning_rate: f64,
+        local_steps: usize,
+        lora_config: LoraConfig,
+        miner_secret: SecretKey,
+    ) -> Self {
         let secp = Secp256k1::new();
-        let miner_secret = SecretKey::new(&mut rand::thread_rng());
         let miner_public_key = PublicKey::from_secret_key(&secp, &miner_secret).serialize();
         Self { client, device: Device::Cpu, learning_rate, local_steps, lora_config, base: None, miner_secret, miner_public_key }
     }

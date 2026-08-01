@@ -148,14 +148,15 @@ All 46 tests pass.
 
 4. `--trainer lora` is a spike.  It builds and submits a `TrainingBlock` but
    does not yet report a meaningful `loss_before`/`loss_after` (both are the
-   LoRA-only loss).  The miner secp256k1 key is randomly generated instead of
-   being derived from the wallet.
+   LoRA-only loss).  The miner's secp256k1 identity is derived from the BIP39
+   wallet seed (`wallet.secret_bytes()`), so the same wallet always produces the
+   same ECDH public key and LoRA delta signatures.
 
-5. `AttestedForward` hidden states are not yet encrypted.  The same ECDH session
-   key and signature flow should be applied to `AttestedForwardResponse`.
+5. `AttestedForward` hidden states are encrypted and signed.
 
-6. `SubmitLoRAUpdate` still returns a placeholder `LoRAUpdateAck`.  The
-   orchestrator must validate, decrypt, and merge the LoRA delta.
+6. `SubmitLoRAUpdate` is validated, signed, and merged by the orchestrator.
+   The LoRA delta itself is left in plaintext for the spike; encryption will be
+   added when the `AttestedForward` session key is reused.
 
 7. The `TrainingArtifact` session nonce is fixed at `[0u8; 12]` in the spike.  In
    production it must be random per artifact.
