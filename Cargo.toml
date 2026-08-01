@@ -198,6 +198,7 @@ heapless = "0.8.0"
 hex = { version = "0.4.3", features = ["serde"] }
 hex-literal = "0.4.1"
 hexplay = "0.3.0"
+hkdf = "0.12.4"
 hmac = { version = "0.12.1", default-features = false }
 home = "0.5.5"
 igd-next = { version = "0.14.2", features = ["aio_tokio"] }
@@ -273,7 +274,7 @@ wasm-bindgen-futures = "0.4.43"
 wasm-bindgen-test = "0.3.43"
 web-sys = "0.3.70"
 xxhash-rust = { version = "0.8.7", features = ["xxh3"] }
-zeroize = { version = "1.6.0", default-features = false, features = ["alloc"] }
+zeroize = { version = "1.6.0", default-features = false, features = ["alloc", "derive"] }
 pin-project-lite = "0.2.13"
 tower-http = { version = "0.4.4", features = [
     "map-response-body",

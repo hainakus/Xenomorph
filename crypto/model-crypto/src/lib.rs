@@ -2,8 +2,14 @@
 //!
 //! This crate is shared between `seed-node` and `xenom-miner` so both sides can
 //! derive the same key and encrypt/decrypt model payloads without duplication.
+//!
+//! Phase 1 security primitives: HKDF key hierarchy, artifact signing, and
+//! mlock/zeroize secret buffers.
 
+pub mod artifact_sign;
 pub mod gossip;
+pub mod key_hierarchy;
+pub mod secret_buffer;
 
 use aes_gcm::{
     aead::{Aead, KeyInit},
