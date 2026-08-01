@@ -18,6 +18,14 @@ use super::messages::{
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MODEL_CHECKPOINT_TIMEOUT: Duration = Duration::from_secs(600);
+/// Training artifact generation can decrypt and load the full active model on the
+/// orchestrator, so allow several minutes.
+const TRAINING_ARTIFACT_TIMEOUT: Duration = Duration::from_secs(600);
+/// Attested forward runs the base DNABERT-2 encoder on the full batch on the
+/// orchestrator, which can take minutes on CPU-only seed-nodes.
+const ATTESTED_FORWARD_TIMEOUT: Duration = Duration::from_secs(600);
+/// Genome batch extraction can take a while on low-CPU orchestrators.
+const GENOME_BATCH_TIMEOUT: Duration = Duration::from_secs(120);
 /// Gradient payloads can be as large as a model checkpoint and the seed-node has
 /// to decrypt, decompress, average and apply them before responding.
 const GRADIENT_SUBMIT_TIMEOUT: Duration = Duration::from_secs(300);
@@ -98,11 +106,14 @@ impl XenomRpcClient {
         preferred_batch_size: usize,
     ) -> Result<GenomeTrainingBatchMsg> {
         let response = self
-            .send_request(RpcRequest::GetGenomeTrainingBatch(super::messages::GetGenomeTrainingBatch {
-                genome_merkle_root,
-                model_id: model_id.to_string(),
-                preferred_batch_size,
-            }))
+            .send_request_with_timeout(
+                RpcRequest::GetGenomeTrainingBatch(super::messages::GetGenomeTrainingBatch {
+                    genome_merkle_root,
+                    model_id: model_id.to_string(),
+                    preferred_batch_size,
+                }),
+                GENOME_BATCH_TIMEOUT,
+            )
             .await?;
 
         match response {
@@ -224,7 +235,7 @@ impl XenomRpcClient {
         miner_public_key: [u8; 33],
     ) -> Result<TrainingArtifact> {
         let request = GetTrainingArtifact { model_id: model_id.to_string(), base_checkpoint, cached_base_hash, miner_public_key };
-        let response = self.send_request(RpcRequest::GetTrainingArtifact(request)).await?;
+        let response = self.send_request_with_timeout(RpcRequest::GetTrainingArtifact(request), TRAINING_ARTIFACT_TIMEOUT).await?;
         match response {
             RpcResponse::TrainingArtifact(artifact) => Ok(artifact),
             RpcResponse::Error(msg) => bail!("Node returned error: {}", msg),
@@ -234,7 +245,7 @@ impl XenomRpcClient {
 
     /// Request an attested forward pass from the orchestrator.
     pub async fn attested_forward(&mut self, request: AttestedForwardRequest) -> Result<AttestedForwardResponse> {
-        let response = self.send_request(RpcRequest::AttestedForward(request)).await?;
+        let response = self.send_request_with_timeout(RpcRequest::AttestedForward(request), ATTESTED_FORWARD_TIMEOUT).await?;
         match response {
             RpcResponse::AttestedForward(resp) => Ok(resp),
             RpcResponse::Error(msg) => bail!("Node returned error: {}", msg),
@@ -244,7 +255,7 @@ impl XenomRpcClient {
 
     /// Submit an encrypted LoRA delta to the orchestrator.
     pub async fn submit_lora_update(&mut self, update: SubmitLoRAUpdate) -> Result<Option<[u8; 32]>> {
-        let response = self.send_request(RpcRequest::SubmitLoRAUpdate(update)).await?;
+        let response = self.send_request_with_timeout(RpcRequest::SubmitLoRAUpdate(update), GRADIENT_SUBMIT_TIMEOUT).await?;
         match response {
             RpcResponse::LoRAUpdateAck { new_checkpoint } => Ok(new_checkpoint),
             RpcResponse::Error(msg) => bail!("Node rejected LoRA update: {}", msg),
