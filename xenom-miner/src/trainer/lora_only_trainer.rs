@@ -15,7 +15,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use candle_core::{DType, Device, Tensor};
 use model_crypto::artifact_sign::ArtifactVerifier;
 use model_crypto::session;
-use secp256k1::{PublicKey, Secp256k1, SecretKey};
+use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 
 use crate::data::MlmBatchGenerator;
 use crate::lora::LoraConfig;
@@ -193,17 +193,9 @@ impl LoraOnlyTrainer {
             last_loss = head.train_step(&hidden_states, &labels_t, &mask_t, &mut optimizer)?;
         }
 
-        // 6. Save the adapter and submit the update.
+        // 6. Save the adapter, encrypt it, and submit the update.
         let delta = head.save_adapter()?;
-
-        let update = SubmitLoRAUpdate {
-            model_id: model_id.to_string(),
-            base_checkpoint,
-            lora_delta: delta.clone(),
-            gradient_commitment: blake3_hash(&delta),
-            participant_weight: 1.0,
-            miner_address: String::new(),
-        };
+        let update = self.build_lora_update(model_id, base_checkpoint, &delta)?;
         let _new_checkpoint = self.client.submit_lora_update(update).await?;
 
         Ok((last_loss, delta))
@@ -271,6 +263,47 @@ impl LoraOnlyTrainer {
 
         Ok(decrypted)
     }
+}
+
+impl LoraOnlyTrainer {
+    fn build_lora_update(&self, model_id: &str, base_checkpoint: [u8; 32], delta: &[u8]) -> Result<SubmitLoRAUpdate> {
+        let delta_hash = blake3_hash(delta);
+
+        let secp = Secp256k1::new();
+        let message = build_lora_delta_message_hash(&delta_hash, base_checkpoint);
+        let message = Message::from_digest(message);
+        let signature = secp.sign_ecdsa(&message, &self.miner_secret);
+        let mut signature_bytes = [0u8; 64];
+        signature_bytes.copy_from_slice(&signature.serialize_compact());
+
+        // The LoRA delta is left in plaintext for the spike.  Encryption will be
+        // added once the session key from AttestedForward is reused for the update.
+        Ok(SubmitLoRAUpdate {
+            model_id: model_id.to_string(),
+            base_checkpoint,
+            lora_delta: delta.to_vec(),
+            lora_delta_hash: delta_hash,
+            gradient_commitment: delta_hash,
+            participant_weight: 1.0,
+            miner_address: String::new(),
+            miner_public_key: self.miner_public_key,
+            encrypted: false,
+            ephemeral_public_key: [0u8; 33],
+            session_nonce: [0u8; 12],
+            signature: signature_bytes,
+            auth_public_key: self.miner_public_key,
+        })
+    }
+}
+
+fn build_lora_delta_message_hash(delta_hash: &[u8; 32], base_checkpoint: [u8; 32]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"xenom-lora-delta-v1");
+    hasher.update(delta_hash);
+    hasher.update(&base_checkpoint);
+    out.copy_from_slice(hasher.finalize().as_bytes());
+    out
 }
 
 fn build_attested_message_hash(hidden_states_hash: &[u8; 32], base_checkpoint: [u8; 32], loss: f64) -> [u8; 32] {

@@ -82,13 +82,13 @@ dedicated async loop (`run_lora_loop` in `xenom-miner/src/main.rs`) that:
 - Trains a LoRA LM head via `LoraOnlyTrainer`.
 - Builds a `TrainingBlock` and submits it (or logs it in `--dry-run`).
 
-### 8. Server stubs
+### 8. Server handlers
 
 `seed-node/src/rpc/server.rs` now handles the new `RpcRequest` variants:
 
 - `AttestedForward` — calls `serving::attested_forward`.
 - `GetTrainingArtifact` — packages the LM head via `model::lora_artifact`.
-- `SubmitLoRAUpdate` — returns a placeholder `LoRAUpdateAck`.
+- `SubmitLoRAUpdate` — calls `model::lora_merge::apply_lora_update`.
 
 ## Tests
 
@@ -136,8 +136,15 @@ All 46 tests pass.
    - Encrypts the hidden states with an ECDH session key.
    - The miner decrypts with its secp256k1 secret and verifies the signature.
 
-3. `SubmitLoRAUpdate` must validate, decrypt, and merge the LoRA delta on the
-   orchestrator.
+3. `SubmitLoRAUpdate` validates, decrypts (placeholder in spike), and merges
+   the LoRA delta on the orchestrator:
+   - The miner signs the `lora_delta_hash || base_checkpoint` with its secp256k1
+     secret.
+   - The orchestrator verifies the signature with `auth_public_key` (miner's
+     public key).
+   - It verifies `lora_delta_hash` against the received delta.
+   - It loads the base checkpoint, merges `W_new = W_base + (alpha/rank) * (lora_b @ lora_a)`,
+     stores the new active checkpoint, and returns the new `weights_hash`.
 
 4. `--trainer lora` is a spike.  It builds and submits a `TrainingBlock` but
    does not yet report a meaningful `loss_before`/`loss_after` (both are the
@@ -179,4 +186,5 @@ All 46 tests pass.
 - `seed-node/src/serving/attested_forward.rs` (new)
 - `seed-node/src/model/mod.rs`
 - `seed-node/src/model/lora_artifact.rs` (new)
+- `seed-node/src/model/lora_merge.rs` (new)
 - `docs/architecture/lora-track-phase1.md` (new)

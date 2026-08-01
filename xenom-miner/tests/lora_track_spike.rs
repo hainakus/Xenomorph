@@ -15,7 +15,7 @@ use futures::{SinkExt, StreamExt};
 use model_crypto::artifact_sign::ArtifactSigner;
 use model_crypto::key_hierarchy::ModelKeyHierarchy;
 use model_crypto::session;
-use secp256k1::PublicKey;
+use secp256k1::{Message as SecpMessage, PublicKey, Secp256k1};
 use tokenizers::models::bpe::BPE;
 use tokenizers::{AddedToken, Tokenizer};
 use tokio::net::TcpListener;
@@ -329,7 +329,20 @@ async fn start_mock_orchestrator(weights: Vec<u8>, config: DnaBert2Config, token
                             auth_public_key,
                         })
                     }
-                    RpcRequest::SubmitLoRAUpdate(_req) => RpcResponse::LoRAUpdateAck { new_checkpoint: Some([3u8; 32]) },
+                    RpcRequest::SubmitLoRAUpdate(req) => {
+                        // Verify the miner's signature on the LoRA delta.
+                        let mut hasher = blake3::Hasher::new();
+                        hasher.update(b"xenom-lora-delta-v1");
+                        hasher.update(&req.lora_delta_hash);
+                        hasher.update(&req.base_checkpoint);
+                        let message = SecpMessage::from_digest(*hasher.finalize().as_bytes());
+                        let signature = secp256k1::ecdsa::Signature::from_compact(&req.signature).unwrap();
+                        let public_key = PublicKey::from_slice(&req.auth_public_key).unwrap();
+                        let secp = Secp256k1::verification_only();
+                        secp.verify_ecdsa(&message, &signature, &public_key).unwrap();
+
+                        RpcResponse::LoRAUpdateAck { new_checkpoint: Some([3u8; 32]) }
+                    }
                     _ => RpcResponse::Error("unexpected request in spike".to_string()),
                 };
 

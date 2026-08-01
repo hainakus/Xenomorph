@@ -1525,4 +1525,88 @@ mod tests {
         assert!(loaded.weights.len() > 8);
         assert_eq!(loaded.weights[8], b'{'); // SafeTensors header starts with JSON
     }
+
+    #[tokio::test]
+    async fn test_lora_merge_update() {
+        use crate::rpc::messages::SubmitLoRAUpdate;
+        use candle_core::{Device, Tensor};
+        use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
+
+        fn blake3_hash(data: &[u8]) -> [u8; 32] {
+            let hash = blake3::hash(data);
+            let mut out = [0u8; 32];
+            out.copy_from_slice(hash.as_bytes());
+            out
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let key = [0u8; 32];
+        let manager = ModelManager::new_with_key(dir.path().to_string_lossy().to_string(), key, None, None, None, None).await.unwrap();
+        let model_id = "dnabert2-tiny";
+
+        let files = build_tiny_dnabert2_files();
+        manager.store_model_files(model_id, &files, ModelMetrics::default()).await.unwrap();
+        manager.load_model(model_id).await.unwrap();
+
+        let (base_checkpoint, _) = manager.get_model_checkpoint(model_id).await.unwrap();
+
+        // Build a tiny LoRA delta with non-zero A/B so the merged weight changes.
+        let rank = 2;
+        let hidden_size = 4;
+        let mut lora_tensors = HashMap::new();
+        lora_tensors.insert(
+            "lm_head.transform.dense.lora_a".to_string(),
+            Tensor::from_vec(
+                (0..rank * hidden_size).map(|i| (i as f32) * 0.001).collect::<Vec<_>>(),
+                (rank, hidden_size),
+                &Device::Cpu,
+            )
+            .unwrap(),
+        );
+        lora_tensors.insert(
+            "lm_head.transform.dense.lora_b".to_string(),
+            Tensor::from_vec(
+                (0..hidden_size * rank).map(|i| (i as f32) * 0.001).collect::<Vec<_>>(),
+                (hidden_size, rank),
+                &Device::Cpu,
+            )
+            .unwrap(),
+        );
+        let lora_pairs: Vec<(String, &Tensor)> = lora_tensors.iter().map(|(k, v)| (k.clone(), v)).collect();
+        let delta = safetensors::tensor::serialize(lora_pairs, &None).unwrap();
+        let delta_hash = blake3_hash(&delta);
+
+        // Create a miner secp256k1 key pair and sign the update.
+        let secp = Secp256k1::new();
+        let miner_secret = SecretKey::new(&mut rand::thread_rng());
+        let miner_public_key = PublicKey::from_secret_key(&secp, &miner_secret).serialize();
+
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"xenom-lora-delta-v1");
+        hasher.update(&delta_hash);
+        hasher.update(&base_checkpoint.weights_hash);
+        let message = Message::from_digest(*hasher.finalize().as_bytes());
+        let signature = secp.sign_ecdsa(&message, &miner_secret);
+        let mut signature_bytes = [0u8; 64];
+        signature_bytes.copy_from_slice(&signature.serialize_compact());
+
+        let update = SubmitLoRAUpdate {
+            model_id: model_id.to_string(),
+            base_checkpoint: base_checkpoint.weights_hash,
+            lora_delta: delta,
+            lora_delta_hash: delta_hash,
+            gradient_commitment: delta_hash,
+            participant_weight: 1.0,
+            miner_address: String::new(),
+            miner_public_key,
+            encrypted: false,
+            ephemeral_public_key: [0u8; 33],
+            session_nonce: [0u8; 12],
+            signature: signature_bytes,
+            auth_public_key: miner_public_key,
+        };
+
+        let new_hash = crate::model::lora_merge::apply_lora_update(Arc::new(manager), &update).await.unwrap();
+        assert_ne!(new_hash, base_checkpoint.weights_hash);
+    }
 }

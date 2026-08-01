@@ -304,7 +304,13 @@ async fn handle_request(
                 RpcResponse::Error(format!("AttestedForward failed: {}", e))
             }
         },
-        RpcRequest::SubmitLoRAUpdate(_req) => RpcResponse::LoRAUpdateAck { new_checkpoint: None },
+        RpcRequest::SubmitLoRAUpdate(req) => match crate::model::lora_merge::apply_lora_update(model_manager.clone(), &req).await {
+            Ok(new_checkpoint) => RpcResponse::LoRAUpdateAck { new_checkpoint: Some(new_checkpoint) },
+            Err(e) => {
+                warn!("SubmitLoRAUpdate failed: {}", e);
+                RpcResponse::Error(format!("SubmitLoRAUpdate failed: {}", e))
+            }
+        },
     }
 }
 

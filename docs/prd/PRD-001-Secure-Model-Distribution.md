@@ -191,10 +191,17 @@ pub struct AttestedForwardResponse {
 pub struct SubmitLoRAUpdate {
     pub model_id: String,
     pub base_checkpoint: [u8; 32],
-    pub lora_delta: Vec<u8>, // encrypted
+    pub lora_delta: Vec<u8>,       // encrypted adapter safetensors
+    pub lora_delta_hash: [u8; 32], // blake3 of plaintext adapter
     pub gradient_commitment: [u8; 32],
     pub participant_weight: f32,
     pub miner_address: String,
+    pub miner_public_key: [u8; 33],
+    pub encrypted: bool,
+    pub ephemeral_public_key: [u8; 33],
+    pub session_nonce: [u8; 12],
+    pub signature: [u8; 64],
+    pub auth_public_key: [u8; 33],
 }
 ```
 

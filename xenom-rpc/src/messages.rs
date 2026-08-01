@@ -213,10 +213,20 @@ pub struct AttestedForwardResponse {
 pub struct SubmitLoRAUpdate {
     pub model_id: String,
     pub base_checkpoint: [u8; 32],
+    /// LoRA adapter safetensors, encrypted with the session key when `encrypted` is true.
     pub lora_delta: Vec<u8>,
+    /// Blake3 hash of the plaintext LoRA delta.
+    pub lora_delta_hash: [u8; 32],
+    /// Hash of the plaintext gradient update (alias for `lora_delta_hash`).
     pub gradient_commitment: [u8; 32],
     pub participant_weight: f32,
     pub miner_address: String,
+    pub miner_public_key: [u8; 33],
+    pub encrypted: bool,
+    pub ephemeral_public_key: [u8; 33],
+    pub session_nonce: [u8; 12],
+    pub signature: [u8; 64],
+    pub auth_public_key: [u8; 33],
 }
 
 /// V2 lightweight checkpoint metadata exposing both the combined and base hashes.
@@ -512,9 +522,16 @@ mod tests {
             model_id: "xeno/mgm-1".to_string(),
             base_checkpoint: [1u8; 32],
             lora_delta: vec![0u8; 64],
+            lora_delta_hash: [2u8; 32],
             gradient_commitment: [2u8; 32],
             participant_weight: 1.0,
             miner_address: "xenomdev:...".to_string(),
+            miner_public_key: [4u8; 33],
+            encrypted: true,
+            ephemeral_public_key: [5u8; 33],
+            session_nonce: [6u8; 12],
+            signature: [7u8; 64],
+            auth_public_key: [8u8; 33],
         };
         let env = RpcEnvelope { request_id: 12, payload: RpcRequest::SubmitLoRAUpdate(req) };
         let bytes = to_vec(&env).unwrap();
