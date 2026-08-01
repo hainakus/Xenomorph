@@ -177,6 +177,17 @@ impl LoraLmHead {
     }
 }
 
+impl Drop for LoraLmHead {
+    /// Zeroize all trainable variables (LoRA A/B weights) before the head is dropped.
+    fn drop(&mut self) {
+        for var in self.varmap.all_vars() {
+            if let Ok(zeros) = Tensor::zeros_like(var.as_tensor()) {
+                let _ = var.set(&zeros);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

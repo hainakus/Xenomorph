@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 use uuid::Uuid;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::consensus::fedavg::{FedAvgAggregator, FedAvgConfig, WeightingStrategy};
 use crate::rpc::messages::{GradientLayer, GradientPayload, GradientUpdate, TrainingBatch};
@@ -256,11 +257,21 @@ pub struct CachedCheckpoint {
 
 /// Ephemeral session state cached by the orchestrator so a miner can re-use the
 /// `AttestedForward` session key to encrypt a subsequent `SubmitLoRAUpdate`.
+/// Overwrites its secret material with zeros on drop.
 #[derive(Clone)]
 pub struct ForwardSession {
     pub ephemeral_secret: secp256k1::SecretKey,
     pub session_nonce: [u8; 12],
 }
+
+impl Zeroize for ForwardSession {
+    fn zeroize(&mut self) {
+        self.ephemeral_secret.non_secure_erase();
+        self.session_nonce.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for ForwardSession {}
 
 /// How long an ephemeral forward session stays in the cache waiting for a `SubmitLoRAUpdate`.
 const FORWARD_SESSION_TTL: Duration = Duration::from_secs(300);

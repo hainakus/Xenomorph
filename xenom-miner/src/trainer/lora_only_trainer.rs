@@ -16,6 +16,7 @@ use candle_core::{DType, Device, Tensor};
 use model_crypto::artifact_sign::ArtifactVerifier;
 use model_crypto::session;
 use secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::data::MlmBatchGenerator;
 use crate::lora::LoraConfig;
@@ -46,7 +47,10 @@ pub struct LoraOnlyTrainer {
 }
 
 /// Session info needed to re-derive the AttestedForward session key on the miner side.
+/// The session nonce is zeroized on drop.
+#[derive(Zeroize, ZeroizeOnDrop)]
 struct ForwardSession {
+    #[zeroize(skip)]
     ephemeral_public_key: [u8; 33],
     session_nonce: [u8; 12],
 }
@@ -57,6 +61,17 @@ struct ArtifactBase {
     config: DnaBert2Config,
     tokenizer: DnaTokenizer,
     base_weights: HashMap<String, Tensor>,
+}
+
+impl Drop for ArtifactBase {
+    /// Overwrite the cached base weights with zeros before the artifact is dropped.
+    fn drop(&mut self) {
+        for tensor in self.base_weights.values_mut() {
+            if let Ok(zeros) = Tensor::zeros_like(tensor) {
+                *tensor = zeros;
+            }
+        }
+    }
 }
 
 impl LoraOnlyTrainer {
@@ -224,6 +239,9 @@ impl LoraOnlyTrainer {
         let update = self.build_lora_update(model_id, base_checkpoint, &delta)?;
         let _new_checkpoint = self.client.submit_lora_update(update).await?;
 
+        // The forward session has been used to encrypt the delta; securely erase it now.
+        self.last_forward_session = None;
+
         Ok((last_loss, base_loss, delta))
     }
 
@@ -366,4 +384,12 @@ fn blake3_hash(data: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(hash.as_bytes());
     out
+}
+
+impl Drop for LoraOnlyTrainer {
+    /// Securely erase the cached artifact and the latest forward session before the trainer is dropped.
+    fn drop(&mut self) {
+        self.base = None;
+        self.last_forward_session = None;
+    }
 }

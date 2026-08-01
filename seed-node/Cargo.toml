@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+zeroize = { workspace = true }
 tokio = { version = "1.35", features = ["full"] }
 tonic = "0.10"
 borsh = { workspace = true }

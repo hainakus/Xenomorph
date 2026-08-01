@@ -159,17 +159,21 @@ All 46 tests pass.
 5. Session nonces for `TrainingArtifact` and `AttestedForward` are generated
    randomly per message using `rand::thread_rng().fill_bytes`.
 
+6. Sensitive state is erased when no longer needed:
+   - `ForwardSession` in the orchestrator and the miner zeroizes the session
+     nonce and ephemeral secret on drop.
+   - `LoraLmHead` overwrites all trainable variables with zeros on drop.
+   - `ArtifactBase` overwrites cached LM head weights with zeros on drop.
+   - `LoraOnlyTrainer` clears the artifact and the latest forward session after
+     submitting a `LoRAUpdate` and on drop.
+
 ## Limitations and next steps
 
 1. `--trainer lora` still requires a genome merkle root and does not yet
    integrate with the full `TrainingBlock` / `TrainingProof` validation pipeline
    in a way that reports the new checkpoint produced by `SubmitLoRAUpdate`.
 
-2. The `LoraOnlyTrainer` keeps the LM head artifact and the latest forward
-   session in memory between rounds.  Secure zeroization of LoRA weights and
-   session state on shutdown is not yet implemented.
-
-3. `xenom-rpc` only holds `rpc::messages`.  The WebSocket client/codec still
+2. `xenom-rpc` only holds `rpc::messages`.  The WebSocket client/codec still
    lives in `xenom-miner` and could be moved later if `seed-node` or the unified
    `xenom` node needs the same client.
 
