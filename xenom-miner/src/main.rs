@@ -447,6 +447,53 @@ async fn main() -> Result<()> {
         ensure_rpc_connection(&gradient_client, &config.rpc_url, config.dry_run).await?;
     }
 
+    let prover = ZkProver::new();
+    let mut block_builder = BlockBuilder::new(miner_address.clone());
+
+    // LoRA-only path: the trainer is not `dyn Trainer`; it needs an async RPC
+    // loop and works only with genome batches for this spike.
+    if trainer_kind == "lora" {
+        info!("Using LoRA-only trainer");
+        let mut guard = rpc_client.lock().await;
+        let client = guard.take().context("No RPC connection for LoRA trainer")?;
+        drop(guard);
+
+        let target_modules = if args.gpu.lora_target_modules.is_empty() {
+            LoraConfig::default_target_modules()
+        } else {
+            args.gpu.lora_target_modules.iter().cloned().collect()
+        };
+        let lora_config =
+            LoraConfig { rank: args.gpu.lora_rank, alpha: args.gpu.lora_alpha, dropout: args.gpu.lora_dropout, target_modules };
+        let learning_rate = 1e-3;
+        let local_steps = if args.gpu.gradient_accumulation > 0 { args.gpu.gradient_accumulation } else { 4 };
+
+        let backend = GpuBackend::Auto;
+        let device_index = args.gpu.gpus.first().copied().unwrap_or(0);
+
+        let miner_secret = SecretKey::from_slice(&wallet.secret_bytes()).context("Failed to derive miner secret from wallet")?;
+        let mut lora_trainer =
+            LoraOnlyTrainer::new(client, learning_rate, local_steps, lora_config, miner_secret, backend, device_index, args.gpu.fp16)?;
+
+        let maybe_genome_merkle = if let Some(hex_str) = args.genome_merkle.as_deref() {
+            Some(parse_genome_merkle(hex_str)?)
+        } else {
+            parse_genome_merkle(HUMAN_GENOME_MERKLE_ROOT).ok()
+        };
+        run_lora_loop(
+            &mut lora_trainer,
+            &rpc_client,
+            &config,
+            maybe_genome_merkle,
+            args.genome_batch_size,
+            args.dry_run,
+            &prover,
+            &mut block_builder,
+        )
+        .await?;
+        return Ok(());
+    }
+
     let trainer: Arc<dyn Trainer> = match trainer_kind.as_str() {
         "mock" => {
             info!("Using mock trainer");
@@ -497,7 +544,7 @@ async fn main() -> Result<()> {
             info!("Using model trainer with {:?} backend and config {:?}", backend, gpu_config);
             load_trainer(&rpc_client, &config.model_id, &model_cache, backend, gpu_config, config.threads, config.dry_run).await?
         }
-        other => bail!("Unknown trainer: {}. Use mock, cpu, dnabert2, mgm1, gpu, cuda, rocm, or metal.", other),
+        other => bail!("Unknown trainer: {}. Use mock, cpu, dnabert2, mgm1, gpu, cuda, rocm, metal, or lora.", other),
     };
 
     let dna_model_backends = ["dnabert2", "mgm1", "gpu", "cuda", "rocm", "metal"];
@@ -515,49 +562,6 @@ async fn main() -> Result<()> {
     };
     if genome_merkle.is_some() && !is_dna_model {
         warn!("--genome-merkle is only supported with --trainer=dnabert2/gpu/cuda/rocm/metal; genome training will likely fail");
-    }
-
-    let prover = ZkProver::new();
-    let mut block_builder = BlockBuilder::new(miner_address.clone());
-
-    // LoRA-only path: the trainer is not `dyn Trainer`; it needs an async RPC
-    // loop and works only with genome batches for this spike.
-    if trainer_kind == "lora" {
-        info!("Using LoRA-only trainer");
-        let mut guard = rpc_client.lock().await;
-        let client = guard.take().context("No RPC connection for LoRA trainer")?;
-        drop(guard);
-
-        let target_modules = if args.gpu.lora_target_modules.is_empty() {
-            LoraConfig::default_target_modules()
-        } else {
-            args.gpu.lora_target_modules.iter().cloned().collect()
-        };
-        let lora_config =
-            LoraConfig { rank: args.gpu.lora_rank, alpha: args.gpu.lora_alpha, dropout: args.gpu.lora_dropout, target_modules };
-        let learning_rate = 1e-3;
-        let local_steps = if args.gpu.gradient_accumulation > 0 { args.gpu.gradient_accumulation } else { 4 };
-
-        let backend = GpuBackend::Auto;
-        let device_index = args.gpu.gpus.first().copied().unwrap_or(0);
-
-        let miner_secret = SecretKey::from_slice(&wallet.secret_bytes()).context("Failed to derive miner secret from wallet")?;
-        let mut lora_trainer =
-            LoraOnlyTrainer::new(client, learning_rate, local_steps, lora_config, miner_secret, backend, device_index, args.gpu.fp16)?;
-
-        let maybe_genome_merkle = genome_merkle.or_else(|| parse_genome_merkle(HUMAN_GENOME_MERKLE_ROOT).ok());
-        run_lora_loop(
-            &mut lora_trainer,
-            &rpc_client,
-            &config,
-            maybe_genome_merkle,
-            args.genome_batch_size,
-            args.dry_run,
-            &prover,
-            &mut block_builder,
-        )
-        .await?;
-        return Ok(());
     }
 
     let progress = ProgressBar::new_spinner();
