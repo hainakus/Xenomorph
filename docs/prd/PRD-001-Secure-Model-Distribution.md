@@ -174,6 +174,7 @@ pub struct AttestedForwardRequest {
     pub attention_mask: Vec<Vec<u32>>,
     pub labels: Vec<Vec<u32>>,
     pub mask: Vec<Vec<u8>>,
+    pub miner_public_key: [u8; 33],
 }
 
 pub struct AttestedForwardResponse {
@@ -182,6 +183,9 @@ pub struct AttestedForwardResponse {
     pub loss: f64,
     pub token_count: u32,
     pub signature: [u8; 64],
+    pub ephemeral_public_key: [u8; 33],
+    pub session_nonce: [u8; 12],
+    pub auth_public_key: [u8; 33],
 }
 
 pub struct SubmitLoRAUpdate {

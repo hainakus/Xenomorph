@@ -114,7 +114,7 @@ fn blake3_hash(data: &[u8]) -> [u8; 32] {
     out
 }
 
-fn load_or_create_hierarchy(model_id: &str, data_dir: &Path) -> Result<ModelKeyHierarchy> {
+pub(crate) fn load_or_create_hierarchy(model_id: &str, data_dir: &Path) -> Result<ModelKeyHierarchy> {
     // Try a stable master key from the environment first.
     if let Ok(hex_key) = std::env::var(MASTER_KEY_ENV) {
         if let Ok(bytes) = hex::decode(hex_key.trim()) {

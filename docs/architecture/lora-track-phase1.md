@@ -128,8 +128,13 @@ All 46 tests pass.
    - The orchestrator master key is loaded from `XENO_MODEL_MASTER_KEY` (hex 64)
      or persisted to `<models_dir>/<model_id>/model_master.key`.
 
-2. `AttestedForward` response hidden states are currently returned in plaintext.
-   They must be encrypted with the session key and signed by the orchestrator.
+2. `AttestedForward` response hidden states are encrypted and signed:
+   - The request carries `miner_public_key`.
+   - The orchestrator runs the base model, serializes hidden states, and
+     computes `hidden_states_hash`.
+   - Signs `hidden_states_hash || base_checkpoint || loss` with the model auth key.
+   - Encrypts the hidden states with an ECDH session key.
+   - The miner decrypts with its secp256k1 secret and verifies the signature.
 
 3. `SubmitLoRAUpdate` must validate, decrypt, and merge the LoRA delta on the
    orchestrator.

@@ -21,7 +21,9 @@ use crate::data::MlmBatchGenerator;
 use crate::lora::LoraConfig;
 use crate::model::DnaBert2Config;
 use crate::rpc::client::XenomRpcClient;
-use crate::rpc::messages::{AttestedForwardRequest, GenomeTrainingBatchMsg, SubmitLoRAUpdate, TrainingArtifact};
+use crate::rpc::messages::{
+    AttestedForwardRequest, AttestedForwardResponse, GenomeTrainingBatchMsg, SubmitLoRAUpdate, TrainingArtifact,
+};
 use crate::tokenizer::DnaTokenizer;
 use crate::trainer::lora_lm_head::LoraLmHead;
 use crate::trainer::ManualAdamW;
@@ -162,10 +164,14 @@ impl LoraOnlyTrainer {
             attention_mask: attention_mask.clone(),
             labels: labels.clone(),
             mask: mask.clone(),
+            miner_public_key: self.miner_public_key,
         };
         let forward = self.client.attested_forward(forward_req).await.with_context(|| "AttestedForward request failed")?;
 
-        // 4. Deserialize hidden states [batch, seq, hidden_size].
+        // 4. Decrypt and verify the attested hidden states.
+        let hidden_states_bytes = self.decrypt_and_verify_forward(&forward, base_checkpoint)?;
+
+        // 5. Deserialize hidden states [batch, seq, hidden_size].
         let batch_size = input_ids.len();
         if batch_size == 0 {
             bail!("Empty batch");
@@ -174,7 +180,7 @@ impl LoraOnlyTrainer {
         let hidden_size = base.config.hidden_size;
 
         let hidden_floats: Vec<f32> =
-            forward.hidden_states.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+            hidden_states_bytes.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
         let hidden_states = Tensor::from_vec(hidden_floats, (batch_size, seq_len, hidden_size), &self.device)?;
 
         let labels_t = Tensor::from_vec(labels.iter().flatten().copied().collect::<Vec<_>>(), (batch_size, seq_len), &self.device)?;
@@ -236,6 +242,46 @@ impl LoraOnlyTrainer {
 
         Ok((config, tokenizer, base_weights))
     }
+
+    fn decrypt_and_verify_forward(&self, forward: &AttestedForwardResponse, base_checkpoint: [u8; 32]) -> Result<Vec<u8>> {
+        if forward.hidden_states.is_empty() {
+            bail!("AttestedForward hidden states are empty");
+        }
+
+        // Decrypt the hidden states.
+        let ephemeral_public =
+            PublicKey::from_slice(&forward.ephemeral_public_key).map_err(|e| anyhow!("Invalid ephemeral public key: {}", e))?;
+        let shared_secret = session::miner_shared_secret(&self.miner_secret, &ephemeral_public);
+        let session_key = session::derive_session_key(&shared_secret, &forward.session_nonce)?;
+        let decrypted = session_key.decrypt(&forward.hidden_states)?;
+
+        // Recompute the hidden-states hash and verify it matches.
+        let recomputed_hash = blake3_hash(&decrypted);
+        if recomputed_hash != forward.hidden_states_hash {
+            bail!("AttestedForward hidden-states hash mismatch");
+        }
+
+        // Verify the orchestrator signature.
+        let verifier =
+            ArtifactVerifier::from_public_key(&forward.auth_public_key).map_err(|e| anyhow!("Invalid auth public key: {}", e))?;
+        let message_hash = build_attested_message_hash(&forward.hidden_states_hash, base_checkpoint, forward.loss);
+        verifier
+            .verify(&message_hash, None, &forward.signature)
+            .map_err(|e| anyhow!("AttestedForward signature verification failed: {}", e))?;
+
+        Ok(decrypted)
+    }
+}
+
+fn build_attested_message_hash(hidden_states_hash: &[u8; 32], base_checkpoint: [u8; 32], loss: f64) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"xenom-attested-forward-v1");
+    hasher.update(hidden_states_hash);
+    hasher.update(&base_checkpoint);
+    hasher.update(&loss.to_le_bytes());
+    out.copy_from_slice(hasher.finalize().as_bytes());
+    out
 }
 
 fn blake3_hash(data: &[u8]) -> [u8; 32] {

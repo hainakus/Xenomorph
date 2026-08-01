@@ -189,6 +189,7 @@ pub struct AttestedForwardRequest {
     pub attention_mask: Vec<Vec<u32>>,
     pub labels: Vec<Vec<u32>>,
     pub mask: Vec<Vec<u8>>,
+    pub miner_public_key: [u8; 33],
 }
 
 /// Signed hidden states and loss returned by the orchestrator.
@@ -482,6 +483,7 @@ mod tests {
             attention_mask: vec![vec![1, 1, 1]],
             labels: vec![vec![0, 1, 2]],
             mask: vec![vec![0, 1, 0]],
+            miner_public_key: [6u8; 33],
         };
         let env = RpcEnvelope { request_id: 11, payload: RpcRequest::AttestedForward(req) };
         let bytes = to_vec(&env).unwrap();

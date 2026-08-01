@@ -297,15 +297,36 @@ async fn start_mock_orchestrator(weights: Vec<u8>, config: DnaBert2Config, token
                         let hidden_bytes: Vec<u8> = hidden_vec.iter().flat_map(|v| v.to_le_bytes()).collect();
                         let hidden_states_hash = *blake3::hash(&hidden_bytes).as_bytes();
 
+                        // Sign the response with a dummy model hierarchy.
+                        let hierarchy = ModelKeyHierarchy::random("xeno/mgm-1", 1);
+                        let auth_key = hierarchy.auth_key().unwrap();
+                        let signer = ArtifactSigner::from_auth_key(&auth_key).unwrap();
+                        let auth_public_key = signer.public_key();
+                        let mut hasher = blake3::Hasher::new();
+                        hasher.update(b"xenom-attested-forward-v1");
+                        hasher.update(&hidden_states_hash);
+                        hasher.update(&req.base_checkpoint);
+                        hasher.update(&loss_scalar.to_le_bytes());
+                        let message_hash: [u8; 32] = *hasher.finalize().as_bytes();
+                        let signature = signer.sign(&message_hash, None).unwrap();
+
+                        // Encrypt the hidden states to the miner's public key.
+                        let miner_pk = PublicKey::from_slice(&req.miner_public_key).unwrap();
+                        let (ephemeral_secret, ephemeral_public_key) = session::generate_ephemeral_keypair();
+                        let session_nonce = [0u8; 12];
+                        let shared_secret = session::orchestrator_shared_secret(&ephemeral_secret, &miner_pk);
+                        let session_key = session::derive_session_key(&shared_secret, &session_nonce).unwrap();
+                        let encrypted_hidden_states = session_key.encrypt(&hidden_bytes).unwrap();
+
                         RpcResponse::AttestedForward(AttestedForwardResponse {
                             hidden_states_hash,
-                            hidden_states: hidden_bytes,
+                            hidden_states: encrypted_hidden_states,
                             loss: loss_scalar,
                             token_count: (batch_size * seq_len) as u32,
-                            signature: [0u8; 64],
-                            ephemeral_public_key: [0u8; 33],
-                            session_nonce: [0u8; 12],
-                            auth_public_key: [0u8; 33],
+                            signature: signature.signature,
+                            ephemeral_public_key: ephemeral_public_key.serialize(),
+                            session_nonce,
+                            auth_public_key,
                         })
                     }
                     RpcRequest::SubmitLoRAUpdate(_req) => RpcResponse::LoRAUpdateAck { new_checkpoint: Some([3u8; 32]) },
