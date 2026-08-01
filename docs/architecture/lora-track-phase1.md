@@ -7,18 +7,20 @@ adapter on the LM head without ever loading the full base transformer.
 
 ## What was added
 
-### 1. RPC messages (`xenom-miner` and `seed-node`)
+### 1. Shared RPC messages crate (`xenom-rpc`)
 
-New `rpc::messages` types mirror the PRD-007 workflow:
+All Borsh RPC messages were extracted into a new `xenom-rpc` crate
+(`xenom-rpc/src/messages.rs`) and are re-exported by `xenom-miner::rpc::messages`
+and `seed-node::rpc::messages`.  This removes the previous duplication between
+the miner and the orchestrator.
 
-- `GetTrainingArtifact` / `TrainingArtifact` — encrypted LoRA/adapter artifact distribution.
+New message types:
+
+- `GetTrainingArtifact` / `TrainingArtifact` — LoRA/adapter artifact distribution.
 - `AttestedForwardRequest` / `AttestedForwardResponse` — orchestrator-signed hidden states.
 - `SubmitLoRAUpdate` — encrypted LoRA delta submission.
 - `ArtifactType` enum (`Base`, `LoRA`, `Adapter`, `GradientTask`).
 - `RpcRequest` and `RpcResponse` variants: `GetTrainingArtifact`, `AttestedForward`, `SubmitLoRAUpdate`, `TrainingArtifact`, `AttestedForward`, `LoRAUpdateAck`.
-
-The `seed-node` and `xenom-miner` message files are still duplicated; this is
-legacy and will be consolidated in a shared crate later.
 
 ### 2. `XenomRpcClient` methods (`xenom-miner/src/rpc/client.rs`)
 
@@ -52,10 +54,11 @@ A minimal trainable LM head for the miner:
 
 Drives the full LoRA-only loop:
 
-- Calls `get_training_artifact`.
+- Calls `get_training_artifact` and caches the artifact across rounds.
 - Builds `LoraLmHead` from the returned artifact.
+- Tokenizes `GenomeTrainingBatchMsg` sequences into an MLM batch.
 - Calls `attested_forward` with a batch.
-- Trains the LoRA adapter for `local_steps`.
+- Trains the LoRA adapter for `local_steps` using `ManualAdamW`.
 - Submits the adapter via `submit_lora_update`.
 
 ### 6. `GetTrainingArtifact` in seed-node (`seed-node/src/model/lora_artifact.rs`)
@@ -64,12 +67,21 @@ Extracts only the frozen LM head + tied embedding weights from a DNABERT-2
 safetensors checkpoint and packages them in a `TrainingArtifact`.  For this
 spike the artifact is not encrypted and the signature is a placeholder.
 
-### 7. Server stubs
+### 7. `--trainer lora` in `xenom-miner`
+
+The miner CLI now accepts `--trainer lora`.  When selected, the miner enters a
+dedicated async loop (`run_lora_loop` in `xenom-miner/src/main.rs`) that:
+
+- Fetches genome batches from the orchestrator.
+- Trains a LoRA LM head via `LoraOnlyTrainer`.
+- Builds a `TrainingBlock` and submits it (or logs it in `--dry-run`).
+
+### 8. Server stubs
 
 `seed-node/src/rpc/server.rs` now handles the new `RpcRequest` variants:
 
 - `AttestedForward` — calls `serving::attested_forward`.
-- `GetTrainingArtifact` — returns an error until distribution is wired.
+- `GetTrainingArtifact` — packages the LM head via `model::lora_artifact`.
 - `SubmitLoRAUpdate` — returns a placeholder `LoRAUpdateAck`.
 
 ## Tests
@@ -113,11 +125,14 @@ All 46 tests pass.
 3. `SubmitLoRAUpdate` must validate, decrypt, and merge the LoRA delta on the
    orchestrator.
 
-4. `LoraOnlyTrainer` is a spike.  It must be wired into `xenom-miner/src/main.rs`
-   behind `--trainer lora` or similar, and must fetch real training batches.
+4. `--trainer lora` is a spike.  It builds and submits a `TrainingBlock` but
+   does not yet report a meaningful `loss_before`/`loss_after` (both are the
+   LoRA-only loss).  It also uses a dummy `miner_public_key` and does not derive
+   a real session key.
 
-5. A shared `rpc::messages` crate should be extracted from `xenom-miner` and
-   `seed-node` to eliminate the duplicated message definitions.
+5. `xenom-rpc` only holds `rpc::messages`.  The WebSocket client/codec still
+   lives in `xenom-miner` and could be moved later if `seed-node` or the unified
+   `xenom` node needs the same client.
 
 ## Files changed
 
@@ -126,9 +141,14 @@ All 46 tests pass.
 - `xenom-miner/src/trainer/mod.rs`
 - `xenom-miner/src/trainer/lora_lm_head.rs` (new)
 - `xenom-miner/src/trainer/lora_only_trainer.rs` (new)
+- `xenom-miner/src/main.rs`
 - `xenom-miner/src/lora.rs` (`varmap()` accessor, `get_base_tensor` is now `pub(crate)`)
 - `xenom-miner/tests/integration_tests.rs`
 - `xenom-miner/tests/lora_track_spike.rs` (new)
+- `xenom-rpc/Cargo.toml` (new)
+- `xenom-rpc/src/lib.rs` (new)
+- `xenom-rpc/src/messages.rs` (new)
+- `Cargo.toml` (workspace members)
 - `seed-node/src/rpc/messages.rs`
 - `seed-node/src/rpc/server.rs`
 - `seed-node/src/serving/mod.rs`

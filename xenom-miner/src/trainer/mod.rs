@@ -6,6 +6,7 @@ pub mod lora_lm_head;
 pub mod lora_only_trainer;
 pub mod lora_spike;
 pub mod mgm1_multi_gpu;
+pub use lora_only_trainer::LoraOnlyTrainer;
 pub mod mgm1_trainer;
 pub mod mixed_precision;
 pub mod mock_trainer;

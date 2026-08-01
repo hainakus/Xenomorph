@@ -1,0 +1,9 @@
+[package]
+name = "xenom-rpc"
+version = "0.1.0"
+edition = "2021"
+authors = ["Xenom Team"]
+description = "Shared Borsh RPC messages and client types for Xenomorph miner/orchestrator communication"
+
+[dependencies]
+borsh = { workspace = true }

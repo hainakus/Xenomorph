@@ -20,8 +20,8 @@ use xenom_miner::rpc::messages::{GenomeTrainingBatchMsg, TrainingBatch, Training
 use xenom_miner::rpc::XenomRpcClient;
 use xenom_miner::tokenizer::DnaTokenizer;
 use xenom_miner::trainer::{
-    CpuTrainer, GpuBackend, GpuTrainer, GradientUpdate, Mgm1MultiGpuTrainer, Mgm1Trainer, MockTrainer, MultiGpuConfig,
-    MultiGpuTrainer, Trainer, TrainingResult,
+    CpuTrainer, GpuBackend, GpuTrainer, GradientUpdate, LoraOnlyTrainer, Mgm1MultiGpuTrainer, Mgm1Trainer, MockTrainer,
+    MultiGpuConfig, MultiGpuTrainer, Trainer, TrainingResult,
 };
 use xenom_miner::wallet::{validate_address, WalletManager};
 
@@ -59,8 +59,8 @@ struct Args {
     #[arg(long, default_value_t = DEFAULT_THREADS)]
     threads: usize,
 
-    /// Trainer backend to use: mock, cpu, dnabert2, mgm1, gpu, cuda, rocm, or metal.
-    #[arg(long, value_parser = ["mock", "cpu", "dnabert2", "mgm1", "gpu", "cuda", "rocm", "metal"], default_value = "mock")]
+    /// Trainer backend to use: mock, cpu, dnabert2, mgm1, gpu, cuda, rocm, metal, or lora.
+    #[arg(long, value_parser = ["mock", "cpu", "dnabert2", "mgm1", "gpu", "cuda", "rocm", "metal", "lora"], default_value = "mock")]
     trainer: String,
 
     /// Deprecated alias for --trainer=mock.
@@ -519,6 +519,41 @@ async fn main() -> Result<()> {
     let prover = ZkProver::new();
     let mut block_builder = BlockBuilder::new(miner_address.clone());
 
+    // LoRA-only path: the trainer is not `dyn Trainer`; it needs an async RPC
+    // loop and works only with genome batches for this spike.
+    if trainer_kind == "lora" {
+        info!("Using LoRA-only trainer");
+        let mut guard = rpc_client.lock().await;
+        let client = guard.take().context("No RPC connection for LoRA trainer")?;
+        drop(guard);
+
+        let target_modules = if args.gpu.lora_target_modules.is_empty() {
+            LoraConfig::default_target_modules()
+        } else {
+            args.gpu.lora_target_modules.iter().cloned().collect()
+        };
+        let lora_config =
+            LoraConfig { rank: args.gpu.lora_rank, alpha: args.gpu.lora_alpha, dropout: args.gpu.lora_dropout, target_modules };
+        let learning_rate = 1e-3;
+        let local_steps = if args.gpu.gradient_accumulation > 0 { args.gpu.gradient_accumulation } else { 4 };
+
+        let mut lora_trainer = LoraOnlyTrainer::new(client, learning_rate, local_steps, lora_config);
+
+        let maybe_genome_merkle = genome_merkle.or_else(|| parse_genome_merkle(HUMAN_GENOME_MERKLE_ROOT).ok());
+        run_lora_loop(
+            &mut lora_trainer,
+            &rpc_client,
+            &config,
+            maybe_genome_merkle,
+            args.genome_batch_size,
+            args.dry_run,
+            &prover,
+            &mut block_builder,
+        )
+        .await?;
+        return Ok(());
+    }
+
     let progress = ProgressBar::new_spinner();
     progress.set_style(
         ProgressStyle::default_spinner().tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ").template("{spinner} {msg}").expect("valid spinner template"),
@@ -766,4 +801,165 @@ async fn main() -> Result<()> {
     progress.finish_with_message(format!("Finished {} blocks ({} reward)", block_number, total_reward));
     info!("Miner shut down gracefully");
     Ok(())
+}
+
+async fn run_lora_loop(
+    lora_trainer: &mut LoraOnlyTrainer,
+    rpc_client: &SharedRpc,
+    config: &MinerConfig,
+    genome_merkle: Option<[u8; 32]>,
+    genome_batch_size: usize,
+    dry_run: bool,
+    prover: &ZkProver,
+    block_builder: &mut BlockBuilder,
+) -> Result<()> {
+    let shutdown = tokio::signal::ctrl_c();
+    tokio::pin!(shutdown);
+    let mut block_number: u64 = 0;
+    let start = Instant::now();
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut shutdown => {
+                info!("LoRA-only trainer received shutdown signal");
+                break;
+            }
+
+            result = run_lora_iteration(
+                lora_trainer,
+                rpc_client,
+                config,
+                genome_merkle,
+                genome_batch_size,
+                dry_run,
+                prover,
+                block_builder,
+                &start,
+                &mut block_number,
+            ) => {
+                if let Err(e) = result {
+                    warn!("LoRA training error: {:?}", e);
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_lora_iteration(
+    lora_trainer: &mut LoraOnlyTrainer,
+    rpc_client: &SharedRpc,
+    config: &MinerConfig,
+    genome_merkle: Option<[u8; 32]>,
+    genome_batch_size: usize,
+    dry_run: bool,
+    prover: &ZkProver,
+    block_builder: &mut BlockBuilder,
+    start: &Instant,
+    block_number: &mut u64,
+) -> Result<()> {
+    if !dry_run {
+        if let Err(e) = ensure_rpc_connection(rpc_client, &config.rpc_url, dry_run).await {
+            warn!("RPC reconnect failed: {}", e);
+            tokio::time::sleep(RETRY_DELAY).await;
+            return Ok(());
+        }
+    }
+
+    let batch = match fetch_lora_batch(rpc_client, &config.model_id, genome_merkle, genome_batch_size, dry_run).await {
+        Some(b) => b,
+        None => {
+            warn!("No LoRA batch available; retrying");
+            tokio::time::sleep(RETRY_DELAY).await;
+            return Ok(());
+        }
+    };
+
+    let base_checkpoint = batch.base_checkpoint;
+    let batch_id = batch.batch.batch_id;
+
+    // Guard against base checkpoint changes.
+    if let Some(current) = lora_trainer.current_base_checkpoint() {
+        if current != base_checkpoint {
+            info!("Base checkpoint changed ({} -> {}); reloading artifact", hex::encode(current), hex::encode(base_checkpoint));
+            lora_trainer.clear_artifact();
+        }
+    }
+
+    let miner_public_key = [0u8; 33];
+    let train_result = lora_trainer.train_genome_round(&batch, miner_public_key).await;
+    let (loss, delta) = match train_result {
+        Ok(v) => v,
+        Err(e) => {
+            return Err(e).context("LoRA train round failed");
+        }
+    };
+
+    // Build a synthetic training result from the LoRA delta.
+    let gradients_commitment = *blake3::hash(&delta).as_bytes();
+
+    let result = TrainingResult {
+        model_id: config.model_id.clone(),
+        batch_indices: vec![batch_id],
+        base_checkpoint,
+        loss_before: loss,
+        loss_after: loss,
+        gradients_commitment,
+        compute_time_ms: start.elapsed().as_millis() as u64,
+    };
+
+    let public_inputs = PublicInputs {
+        model_id: config.model_id.clone(),
+        batch_id,
+        loss_before: loss,
+        loss_after: loss,
+        gradients_commitment,
+        base_checkpoint,
+    };
+    let zk_proof = prover.generate_proof(&result, &public_inputs)?;
+    let block = block_builder.build_block(&config.model_id, &result, zk_proof, [0u8; 32])?;
+
+    if dry_run {
+        info!("Dry-run LoRA block {} built | loss {:.6}", *block_number, loss);
+    } else {
+        match submit_block(rpc_client, block).await {
+            Ok(block_hash) => {
+                block_builder.set_prev_block(block_hash, *block_number);
+                info!("Submitted LoRA block {}: {} | loss {:.6}", *block_number, hex::encode(block_hash), loss);
+            }
+            Err(e) => warn!("Failed to submit LoRA block: {}", e),
+        }
+    }
+
+    *block_number += 1;
+    Ok(())
+}
+
+async fn fetch_lora_batch(
+    rpc_client: &SharedRpc,
+    model_id: &str,
+    genome_merkle: Option<[u8; 32]>,
+    genome_batch_size: usize,
+    _dry_run: bool,
+) -> Option<GenomeTrainingBatchMsg> {
+    let mut guard = rpc_client.lock().await;
+    let client = guard.as_mut()?;
+    if let Some(merkle) = genome_merkle {
+        match client.get_genome_training_batch(merkle, model_id, genome_batch_size).await {
+            Ok(msg) => Some(msg),
+            Err(e) => {
+                warn!("Failed to fetch genome training batch: {}", e);
+                *guard = None;
+                None
+            }
+        }
+    } else {
+        // LoRA-only training currently requires a genome merkle root.  Without one
+        // we cannot generate a meaningful masked batch on the miner side.
+        warn!("LoRA-only training requires --genome-merkle or a DNA model; use --trainer lora --genome-merkle <64-hex>");
+        None
+    }
 }

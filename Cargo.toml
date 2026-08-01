@@ -67,6 +67,7 @@ members = [
     "seed-node",
     "api-gateway",
     "xenom-miner",
+    "xenom-rpc",
     "tests",
 ]
 

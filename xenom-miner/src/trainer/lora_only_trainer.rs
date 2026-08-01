@@ -12,10 +12,11 @@ use std::collections::HashMap;
 use anyhow::{anyhow, bail, Context, Result};
 use candle_core::{DType, Device, Tensor};
 
+use crate::data::MlmBatchGenerator;
 use crate::lora::LoraConfig;
 use crate::model::DnaBert2Config;
 use crate::rpc::client::XenomRpcClient;
-use crate::rpc::messages::{AttestedForwardRequest, SubmitLoRAUpdate, TrainingArtifact};
+use crate::rpc::messages::{AttestedForwardRequest, GenomeTrainingBatchMsg, SubmitLoRAUpdate, TrainingArtifact};
 use crate::tokenizer::DnaTokenizer;
 use crate::trainer::lora_lm_head::LoraLmHead;
 use crate::trainer::ManualAdamW;
@@ -27,19 +28,70 @@ pub struct LoraOnlyTrainer {
     learning_rate: f64,
     local_steps: usize,
     lora_config: LoraConfig,
+    /// Cached artifact data across rounds.
+    base: Option<ArtifactBase>,
+}
+
+struct ArtifactBase {
+    model_id: String,
+    base_checkpoint: [u8; 32],
+    config: DnaBert2Config,
+    tokenizer: DnaTokenizer,
+    base_weights: HashMap<String, Tensor>,
 }
 
 impl LoraOnlyTrainer {
     pub fn new(client: XenomRpcClient, learning_rate: f64, local_steps: usize, lora_config: LoraConfig) -> Self {
-        Self { client, device: Device::Cpu, learning_rate, local_steps, lora_config }
+        Self { client, device: Device::Cpu, learning_rate, local_steps, lora_config, base: None }
     }
 
-    /// Run one training round.
+    /// Return the active base checkpoint, if an artifact has been loaded.
+    pub fn current_base_checkpoint(&self) -> Option<[u8; 32]> {
+        self.base.as_ref().map(|b| b.base_checkpoint)
+    }
+
+    /// Clear the cached artifact so the next round fetches it again.
+    pub fn clear_artifact(&mut self) {
+        self.base = None;
+    }
+
+    /// Train one genome-backed batch and return the final loss and LoRA delta.
     ///
-    /// `base_checkpoint` is the active checkpoint id.  `miner_public_key` is the
-    /// miner's public key (currently only used to fill the request; encryption is
-    /// not yet wired).  `input_ids`, `attention_mask`, `labels`, and `mask` are
-    /// a single pre-tokenized batch.
+    /// This fetches (or reuses) the training artifact, tokenizes the provided DNA
+    /// sequences into an MLM batch, requests attested hidden states, trains, and
+    /// submits a `LoRAUpdate`.
+    pub async fn train_genome_round(&mut self, msg: &GenomeTrainingBatchMsg, miner_public_key: [u8; 33]) -> Result<(f64, Vec<u8>)> {
+        let model_id = msg.batch.model_id.clone();
+        let base_checkpoint = msg.base_checkpoint;
+        let seed = msg.base_checkpoint;
+
+        // 1. Ensure we have the artifact for this base checkpoint.
+        self.ensure_artifact(&model_id, base_checkpoint, miner_public_key).await?;
+
+        // 2. Tokenize the sequences into an MLM batch.
+        let base = self.base.as_ref().unwrap();
+        let tokenizer = base.tokenizer.clone();
+        let batch_size = msg.sequences.len();
+        if batch_size == 0 {
+            bail!("Empty genome batch");
+        }
+        let generator = MlmBatchGenerator::new(tokenizer, base.config.max_position_embeddings)
+            .with_mask_prob(0.15)
+            .with_span_len(6.min(base.config.max_position_embeddings));
+        let source_indices: Vec<u64> = msg.batch.data_indices.iter().map(|s| s.chunk_idx).collect();
+        let mlm = generator.generate_from_sequences_with_indices(&msg.sequences, &seed, msg.batch.batch_id, Some(&source_indices))?;
+
+        // 3. Reshape into per-row 2D vectors as expected by `train_round_tensors`.
+        let input_ids: Vec<Vec<u32>> = mlm.input_ids.chunks(mlm.seq_len).map(|c| c.to_vec()).collect();
+        let attention_mask: Vec<Vec<u32>> = mlm.attention_mask.chunks(mlm.seq_len).map(|c| c.to_vec()).collect();
+        let labels: Vec<Vec<u32>> = mlm.labels.chunks(mlm.seq_len).map(|c| c.to_vec()).collect();
+        let mask: Vec<Vec<u8>> = mlm.mask.chunks(mlm.seq_len).map(|c| c.to_vec()).collect();
+
+        // 4. Run the tensor-level round (which also reuses the loaded artifact).
+        self.train_round_tensors(&model_id, base_checkpoint, miner_public_key, input_ids, attention_mask, labels, mask).await
+    }
+
+    /// Run one training round from pre-tokenized tensors.
     pub async fn train_round(
         &mut self,
         model_id: &str,
@@ -50,7 +102,17 @@ impl LoraOnlyTrainer {
         labels: Vec<Vec<u32>>,
         mask: Vec<Vec<u8>>,
     ) -> Result<(f64, Vec<u8>)> {
-        // 1. Fetch the training artifact (LM head base weights + LoRA seed).
+        self.ensure_artifact(model_id, base_checkpoint, miner_public_key).await?;
+        self.train_round_tensors(model_id, base_checkpoint, miner_public_key, input_ids, attention_mask, labels, mask).await
+    }
+
+    async fn ensure_artifact(&mut self, model_id: &str, base_checkpoint: [u8; 32], miner_public_key: [u8; 33]) -> Result<()> {
+        if let Some(base) = self.base.as_ref() {
+            if base.model_id == model_id && base.base_checkpoint == base_checkpoint {
+                return Ok(());
+            }
+        }
+
         let artifact = self
             .client
             .get_training_artifact(model_id, base_checkpoint, Some(base_checkpoint), miner_public_key)
@@ -61,10 +123,25 @@ impl LoraOnlyTrainer {
             bail!("Training artifact is encrypted, but decryption is not yet implemented in the spike");
         }
 
-        let (config, _tokenizer, base_weights) = Self::load_artifact(&artifact)?;
+        let (config, tokenizer, base_weights) = Self::load_artifact(&artifact)?;
+        self.base = Some(ArtifactBase { model_id: model_id.to_string(), base_checkpoint, config, tokenizer, base_weights });
+        Ok(())
+    }
+
+    async fn train_round_tensors(
+        &mut self,
+        model_id: &str,
+        base_checkpoint: [u8; 32],
+        _miner_public_key: [u8; 33],
+        input_ids: Vec<Vec<u32>>,
+        attention_mask: Vec<Vec<u32>>,
+        labels: Vec<Vec<u32>>,
+        mask: Vec<Vec<u8>>,
+    ) -> Result<(f64, Vec<u8>)> {
+        let base = self.base.as_ref().ok_or_else(|| anyhow!("No artifact loaded"))?;
 
         // 2. Build the LoRA LM head.
-        let head = LoraLmHead::load(&config, &base_weights, &self.lora_config, &self.device, DType::F32)?;
+        let head = LoraLmHead::load(&base.config, &base.base_weights, &self.lora_config, &self.device, DType::F32)?;
 
         // 3. Request attested hidden states.
         let forward_req = AttestedForwardRequest {
@@ -83,7 +160,7 @@ impl LoraOnlyTrainer {
             bail!("Empty batch");
         }
         let seq_len = input_ids[0].len();
-        let hidden_size = config.hidden_size;
+        let hidden_size = base.config.hidden_size;
 
         let hidden_floats: Vec<f32> =
             forward.hidden_states.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();

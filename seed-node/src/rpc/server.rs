@@ -19,8 +19,9 @@ use crate::model::manager::ModelManager;
 use crate::p2p::P2pGossipHandle;
 use crate::rpc::client::XenomorphRpcClient;
 use crate::rpc::messages::{
-    GenomeTrainingBatchMsg, GetCheckpointPeers, GetGenomeTrainingBatch, GetModelCheckpointInfo, GetModelCheckpointInfoV2,
-    ModelCheckpointInfoV2, ModelCheckpointV2, PeerAnnouncement, RpcEnvelope, RpcRequest, RpcResponse, TrainingBatch,
+    GenomeSlice, GenomeTrainingBatch as RpcGenomeTrainingBatch, GenomeTrainingBatchMsg, GetCheckpointPeers, GetGenomeTrainingBatch,
+    GetModelCheckpointInfo, GetModelCheckpointInfoV2, ModelCheckpointInfoV2, ModelCheckpointV2, PeerAnnouncement, RpcEnvelope,
+    RpcRequest, RpcResponse, TrainingBatch,
 };
 
 /// Allow WebSocket messages up to 1 GiB so model checkpoints (config + tokenizer + weights) fit.
@@ -362,7 +363,19 @@ async fn handle_genome_batch_request(
     let sequences = generator.extract_sequences(&batch);
     let base_checkpoint = get_checkpoint(&model_manager, &request.model_id).await;
 
-    RpcResponse::GenomeTrainingBatch(GenomeTrainingBatchMsg { batch, sequences, base_checkpoint })
+    let rpc_batch = RpcGenomeTrainingBatch {
+        batch_id: batch.batch_id,
+        model_id: batch.model_id,
+        genome_merkle_root: batch.genome_merkle_root,
+        data_indices: batch
+            .data_indices
+            .iter()
+            .map(|s| GenomeSlice { chunk_idx: s.chunk_idx, start_base: s.start_base, length: s.length })
+            .collect(),
+        mask_ratio: batch.mask_ratio,
+        seq_length: batch.seq_length,
+    };
+    RpcResponse::GenomeTrainingBatch(GenomeTrainingBatchMsg { batch: rpc_batch, sequences, base_checkpoint })
 }
 
 async fn get_checkpoint(model_manager: &ModelManager, model_id: &str) -> [u8; 32] {
